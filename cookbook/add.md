@@ -1,67 +1,53 @@
 # Add a New Entry to the Library
 
 ## Context
-Register a new skill, agent, or prompt in the library catalog.
+Register a new skill, agent, or prompt in the catalog. The `library` CLI does the
+deterministic work — alphabetical insertion into the right section (preserving the
+file's exact style), the YAML re-parse safety check, and the git pull/commit/push.
 
-## Input
-The user provides: name, description, source, and optionally type and dependencies.
+Your job is the **judgment** the CLI can't do:
+1. Resolve the source if the user was vague.
+2. Detect dependencies from the item's own content (the CLI does *not* auto-detect).
 
 ## Steps
 
-### 1. Sync the Library Repo
-Pull the latest changes before modifying:
+### 1. Determine type and source
+- Type is inferred from the source filename (`SKILL.md`→skill, `AGENT.md`→agent, else
+  prompt). Pass `--type` only to override.
+- The source must point to a specific file (local path or GitHub blob/raw URL).
+
+### 2. Detect dependencies (the fuzzy part)
+Read the item's file(s). Look in frontmatter and body for typed references like
+`skill:foo`, `agent:bar`, `prompt:baz` (and for skills that shell out to a toolkit's
+`$*_BIN_DIR`, treat that toolkit as a dependency). If unsure, ask the user.
+
+For each dependency that isn't already in the catalog, **add it first** with its own
+`library add` call (recursively), so no entry references a missing dependency.
+
+### 3. Add the entry
+Run the CLI from the library skill directory:
+
 ```bash
-cd <LIBRARY_SKILL_DIR>
-git pull
+<LIBRARY_SKILL_DIR>/library add \
+  --name "<name>" \
+  --description "<one-line description>" \
+  --source "<path-or-url>" \
+  [--type skill|agent|prompt] \
+  [--requires "skill:foo,agent:bar"] \
+  [--json]
 ```
 
-### 2. Determine the Type
-Figure out the type from the user's prompt or the source path:
-- If the source path contains `SKILL.md` or user says "skill" → type is `skill`
-- If the source path contains `AGENT.md` or user says "agent" → type is `agent`
-- If user says "prompt" → type is `prompt`
-- If ambiguous, ask the user
+The CLI pulls the library repo, inserts the entry alphabetically, verifies the file
+still parses, then commits and pushes. Flags:
+- `--no-push` → commit locally but don't push (let the user review first).
+- `--no-commit` → edit the catalog only.
 
-### 3. Validate the Source
-- **Local path**: Verify the file exists at the given path
-- **GitHub URL**: Verify the URL is well-formed (matches browser or raw URL patterns)
-- Confirm the source points to a specific file, not a directory
+It refuses to add a name that already exists (telling you to use `use`/`push` instead)
+and warns if a `--requires` ref isn't in the catalog yet.
 
-### 4. Parse Dependencies
-Detect dependencies by looking through the skill/agent/prompt files, format them as typed references:
-- `skill:name`, `agent:name`, `prompt:name`
-- Verify each dependency already exists in `library.yaml` if or warn the user
-  - If they don't exist add them to `library.yaml` first. If those files have dependencies, add them recursively.
-  - You can detect these sometimes by looking at the frontmatter, and then in the file content look for `/<prompt|agent|skill>:name` references. If you're not sure, ask the user the user if they have any dependencies.
+### 4. Confirm
+Relay the CLI's result: what was added, and whether it was committed/pushed. If you
+added dependencies first, mention those too.
 
-### 5. Add the Entry to library.yaml
-Read `library.yaml`, add the new entry under the correct section:
-
-```yaml
-# Under library.skills, library.agents, or library.prompts
-- name: <name>
-  description: <description>
-  source: <source>
-  requires: [<typed:refs>]  # omit if no dependencies
-```
-
-**YAML formatting rules:**
-- 2-space indentation
-- List items use `- ` prefix
-- Properties are indented under the list item
-- Keep entries alphabetically sorted by name within each section
-- For skills reference the `.../<skill-name>/SKILL.md` file,
-- For agents reference the `.../<agent name>.md` file,
-- For prompts reference the `.../<prompt name>.md` file (installed to `.claude/commands/`),
-- Remember we'll be adding a absolute path or a github url (https or ssh)
-
-### 6. Commit and Push
-```bash
-cd <LIBRARY_SKILL_DIR>
-git add library.yaml
-git commit -m "library: added <type> <name>"
-git push
-```
-
-### 7. Confirm
-Tell the user the entry has been added and is now available for others to use via `/library use <name>`.
+> The CLI is the source of truth for the YAML edit and git. Don't hand-edit
+> `library.yaml` or run the git commands yourself.

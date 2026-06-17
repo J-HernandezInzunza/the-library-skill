@@ -3,53 +3,20 @@
 ## Context
 Show the full library catalog with install status.
 
+This is a deterministic operation — the `library` CLI does all the work (git pull,
+parse `library.yaml`, check install status). Do **not** re-implement it by hand.
+
 ## Steps
 
-### 1. Sync the Library Repo
-Pull the latest catalog before reading:
+Run the CLI from the library skill directory:
+
 ```bash
-cd <LIBRARY_SKILL_DIR>
-git pull
+<LIBRARY_SKILL_DIR>/library list
 ```
 
-### 2. Read the Catalog
-- Read `library.yaml`
-- Parse all entries from `library.skills`, `library.agents`, and `library.prompts`
+- Add `--json` if you need to reason over the result (e.g. to filter or summarize).
+- Add `--no-pull` to skip the git pull (faster; use when offline or already fresh).
 
-### 3. Check Install Status
-For each entry:
-- Determine the type and corresponding default/global directories from `default_dirs`
-- Check if a directory matching the entry name exists in the **default** directory
-- Check if a directory matching the entry name exists in the **global** directory
-- Search recursively for name matches
-- Mark as: `installed (default)`, `installed (global)`, or `not installed`
-
-### 4. Display Results
-
-Format the output as a table grouped by type:
-
-```
-## Skills
-| Name | Description | Source | Status |
-|------|-------------|--------|--------|
-| skill-name | skill-description | /local/path/... | installed (default) |
-| other-skill | other-description | github.com/... | not installed |
-
-## Agents
-| Name | Description | Source | Status |
-|------|-------------|--------|--------|
-| agent-name | agent-description | /local/path/... | installed (global) |
-
-## Prompts
-| Name | Description | Source | Status |
-|------|-------------|--------|--------|
-| prompt-name | prompt-description | github.com/... | not installed |
-```
-
-If a section is empty, show: `No <type> in catalog.`
-
-### 5. Summary
-At the bottom, show:
-- Total entries in catalog
-- Total installed locally
-- Total not installed
+Relay the output to the user. The CLI already groups by type, shows install status
+(`installed (default|global)` or `not installed`), and prints a summary line. No
+further work is needed unless the user asks a follow-up question about a specific entry.

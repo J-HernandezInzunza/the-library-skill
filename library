@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Uniform entry point for The Library CLI.
+# Prefers the self-contained .venv (has PyYAML); falls back to system python3.
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY="$DIR/.venv/bin/python"
+[ -x "$PY" ] || PY="$(command -v python3)"
+exec "$PY" "$DIR/library.py" "$@"

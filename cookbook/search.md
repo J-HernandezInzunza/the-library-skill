@@ -3,48 +3,18 @@
 ## Context
 Find entries in the catalog by keyword when the user doesn't remember the exact name.
 
-## Input
-The user provides a keyword or description.
+This is a deterministic operation handled entirely by the `library` CLI
+(case-insensitive substring match over name + description). Do **not** re-implement it.
 
 ## Steps
 
-### 1. Sync the Library Repo
-Pull the latest catalog before reading:
 ```bash
-cd <LIBRARY_SKILL_DIR>
-git pull
+<LIBRARY_SKILL_DIR>/library search "<keyword>"
 ```
 
-### 2. Read the Catalog
-- Read `library.yaml`
-- Parse all entries from `library.skills`, `library.agents`, and `library.prompts`
+- Add `--json` if you need to reason over the matches (e.g. rank them or pick one for the user).
+- Add `--no-pull` to skip the git pull.
 
-### 3. Search
-- Match the keyword (case-insensitive) against:
-  - Entry `name`
-  - Entry `description`
-- A match is any entry where the keyword appears as a substring in either field
-- Collect all matches across all types
-
-### 4. Display Results
-
-If matches found, format as:
-
-```
-## Search Results for "<keyword>"
-
-| Type | Name | Description | Source |
-|------|------|-------------|--------|
-| skill | matching-skill | description... | source... |
-| agent | matching-agent | description... | source... |
-```
-
-If no matches:
-```
-No results found for "<keyword>".
-
-Tip: Try broader keywords or run `/library list` to see the full catalog.
-```
-
-### 5. Suggest Next Step
-If matches were found, suggest: `Run /library use <name> to install one of these.`
+Relay the results. If the CLI returns no matches, suggest a broader keyword or
+`library list`. If the user clearly wants one of the results, follow up with
+`library use <name>` (see [use.md](use.md)).

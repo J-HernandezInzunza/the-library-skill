@@ -1,54 +1,38 @@
 # Remove an Entry from the Library
 
 ## Context
-The user wants to remove a skill, agent, or prompt from the library catalog and optionally delete the local copy.
+Remove a skill, agent, or prompt from the catalog, and optionally delete the local copy.
+The `library` CLI does the deterministic work — removing the entry (preserving the file's
+style, collapsing an emptied section back to `[]`), the YAML re-parse safety check, local
+deletion, and the git pull/commit/push.
 
-## Input
-The user provides a skill name or description.
+Your job is the **judgment**: confirm with the user before anything destructive, and weigh
+the dependents warning.
 
 ## Steps
 
-### 1. Sync the Library Repo
-Pull the latest catalog before modifying:
+### 1. Confirm with the user
+Show the entry and ask before proceeding:
+- "Remove **<name>** from the catalog?"
+- If they also want the local copy gone, that's the `--purge` flag — confirm that
+  separately, since it deletes from `~/.claude/...` (global) too.
+
+### 2. Remove via the CLI
+
 ```bash
-cd <LIBRARY_SKILL_DIR>
-git pull
+<LIBRARY_SKILL_DIR>/library remove "<name>" [--purge] [--json]
 ```
 
-### 2. Find the Entry
-- Read `library.yaml`
-- Search across all sections for the matching entry
-- Determine the type (skill, agent, or prompt)
-- If no match, tell the user the item wasn't found in the catalog
+- `--purge` → also delete the installed copy from the default and global dirs.
+- `--no-push` → commit locally but don't push.
+- `--no-commit` → edit the catalog only.
 
-### 3. Confirm with User
-Show the entry details and ask:
-- "Remove **<name>** from the library catalog?"
-- If installed locally, also ask: "Also delete the local copy at `<path>`?"
+The CLI warns (on stderr) if other entries still `require` this one — surface that to the
+user; they may need to update or remove the dependents too.
 
-### 4. Remove from library.yaml
-- Remove the entry from the appropriate section (`library.skills`, `library.agents`, or `library.prompts`)
-- If other entries depend on this one (via `requires`), warn the user before proceeding
+### 3. Confirm
+Relay what was removed, whether a local copy was deleted, any dependents still pointing at
+it, and whether the change was committed/pushed.
 
-### 5. Delete Local Copy (if requested)
-If the user confirmed local deletion:
-- Check the default directory for the type (from `default_dirs`)
-- Check the global directory
-- Remove the directory or file:
-  ```bash
-  rm -rf <target_directory>/<name>
-  ```
-
-### 6. Commit and Push
-```bash
-cd <LIBRARY_SKILL_DIR>
-git add library.yaml
-git commit -m "library: removed <type> <name>"
-git push
-```
-
-### 7. Confirm
-Tell the user:
-- The entry has been removed from the catalog
-- Whether the local copy was also deleted
-- If other entries depended on it, remind them to update those entries
+> The CLI owns the YAML edit, local deletion, and git. Don't hand-edit `library.yaml` or
+> run `rm`/git yourself.

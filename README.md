@@ -18,12 +18,24 @@ The Library is a single skill whose only job is to manage other skills. It's a c
 
 Think of it as a `package.json` for agent capabilities — but instead of packages, you're managing skills, agents, and prompts. Instead of a registry, you're pointing at your own private GitHub repos and local paths.
 
-**This is a pure agent application.** There are no scripts, no CLIs, no dependencies, no build tools. The entire application is encoded in `SKILL.md` and a set of cookbook instructions that teach the agent exactly what to do. The agent IS the runtime. This matters because:
+**This is a hybrid agent application.** The catalog and the workflow are still defined in
+`SKILL.md` and a set of cookbook instructions — but the *deterministic mechanics* (reading
+the catalog, parsing sources, resolving dependencies, cloning/copying) live in a small,
+single-file CLI (`library.py`). The agent handles only the parts that need judgment: fuzzy
+name matching, dependency detection from prose, and conflict narration. This matters because:
 
-- Any agent harness that reads skill files can run it (Claude Code, Pi, etc.)
-- You can modify behavior by editing markdown, not code
-- The skill can be extended, forked, and adapted instantly
-- An orchestrator agent can chain library commands without any tooling overhead
+- The high-frequency, read-mostly commands (`list`, `search`, `use`, `sync`, `doctor`) run
+  with **no LLM call at all** — faster, free, and fully deterministic.
+- Destructive, stateful operations (clone, copy, git) are executed by code, not improvised
+  by a probabilistic model.
+- The agent is still the runtime for everything fuzzy or interactive; any harness that reads
+  skill files can drive it (Claude Code, Pi, etc.).
+- You can still modify *behavior* by editing markdown; you modify *mechanics* by editing one
+  Python file.
+
+> The CLI depends only on `python3` + PyYAML (kept in a gitignored `.venv`; run
+> `just bootstrap` once). If you'd rather stay 100% dependency-free, the previous
+> pure-markdown approach is preserved in git history.
 
 ## Why It Exists
 
@@ -106,6 +118,7 @@ Dependencies are resolved and pulled first, recursively.
 - **gh** (optional) — GitHub CLI for forking, cloning, and private repo access. Install: `brew install gh` or see [gh docs](https://cli.github.com)
 - **GitHub SSH key or `GITHUB_TOKEN`** — for accessing private repos (not needed if using `gh auth login`)
 - **just** (optional) — for justfile shortcuts. Install: `brew install just` or see [just docs](https://github.com/casey/just)
+- **python3** — for the deterministic CLI. PyYAML is installed into a local `.venv` via `just bootstrap` (one-time).
 
 ## Installation
 
@@ -215,21 +228,56 @@ Pull the latest version of all installed items:
 | `/library list`             | Show full catalog with install status                      |
 | `/library sync`             | Re-pull all installed items from source                    |
 | `/library search <keyword>` | Find entries by name or description                        |
+| `/library doctor`           | Validate catalog integrity (`--deep` checks source liveness) |
 
 ### Justfile Shortcuts
 
-The included `justfile` lets you run library commands from your terminal without an interactive Claude session.
+The included `justfile` lets you run library commands from your terminal.
 
 ```bash
+just bootstrap             # One-time: create .venv + install PyYAML for the CLI
+
+# Deterministic — run the CLI directly (no LLM, no tokens):
 just list                  # List catalog
-just use my-skill          # Pull a skill
-just push my-skill         # Push changes back
-just add "name: foo, description: bar, source: /path/to/SKILL.md"
+just search "keyword"       # Search by keyword
+just use my-skill          # Pull a skill (exact name)
+just use-global my-skill    # Pull into ~/.claude/...
 just sync                  # Re-pull all installed items
-just search "keyword"
+just doctor                # Validate catalog integrity
+just doctor --deep         # ...and check every source is reachable
+
+# Fuzzy / write ops — route through the agent:
+just add "name: foo, description: bar, source: /path/to/SKILL.md"
+just push my-skill         # Push changes back
+just remove my-skill       # Remove from catalog
+just ask "use that PR review thing"   # natural-language / fuzzy intent
 ```
 
-> **Note:** Justfile recipes use `--dangerously-skip-permissions` because the agent needs filesystem and git access to clone, copy, and push. Review the `justfile` if you want to modify this behavior.
+> **Note:** The agent-backed recipes use `--dangerously-skip-permissions` because the agent
+> needs filesystem and git access. The CLI-backed recipes (`list`/`search`/`use`/`sync`/`doctor`)
+> run locally with no agent at all. Review the `justfile` to change this behavior.
+
+## Troubleshooting
+
+**Start here for anything catalog-related:** run the health check. It validates the entire
+catalog in one pass and is the fastest way to find what's wrong.
+
+```bash
+just doctor          # static checks: duplicates, dangling/cyclic deps, bad sources, sort drift
+just doctor --deep    # also confirm every source repo + branch is reachable
+```
+
+| Symptom | Likely cause / fix |
+| ------- | ------------------ |
+| CLI won't run / `ModuleNotFoundError: No module named 'yaml'` | The `.venv` isn't set up. Run `just bootstrap` once. |
+| `pip install pyyaml` fails with *externally-managed-environment* | Expected on Homebrew/Debian Python (PEP 668). Don't install globally — `just bootstrap` uses a `.venv` to avoid this. |
+| `/library use <name>` warns about a missing dependency, or installs behave oddly | Run `just doctor` — it catches dangling `requires`, duplicate names, and cycles. |
+| `use`/`sync` fails to clone a source | Run `just doctor --deep`. If it reports the repo/branch unreachable, the source moved or the branch was deleted — fix the entry's `source`. If `--deep` says it's reachable but clone still fails, it's auth: check your SSH key, `gh auth login`, or `GITHUB_TOKEN`. |
+| A section looks out of order after a manual edit | `just doctor` flags sort drift; re-add via `library add` (it keeps each section alphabetical). |
+| `doctor --deep` is slow | It does one network round-trip per source. Normal for large catalogs; use plain `just doctor` for a quick offline check. |
+
+`doctor` exits non-zero when it finds errors, so you can also wire `just doctor` into a
+pre-commit hook or CI on your fork to stop a broken catalog from being pushed.
 
 ## Architecture
 
@@ -246,7 +294,11 @@ just search "keyword"
         list.md
         sync.md
         search.md
-    justfile                  # CLI shorthand for all commands
+        doctor.md
+    library.py                # Deterministic CLI — the mechanics for every catalog op
+    library                   # Wrapper that selects .venv python, then runs library.py
+    justfile                  # Terminal shortcuts (CLI direct + agent fallback)
+    .venv/                    # PyYAML for the CLI (gitignored; `just bootstrap`)
     README.md                 # This file
 ```
 
@@ -254,7 +306,7 @@ just search "keyword"
 
 - **Private-first**: Built for your specialized, competitive-edge agentics. Not a public marketplace.
 - **Reference-based**: The catalog stores pointers, not copies. Skills live in their source repos.
-- **Pure agent**: No scripts, no build tools. The SKILL.md teaches the agent everything it needs to know.
+- **Hybrid**: Deterministic mechanics live in a small CLI; the agent handles only fuzzy/interactive parts. SKILL.md still defines the workflow.
 - **Agent-agnostic**: Default target is `.claude/skills/` but supports any directory for any agent harness.
 - **Catalog, not manifest**: Entries define what's available, not what's installed. Pull on demand.
 

@@ -42,14 +42,26 @@ If already cloned (e.g., user cloned the template first), just update the remote
   - **LIBRARY_YAML_PATH**: Confirm path (default: `~/.claude/skills/library/library.yaml`)
   - **LIBRARY_SKILL_DIR**: Confirm path (default: `~/.claude/skills/library/`)
 
-### 5. Verify Installation
+### 5. Bootstrap the CLI
+The deterministic CLI (`library`) needs PyYAML in a self-contained `.venv`:
+```bash
+cd <LIBRARY_SKILL_DIR>
+just bootstrap
+```
+Verify it works:
+```bash
+<LIBRARY_SKILL_DIR>/library list --no-pull
+```
+
+### 6. Verify Installation
 - Confirm SKILL.md exists at `<LIBRARY_SKILL_DIR>/SKILL.md`
 - Confirm library.yaml exists at `<LIBRARY_SKILL_DIR>/library.yaml`
+- Confirm `<LIBRARY_SKILL_DIR>/library list` runs
 - Confirm the `/library` command is now available
 
-### 6. Done
+### 7. Done
 Tell the user:
 - The Library is now globally available
-- `/library list` will show the catalog (empty by default)
+- `/library list` (or `just list`) will show the catalog
 - `/library add` to start adding skills, agents, and prompts
-- The `justfile` in the library directory has shorthand commands
+- The `justfile` in the library directory has shorthand commands (`just list`, `just search`, `just use`, `just sync` run the CLI directly; `just add/push/remove/install` route through the agent)

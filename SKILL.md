@@ -22,6 +22,38 @@ The Library is a catalog of references to your agentics. The `library.yaml` file
 
 **The `library.yaml` is a catalog, not a manifest.** Entries define what's *available* — not what gets installed. You pull specific items on demand with `/library use <name>`.
 
+## Deterministic CLI vs. Agent
+
+The mechanical parts of the workflow — reading the catalog, parsing sources, resolving
+dependencies, cloning/copying — are handled by a small deterministic CLI (`library.py`,
+invoked via the `library` wrapper). The agent is only needed for judgment: fuzzy name
+matching, dependency detection from prose, and conflict narration.
+
+- **CLI-backed (no LLM needed):** `list`, `search`, `use`, `sync`, `doctor`. Run these
+  directly: `<LIBRARY_SKILL_DIR>/library <command>`. They support `--json` (machine-readable)
+  and `--no-pull` (skip the catalog git pull).
+- **Agent-mediated (fallback):** `install`, `add`, `push`, `remove`, and any *fuzzy*
+  request (vague name, natural-language intent). The CLI signals when it needs the agent
+  by exiting non-zero with `status: "AMBIGUOUS"` or `status: "NOT_FOUND"`.
+  - `add`, `remove`, and `push` are hybrids: the agent handles only the judgment (type +
+    dependency detection for `add`; destructive-action confirmation for `remove`; choosing
+    the local copy and warning about overwrites for `push`), then delegates the YAML edit /
+    file ops / git to `library add|remove|push` (deterministic).
+
+**When a CLI-backed command is invoked, run the `library` CLI — do not re-implement the
+mechanics by hand.** The CLI is the source of truth; if something is wrong, fix
+`library.py`.
+
+### Bootstrap
+
+The CLI needs PyYAML, kept in a self-contained `.venv` (gitignored). One-time per device:
+
+```bash
+cd <LIBRARY_SKILL_DIR> && just bootstrap
+```
+
+The `library` wrapper auto-selects `.venv/bin/python` when present, else system `python3`.
+
 ## Commands
 
 | Command                     | Purpose                                  |
@@ -34,6 +66,7 @@ The Library is a catalog of references to your agentics. The `library.yaml` file
 | `/library list`             | Show full catalog with install status    |
 | `/library sync`             | Re-pull all installed items from source   |
 | `/library search <keyword>` | Find entries by keyword                  |
+| `/library doctor`           | Validate catalog integrity (`--deep` checks sources) |
 
 ## Cookbook
 
@@ -49,6 +82,7 @@ Each command has a detailed step-by-step guide. **Read the relevant cookbook fil
 | list    | [cookbook/list.md](cookbook/list.md)       | User wants to see what's available and what's installed      |
 | sync    | [cookbook/sync.md](cookbook/sync.md)       | User wants to refresh all installed items at once            |
 | search  | [cookbook/search.md](cookbook/search.md)   | User is looking for a skill but doesn't know the exact name |
+| doctor  | [cookbook/doctor.md](cookbook/doctor.md)   | User wants to validate catalog integrity / find broken entries |
 
 **When a user invokes a `/library` command, read the matching cookbook file first, then execute the steps.**
 

@@ -1,84 +1,35 @@
 # Push a Skill to the Library Source
 
 ## Context
-The user has improved a skill locally and wants to push changes back to the source.
+The user improved an item locally and wants to push it back to its source. The `library`
+CLI does the deterministic work — locating the local copy, cloning the source repo,
+overwriting it, detecting whether anything actually changed, and committing/pushing (for
+GitHub sources) or copying over the source dir (for local-path sources).
 
-## Input
-The user provides a skill name or description.
+Your job is the **judgment**: pick the right local copy if it's installed in more than one
+place, and warn the user that push *overwrites* the source with their local copy.
 
 ## Steps
 
-### 1. Find the Entry
-- Read `library.yaml`
-- Search across all sections for the matching entry
-- If no match, tell the user the item wasn't found in the catalog
+### 1. Push via the CLI
 
-### 2. Locate the Local Copy
-- Check the default directory for the type (from `default_dirs`)
-- Check the global directory
-- If found in multiple places, ask which one to push
-- If not found locally, tell the user there's nothing to push
+```bash
+<LIBRARY_SKILL_DIR>/library push "<name>" [--from default|global|<path>] [--message "<msg>"] [--json]
+```
 
-### 3. Check for Conflicts
+- `--from` → required only if the item is installed in **both** the default and global
+  dirs (the CLI errors and asks). Otherwise it auto-detects.
+- `--message` → commit message for GitHub sources (default: `library: updated <name>`).
+- `--no-push` → for GitHub sources, commit in the clone but don't push (rarely useful).
 
-**If source is a local path:**
-- Compare the local installed copy with the source
-- If the source has been modified since last pull, warn the user:
-  "The source has changes that aren't in your local copy. Pushing will overwrite them. Continue?"
+### 2. Interpret the result
+- `changed: false` → the local copy already matches the source; nothing was pushed.
+- `changed: true, pushed: true` → committed and pushed to the GitHub source.
+- local-path source → the source directory was overwritten in place (no git).
 
-**If source is a GitHub URL:**
-- Clone the repo to a temp directory (shallow):
-  ```bash
-  tmp_dir=$(mktemp -d)
-  git clone --depth 1 --branch <branch> <clone_url> "$tmp_dir"
-  ```
-- Compare the skill directory in the clone with the local copy
-- If they differ AND the remote has changes not in the local copy, warn about conflict
-- Ask the user to resolve before continuing
+### 3. Heads-up on overwrites
+Push replaces the source with your local copy. If the source may have changed elsewhere
+since you installed, suggest the user run `library use <name>` (refresh) first and
+reconcile, so a teammate's edits aren't clobbered. The CLI does not do 3-way merging.
 
-### 4. Push to Source
-
-**If source is a local path:**
-- Copy the entire local directory to the source location, overwriting:
-  ```bash
-  cp -R <local_directory>/ <source_parent_directory>/
-  ```
-- Confirm the overwrite
-
-**If source is a GitHub URL:**
-- If we don't already have a tmp clone from step 3, clone now:
-  ```bash
-  tmp_dir=$(mktemp -d)
-  git clone --depth 1 --branch <branch> <clone_url> "$tmp_dir"
-  ```
-- Remove the old skill directory in the clone:
-  ```bash
-  rm -rf "$tmp_dir/<skill_path_in_repo>"
-  ```
-- Copy the local version into the clone:
-  ```bash
-  cp -R <local_directory>/ "$tmp_dir/<skill_path_in_repo>/"
-  ```
-- Stage ONLY the relevant changes:
-  ```bash
-  cd "$tmp_dir"
-  git add <skill_path_in_repo>
-  ```
-- Commit with the standard format:
-  ```bash
-  git commit -m "library: updated <name> <brief description of what changed>"
-  ```
-- Push:
-  ```bash
-  git push
-  ```
-- Clean up:
-  ```bash
-  rm -rf "$tmp_dir"
-  ```
-
-### 5. Confirm
-Tell the user:
-- What was pushed and where
-- The commit message used
-- If it was a local path push, confirm the overwrite
+> The CLI owns the clone/copy/commit/push. Don't hand-run git or `cp` yourself.
