@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Uniform entry point for The Library CLI.
+# Prefers the self-contained .venv (has PyYAML); falls back to system python3.
+set -euo pipefail
+# Capture the caller's working directory BEFORE resolving the tool dir, so the
+# CLI can anchor 'default'-scope installs to where the user actually is, even
+# when invoked by absolute path. An explicit --cwd flag still overrides this,
+# and an outer LIBRARY_CWD (if already exported) is respected.
+export LIBRARY_CWD="${LIBRARY_CWD:-$PWD}"
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY="$DIR/.venv/bin/python"
+[ -x "$PY" ] || PY="$(command -v python3)"
+exec "$PY" "$DIR/library.py" "$@"

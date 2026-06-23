@@ -1,0 +1,13 @@
+.DS_Store
+.env
+*.tmp
+
+# library CLI
+.venv/
+__pycache__/
+*.pyc
+
+# per-device config + local catalog clone (never committed)
+library.local.yaml
+.catalog-repo/
+

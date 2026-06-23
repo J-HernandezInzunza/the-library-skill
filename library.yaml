@@ -1,0 +1,64 @@
+default_dirs:
+  skills:
+    - default: .claude/skills/
+    - global: ~/.claude/skills/
+  agents:
+    - default: .claude/agents/
+    - global: ~/.claude/agents/
+  prompts:
+    - default: .claude/commands/
+    - global: ~/.claude/commands/
+
+library:
+  skills:
+    - name: atlassian-toolkit
+      description: Self-contained CLI toolkit for Atlassian Cloud (Jira, Bitbucket, Confluence) via API token — no MCP, no npm install. Shared dependency for the bug, PR, and retro agents; other skills shell out to its bins through $ATLASSIAN_BIN_DIR. Infrastructure, not a task the model performs directly; requires ATLASSIAN_BIN_DIR + ATLASSIAN_EMAIL/ATLASSIAN_API_TOKEN set in the shell rc.
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/atlassian-toolkit/SKILL.md
+    - name: bug-investigator
+      description: Investigate sparse Jira bug tickets and enrich them with a grounded root-cause theory. Fetch the ticket, trace code across repos (starting from any linked PRs the triager found), form a falsifiable theory, and append to Dev Notes or return a draft. Triggers on "investigate this", "look at this bug", "trace down this bug", or pasting a Jira bug key/URL.
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/bug-investigator/SKILL.md
+      requires: ["skill:atlassian-toolkit"]
+    - name: bug-triager
+      description: Triage a Jira bug by searching Jira for related, duplicate, or previously-fixed tickets before code investigation. Ranks matches, captures their linked pull requests, optionally posts a related-tickets comment, and hands off to bug-investigator. Triggers on "triage this", "has this been reported", "find related tickets", "check for duplicates".
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/bug-triager/SKILL.md
+      requires: ["skill:atlassian-toolkit"]
+    - name: commit-push
+      description: Write a semantic commit message from staged changes, commit, and push to the remote. Enforces Jose's preferred commit style (semantic prefix, bulleted changes with filenames only, closing summary paragraph). Use whenever the user says "commit and push", "ship this", "write a commit message", "commit my changes", or otherwise wants staged work turned into a well-formatted commit. Also use when the user has staged changes and asks you to wrap up or finalize the work.
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/commit-push/SKILL.md
+    - name: document-frontend-code
+      description: Adds inline documentation (TSDoc/JSDoc) to frontend code. Use this skill whenever the user asks to add docs, document a function, write TSDoc/JSDoc, document an interface, or document a component, including phrases like "add docs", "document this", "write TSDoc for this", "document this composable", or "add jsdoc". Do NOT use for backend documentation (Javadoc, Python docstrings, Go doc comments, etc.) — this skill is frontend-only and assumes a frontend codebase.
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/document-frontend-code/SKILL.md
+    - name: explain-code
+      description: Walks through code to build the user's mental model — useful for onboarding to legacy code, understanding unfamiliar files, or grokking complex logic before changing it. Language-agnostic; works on frontend (Vue, TypeScript, JavaScript) and backend (Java, Spring Boot, Python, etc.). Use this skill whenever the user asks to explain, walk through, break down, or understand a piece of code, including phrases like "how does this work", "what is this doing", "walk me through this function", "explain this file", "help me understand this", or "break this down". This is a teaching skill — explanations are structured to build understanding and invite deeper thinking, not just to answer the surface question. Do NOT use this skill for adding inline documentation (TSDoc/JSDoc/Javadoc) — that's a separate skill.
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/explain-code/SKILL.md
+    - name: frontend-code-review
+      description: Reviews frontend code changes for bugs, style issues, and best practices. Specialized for Vue 3, TypeScript, and modern web development. Use when reviewing PRs or checking code quality.
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/frontend-code-review/SKILL.md
+    - name: generate-frontend-unit-tests
+      description: Generates comprehensive unit tests for Vue components AND TypeScript logic/composables using Vitest.
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/generate-frontend-unit-tests/SKILL.md
+    - name: grill-me
+      description: A questioning layer that surfaces load-bearing design decisions only the user's brain can answer. Enhances other planning workflows (spec-driven development, plan mode, ticket drafting, free-form design conversations, etc.) by injecting harder questions — does not produce its own spec or requirements doc. Use this skill whenever the user says "grill me", "help me plan X", "create a plan for X", "let's spec this out", or is in any planning/spec workflow that would benefit from deeper interrogation. Trigger even when the user doesn't say "grill" — any non-trivial planning conversation should pull this in as a layer.
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/grill-me/SKILL.md
+    - name: jira-ticket-drafter
+      description: Draft well-structured Jira tickets from brief descriptions, conversations, or retro action items. Generates title, description body (with acceptance criteria, technical notes, affected services, and related ticket links), and suggests issue type and priority. Designed for the Workstand Jira instance, with team-specific conventions loaded from a separate reference file. Use whenever the user says "create a ticket for", "write a Jira ticket", "draft a ticket", "turn this into a ticket", "make a dev task for", "file a bug for", or describes work that should become a trackable Jira issue — even without saying "ticket" or "Jira". Also trigger when the user pastes a retro action item, a Slack message, or a vague idea and wants it turned into something actionable.
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/jira-ticket-drafter/SKILL.md
+    - name: pr-and-notify
+      description: Create a Bitbucket pull request from the current branch and notify the team in Slack with a concise summary. Handles stacked PR detection (first, middle, or manual commit range), formats the PR title from the branch name (e.g. "INST-123_2" → "INST-123 [2/x]"), builds the description from the relevant commits only, targets the correct parent branch, and posts a formatted Slack message. Use whenever the user says "open a PR and let the team know", "ship this PR", "create the PR and notify Slack", "PR this branch", "send this up for review", or wants a branch turned into a PR with team notification — even without saying "Slack". Also trigger for stacked PR workflows with branch suffixes like "_1", "_2", "_3".
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/pr-and-notify/SKILL.md
+      requires: ["skill:atlassian-toolkit", "skill:slack-toolkit"]
+    - name: review-accessibility
+      description: detailed accessibility (a11y) review for Vue components and HTML, checking for WCAG compliance and best practices.
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/review-accessibility/SKILL.md
+    - name: slack-toolkit
+      description: Self-contained CLI toolkit for the Slack Web API via a bot token — no MCP, no npm install. Shared dependency for the PR/notify and (future) notification agents; other skills shell out to its bins through $SLACK_BIN_DIR. Infrastructure, not a task the model performs directly; requires SLACK_BIN_DIR + SLACK_BOT_TOKEN + SLACK_DEFAULT_CHANNEL set in the shell rc.
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/slack-toolkit/SKILL.md
+    - name: vue-component-standards
+      description: Standards for Vue.js component development including naming, structure, and patterns
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/vue-component-standards/SKILL.md
+  agents: []
+  prompts:
+    - name: triage-bug
+      description: Interactive bug-triage → investigation workflow as a pi prompt template. Invoke as `/triage-bug <TICKET-KEY>`. Asks before any Jira write. Enforces strict triage→investigate handoff via triage-context.json. Headless counterpart lives at my-engineering-library/workflows/bug-triage/.
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/prompts/triage-bug.md
+      requires: ["skill:bug-investigator", "skill:bug-triager"]
