@@ -6,8 +6,9 @@ catalog, parsing sources, resolving dependencies, and copying/cloning items into
 place. The agent layer only handles fuzzy intent (vague names, dependency
 detection from prose, conflict narration); everything here is deterministic.
 
-Read-only against library.yaml: `list`, `search`, `sync`, `use`.
-(Write ops — add/remove/push — remain agent-mediated for now.)
+Catalog reads come from a persistent clone of the catalog repo at
+CATALOG_CLONE_DIR (pull to refresh). Catalog/source writes happen in an
+ephemeral temp-clone, on a branch, pushed, then a PR is opened.
 
 JSON mode (`--json`) emits machine-readable output for the agent fallback path.
 """
@@ -15,6 +16,8 @@ JSON mode (`--json`) emits machine-readable output for the agent fallback path.
 from __future__ import annotations
 
 import argparse
+import datetime
+import filecmp
 import json
 import os
 import re
@@ -35,8 +38,19 @@ except ModuleNotFoundError:
     )
     sys.exit(3)
 
+# Keep git non-interactive: a private remote would otherwise prompt for credentials
+# (HTTPS terminal prompt OR a GUI askpass) or an SSH passphrase/host-key, and block
+# forever when the tool is driven by the agent. These make git fail fast instead, so
+# clone_urls() can fall back to the next URL. A configured credential helper still
+# works (askpass only fires when the helper has nothing), so cached HTTPS creds are
+# unaffected — only the interactive *prompt* is suppressed.
+os.environ["GIT_TERMINAL_PROMPT"] = "0"
+os.environ["GIT_ASKPASS"] = shutil.which("true") or "/usr/bin/true"
+os.environ.setdefault("GIT_SSH_COMMAND", "ssh -oBatchMode=yes")
+
 SKILL_DIR = Path(__file__).resolve().parent
-CATALOG_PATH = SKILL_DIR / "library.yaml"
+LOCAL_CONFIG_PATH = SKILL_DIR / "library.local.yaml"
+CATALOG_CLONE_DIR = SKILL_DIR / ".catalog-repo"
 TYPES = ("skills", "agents", "prompts")
 SINGULAR = {"skills": "skill", "agents": "agent", "prompts": "prompt"}
 PLURAL = {v: k for k, v in SINGULAR.items()}
@@ -64,6 +78,85 @@ class LibraryError(Exception):
 
 
 # --------------------------------------------------------------------------- #
+# Local config (per-device; gitignored library.local.yaml)
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class Config:
+    """Per-device settings, loaded from library.local.yaml.
+
+    Replaces the old hardcoded ## Variables block in SKILL.md. Never committed
+    to the tool repo — each teammate points the tool at the shared catalog repo
+    (agent-library) here. Write ops branch + PR against `catalog_branch`.
+    """
+    catalog_repo: str            # clone URL of the catalog repo (agent-library)
+    catalog_yaml_path: str       # path to the catalog file within that repo
+    catalog_branch: str          # protected branch that PRs target
+    autopush: bool = False       # if true, write ops also run `gh pr create`
+
+    @staticmethod
+    def missing_keys(data: dict[str, Any]) -> list[str]:
+        """Required keys absent from *data* (non-dying; used by doctor)."""
+        cat = (data or {}).get("catalog") or {}
+        return [f"catalog.{k}" for k in ("repo", "yaml_path", "branch") if not cat.get(k)]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Config":
+        missing = cls.missing_keys(data)
+        if missing:
+            die(f"{LOCAL_CONFIG_PATH} is missing {', '.join(missing)} — run `library init` to (re)create it")
+        cat = data["catalog"]
+        yaml_path = str(cat["yaml_path"])
+        if yaml_path.startswith("/") or ":" in yaml_path or ".." in Path(yaml_path).parts:
+            die(f"invalid catalog.yaml_path {yaml_path!r}: use a relative path inside "
+                "the repo (no leading '/', no '..', no ':')")
+        return cls(
+            catalog_repo=str(cat["repo"]),
+            catalog_yaml_path=yaml_path,
+            catalog_branch=str(cat["branch"]),
+            autopush=bool(data.get("autopush", False)),
+        )
+
+
+def load_config() -> Config:
+    """Load + validate the per-device config, or die with a setup hint."""
+    if not LOCAL_CONFIG_PATH.exists():
+        die(
+            f"no local config at {LOCAL_CONFIG_PATH}\n"
+            "  run `library init --repo <catalog-repo-url>` first"
+        )
+    with LOCAL_CONFIG_PATH.open() as fh:
+        data = yaml.safe_load(fh) or {}
+    if not isinstance(data, dict):
+        die(f"{LOCAL_CONFIG_PATH} is malformed (expected a YAML mapping)")
+    return Config.from_dict(data)
+
+
+_VAR_RE = re.compile(r"^\s*-\s*\*\*(\w+)\*\*:\s*`([^`]+)`")
+
+
+def _migrate_old_variables() -> dict[str, str]:
+    """Best-effort read of the legacy ## Variables block in SKILL.md for init defaults.
+
+    Only LIBRARY_YAML_PATH is useful (its basename becomes the catalog yaml_path).
+    The old LIBRARY_REPO_URL pointed at the *tool* repo, not the catalog, so it is
+    intentionally ignored — init must be told the catalog repo explicitly.
+
+    Transitional: safe to delete once every teammate has re-initialized on the
+    new config (the ## Variables block no longer exists in SKILL.md).
+    """
+    skill_md = SKILL_DIR / "SKILL.md"
+    out: dict[str, str] = {}
+    if not skill_md.exists():
+        return out
+    for line in skill_md.read_text().splitlines():
+        m = _VAR_RE.match(line)
+        if m:
+            out[m.group(1)] = m.group(2)
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Catalog + source model
 # --------------------------------------------------------------------------- #
 
@@ -80,10 +173,17 @@ class Entry:
         return PLURAL[self.type]
 
 
-def load_catalog() -> dict[str, Any]:
-    if not CATALOG_PATH.exists():
-        die(f"catalog not found at {CATALOG_PATH}")
-    with CATALOG_PATH.open() as fh:
+def load_catalog(path: Path | None = None) -> dict[str, Any]:
+    """Load the catalog YAML from *path*.
+
+    If path is omitted, falls back to catalog_path(load_config()) — requires
+    a valid local config and an existing catalog clone.
+    """
+    if path is None:
+        path = catalog_path(load_config())
+    if not path.exists():
+        die(f"catalog not found at {path}")
+    with path.open() as fh:
         data = yaml.safe_load(fh) or {}
     return data
 
@@ -138,7 +238,7 @@ def fuzzy_candidates(entries: list[Entry], query: str) -> list[Entry]:
 
 @dataclass
 class Source:
-    kind: str  # "local" | "github"
+    kind: str  # "local" | "github" | "bitbucket"
     # local
     path: Path | None = None
     # github
@@ -156,15 +256,20 @@ class Source:
         return os.path.basename(self.file_path)
 
     def clone_urls(self) -> list[str]:
-        # https first, ssh fallback (private repos)
+        # ssh first (works for private repos via keys), https fallback (tokens/helpers)
+        host = "bitbucket.org" if self.kind == "bitbucket" else "github.com"
         return [
-            f"https://github.com/{self.org}/{self.repo}.git",
-            f"git@github.com:{self.org}/{self.repo}.git",
+            f"git@{host}:{self.org}/{self.repo}.git",
+            f"https://{host}/{self.org}/{self.repo}.git",
         ]
 
 
 _GH_BLOB = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.+)$")
 _GH_RAW = re.compile(r"^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.+)$")
+_BB_SRC = re.compile(r"^https://bitbucket\.org/([^/]+)/([^/]+)/src/([^/]+)/(.+)$")
+_BB_RAW = re.compile(r"^https://bitbucket\.org/([^/]+)/([^/]+)/raw/([^/]+)/(.+)$")
+# host, owner, repo from a GitHub/Bitbucket SSH or HTTPS clone URL
+_CLONE_URL = re.compile(r"^(?:git@|ssh://git@|https://)([^/:]+)[:/]+([^/]+)/(.+?)(?:\.git)?/?$")
 
 
 def parse_source(source: str) -> Source:
@@ -172,27 +277,122 @@ def parse_source(source: str) -> Source:
     if s.startswith("/") or s.startswith("~"):
         return Source(kind="local", path=Path(s).expanduser())
     m = _GH_BLOB.match(s) or _GH_RAW.match(s)
-    if m:
-        org, repo, branch, path = m.groups()
-        if repo.endswith(".git"):
-            repo = repo[:-4]
-        return Source(kind="github", org=org, repo=repo, branch=branch, file_path=path)
-    raise LibraryError(f"unrecognized source format: {source}")
+    kind = "github"
+    if not m:
+        m = _BB_SRC.match(s) or _BB_RAW.match(s)
+        kind = "bitbucket"
+    if not m:
+        raise LibraryError(f"unrecognized source format: {source}")
+    org, repo, branch, path = m.groups()
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+    path = path.split("?")[0].split("#")[0]  # strip ?at=/#lines query noise (Bitbucket)
+    return Source(kind=kind, org=org, repo=repo, branch=branch, file_path=path)
+
+
+def _remote_web(clone_url: str) -> tuple[str, str, str] | None:
+    """(host, owner, repo) from a GitHub/Bitbucket SSH or HTTPS clone URL, or None."""
+    m = _CLONE_URL.match(clone_url.strip())
+    if not m:
+        return None
+    return m.group(1), m.group(2), m.group(3)
+
+
+def _suggest_remote_for_local(path: Path | None) -> str | None:
+    """If *path* sits inside a git repo with a GitHub/Bitbucket origin, build the
+    browser URL teammates could use as the source. Returns None if not derivable."""
+    if path is None:
+        return None
+    d = path if path.is_dir() else path.parent
+    root = subprocess.run(["git", "-C", str(d), "rev-parse", "--show-toplevel"],
+                          capture_output=True, text=True)
+    if root.returncode != 0:
+        return None
+    repo_root = Path(root.stdout.strip())
+    origin = subprocess.run(["git", "-C", str(repo_root), "remote", "get-url", "origin"],
+                            capture_output=True, text=True)
+    web = _remote_web(origin.stdout.strip()) if origin.returncode == 0 else None
+    if not web:
+        return None
+    host, owner, repo = web
+    branch = subprocess.run(["git", "-C", str(repo_root), "rev-parse", "--abbrev-ref", "HEAD"],
+                            capture_output=True, text=True).stdout.strip() or "main"
+    try:
+        rel = path.resolve().relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        return None
+    if host == "bitbucket.org":
+        return f"https://bitbucket.org/{owner}/{repo}/src/{branch}/{rel}"
+    if host == "github.com":
+        return f"https://github.com/{owner}/{repo}/blob/{branch}/{rel}"
+    return None
 
 
 # --------------------------------------------------------------------------- #
 # Install status + targets
 # --------------------------------------------------------------------------- #
 
-def resolve_target_base(catalog: dict[str, Any], entry: Entry, scope: str, custom: str | None) -> Path:
+# Set once in main() from --cwd; otherwise resolved lazily from the
+# environment / process cwd. This is the user's *project* working directory,
+# used to anchor relative ('default'-scope) install dirs.
+_PROJECT_CWD: Path | None = None
+
+
+def project_cwd() -> Path:
+    """The user's working directory for resolving relative install dirs.
+
+    Priority: explicit ``--cwd`` (set in main) > ``LIBRARY_CWD`` env var (set by
+    the ``library`` wrapper, captured before the CLI runs) > ``os.getcwd()``.
+
+    This is the contract that keeps a ``default``-scope install anchored to where
+    the user invoked the command — never to the tool directory the CLI happens
+    to execute from.
+    """
+    global _PROJECT_CWD
+    if _PROJECT_CWD is not None:
+        return _PROJECT_CWD
+    env = os.environ.get("LIBRARY_CWD")
+    _PROJECT_CWD = Path(env).expanduser().resolve() if env else Path.cwd()
+    return _PROJECT_CWD
+
+
+def resolve_install_dir(raw: str) -> Path:
+    """Resolve a configured or custom install directory per the dir contract.
+
+    - Absolute paths (including ``~``-expanded, e.g. the ``global`` scope's
+      ``~/.claude/...``) are returned as-is — they are CWD-independent.
+    - Relative paths (e.g. the ``default`` scope's ``.claude/skills/``) are
+      anchored to :func:`project_cwd` — the user's invocation directory.
+    """
+    p = Path(raw).expanduser()
+    if p.is_absolute():
+        return p
+    return (project_cwd() / p).resolve()
+
+
+def resolve_target_base(
+    catalog: dict[str, Any],
+    entry: Entry,
+    scope: str,
+    custom: str | None,
+) -> Path:
+    """Return the base directory where *entry* should be installed.
+
+    Resolution order:
+    1. Explicit --dir / custom path (highest priority).
+    2. Catalog default_dirs[section][scope] ('default' = project-local .claude/
+       anchored to the invocation cwd, 'global' = home ~/.claude/).
+
+    Relative paths follow the dir contract in :func:`resolve_install_dir`:
+    they anchor to the user's working directory, not the CLI's runtime cwd.
+    """
     if custom:
-        return Path(custom).expanduser()
+        return resolve_install_dir(custom)
     dirs = default_dirs(catalog)[entry.section]
     raw = dirs.get(scope)
     if not raw:
         raise LibraryError(f"no '{scope}' dir configured for {entry.section}")
-    # default paths are relative to the invoker's CWD; global is absolute (~).
-    return Path(raw).expanduser()
+    return resolve_install_dir(raw)
 
 
 def installed_scopes(catalog: dict[str, Any], entry: Entry) -> list[str]:
@@ -200,7 +400,7 @@ def installed_scopes(catalog: dict[str, Any], entry: Entry) -> list[str]:
     found: list[str] = []
     dirs = default_dirs(catalog)[entry.section]
     for scope, raw in dirs.items():
-        base = Path(raw).expanduser()
+        base = resolve_install_dir(raw)
         if not base.exists():
             continue
         if entry.type == "skill":
@@ -292,7 +492,7 @@ def fetch_local(src: Source, entry: Entry, target_base: Path) -> Path:
     return dest
 
 
-def fetch_github(src: Source, entry: Entry, target_base: Path) -> Path:
+def fetch_remote(src: Source, entry: Entry, target_base: Path) -> Path:
     tmp = Path(tempfile.mkdtemp(prefix="library-"))
     try:
         cloned = False
@@ -327,7 +527,7 @@ def fetch(entry: Entry, target_base: Path) -> Path:
     src = parse_source(entry.source)
     if src.kind == "local":
         return fetch_local(src, entry, target_base)
-    return fetch_github(src, entry, target_base)
+    return fetch_remote(src, entry, target_base)
 
 
 def main_file_for(entry: Entry, dest: Path) -> Path:
@@ -341,32 +541,51 @@ def main_file_for(entry: Entry, dest: Path) -> Path:
 
 
 # --------------------------------------------------------------------------- #
-# Library repo sync
+# Catalog repo sync (Phase 2: replaces git_pull_library)
 # --------------------------------------------------------------------------- #
 
-def git_pull_library(quiet: bool = True) -> None:
+def pull_catalog(cfg: Config, quiet: bool = True) -> None:
+    """Ensure the catalog repo clone is present and up to date.
+
+    If CATALOG_CLONE_DIR is absent → clone (shallow, single-branch on
+    cfg.catalog_branch). On clone failure → die with auth hint.
+    If it already exists → git pull --ff-only. On pull failure → warn and
+    continue (stale cache is better than nothing for offline workflows).
+    """
+    if not CATALOG_CLONE_DIR.exists():
+        proc = subprocess.run(
+            [
+                "git", "clone", "--depth", "1", "--single-branch",
+                "--branch", cfg.catalog_branch,
+                cfg.catalog_repo, str(CATALOG_CLONE_DIR),
+            ],
+            capture_output=True, text=True,
+        )
+        if proc.returncode != 0:
+            die(
+                f"could not clone catalog repo: {_git_error_summary(proc.stderr)}\n"
+                "  check your --repo URL and auth, then re-run `library init`"
+            )
+        return
+
     proc = subprocess.run(
-        ["git", "-C", str(SKILL_DIR), "pull", "--ff-only"],
+        ["git", "-C", str(CATALOG_CLONE_DIR), "pull", "--ff-only"],
         capture_output=True, text=True,
     )
     if proc.returncode != 0:
-        warn(f"could not pull library repo ({proc.stderr.strip()}); using local catalog")
+        warn(f"could not pull catalog repo ({proc.stderr.strip()}); using cached copy")
     elif not quiet:
         sys.stdout.write(proc.stdout)
+
+
+def catalog_path(cfg: Config) -> Path:
+    """Absolute path to the catalog YAML inside the persistent clone."""
+    return CATALOG_CLONE_DIR / cfg.catalog_yaml_path
 
 
 # --------------------------------------------------------------------------- #
 # Catalog writing (text-splice to preserve hand-authored style)
 # --------------------------------------------------------------------------- #
-
-def _git(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
-    proc = subprocess.run(
-        ["git", "-C", str(SKILL_DIR), *cmd], capture_output=True, text=True
-    )
-    if check and proc.returncode != 0:
-        raise LibraryError(f"git {' '.join(cmd)} failed: {proc.stderr.strip()}")
-    return proc
-
 
 def _yaml_inline(value: str) -> str:
     """Encode a single value as YAML would on one line (adds quoting only if needed)."""
@@ -495,66 +714,174 @@ def remove_entry(text: str, entry_type: str, name: str) -> str:
     return "\n".join(lines)
 
 
+# --------------------------------------------------------------------------- #
+# Push helpers (local-path sources — immediate, no PR)
+# --------------------------------------------------------------------------- #
+
+def _dir_identical(a: Path, b: Path) -> bool:
+    """True if dirs *a* and *b* match in structure and file contents (deep compare)."""
+    if not b.is_dir():
+        return False
+    cmp = filecmp.dircmp(a, b)
+    if cmp.left_only or cmp.right_only or cmp.funny_files:
+        return False
+    _, mismatch, errs = filecmp.cmpfiles(a, b, cmp.common_files, shallow=False)
+    if mismatch or errs:
+        return False
+    return all(_dir_identical(a / d, b / d) for d in cmp.common_dirs)
+
+
 def _push_local(src: Source, entry: Entry, local_path: Path) -> dict[str, Any]:
     if entry.type == "skill":
         dest = src.path.parent  # type: ignore[union-attr]
+        if _dir_identical(local_path, dest):
+            return {"changed": False, "pushed": False, "dest": str(dest)}
         _copy_dir(local_path, dest)
     else:
         dest = src.path  # type: ignore[assignment]
+        if dest.exists() and filecmp.cmp(local_path, dest, shallow=False):  # type: ignore[arg-type]
+            return {"changed": False, "pushed": False, "dest": str(dest)}
         _copy_file(local_path, dest)  # type: ignore[arg-type]
     return {"changed": True, "pushed": False, "dest": str(dest)}
 
 
-def _push_github(src: Source, entry: Entry, local_path: Path, message: str, do_push: bool) -> dict[str, Any]:
-    tmp = Path(tempfile.mkdtemp(prefix="library-push-"))
-    try:
-        cloned = False
-        last_err = ""
-        for url in src.clone_urls():
-            pr = subprocess.run(
-                ["git", "clone", "--branch", src.branch, url, str(tmp / "repo")],
-                capture_output=True, text=True,
-            )
-            if pr.returncode == 0:
-                cloned = True
-                break
-            last_err = _git_error_summary(pr.stderr)
-        if not cloned:
-            raise LibraryError(f"clone failed for {src.org}/{src.repo}: {last_err or 'unknown error'}")
-        repo = tmp / "repo"
-        if entry.type == "skill":
-            add_path = src.parent_path
-            _copy_dir(local_path, repo / add_path)
-        else:
-            add_path = src.file_path
-            _copy_file(local_path, repo / add_path)
+# --------------------------------------------------------------------------- #
+# PR helpers (Phase 3)
+# --------------------------------------------------------------------------- #
 
-        subprocess.run(["git", "-C", str(repo), "add", add_path], check=True)
-        if subprocess.run(["git", "-C", str(repo), "diff", "--cached", "--quiet"]).returncode == 0:
-            return {"changed": False, "pushed": False}
+def _git_in(work_dir: Path, cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
+    """Run a git command inside *work_dir*. Raises LibraryError on failure if check=True."""
+    proc = subprocess.run(
+        ["git", "-C", str(work_dir), *cmd], capture_output=True, text=True,
+    )
+    if check and proc.returncode != 0:
+        raise LibraryError(f"git {' '.join(cmd)} failed: {proc.stderr.strip()}")
+    return proc
 
-        cm = subprocess.run(["git", "-C", str(repo), "commit", "-m", message], capture_output=True, text=True)
-        if cm.returncode != 0:
-            raise LibraryError(f"commit failed: {cm.stderr.strip()}")
-        pushed = False
-        if do_push:
-            pr = subprocess.run(["git", "-C", str(repo), "push"], capture_output=True, text=True)
-            if pr.returncode != 0:
-                raise LibraryError(f"push failed: {_git_error_summary(pr.stderr)}")
-            pushed = True
-        return {"changed": True, "pushed": pushed, "message": message}
-    finally:
+
+def _pr_branch_name(op: str, name: str) -> str:
+    """Generate a PR branch name with a short timestamp to avoid collisions."""
+    ts = datetime.datetime.now().strftime("%Y%m%dT%H%M")
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "-", name)
+    return f"library/{op}-{safe_name}-{ts}"
+
+
+def _pr_clone(repo_url: str, branch: str) -> tuple[Path, Any]:
+    """Clone *repo_url* at *branch* into a temp dir for a write op.
+
+    Returns (repo_path, cleanup_fn). Caller must invoke cleanup_fn when done
+    (even on error). Dies immediately on clone failure.
+    """
+    tmp = Path(tempfile.mkdtemp(prefix="library-pr-"))
+    repo_dir = tmp / "repo"
+    proc = subprocess.run(
+        ["git", "clone", "--single-branch", "--branch", branch, repo_url, str(repo_dir)],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
         shutil.rmtree(tmp, ignore_errors=True)
+        die(f"failed to clone {repo_url} for write op: {_git_error_summary(proc.stderr)}")
+    return repo_dir, lambda: shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _create_pr(
+    cfg: Config,
+    repo_dir: Path,
+    branch_name: str,
+    base_branch: str,
+    title: str,
+    body: str,
+    repo_url: str,
+) -> dict[str, Any]:
+    """Push *branch_name* to origin and optionally open a PR via `gh`.
+
+    The branch is always pushed regardless of cfg.autopush — autopush only
+    controls whether `gh pr create` is also called (Risk #1 resolution).
+
+    Returns a dict with 'method' ('gh' or 'manual'), 'branch', and either
+    'pr_url' (gh succeeded) or 'compare_url' (manual/fallback).
+    """
+    push_proc = subprocess.run(
+        ["git", "-C", str(repo_dir), "push", "-u", "origin", branch_name],
+        capture_output=True, text=True,
+    )
+    if push_proc.returncode != 0:
+        err = push_proc.stderr.strip()
+        lower = err.lower()
+        if any(kw in lower for kw in (
+            "denied", "permission", "403", "forbidden", "not authorized",
+            "protected branch", "remote rejected", "remote: error",
+        )):
+            die(
+                f"push rejected — you lack write access to {repo_url}.\n"
+                "  Ask a maintainer, check your SSH/HTTPS auth, or verify the branch"
+                " protection settings."
+            )
+        die(f"push failed: {_git_error_summary(err)}")
+
+    web = _remote_web(repo_url)
+    host = web[0] if web else None
+    compare_url = None
+    if web:
+        _, owner, repo = web
+        if host == "github.com":
+            compare_url = f"https://github.com/{owner}/{repo}/compare/{base_branch}...{branch_name}?expand=1"
+        elif host == "bitbucket.org":
+            compare_url = (
+                f"https://bitbucket.org/{owner}/{repo}/pull-requests/new"
+                f"?source={branch_name}&dest={base_branch}"
+            )
+
+    if not cfg.autopush:
+        return {"method": "manual", "branch": branch_name, "compare_url": compare_url}
+
+    # autopush: `gh pr create` is GitHub-only; Bitbucket has no CLI equivalent here.
+    if host == "github.com" and web:
+        _, owner, repo = web
+        gh_cmd = [
+            "gh", "pr", "create",
+            "--repo", f"{owner}/{repo}",
+            "--base", base_branch,
+            "--head", branch_name,
+            "--title", title,
+            "--body", body,
+        ]
+        try:
+            gh_proc = subprocess.run(gh_cmd, capture_output=True, text=True)
+            if gh_proc.returncode == 0:
+                return {"method": "gh", "pr_url": gh_proc.stdout.strip(), "branch": branch_name}
+            last = (gh_proc.stderr.strip().splitlines() or ["unknown"])[-1]
+            warn(f"gh pr create failed: {last}; falling back to compare URL")
+        except FileNotFoundError:
+            warn("gh CLI not found; falling back to compare URL (install `gh` + `gh auth login` for autopush)")
+    elif host == "bitbucket.org":
+        warn("autopush has no CLI path for Bitbucket; open the PR via the printed URL")
+
+    return {"method": "manual", "branch": branch_name, "compare_url": compare_url}
 
 
 # --------------------------------------------------------------------------- #
-# Commands
+# Commands — reads (Phase 2: config + catalog clone)
 # --------------------------------------------------------------------------- #
+
+def _install_one(
+    catalog: dict[str, Any],
+    entry: Entry,
+    scope: str,
+    custom: str | None,
+) -> dict[str, Any]:
+    base = resolve_target_base(catalog, entry, scope, custom)
+    dest = fetch(entry, base)
+    main = main_file_for(entry, dest)
+    ok = main.exists()
+    return {"type": entry.type, "name": entry.name, "dest": str(dest), "verified": ok}
+
 
 def cmd_list(args: argparse.Namespace) -> int:
+    cfg = load_config()
     if not args.no_pull:
-        git_pull_library()
-    catalog = load_catalog()
+        pull_catalog(cfg)
+    catalog = load_catalog(catalog_path(cfg))
     entries = iter_entries(catalog)
     rows = []
     for e in entries:
@@ -590,9 +917,10 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 def cmd_search(args: argparse.Namespace) -> int:
+    cfg = load_config()
     if not args.no_pull:
-        git_pull_library()
-    catalog = load_catalog()
+        pull_catalog(cfg)
+    catalog = load_catalog(catalog_path(cfg))
     entries = iter_entries(catalog)
     matches = fuzzy_candidates(entries, args.keyword)
 
@@ -615,18 +943,11 @@ def cmd_search(args: argparse.Namespace) -> int:
     return 0
 
 
-def _install_one(catalog: dict[str, Any], entry: Entry, scope: str, custom: str | None) -> dict[str, Any]:
-    base = resolve_target_base(catalog, entry, scope, custom)
-    dest = fetch(entry, base)
-    main = main_file_for(entry, dest)
-    ok = main.exists()
-    return {"type": entry.type, "name": entry.name, "dest": str(dest), "verified": ok}
-
-
 def cmd_use(args: argparse.Namespace) -> int:
+    cfg = load_config()
     if not args.no_pull:
-        git_pull_library()
-    catalog = load_catalog()
+        pull_catalog(cfg)
+    catalog = load_catalog(catalog_path(cfg))
     entries = iter_entries(catalog)
 
     entry = find_exact(entries, args.name)
@@ -674,9 +995,10 @@ def cmd_use(args: argparse.Namespace) -> int:
 
 
 def cmd_sync(args: argparse.Namespace) -> int:
+    cfg = load_config()
     if not args.no_pull:
-        git_pull_library()
-    catalog = load_catalog()
+        pull_catalog(cfg)
+    catalog = load_catalog(catalog_path(cfg))
     entries = iter_entries(catalog)
 
     installed: list[tuple[Entry, str]] = []
@@ -714,6 +1036,10 @@ def cmd_sync(args: argparse.Namespace) -> int:
     return 0 if not failed else 1
 
 
+# --------------------------------------------------------------------------- #
+# Commands — writes (Phase 3: PR flow)
+# --------------------------------------------------------------------------- #
+
 def cmd_add(args: argparse.Namespace) -> int:
     # Resolve type: explicit, else inferred from the source filename.
     typ = args.type
@@ -728,6 +1054,18 @@ def cmd_add(args: argparse.Namespace) -> int:
     if src.kind == "local" and (src.path is None or not src.path.exists()):
         die(f"local source not found: {args.source}")
 
+    # The catalog is shared, so a local-path source won't resolve for teammates.
+    # Refuse it by default; suggest the remote URL when the file is in a git repo.
+    if src.kind == "local" and not args.allow_local:
+        msg = (
+            "local-path sources don't resolve for teammates pulling the shared catalog.\n"
+            "  Provide a GitHub/Bitbucket URL, or pass --allow-local for a personal catalog."
+        )
+        hint = _suggest_remote_for_local(src.path)
+        if hint:
+            msg += f"\n  This file is in a git repo — did you mean:\n    {hint}"
+        die(msg)
+
     requires: list[str] = []
     for r in (args.requires or "").split(","):
         r = r.strip()
@@ -739,9 +1077,12 @@ def cmd_add(args: argparse.Namespace) -> int:
 
     entry = Entry(type=typ, name=args.name, description=args.description, source=args.source, requires=requires)
 
+    cfg = load_config()
     if not args.no_pull:
-        git_pull_library()
-    catalog = load_catalog()
+        pull_catalog(cfg)
+
+    # Validate against the persistent clone.
+    catalog = load_catalog(catalog_path(cfg))
     existing = find_exact(iter_entries(catalog), entry.name)
     if existing:
         die(f"'{entry.name}' already in catalog (type {existing.type}); use `library use` to refresh or `push` to update")
@@ -752,45 +1093,87 @@ def cmd_add(args: argparse.Namespace) -> int:
         if (t, n) not in known:
             warn(f"required dependency {r} is not in the catalog yet")
 
-    new_text = splice_entry(CATALOG_PATH.read_text(), entry)
-    # Safety net: result must still parse and contain the new entry before we write.
-    parsed = yaml.safe_load(new_text) or {}
-    sec = (parsed.get("library", {}) or {}).get(entry.section, []) or []
-    if not any((it or {}).get("name") == entry.name for it in sec):
-        die("internal error: entry missing after splice; not writing")
-    CATALOG_PATH.write_text(new_text)
+    branch = _pr_branch_name("add", entry.name)
 
-    committed = pushed = False
-    if not args.no_commit:
-        _git(["add", "library.yaml"])
-        _git(["commit", "-m", f"library: added {entry.type} {entry.name}"])
-        committed = True
-        if not args.no_push:
-            _git(["push"])
-            pushed = True
+    if args.dry_run:
+        repo_dir, cleanup = _pr_clone(cfg.catalog_repo, cfg.catalog_branch)
+        try:
+            yaml_p = repo_dir / cfg.catalog_yaml_path
+            new_text = splice_entry(yaml_p.read_text(), entry)
+            # Safety net: result must still parse and contain the new entry.
+            parsed = yaml.safe_load(new_text) or {}
+            sec = (parsed.get("library", {}) or {}).get(entry.section, []) or []
+            if not any((it or {}).get("name") == entry.name for it in sec):
+                die("internal error: entry missing after splice; aborting")
+            yaml_p.write_text(new_text)
+            _git_in(repo_dir, ["checkout", "-b", branch])
+            _git_in(repo_dir, ["add", cfg.catalog_yaml_path])
+            _git_in(repo_dir, ["commit", "-m", f"library: added {entry.type} {entry.name}"])
+            diff_proc = subprocess.run(
+                ["git", "-C", str(repo_dir), "show", "HEAD"],
+                capture_output=True, text=True,
+            )
+            diff_text = diff_proc.stdout
+            if args.json:
+                print(json.dumps({
+                    "status": "DRY_RUN",
+                    "would_change": True,
+                    "added": {"type": entry.type, "name": entry.name, "section": entry.section},
+                    "branch": branch,
+                    "diff": diff_text,
+                }, indent=2))
+            else:
+                print(f"[dry-run] would open PR: {branch}\n")
+                print(diff_text)
+        finally:
+            cleanup()
+        return 0
+
+    repo_dir, cleanup = _pr_clone(cfg.catalog_repo, cfg.catalog_branch)
+    try:
+        yaml_p = repo_dir / cfg.catalog_yaml_path
+        new_text = splice_entry(yaml_p.read_text(), entry)
+        # Safety net: result must still parse and contain the new entry.
+        parsed = yaml.safe_load(new_text) or {}
+        sec = (parsed.get("library", {}) or {}).get(entry.section, []) or []
+        if not any((it or {}).get("name") == entry.name for it in sec):
+            die("internal error: entry missing after splice; aborting")
+        yaml_p.write_text(new_text)
+        _git_in(repo_dir, ["checkout", "-b", branch])
+        _git_in(repo_dir, ["add", cfg.catalog_yaml_path])
+        _git_in(repo_dir, ["commit", "-m", f"library: added {entry.type} {entry.name}"])
+        pr_info = _create_pr(
+            cfg, repo_dir, branch, cfg.catalog_branch,
+            title=f"library: add {entry.type} {entry.name}",
+            body=f"Adds `{entry.name}` ({entry.type}) to the catalog.\n\nSource: {entry.source}",
+            repo_url=cfg.catalog_repo,
+        )
+    finally:
+        cleanup()
 
     if args.json:
         print(json.dumps({
             "status": "OK",
             "added": {"type": entry.type, "name": entry.name, "section": entry.section},
-            "committed": committed, "pushed": pushed,
+            **pr_info,
         }, indent=2))
         return 0
 
     print(f"Added [{entry.type}] {entry.name} to {entry.section}.")
-    if pushed:
-        print("  committed and pushed to remote")
-    elif committed:
-        print(f"  committed locally (not pushed — `git -C {SKILL_DIR} push` when ready)")
+    if pr_info.get("method") == "gh":
+        print(f"  PR opened: {pr_info.get('pr_url')}")
     else:
-        print("  catalog edited (not committed)")
+        print(f"  Branch pushed: {pr_info.get('branch')}")
+        if pr_info.get("compare_url"):
+            print(f"  Open PR at:   {pr_info.get('compare_url')}")
     return 0
 
 
 def cmd_remove(args: argparse.Namespace) -> int:
+    cfg = load_config()
     if not args.no_pull:
-        git_pull_library()
-    catalog = load_catalog()
+        pull_catalog(cfg)
+    catalog = load_catalog(catalog_path(cfg))
     entries = iter_entries(catalog)
     entry = find_exact(entries, args.name)
     if entry is None:
@@ -800,17 +1183,73 @@ def cmd_remove(args: argparse.Namespace) -> int:
     if dependents:
         warn("removing a dependency of: " + ", ".join(f"{d.type}:{d.name}" for d in dependents))
 
-    new_text = remove_entry(CATALOG_PATH.read_text(), entry.type, entry.name)
-    parsed = yaml.safe_load(new_text) or {}
-    sec = (parsed.get("library", {}) or {}).get(entry.section, []) or []
-    if any((it or {}).get("name") == entry.name for it in sec):
-        die("internal error: entry still present after removal; not writing")
-    CATALOG_PATH.write_text(new_text)
+    branch = _pr_branch_name("remove", entry.name)
 
+    if args.dry_run:
+        repo_dir, cleanup = _pr_clone(cfg.catalog_repo, cfg.catalog_branch)
+        try:
+            yaml_p = repo_dir / cfg.catalog_yaml_path
+            new_text = remove_entry(yaml_p.read_text(), entry.type, entry.name)
+            # Safety net: entry must be gone after removal.
+            parsed = yaml.safe_load(new_text) or {}
+            sec = (parsed.get("library", {}) or {}).get(entry.section, []) or []
+            if any((it or {}).get("name") == entry.name for it in sec):
+                die("internal error: entry still present after removal; aborting")
+            yaml_p.write_text(new_text)
+            _git_in(repo_dir, ["checkout", "-b", branch])
+            _git_in(repo_dir, ["add", cfg.catalog_yaml_path])
+            _git_in(repo_dir, ["commit", "-m", f"library: removed {entry.type} {entry.name}"])
+            diff_proc = subprocess.run(
+                ["git", "-C", str(repo_dir), "show", "HEAD"],
+                capture_output=True, text=True,
+            )
+            diff_text = diff_proc.stdout
+            if args.json:
+                print(json.dumps({
+                    "status": "DRY_RUN",
+                    "would_change": True,
+                    "removed": {"type": entry.type, "name": entry.name, "section": entry.section},
+                    "dependents": [f"{d.type}:{d.name}" for d in dependents],
+                    "branch": branch,
+                    "diff": diff_text,
+                }, indent=2))
+            else:
+                print(f"[dry-run] would open PR: {branch}\n")
+                print(diff_text)
+        finally:
+            cleanup()
+        return 0
+
+    repo_dir, cleanup = _pr_clone(cfg.catalog_repo, cfg.catalog_branch)
+    try:
+        yaml_p = repo_dir / cfg.catalog_yaml_path
+        new_text = remove_entry(yaml_p.read_text(), entry.type, entry.name)
+        # Safety net: entry must be gone after removal.
+        parsed = yaml.safe_load(new_text) or {}
+        sec = (parsed.get("library", {}) or {}).get(entry.section, []) or []
+        if any((it or {}).get("name") == entry.name for it in sec):
+            die("internal error: entry still present after removal; aborting")
+        yaml_p.write_text(new_text)
+        _git_in(repo_dir, ["checkout", "-b", branch])
+        _git_in(repo_dir, ["add", cfg.catalog_yaml_path])
+        _git_in(repo_dir, ["commit", "-m", f"library: removed {entry.type} {entry.name}"])
+        pr_info = _create_pr(
+            cfg, repo_dir, branch, cfg.catalog_branch,
+            title=f"library: remove {entry.type} {entry.name}",
+            body=f"Removes `{entry.name}` ({entry.type}) from the catalog.",
+            repo_url=cfg.catalog_repo,
+        )
+    finally:
+        cleanup()
+
+    # --purge: delete local copies immediately (unrelated to the PR)
     deleted: list[str] = []
     if args.purge:
         for scope in ("default", "global"):
-            base = resolve_target_base(catalog, entry, scope, None)
+            try:
+                base = resolve_target_base(catalog, entry, scope, None)
+            except LibraryError:
+                continue
             target = base / entry.name if entry.type == "skill" else base / f"{entry.name}.md"
             if target.is_dir():
                 shutil.rmtree(target)
@@ -819,22 +1258,13 @@ def cmd_remove(args: argparse.Namespace) -> int:
                 target.unlink()
                 deleted.append(str(target))
 
-    committed = pushed = False
-    if not args.no_commit:
-        _git(["add", "library.yaml"])
-        _git(["commit", "-m", f"library: removed {entry.type} {entry.name}"])
-        committed = True
-        if not args.no_push:
-            _git(["push"])
-            pushed = True
-
     if args.json:
         print(json.dumps({
             "status": "OK",
             "removed": {"type": entry.type, "name": entry.name, "section": entry.section},
             "deleted": deleted,
             "dependents": [f"{d.type}:{d.name}" for d in dependents],
-            "committed": committed, "pushed": pushed,
+            **pr_info,
         }, indent=2))
         return 0
 
@@ -843,15 +1273,20 @@ def cmd_remove(args: argparse.Namespace) -> int:
         print(f"  deleted local copy: {d}")
     if dependents:
         print("  WARNING still required by: " + ", ".join(f"{d.type}:{d.name}" for d in dependents))
-    if pushed:
-        print("  committed and pushed to remote")
-    elif committed:
-        print(f"  committed locally (not pushed — `git -C {SKILL_DIR} push` when ready)")
+    if pr_info.get("method") == "gh":
+        print(f"  PR opened: {pr_info.get('pr_url')}")
+    else:
+        print(f"  Branch pushed: {pr_info.get('branch')}")
+        if pr_info.get("compare_url"):
+            print(f"  Open PR at:   {pr_info.get('compare_url')}")
     return 0
 
 
 def cmd_push(args: argparse.Namespace) -> int:
-    catalog = load_catalog()
+    cfg = load_config()
+    if not getattr(args, "no_pull", False):
+        pull_catalog(cfg)
+    catalog = load_catalog(catalog_path(cfg))
     entry = find_exact(iter_entries(catalog), args.name)
     if entry is None:
         die(f"'{args.name}' not found in catalog")
@@ -878,25 +1313,115 @@ def cmd_push(args: argparse.Namespace) -> int:
 
     src = parse_source(entry.source)
     message = args.message or f"library: updated {entry.name}"
+
+    # Local-path sources: overwrite in place, no PR needed (Risk #6).
     if src.kind == "local":
         res = _push_local(src, entry, local_path)
-    else:
-        res = _push_github(src, entry, local_path, message, not args.no_push)
-
-    if args.json:
-        print(json.dumps({"status": "OK", "name": entry.name, **res}, indent=2))
+        if args.json:
+            print(json.dumps({"status": "OK", "name": entry.name, **res}, indent=2))
+            return 0
+        if not res.get("changed"):
+            print(f"No changes — local copy of {entry.name} matches source.")
+        else:
+            print(f"Copied {entry.name} to local source: {res.get('dest')}")
+        print("  (local-source push is immediate; GitHub-source push goes through a PR)")
         return 0
 
-    if not res.get("changed"):
-        print(f"No changes — local copy of {entry.name} matches source.")
-    elif res.get("pushed"):
-        print(f"Pushed {entry.name} to source (commit: {message}).")
-    elif src.kind == "local":
-        print(f"Copied {entry.name} to local source: {res.get('dest')}")
-    else:
-        print(f"Committed {entry.name} in the source clone but did not push (--no-push).")
-    return 0
+    # GitHub source: PR flow.
+    branch = _pr_branch_name("update", entry.name)
+    repo_dir: Path | None = None
+    tmp_dir: Path | None = None
+    last_err = ""
 
+    for url in src.clone_urls():
+        tmp_candidate = Path(tempfile.mkdtemp(prefix="library-push-"))
+        proc = subprocess.run(
+            ["git", "clone", "--single-branch", "--branch", src.branch,
+             url, str(tmp_candidate / "repo")],
+            capture_output=True, text=True,
+        )
+        if proc.returncode == 0:
+            tmp_dir = tmp_candidate
+            repo_dir = tmp_candidate / "repo"
+            break
+        last_err = _git_error_summary(proc.stderr)
+        shutil.rmtree(tmp_candidate, ignore_errors=True)
+
+    if repo_dir is None:
+        die(f"clone failed for {src.org}/{src.repo}: {last_err or 'unknown error'}")
+
+    try:
+        if entry.type == "skill":
+            add_path = src.parent_path
+            _copy_dir(local_path, repo_dir / add_path)
+        else:
+            add_path = src.file_path
+            _copy_file(local_path, repo_dir / add_path)
+
+        _git_in(repo_dir, ["checkout", "-b", branch])
+        _git_in(repo_dir, ["add", add_path])
+
+        diff_check = subprocess.run(
+            ["git", "-C", str(repo_dir), "diff", "--cached", "--quiet"]
+        )
+        if diff_check.returncode == 0:
+            if args.json:
+                print(json.dumps({"status": "OK", "name": entry.name, "changed": False}, indent=2))
+            else:
+                print(f"No changes — local copy of {entry.name} matches source.")
+            return 0
+
+        _git_in(repo_dir, ["commit", "-m", message])
+
+        if args.dry_run:
+            diff_proc = subprocess.run(
+                ["git", "-C", str(repo_dir), "show", "HEAD"],
+                capture_output=True, text=True,
+            )
+            if args.json:
+                print(json.dumps({
+                    "status": "DRY_RUN", "would_change": True, "name": entry.name,
+                    "branch": branch, "diff": diff_proc.stdout,
+                }, indent=2))
+            else:
+                print(f"[dry-run] would open PR: {branch}\n")
+                print(diff_proc.stdout)
+            return 0
+
+        # Use HTTPS URL for the PR info (org/repo parsing).
+        pr_info = _create_pr(
+            cfg, repo_dir, branch, src.branch,
+            title=message,
+            body=f"Updated {entry.type} `{entry.name}` via `library push`.",
+            repo_url=src.clone_urls()[0],
+        )
+
+        if args.json:
+            print(json.dumps({"status": "OK", "name": entry.name, "changed": True, **pr_info}, indent=2))
+            return 0
+
+        if pr_info.get("method") == "gh":
+            print(f"PR opened for {entry.name}: {pr_info.get('pr_url')}")
+        else:
+            print(f"Branch pushed: {pr_info.get('branch')}")
+            if pr_info.get("compare_url"):
+                print(f"Open PR at:   {pr_info.get('compare_url')}")
+        return 0
+
+    except LibraryError as ex:
+        if args.json:
+            print(json.dumps({"status": "ERROR", "name": entry.name, "reason": str(ex)}, indent=2))
+        else:
+            print(f"Failed to push {entry.name}: {ex}")
+        return 1
+    finally:
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------- #
+# Doctor (Phase 2 threading + Phase 5 enhancements)
+# --------------------------------------------------------------------------- #
 
 def _find_cycles(entries: list[Entry]) -> list[list[str]]:
     """Return dependency cycles as lists of `type:name` refs (catalog-internal only)."""
@@ -929,13 +1454,8 @@ def _find_cycles(entries: list[Entry]) -> list[list[str]]:
     return cycles
 
 
-def _github_source_alive(src: Source) -> bool:
-    """Check repo + branch reachability via `git ls-remote` (same auth as clone/fetch).
-
-    Verifies the repo is reachable and the branch exists — the dominant rot cases
-    (repo renamed, branch deleted). It does not verify the exact file path within the
-    repo; a moved/renamed file is still caught at `use`/`sync` time.
-    """
+def _source_alive(src: Source) -> bool:
+    """Check repo + branch reachability via `git ls-remote` (same auth as clone/fetch)."""
     for url in src.clone_urls():
         pr = subprocess.run(
             ["git", "ls-remote", "--heads", url, src.branch],
@@ -947,53 +1467,130 @@ def _github_source_alive(src: Source) -> bool:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    if not args.no_pull:
-        git_pull_library()
-    catalog = load_catalog()
-    entries = iter_entries(catalog)
     errors: list[tuple[str | None, str]] = []
     warns: list[tuple[str | None, str]] = []
 
-    # Duplicate names (use/find_exact matches globally, so a dup silently shadows).
-    by_name: dict[str, list[Entry]] = {}
-    for e in entries:
-        by_name.setdefault(e.name, []).append(e)
-    for name, group in by_name.items():
-        if len(group) > 1:
-            errors.append((name, f"duplicate name in {', '.join(g.type for g in group)}"))
-
-    known = {(e.type, e.name) for e in entries}
-    for e in entries:
+    # ── Phase 5.1: config validation ────────────────────────────────────
+    cfg: Config | None = None
+    if not LOCAL_CONFIG_PATH.exists():
+        errors.append((None, f"no local config at {LOCAL_CONFIG_PATH} — run `library init --repo <url>` first"))
+    else:
         try:
-            src = parse_source(e.source)
-            if src.kind == "local" and (src.path is None or not src.path.exists()):
-                errors.append((e.name, f"local source not found: {e.source}"))
-        except LibraryError as ex:
-            errors.append((e.name, str(ex)))
-        for r in e.requires:
-            if ":" not in r or r.split(":", 1)[0] not in ("skill", "agent", "prompt"):
-                errors.append((e.name, f"malformed requires ref '{r}'"))
-                continue
-            t, n = r.split(":", 1)
-            if (t.strip(), n.strip()) not in known:
-                errors.append((e.name, f"dangling dependency '{r}'"))
+            with LOCAL_CONFIG_PATH.open() as fh:
+                raw_cfg = yaml.safe_load(fh) or {}
+            if not isinstance(raw_cfg, dict):
+                raise ValueError("expected a YAML mapping")
+            missing = Config.missing_keys(raw_cfg)
+            if missing:
+                errors.append((None, f"config at {LOCAL_CONFIG_PATH} is missing {', '.join(missing)} — run `library init`"))
+            else:
+                cfg = Config.from_dict(raw_cfg)
+        except Exception as ex:
+            errors.append((None, f"config parse error: {ex}"))
 
-    for cyc in _find_cycles(entries):
-        errors.append((None, "dependency cycle: " + " -> ".join(cyc)))
+    # ── Phase 5.1: catalog clone check ──────────────────────────────────
+    if cfg is not None:
+        if not CATALOG_CLONE_DIR.exists():
+            warns.append((None, f"catalog not yet cloned at {CATALOG_CLONE_DIR}; it will clone on first read (`library list`)"))
+        else:
+            r = subprocess.run(
+                ["git", "-C", str(CATALOG_CLONE_DIR), "remote", "get-url", "origin"],
+                capture_output=True, text=True,
+            )
+            if r.returncode != 0:
+                errors.append((None, "catalog clone is missing 'origin' remote — re-run `library init --force`"))
+            elif r.stdout.strip() != cfg.catalog_repo:
+                warns.append((None,
+                    f"catalog clone remote ({r.stdout.strip()!r}) differs from "
+                    f"config catalog.repo ({cfg.catalog_repo!r})"))
 
-    for section in TYPES:
-        names = [e.name for e in entries if e.section == section]
-        if names != sorted(names, key=str.lower):
-            warns.append((None, f"{section} not alphabetically sorted"))
+        # ── Phase 5.2: auth check (catalog repo read access) ────────────
+        try:
+            ls = subprocess.run(
+                ["git", "ls-remote", "--heads", cfg.catalog_repo],
+                capture_output=True, text=True, timeout=15,
+            )
+            if ls.returncode != 0:
+                errors.append((None,
+                    f"catalog repo unreachable ({cfg.catalog_repo}): "
+                    f"{_git_error_summary(ls.stderr)}"))
+        except subprocess.TimeoutExpired:
+            errors.append((None, f"catalog repo timed out — is {cfg.catalog_repo} reachable?"))
 
-    if args.deep:
+        # ── Phase 5.2: gh CLI check ──────────────────────────────────────
+        try:
+            gh_status = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True)
+            if gh_status.returncode != 0:
+                warns.append((None, "gh CLI not authenticated — `autopush: true` will fall back to compare URL"))
+        except FileNotFoundError:
+            warns.append((None, "gh CLI not installed — `autopush: true` will fall back to compare URL"))
+
+        # ── Phase 5.3: tool staleness check ─────────────────────────────
+        try:
+            fetch_dry = subprocess.run(
+                ["git", "-C", str(SKILL_DIR), "fetch", "--dry-run"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if fetch_dry.returncode == 0 and any("->" in ln for ln in fetch_dry.stderr.splitlines()):
+                warns.append((None, "tool has upstream changes available; run `library self-update`"))
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass  # offline or no git — not worth warning about
+
+    # ── Catalog content checks ───────────────────────────────────────────
+    entries: list[Entry] = []
+    catalog: dict[str, Any] = {}
+
+    if cfg is not None and CATALOG_CLONE_DIR.exists():
+        if not args.no_pull:
+            pull_catalog(cfg)  # safe: clone exists, worst case is a warn
+        p = catalog_path(cfg)
+        if p.exists():
+            catalog = load_catalog(p)
+            entries = iter_entries(catalog)
+        else:
+            errors.append((None, f"catalog file not found at {p}"))
+
+    if entries:
+        # Duplicate names (use/find_exact matches globally, so a dup silently shadows).
+        by_name: dict[str, list[Entry]] = {}
+        for e in entries:
+            by_name.setdefault(e.name, []).append(e)
+        for name, group in by_name.items():
+            if len(group) > 1:
+                errors.append((name, f"duplicate name in {', '.join(g.type for g in group)}"))
+
+        known = {(e.type, e.name) for e in entries}
         for e in entries:
             try:
                 src = parse_source(e.source)
-            except LibraryError:
-                continue  # already reported as malformed
-            if src.kind == "github" and not _github_source_alive(src):
-                errors.append((e.name, f"repo or branch unreachable: {src.org}/{src.repo}@{src.branch}"))
+                if src.kind == "local" and (src.path is None or not src.path.exists()):
+                    errors.append((e.name, f"local source not found: {e.source}"))
+            except LibraryError as ex:
+                errors.append((e.name, str(ex)))
+            for r in e.requires:
+                if ":" not in r or r.split(":", 1)[0] not in ("skill", "agent", "prompt"):
+                    errors.append((e.name, f"malformed requires ref '{r}'"))
+                    continue
+                t, n = r.split(":", 1)
+                if (t.strip(), n.strip()) not in known:
+                    errors.append((e.name, f"dangling dependency '{r}'"))
+
+        for cyc in _find_cycles(entries):
+            errors.append((None, "dependency cycle: " + " -> ".join(cyc)))
+
+        for section in TYPES:
+            names = [e.name for e in entries if e.section == section]
+            if names != sorted(names, key=str.lower):
+                warns.append((None, f"{section} not alphabetically sorted"))
+
+        if args.deep:
+            for e in entries:
+                try:
+                    src = parse_source(e.source)
+                except LibraryError:
+                    continue  # already reported as malformed
+                if src.kind != "local" and not _source_alive(src):
+                    errors.append((e.name, f"repo or branch unreachable: {src.org}/{src.repo}@{src.branch}"))
 
     if args.json:
         print(json.dumps({
@@ -1005,7 +1602,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         return 1 if errors else 0
 
     if not errors and not warns:
-        print(f"Catalog OK — {len(entries)} entries, no problems found.")
+        count_str = f"{len(entries)} catalog entries" if entries else "no catalog loaded"
+        print(f"All checks passed — {count_str}, no problems found.")
         return 0
     for n, m in errors:
         print(f"  ERROR  [{n or '-'}] {m}")
@@ -1013,6 +1611,117 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"  WARN   [{n or '-'}] {m}")
     print(f"\n{len(errors)} errors · {len(warns)} warnings")
     return 1 if errors else 0
+
+
+# --------------------------------------------------------------------------- #
+# init + self-update
+# --------------------------------------------------------------------------- #
+
+_LOCAL_CONFIG_TEMPLATE = """\
+# The Library — per-device config (gitignored; never commit this).
+# Points this machine's tool at the shared catalog repo. See cookbook/init.md.
+
+catalog:
+  repo: {repo}            # clone URL of the catalog repo (e.g. agent-library)
+  yaml_path: {yaml_path}  # path to the catalog file within that repo
+  branch: {branch}        # protected branch that add/remove/push open PRs against
+
+# If true, add/remove/push also run `gh pr create` after pushing the PR branch.
+# The protected branch is never pushed to directly regardless of this setting.
+autopush: {autopush}
+
+# Install locations come from the catalog's default_dirs:
+#   `use <name>`          -> project-local .claude/ (default scope)
+#   `use <name> --global` -> home ~/.claude/ (global scope)
+#   `use <name> --dir X`  -> custom path
+"""
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    if LOCAL_CONFIG_PATH.exists() and not args.force:
+        die(f"{LOCAL_CONFIG_PATH} already exists; pass --force to overwrite")
+
+    old = _migrate_old_variables()
+    default_yaml = "library.yaml"
+    if "LIBRARY_YAML_PATH" in old:
+        default_yaml = Path(old["LIBRARY_YAML_PATH"]).name or "library.yaml"
+    yaml_path = args.yaml_path or default_yaml
+
+    LOCAL_CONFIG_PATH.write_text(_LOCAL_CONFIG_TEMPLATE.format(
+        repo=args.repo,
+        yaml_path=yaml_path,
+        branch=args.branch,
+        autopush="true" if args.autopush else "false",
+    ))
+
+    cfg = load_config()  # validate what we just wrote
+
+    # Phase 2: perform initial catalog clone. Re-clone on --force, or when an
+    # existing clone points at a different repo than the (new) config.
+    if CATALOG_CLONE_DIR.exists():
+        origin = subprocess.run(
+            ["git", "-C", str(CATALOG_CLONE_DIR), "remote", "get-url", "origin"],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        if args.force or origin != cfg.catalog_repo:
+            shutil.rmtree(CATALOG_CLONE_DIR)
+    if not CATALOG_CLONE_DIR.exists():
+        sys.stderr.write(f"Cloning catalog repo → {CATALOG_CLONE_DIR} ...\n")
+        pull_catalog(cfg)  # clones if absent; dies on failure with auth hint
+
+    # Verify the catalog YAML exists inside the clone.
+    cp = catalog_path(cfg)
+    if not cp.exists():
+        die(
+            f"catalog file not found at {cp}\n"
+            f"  check --yaml-path (got: {cfg.catalog_yaml_path})"
+        )
+
+    if args.json:
+        print(json.dumps({
+            "status": "OK",
+            "config": str(LOCAL_CONFIG_PATH),
+            "catalog_repo": cfg.catalog_repo,
+            "catalog_yaml_path": cfg.catalog_yaml_path,
+            "catalog_branch": cfg.catalog_branch,
+            "autopush": cfg.autopush,
+            "catalog_clone": str(CATALOG_CLONE_DIR),
+            "catalog_entries": len(iter_entries(load_catalog(cp))),
+        }, indent=2))
+        return 0
+
+    print(f"Wrote {LOCAL_CONFIG_PATH}")
+    print(f"  catalog repo : {cfg.catalog_repo}")
+    print(f"  catalog file : {cfg.catalog_yaml_path} (branch '{cfg.catalog_branch}')")
+    print(f"  autopush     : {cfg.autopush}")
+    print(f"  catalog clone: {CATALOG_CLONE_DIR}")
+    n_entries = len(iter_entries(load_catalog(cp)))
+    print(f"  catalog ready: {n_entries} entries")
+    if "LIBRARY_REPO_URL" in old:
+        print(
+            "\nnote: the legacy LIBRARY_REPO_URL pointed at the tool repo, not the catalog —\n"
+            "      confirm --repo above is your shared catalog repo (e.g. agent-library)."
+        )
+    print("\nnext: `library list` to see the catalog.")
+    return 0
+
+
+def cmd_self_update(args: argparse.Namespace) -> int:
+    proc = subprocess.run(
+        ["git", "-C", str(SKILL_DIR), "pull", "--ff-only"],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        if args.json:
+            print(json.dumps({"status": "ERROR", "message": proc.stderr.strip()}, indent=2))
+            return 1
+        die(f"self-update failed: {proc.stderr.strip()}")
+    out = proc.stdout.strip()
+    if args.json:
+        print(json.dumps({"status": "OK", "output": out}, indent=2))
+    else:
+        print(out or "Already up to date.")
+    return 0
 
 
 # --------------------------------------------------------------------------- #
@@ -1025,7 +1734,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add_common(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("--json", action="store_true", help="machine-readable output")
-        sp.add_argument("--no-pull", action="store_true", help="skip git pull of the library repo")
+        sp.add_argument("--no-pull", action="store_true", help="skip git pull of the catalog repo")
+        sp.add_argument("--cwd", help="project dir to anchor relative ('default'-scope) installs to "
+                                      "(default: $LIBRARY_CWD or the current working directory)")
+
+    sp = sub.add_parser("init", help="create the per-device local config (library.local.yaml)")
+    sp.add_argument("--repo", required=True, help="clone URL of the shared catalog repo (e.g. agent-library)")
+    sp.add_argument("--yaml-path", dest="yaml_path", help="path to the catalog within that repo (default: library.yaml)")
+    sp.add_argument("--branch", required=True, help="protected branch PRs target (e.g. main, develop)")
+    sp.add_argument("--autopush", action="store_true", help="also run `gh pr create` after pushing the PR branch")
+    sp.add_argument("--force", action="store_true", help="overwrite an existing local config and re-clone catalog")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_init)
+
+    sp = sub.add_parser("self-update", help="update the tool itself (git pull in the tool dir)")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_self_update)
 
     sp = sub.add_parser("list", help="show the catalog with install status")
     add_common(sp)
@@ -1047,37 +1771,43 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(sp)
     sp.set_defaults(func=cmd_sync)
 
-    sp = sub.add_parser("add", help="register a new entry in the catalog")
+    sp = sub.add_parser("add", help="register a new entry in the catalog (opens a PR)")
     sp.add_argument("--name", required=True)
     sp.add_argument("--description", required=True)
     sp.add_argument("--source", required=True)
     sp.add_argument("--type", choices=["skill", "agent", "prompt"], help="inferred from source if omitted")
     sp.add_argument("--requires", help="comma-separated typed refs, e.g. skill:foo,agent:bar")
-    sp.add_argument("--no-commit", action="store_true", help="edit the catalog but don't git commit")
-    sp.add_argument("--no-push", action="store_true", help="commit but don't git push")
+    sp.add_argument("--allow-local", action="store_true",
+                    help="permit a local-path source (personal catalogs only; won't resolve for teammates)")
+    sp.add_argument("--dry-run", action="store_true",
+                    help="show what the PR diff would be without pushing")
     sp.add_argument("--json", action="store_true")
     sp.add_argument("--no-pull", action="store_true")
     sp.set_defaults(func=cmd_add)
 
-    sp = sub.add_parser("remove", help="remove an entry from the catalog")
+    sp = sub.add_parser("remove", help="remove an entry from the catalog (opens a PR)")
     sp.add_argument("name")
     sp.add_argument("--purge", action="store_true", help="also delete the local copy (default + global)")
-    sp.add_argument("--no-commit", action="store_true", help="edit the catalog but don't git commit")
-    sp.add_argument("--no-push", action="store_true", help="commit but don't git push")
+    sp.add_argument("--dry-run", action="store_true",
+                    help="show what the PR diff would be without pushing")
     sp.add_argument("--json", action="store_true")
     sp.add_argument("--no-pull", action="store_true")
+    sp.add_argument("--cwd", help="project dir to anchor relative ('default'-scope) paths to "
+                                  "(default: $LIBRARY_CWD or the current working directory)")
     sp.set_defaults(func=cmd_remove)
 
-    sp = sub.add_parser("push", help="push a local copy back to its source")
+    sp = sub.add_parser("push", help="push a local copy back to its source (opens a PR for GitHub sources)")
     sp.add_argument("name")
     sp.add_argument("--from", dest="frm", help="which local copy: default | global | <path>")
     sp.add_argument("--message", help="commit message (GitHub sources)")
-    sp.add_argument("--no-push", action="store_true", help="commit in the source clone but don't push")
+    sp.add_argument("--no-pull", action="store_true", help="skip refreshing the catalog clone")
+    sp.add_argument("--dry-run", action="store_true",
+                    help="show what the PR diff would be without pushing (GitHub sources only)")
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=cmd_push)
 
-    sp = sub.add_parser("doctor", help="validate catalog integrity (static; --deep checks source liveness)")
-    sp.add_argument("--deep", action="store_true", help="also verify each source is reachable (uses gh)")
+    sp = sub.add_parser("doctor", help="validate config + catalog integrity (--deep checks source liveness)")
+    sp.add_argument("--deep", action="store_true", help="also verify each source repo/branch is reachable")
     add_common(sp)
     sp.set_defaults(func=cmd_doctor)
 
@@ -1086,6 +1816,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    # Pin the project working directory once, so every dir resolution in this
+    # run agrees on the same anchor (see project_cwd / resolve_install_dir).
+    if getattr(args, "cwd", None):
+        global _PROJECT_CWD
+        _PROJECT_CWD = Path(args.cwd).expanduser().resolve()
     return args.func(args)
 
 

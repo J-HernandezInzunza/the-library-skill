@@ -1,0 +1,55 @@
+# Example catalog for The Library — a TEMPLATE, not a live catalog.
+#
+# This file is reference only; the CLI never reads it. Your real catalog lives in
+# your shared catalog repo (the one `library init --repo …` points at), typically
+# as `library.yaml` / `library.yml` at its root. Copy this structure there and
+# replace every placeholder (myworkspace / myorg / paths) with your own.
+
+# Where `use`/`sync` install items. `default` = project-local .claude/, used unless
+# the user passes --global (home ~/.claude/) or --dir <path>.
+default_dirs:
+  skills:
+    - default: .claude/skills/
+    - global: ~/.claude/skills/
+  agents:
+    - default: .claude/agents/
+    - global: ~/.claude/agents/
+  prompts:
+    - default: .claude/commands/
+    - global: ~/.claude/commands/
+
+library:
+  skills:
+    # Co-located source: the skill lives in this same catalog repo (common for teams).
+    # Bitbucket browser URL — https://bitbucket.org/<workspace>/<repo>/src/<branch>/<path>
+    - name: example-skill
+      description: One-line summary of what the skill does and when to use it.
+      source: https://bitbucket.org/myworkspace/agent-library/src/main/skills/example-skill/SKILL.md
+
+    # Source in a separate GitHub repo — https://github.com/<org>/<repo>/blob/<branch>/<path>
+    - name: another-skill
+      description: A skill hosted in a different GitHub repo than the catalog.
+      source: https://github.com/myorg/some-tools/blob/main/skills/another-skill/SKILL.md
+
+    # Typed dependency: deps are fetched first (recursively) when this is installed.
+    - name: dependent-skill
+      description: Demonstrates a dependency on another catalog entry.
+      source: https://bitbucket.org/myworkspace/agent-library/src/main/skills/dependent-skill/SKILL.md
+      requires: ["skill:example-skill"]
+
+    # Local filesystem source — personal, single-machine catalogs only. Won't resolve
+    # for teammates; `library add` refuses local sources unless you pass --allow-local.
+    - name: local-only-skill
+      description: A skill referenced by absolute path on one machine.
+      source: /Users/you/projects/skills/local-only-skill/SKILL.md
+
+  agents:
+    - name: example-agent
+      description: An agent definition hosted alongside the catalog.
+      source: https://bitbucket.org/myworkspace/agent-library/src/main/agents/example-agent/AGENT.md
+
+  prompts:
+    # GitHub raw URL — https://raw.githubusercontent.com/<org>/<repo>/<branch>/<path>
+    - name: example-prompt
+      description: A reusable prompt template.
+      source: https://raw.githubusercontent.com/myorg/team-prompts/main/prompts/example-prompt.md

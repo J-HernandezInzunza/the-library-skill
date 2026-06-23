@@ -12,7 +12,17 @@ bootstrap:
     {{justfile_directory()}}/.venv/bin/pip install --quiet --upgrade pip pyyaml
     @echo "Bootstrapped: PyYAML installed in .venv"
 
-# --- Deterministic ops: run the CLI directly (no LLM, no tokens) ----------
+# --- First-time setup ---------------------------------------------------
+
+# Create per-device config and clone the catalog repo (e.g. `just init <url> main`)
+init repo branch:
+    @{{lib}} init --repo "{{repo}}" --branch "{{branch}}"
+
+# Update the tool itself (git pull in the tool dir)
+self-update:
+    @{{lib}} self-update
+
+# --- Deterministic ops: run the CLI directly (no LLM, no tokens) --------
 
 # List all entries in the catalog with install status
 list:
@@ -34,27 +44,27 @@ use-global name:
 sync:
     @{{lib}} sync
 
-# Validate catalog integrity (add --deep to check source liveness via gh)
+# Validate config + catalog integrity (add --deep to check source liveness)
 doctor *args:
     @{{lib}} doctor {{args}}
 
+# Check SKILL.md + README.md document exactly the CLI's command set (no drift)
+check-docs:
+    @{{justfile_directory()}}/.venv/bin/python {{justfile_directory()}}/check_docs.py
+
 # --- Fuzzy / write ops: fall back to the agent ----------------------------
 # These need judgment (vague names, dependency detection from prose, YAML
-# edits + git writes, conflict narration), so they route through Claude.
+# edits + PR creation, conflict narration), so they route through Claude.
 
-# First-time setup: fork, clone, configure
-install:
-    claude --dangerously-skip-permissions --model opus "/library install"
-
-# Add a new skill, agent, or prompt to the catalog
+# Add a new skill, agent, or prompt to the catalog (proposes a PR)
 add prompt:
     claude --dangerously-skip-permissions --model opus "/library add {{prompt}}"
 
-# Push local changes back to the source
+# Push local changes back to the source (PR for GitHub sources)
 push name:
     claude --dangerously-skip-permissions --model opus "/library push {{name}}"
 
-# Remove an entry from the catalog (and optionally the local copy)
+# Remove an entry from the catalog (proposes a PR)
 remove name:
     claude --dangerously-skip-permissions --model opus "/library remove {{name}}"
 

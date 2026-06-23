@@ -1,67 +1,70 @@
 # Install The Library
 
 ## Context
-First-time setup of The Library on a new device. The user either has the template repo cloned directly, or has already forked it to their own private repo.
+First-time setup of The Library on a new device. The tool is a read-only clone —
+**no forking required**. The catalog lives in a separate repo (on any git host) pointed
+to by per-device config.
 
 ## Steps
 
 ### 1. Check Prerequisites
-- Verify `git` is installed: `git --version`
-- Verify the global skills directory exists or can be created: `~/.claude/skills/`
 
-### 2. Determine Fork Status
-Ask the user: **"Is this the template repo or your own fork?"**
-
-**If template repo (hasn't forked yet):**
-- Instruct the user to create a private fork on GitHub
-- Once forked, update the remote URL:
-  ```bash
-  cd <LIBRARY_SKILL_DIR>
-  git remote set-url origin <fork_url>
-  ```
-- Verify with: `git remote -v`
-
-**If already forked:**
-- Skip this step — the remote is already pointing to their fork
-
-### 3. Clone to Global Skills Directory
-If the repo isn't already cloned locally:
 ```bash
-mkdir -p <LIBRARY_SKILL_DIR>
-cd <LIBRARY_SKILL_DIR>
-git clone <fork_url> .
+git --version   # git is required
+gh --version    # optional — needed only for autopush (auto-open PRs)
 ```
 
-If already cloned (e.g., user cloned the template first), just update the remote per step 2.
+Verify that `~/.claude/skills/` exists or can be created.
 
-### 4. Update Variables
-- Open `SKILL.md` in the library directory
-- Take note of your current working directory.
-- Update the `## Variables` section:
-  - **LIBRARY_REPO_URL**: Set to the user's fork URL
-  - **LIBRARY_YAML_PATH**: Confirm path (default: `~/.claude/skills/library/library.yaml`)
-  - **LIBRARY_SKILL_DIR**: Confirm path (default: `~/.claude/skills/library/`)
+### 2. Clone the Tool
 
-### 5. Bootstrap the CLI
-The deterministic CLI (`library`) needs PyYAML in a self-contained `.venv`:
 ```bash
-cd <LIBRARY_SKILL_DIR>
+git clone <tool-repo-url> ~/.claude/skills/library
+```
+
+The tool dir can be anywhere; `~/.claude/skills/library` is the conventional location.
+
+### 3. Bootstrap the CLI
+
+The CLI needs PyYAML in a self-contained `.venv`:
+
+```bash
+cd ~/.claude/skills/library
 just bootstrap
 ```
+
 Verify it works:
 ```bash
-<LIBRARY_SKILL_DIR>/library list --no-pull
+~/.claude/skills/library/library --help
 ```
 
-### 6. Verify Installation
-- Confirm SKILL.md exists at `<LIBRARY_SKILL_DIR>/SKILL.md`
-- Confirm library.yaml exists at `<LIBRARY_SKILL_DIR>/library.yaml`
-- Confirm `<LIBRARY_SKILL_DIR>/library list` runs
-- Confirm the `/library` command is now available
+### 4. Initialize the Config
 
-### 7. Done
-Tell the user:
-- The Library is now globally available
-- `/library list` (or `just list`) will show the catalog
-- `/library add` to start adding skills, agents, and prompts
-- The `justfile` in the library directory has shorthand commands (`just list`, `just search`, `just use`, `just sync` run the CLI directly; `just add/push/remove/install` route through the agent)
+Point the tool at your team's shared catalog repo:
+
+```bash
+~/.claude/skills/library/library init \
+  --repo git@github.com:yourorg/agent-library.git \
+  --branch main
+```
+
+This creates `library.local.yaml` (gitignored, per-device) and clones the catalog
+repo into `.catalog-repo/`. See [cookbook/init.md](init.md) for all flags.
+
+### 5. Verify
+
+```bash
+~/.claude/skills/library/library list
+```
+
+You should see the catalog entries with install status. If the catalog is empty or
+the clone fails, check your SSH/HTTPS auth to the catalog repo.
+
+### 6. Done
+
+- `/library list` (or `just list`) shows the catalog
+- `/library use <name>` installs a skill
+- `/library add`, `/library push`, `/library remove` propose changes via PRs
+- The `justfile` has shorthand recipes (`just list`, `just search`, `just use`,
+  `just sync`, `just doctor` run the CLI directly; `just add/push/remove` route
+  through the agent)

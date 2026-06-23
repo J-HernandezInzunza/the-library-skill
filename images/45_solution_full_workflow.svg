@@ -234,7 +234,7 @@
     </rect>
   </g>
 
-  <!-- Source: Private GitHub -->
+  <!-- Source: Private Repo -->
   <g opacity="0">
     <animate attributeName="opacity" from="0" to="1" begin="4.3s" dur="0.5s" fill="freeze"/>
     <rect x="444" y="160" width="142" height="40" rx="6" fill="#0F172A" stroke="#6366F1" stroke-width="1.5"/>
@@ -242,7 +242,7 @@
     <circle cx="462" cy="180" r="8" fill="none" stroke="#A5B4FC" stroke-width="1.2"/>
     <circle cx="462" cy="178" r="3" fill="#A5B4FC"/>
     <path d="M458,186 Q462,184 466,186" fill="none" stroke="#A5B4FC" stroke-width="0.8"/>
-    <text x="522" y="184" text-anchor="middle" font-size="10" font-weight="600" fill="#A5B4FC">Private GitHub</text>
+    <text x="522" y="184" text-anchor="middle" font-size="10" font-weight="600" fill="#A5B4FC">Private Repo</text>
   </g>
 
   <!-- Source: Local Paths -->
@@ -255,7 +255,7 @@
     <text x="524" y="244" text-anchor="middle" font-size="10" font-weight="600" fill="#C4B5FD">Local Paths</text>
   </g>
 
-  <!-- Source: Public GitHub -->
+  <!-- Source: Public Repo -->
   <g opacity="0">
     <animate attributeName="opacity" from="0" to="1" begin="5.3s" dur="0.5s" fill="freeze"/>
     <rect x="444" y="280" width="142" height="40" rx="6" fill="#0F172A" stroke="#10B981" stroke-width="1.5"/>
@@ -263,17 +263,17 @@
     <circle cx="462" cy="300" r="8" fill="none" stroke="#6EE7B7" stroke-width="1.2"/>
     <ellipse cx="462" cy="300" rx="4" ry="8" fill="none" stroke="#6EE7B7" stroke-width="0.8"/>
     <line x1="454" y1="300" x2="470" y2="300" stroke="#6EE7B7" stroke-width="0.8"/>
-    <text x="524" y="304" text-anchor="middle" font-size="10" font-weight="600" fill="#6EE7B7">Public GitHub</text>
+    <text x="524" y="304" text-anchor="middle" font-size="10" font-weight="600" fill="#6EE7B7">Public Repo</text>
   </g>
 
   <!-- Reference arrows from library.yaml to sources -->
   <g opacity="0">
     <animate attributeName="opacity" from="0" to="1" begin="5.5s" dur="0.5s" fill="freeze"/>
-    <!-- To Private GitHub -->
+    <!-- To Private Repo -->
     <path d="M370,240 L444,180" fill="none" stroke="#4B5563" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow-gray)"/>
     <!-- To Local Paths -->
     <path d="M370,276 L444,240" fill="none" stroke="#4B5563" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow-gray)"/>
-    <!-- To Public GitHub -->
+    <!-- To Public Repo -->
     <path d="M370,300 L444,300" fill="none" stroke="#4B5563" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow-gray)"/>
   </g>
 
@@ -344,7 +344,7 @@
     <text x="694" y="217" text-anchor="middle" class="mono" font-size="7" fill="#6EE7B7">/library use</text>
   </g>
 
-  <!-- Consumer 3: Mac Mini Agent -->
+  <!-- Consumer 3: Managed Agent -->
   <g opacity="0">
     <animate attributeName="opacity" from="0" to="1" begin="6.9s" dur="0.5s" fill="freeze"/>
     <rect x="638" y="300" width="144" height="44" rx="6" fill="#0F172A" stroke="#06B6D4" stroke-width="1.5"/>
@@ -352,7 +352,7 @@
     <rect x="650" y="310" width="14" height="10" rx="1" fill="none" stroke="#67E8F9" stroke-width="1.2"/>
     <line x1="657" y1="320" x2="657" y2="324" stroke="#67E8F9" stroke-width="1"/>
     <line x1="652" y1="324" x2="662" y2="324" stroke="#67E8F9" stroke-width="1"/>
-    <text x="718" y="326" text-anchor="middle" font-size="10" font-weight="600" fill="#67E8F9">Mac Mini Agent</text>
+    <text x="718" y="326" text-anchor="middle" font-size="10" font-weight="600" fill="#67E8F9">Managed Agent</text>
   </g>
 
   <!-- /library use pill for Consumer 3 -->
@@ -366,7 +366,7 @@
   <g opacity="0">
     <animate attributeName="opacity" from="0" to="1" begin="7.0s" dur="0.5s" fill="freeze"/>
     <line x1="586" y1="180" x2="638" y2="162" stroke="#4B5563" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow-gray)"/>
-    <line x1="586" y1="240" x2="638" y2="242" stroke="#4B5563" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow-gray)"/>
+    <!-- <line x1="586" y1="240" x2="638" y2="242" stroke="#4B5563" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow-gray)"/> -->
     <line x1="586" y1="300" x2="638" y2="322" stroke="#4B5563" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow-gray)"/>
   </g>
 
