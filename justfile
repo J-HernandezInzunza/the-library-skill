@@ -10,6 +10,7 @@ default:
 bootstrap:
     python3 -m venv {{justfile_directory()}}/.venv
     {{justfile_directory()}}/.venv/bin/pip install --quiet --upgrade pip pyyaml
+    -@git -C {{justfile_directory()}} config core.hooksPath .githooks 2>/dev/null && echo "Git hooks enabled (.githooks)"
     @echo "Bootstrapped: PyYAML installed in .venv"
 
 # --- First-time setup ---------------------------------------------------
@@ -51,6 +52,16 @@ doctor *args:
 # Check SKILL.md + README.md document exactly the CLI's command set (no drift)
 check-docs:
     @{{justfile_directory()}}/.venv/bin/python {{justfile_directory()}}/check_docs.py
+
+# All fast pre-push checks: Python compiles + doc/CLI drift (no network). Run by the hook.
+check:
+    @{{justfile_directory()}}/.venv/bin/python -m py_compile {{justfile_directory()}}/library.py {{justfile_directory()}}/check_docs.py
+    @{{justfile_directory()}}/.venv/bin/python {{justfile_directory()}}/check_docs.py
+
+# Enable the committed git hooks (pre-push runs `check`). One-time per clone.
+install-hooks:
+    @git -C {{justfile_directory()}} config core.hooksPath .githooks
+    @echo "Git hooks enabled: .githooks (pre-push)"
 
 # --- Fuzzy / write ops: fall back to the agent ----------------------------
 # These need judgment (vague names, dependency detection from prose, YAML

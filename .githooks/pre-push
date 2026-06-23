@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Pre-push checks for the TOOL repo: Python compiles + doc/CLI drift.
+# Fast, offline, no `just` required. Bypass with `git push --no-verify` if ever needed.
+#
+# Enable once per clone:  git config core.hooksPath .githooks   (or `just install-hooks`)
+set -uo pipefail
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PY="$DIR/.venv/bin/python"
+[ -x "$PY" ] || PY="$(command -v python3 || true)"
+[ -n "$PY" ] || { echo "pre-push: no python3 found; skipping checks"; exit 0; }
+
+# 1. Python must compile.
+if ! "$PY" -m py_compile "$DIR/library.py" "$DIR/check_docs.py"; then
+  echo "pre-push: Python compile failed — fix before pushing." >&2
+  exit 1
+fi
+
+# 2. Docs must match the CLI's command set.
+"$PY" "$DIR/check_docs.py"
+rc=$?
+if [ "$rc" -eq 3 ]; then
+  # library.py exits 3 when PyYAML is missing (venv not bootstrapped).
+  echo "pre-push: PyYAML not available (run 'just bootstrap'); skipping doc-drift check." >&2
+  exit 0
+elif [ "$rc" -ne 0 ]; then
+  echo "pre-push: doc/CLI drift — update SKILL.md/README.md (run ./check_docs.py)." >&2
+  exit "$rc"
+fi
+
+exit 0
