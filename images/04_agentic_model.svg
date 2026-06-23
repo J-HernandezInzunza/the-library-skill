@@ -108,7 +108,7 @@
   <!-- ============================================================ -->
   <!-- COMPOSITION: the real stack (indigo -> purple -> cyan)       -->
   <!-- ============================================================ -->
-  <text x="400" y="324" font-size="13" font-weight="700" fill="#A5B4FC" text-anchor="middle" opacity="0" letter-spacing="1">
+  <text x="400" y="300" font-size="14" font-weight="700" fill="#E0E0E0" text-anchor="middle" opacity="0" letter-spacing="1">
     COMPOSITION — what the agent can do
     <animate attributeName="opacity" from="0" to="1" dur="0.5s" begin="3.6s" fill="freeze"/>
   </text>
