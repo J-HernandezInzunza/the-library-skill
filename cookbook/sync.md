@@ -20,6 +20,29 @@ re-implement it.
 
 ## Report
 
-Relay the CLI's summary. It lists each refreshed item and any failures with reasons
-(e.g. network error, missing source). If items failed, surface them so the user can
-fix individually with `<tool-dir>/library use <name>`.
+Relay the CLI's summary. For each refreshed item it now prints a **change summary**
+computed by diffing the incoming source against the currently-installed copy *before*
+overwriting it:
+
+```
+  refreshed [skill] bug-investigator (global) · 2 modified, 1 added
+      ~ SKILL.md
+      ~ references/policy.md
+      + references/new-thing.md
+  refreshed [skill] grill-me (global) · no changes
+```
+
+- `~` modified · `+` added · `-` removed (relative paths within the item).
+- `new install` means the item wasn't present locally before this sync.
+- The footer reports `Synced N · M changed · failed K`.
+- `--json` adds a `changes` object (`{new_install, added, removed, modified}`) to each
+  synced entry; all pre-existing fields are unchanged.
+
+**Caveat — this is "source vs. currently-installed", not "since last sync".** If you've
+edited an installed copy locally, that local drift shows up as `modified` and the sync
+**overwrites it**. That's a useful "you're about to lose local edits" signal, but it is
+not a changelog of what the source author changed. True since-last-sync tracking would
+require storing per-install hashes (not implemented).
+
+If items failed, surface them so the user can fix individually with
+`<tool-dir>/library use <name>`.

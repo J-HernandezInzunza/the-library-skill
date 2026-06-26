@@ -274,6 +274,12 @@ when `autopush: true`.) Local-path sources are overwritten in place immediately 
 ./library sync
 ```
 
+Each refreshed item reports a change summary (`~` modified · `+` added · `-` removed,
+or `no changes` / `new install`) by diffing the incoming source against the
+currently-installed copy *before* overwriting it. Note this is "source vs. installed,"
+not "since last sync" — local edits to an installed copy show up as modified and get
+overwritten.
+
 ## Commands
 
 Two ways to drive it, same result:

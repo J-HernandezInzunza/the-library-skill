@@ -467,32 +467,97 @@ def _git_error_summary(stderr: str) -> str:
     return lines[-1] if lines else "unknown error"
 
 
-def _copy_dir(src: Path, dst: Path) -> None:
+def _walk_files(root: Path) -> set[str]:
+    """Relative paths of every file under *root* (recursive)."""
+    return {str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()}
+
+
+def _diff_dirs(new_src: Path, old_dest: Path) -> dict[str, Any]:
+    """Compare an incoming source tree against the currently-installed tree.
+
+    Returns {"new_install": True} when nothing is installed yet, else
+    {"new_install": False, "added": [...], "removed": [...], "modified": [...]}
+    with relative file paths. "modified" is a deep byte comparison.
+    """
+    if not old_dest.exists():
+        return {"new_install": True}
+    new_files, old_files = _walk_files(new_src), _walk_files(old_dest)
+    modified = sorted(
+        f for f in (new_files & old_files)
+        if not filecmp.cmp(new_src / f, old_dest / f, shallow=False)
+    )
+    return {
+        "new_install": False,
+        "added": sorted(new_files - old_files),
+        "removed": sorted(old_files - new_files),
+        "modified": modified,
+    }
+
+
+def _diff_file(new_src: Path, old_dest: Path) -> dict[str, Any]:
+    """Single-file analogue of _diff_dirs (for agents/prompts)."""
+    if not old_dest.exists():
+        return {"new_install": True}
+    changed = not filecmp.cmp(new_src, old_dest, shallow=False)
+    return {
+        "new_install": False,
+        "added": [],
+        "removed": [],
+        "modified": [old_dest.name] if changed else [],
+    }
+
+
+def _summarize_changes(ch: dict[str, Any]) -> str:
+    """One-line human summary of a diff dict."""
+    if ch.get("new_install"):
+        return "new install"
+    parts = []
+    for key in ("modified", "added", "removed"):
+        n = len(ch.get(key, []))
+        if n:
+            parts.append(f"{n} {key}")
+    return ", ".join(parts) if parts else "no changes"
+
+
+def _change_detail_lines(ch: dict[str, Any], indent: str = "    ") -> list[str]:
+    """Per-file detail lines (~ modified, + added, - removed)."""
+    if ch.get("new_install"):
+        return []
+    lines = []
+    lines += [f"{indent}~ {f}" for f in ch.get("modified", [])]
+    lines += [f"{indent}+ {f}" for f in ch.get("added", [])]
+    lines += [f"{indent}- {f}" for f in ch.get("removed", [])]
+    return lines
+
+
+def _copy_dir(src: Path, dst: Path) -> dict[str, Any]:
+    diff = _diff_dirs(src, dst)
     if dst.exists():
         shutil.rmtree(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(src, dst)
+    return diff
 
 
-def _copy_file(src: Path, dst: Path) -> None:
+def _copy_file(src: Path, dst: Path) -> dict[str, Any]:
+    diff = _diff_file(src, dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
+    return diff
 
 
-def fetch_local(src: Source, entry: Entry, target_base: Path) -> Path:
+def fetch_local(src: Source, entry: Entry, target_base: Path) -> tuple[Path, dict[str, Any]]:
     ref = src.path
     if ref is None or not ref.exists():
         raise LibraryError(f"local source not found: {src.path}")
     if entry.type == "skill":
         dest = target_base / entry.name
-        _copy_dir(ref.parent, dest)
-        return dest
+        return dest, _copy_dir(ref.parent, dest)
     dest = target_base / f"{entry.name}.md"
-    _copy_file(ref, dest)
-    return dest
+    return dest, _copy_file(ref, dest)
 
 
-def fetch_remote(src: Source, entry: Entry, target_base: Path) -> Path:
+def fetch_remote(src: Source, entry: Entry, target_base: Path) -> tuple[Path, dict[str, Any]]:
     tmp = Path(tempfile.mkdtemp(prefix="library-"))
     try:
         cloned = False
@@ -514,16 +579,14 @@ def fetch_remote(src: Source, entry: Entry, target_base: Path) -> Path:
             raise LibraryError(f"referenced file missing in repo: {src.file_path}")
         if entry.type == "skill":
             dest = target_base / entry.name
-            _copy_dir(ref.parent, dest)
-            return dest
+            return dest, _copy_dir(ref.parent, dest)
         dest = target_base / f"{entry.name}.md"
-        _copy_file(ref, dest)
-        return dest
+        return dest, _copy_file(ref, dest)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def fetch(entry: Entry, target_base: Path) -> Path:
+def fetch(entry: Entry, target_base: Path) -> tuple[Path, dict[str, Any]]:
     src = parse_source(entry.source)
     if src.kind == "local":
         return fetch_local(src, entry, target_base)
@@ -871,10 +934,11 @@ def _install_one(
     custom: str | None,
 ) -> dict[str, Any]:
     base = resolve_target_base(catalog, entry, scope, custom)
-    dest = fetch(entry, base)
+    dest, changes = fetch(entry, base)
     main = main_file_for(entry, dest)
     ok = main.exists()
-    return {"type": entry.type, "name": entry.name, "dest": str(dest), "verified": ok}
+    return {"type": entry.type, "name": entry.name, "dest": str(dest),
+            "verified": ok, "changes": changes}
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -990,7 +1054,10 @@ def cmd_use(args: argparse.Namespace) -> int:
         for r in deps:
             print(f"  [{r['type']}] {r['name']} → {r['dest']}")
     flag = "" if target["verified"] else "  (warning: main file not found)"
-    print(f"Installed [{target['type']}] {target['name']} → {target['dest']}{flag}")
+    summary = _summarize_changes(target["changes"])
+    print(f"Installed [{target['type']}] {target['name']} → {target['dest']} · {summary}{flag}")
+    for line in _change_detail_lines(target["changes"]):
+        print(line)
     return 0 if all(r["verified"] for r in results) else 1
 
 
@@ -1017,9 +1084,9 @@ def cmd_sync(args: argparse.Namespace) -> int:
     synced, failed = [], []
     for e, scope in installed:
         try:
-            for dep in resolve_deps(entries, e):
-                _install_one(catalog, dep, scope, None)
-            synced.append({"type": e.type, "name": e.name, "scope": scope})
+            results = [_install_one(catalog, dep, scope, None) for dep in resolve_deps(entries, e)]
+            synced.append({"type": e.type, "name": e.name, "scope": scope,
+                           "changes": results[-1]["changes"]})
         except LibraryError as ex:
             failed.append({"type": e.type, "name": e.name, "reason": str(ex)})
 
@@ -1028,11 +1095,18 @@ def cmd_sync(args: argparse.Namespace) -> int:
         print(json.dumps({"status": status, "synced": synced, "failed": failed}, indent=2))
         return 0 if not failed else 1
 
+    changed_count = 0
     for r in synced:
-        print(f"  refreshed [{r['type']}] {r['name']} ({r['scope']})")
+        ch = r["changes"]
+        summary = _summarize_changes(ch)
+        if summary != "no changes":
+            changed_count += 1
+        print(f"  refreshed [{r['type']}] {r['name']} ({r['scope']}) · {summary}")
+        for line in _change_detail_lines(ch):
+            print(line)
     for r in failed:
         print(f"  FAILED    [{r['type']}] {r['name']}: {r['reason']}")
-    print(f"\nSynced {len(synced)} · failed {len(failed)}")
+    print(f"\nSynced {len(synced)} · {changed_count} changed · failed {len(failed)}")
     return 0 if not failed else 1
 
 

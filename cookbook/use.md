@@ -55,7 +55,7 @@ though the CLI itself lives in the tool dir.
 
 The CLI exits non-zero and emits one of these when it can't act on its own:
 
-- `status: "OK"` → done. Report what was installed (and any dependencies) to the user.
+- `status: "OK"` → done. Report what was installed or changed (and any dependencies) to the user.
 - `status: "AMBIGUOUS"` → the `candidates` array lists near matches. **This is the
   step that needs you.** Pick the best match if it's obvious from the user's intent,
   or ask the user to choose, then re-run `<tool-dir>/library use "<exact-name>"`.
