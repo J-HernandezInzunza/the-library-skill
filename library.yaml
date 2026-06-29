@@ -60,9 +60,6 @@ library:
     - name: slack-toolkit
       description: Self-contained CLI toolkit for the Slack Web API via a bot token — no MCP, no npm install. Shared dependency for the PR/notify and (future) notification agents; other skills shell out to its bins through $SLACK_BIN_DIR. Infrastructure, not a task the model performs directly; requires SLACK_BIN_DIR + SLACK_BOT_TOKEN + SLACK_DEFAULT_CHANNEL set in the shell rc.
       source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/slack-toolkit/SKILL.md
-    - name: vue-component-standards
-      description: Standards for Vue.js component development including naming, structure, and patterns
-      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/vue-component-standards/SKILL.md
   agents: []
   prompts:
     - name: triage-bug
