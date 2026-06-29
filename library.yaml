@@ -50,6 +50,10 @@ library:
     - name: review-accessibility
       description: detailed accessibility (a11y) review for Vue components and HTML, checking for WCAG compliance and best practices.
       source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/review-accessibility/SKILL.md
+    - name: session-retro
+      description: Review a finished coding session from its on-disk transcript and distill what the developer taught about the code they like, then propose those learnings as edits to the frontend-code-practices skill. Run at end of session, after the final branch is pushed.
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/session-retro/SKILL.md
+      requires: ["skill:frontend-code-practices"]
     - name: slack-toolkit
       description: Self-contained CLI toolkit for the Slack Web API via a bot token — no MCP, no npm install. Shared dependency for the PR/notify and (future) notification agents; other skills shell out to its bins through $SLACK_BIN_DIR. Infrastructure, not a task the model performs directly; requires SLACK_BIN_DIR + SLACK_BOT_TOKEN + SLACK_DEFAULT_CHANNEL set in the shell rc.
       source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/slack-toolkit/SKILL.md
