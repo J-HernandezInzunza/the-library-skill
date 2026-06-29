@@ -31,6 +31,9 @@ library:
     - name: explain-code
       description: Walks through code to build the user's mental model — useful for onboarding to legacy code, understanding unfamiliar files, or grokking complex logic before changing it. Language-agnostic; works on frontend (Vue, TypeScript, JavaScript) and backend (Java, Spring Boot, Python, etc.). Use this skill whenever the user asks to explain, walk through, break down, or understand a piece of code, including phrases like "how does this work", "what is this doing", "walk me through this function", "explain this file", "help me understand this", or "break this down". This is a teaching skill — explanations are structured to build understanding and invite deeper thinking, not just to answer the surface question. Do NOT use this skill for adding inline documentation (TSDoc/JSDoc/Javadoc) — that's a separate skill.
       source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/explain-code/SKILL.md
+    - name: frontend-code-practices
+      description: Standing conventions for frontend code (Vue 3 / TypeScript) — structure, data modeling, comment density, function style, readability. Consult before writing or editing any frontend code.
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/frontend-code-practices/SKILL.md
     - name: frontend-code-review
       description: Reviews frontend code changes for bugs, style issues, and best practices. Specialized for Vue 3, TypeScript, and modern web development. Use when reviewing PRs or checking code quality.
       source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/frontend-code-review/SKILL.md
