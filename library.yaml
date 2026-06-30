@@ -81,9 +81,9 @@ library:
   agents: []
   prompts:
     - name: review-branch
-      description: Interactive branch-review workflow as a pi prompt. Invoke as `/review-branch [base]`. Builds a structured review map first (risk tiers via review-triage, per-feature reading paths via review-order, dependency verdicts via review-warm), then forks — the user finishes manually or hands risky groups to review-code and review-zombies. The map is the deliverable; agent completion is opt-in.
+      description: Interactive branch-review workflow as a pi prompt. Invoke as `/review-branch [base]`. Builds a structured review map first (intent map via review-intent, risk tiers via review-triage, per-feature reading paths via review-order, dependency verdicts via review-warm), then forks — the user finishes manually or hands risky groups to review-code and review-zombies. The map is the deliverable; agent completion is opt-in.
       source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/prompts/review-branch.md
-      requires: ["skill:review-code", "skill:review-order", "skill:review-triage", "skill:review-warm", "skill:review-zombies"]
+      requires: ["skill:review-intent", "skill:review-code", "skill:review-order", "skill:review-triage", "skill:review-warm", "skill:review-zombies"]
     - name: triage-bug
       description: Interactive bug-triage → investigation workflow as a pi prompt template. Invoke as `/triage-bug <TICKET-KEY>`. Asks before any Jira write. Enforces strict triage→investigate handoff via triage-context.json. Headless counterpart lives at my-engineering-library/workflows/bug-triage/.
       source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/prompts/triage-bug.md
