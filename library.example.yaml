@@ -2,7 +2,7 @@
 #
 # This file is reference only; the CLI never reads it. Your real catalog lives in
 # your shared catalog repo (the one `library init --repo …` points at), typically
-# as `library.yaml` / `library.yml` at its root. Copy this structure there and
+# as `library.yaml` at its root. Copy this structure there and
 # replace every placeholder (myworkspace / myorg / paths) with your own.
 
 # Where `use`/`sync` install items. `default` = project-local .claude/, used unless
