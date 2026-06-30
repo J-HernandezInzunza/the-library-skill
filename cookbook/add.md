@@ -64,6 +64,11 @@ Read the item's file(s). Look in frontmatter and body for typed references like
 For each dependency that isn't already in the catalog, **add it first** with its own
 `<tool-dir>/library add` call (recursively), so no entry references a missing dependency.
 
+Exception: when you're adding the dependency *and* its dependents **in the same batch**
+(see Step 4a), they can reference each other freely — a `requires` ref satisfied by another
+entry in the same batch counts as resolved and won't warn. Order within the batch file
+doesn't matter.
+
 ### 3. Preview the change (optional)
 
 ```bash
@@ -100,6 +105,36 @@ The CLI:
 
 It refuses to add a name that already exists (telling you to use `use`/`push` instead)
 and warns if a `--requires` ref isn't in the catalog yet.
+
+### 4a. Add several entries in one PR (batch)
+
+When the user wants multiple agentics registered together — e.g. a prompt plus the skills
+it requires — use `--batch` instead of calling `add` once per entry. **One branch, one
+commit, one PR** for the whole set, rather than N separate PRs.
+
+Write a YAML (or JSON) file listing the entries, then point `--batch` at it:
+
+```yaml
+# review-suite.yaml — a list of entries (or a mapping with an `entries:` key)
+- name: review-code
+  description: Code review staged changes, a branch range, or a named feature area.
+  source: https://github.com/org/repo/blob/main/skills/review-code/SKILL.md
+- name: review-branch
+  description: Interactive branch-review workflow as a pi prompt.
+  source: https://github.com/org/repo/blob/main/prompts/review-branch.md
+  requires: ["skill:review-code"]   # satisfied by the entry above, in this same batch
+```
+
+```bash
+<tool-dir>/library add --batch review-suite.yaml [--dry-run] [--json]
+```
+
+Per-entry fields match the single-add flags (`name`, `description`, `source`, optional
+`type`, optional `requires` as a list or comma-string). The CLI validates every entry up
+front — rejecting intra-batch duplicate names and any name already in the catalog — then
+splices them all into one branch (`library/add-batch-<n>-entries-<ts>`) and opens a single
+PR. `--dry-run` shows the combined diff without pushing. `--batch` can't be combined with
+`--name`/`--source`; put every entry in the file.
 
 ### 5. Confirm
 Relay the CLI's result: what was added, the PR branch name, and the compare/PR URL. If

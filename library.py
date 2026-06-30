@@ -1114,23 +1114,38 @@ def cmd_sync(args: argparse.Namespace) -> int:
 # Commands — writes (Phase 3: PR flow)
 # --------------------------------------------------------------------------- #
 
-def cmd_add(args: argparse.Namespace) -> int:
+def _prepare_entry(
+    name: str,
+    description: str,
+    source: str,
+    typ: str | None,
+    requires_raw: "str | list[str] | None",
+    allow_local: bool,
+) -> Entry:
+    """Validate one entry's fields and return an Entry. Dies on any problem.
+
+    Shared by single `add` and `--batch` add so both paths apply identical
+    type inference, source validation, and requires parsing. `requires_raw`
+    accepts a comma-string (CLI) or a list (batch YAML).
+    """
+    if not name or not description or not source:
+        die("each entry needs a name, description, and source")
+
     # Resolve type: explicit, else inferred from the source filename.
-    typ = args.type
     if not typ:
-        sl = args.source.lower()
+        sl = source.lower()
         typ = "skill" if "skill.md" in sl else "agent" if "agent.md" in sl else "prompt"
     if typ not in ("skill", "agent", "prompt"):
         die(f"invalid type: {typ}")
 
     # Validate source format (and existence for local paths).
-    src = parse_source(args.source)
+    src = parse_source(source)
     if src.kind == "local" and (src.path is None or not src.path.exists()):
-        die(f"local source not found: {args.source}")
+        die(f"local source not found: {source}")
 
     # The catalog is shared, so a local-path source won't resolve for teammates.
     # Refuse it by default; suggest the remote URL when the file is in a git repo.
-    if src.kind == "local" and not args.allow_local:
+    if src.kind == "local" and not allow_local:
         msg = (
             "local-path sources don't resolve for teammates pulling the shared catalog.\n"
             "  Provide a GitHub/Bitbucket URL, or pass --allow-local for a personal catalog."
@@ -1140,16 +1155,72 @@ def cmd_add(args: argparse.Namespace) -> int:
             msg += f"\n  This file is in a git repo — did you mean:\n    {hint}"
         die(msg)
 
+    if isinstance(requires_raw, str):
+        raw_refs = requires_raw.split(",")
+    else:
+        raw_refs = list(requires_raw or [])
     requires: list[str] = []
-    for r in (args.requires or "").split(","):
-        r = r.strip()
+    for r in raw_refs:
+        r = (r or "").strip()
         if not r:
             continue
         if ":" not in r or r.split(":", 1)[0] not in ("skill", "agent", "prompt"):
             die(f"invalid requires ref '{r}' (expected type:name)")
         requires.append(r)
 
-    entry = Entry(type=typ, name=args.name, description=args.description, source=args.source, requires=requires)
+    return Entry(type=typ, name=name, description=description, source=source, requires=requires)
+
+
+def _load_batch_file(path_str: str) -> list[dict[str, Any]]:
+    """Read a --batch manifest: a YAML/JSON list of entries, or a mapping with
+    an `entries:` key. Each item is a dict of name/description/source/type/requires."""
+    p = Path(path_str).expanduser()
+    if not p.exists():
+        die(f"batch file not found: {path_str}")
+    try:
+        data = yaml.safe_load(p.read_text())
+    except yaml.YAMLError as e:
+        die(f"batch file is not valid YAML/JSON: {e}")
+    if isinstance(data, dict):
+        data = data.get("entries")
+    if not isinstance(data, list) or not data:
+        die("batch file must be a non-empty list of entries (or a mapping with an `entries:` list)")
+    items: list[dict[str, Any]] = []
+    for i, it in enumerate(data):
+        if not isinstance(it, dict):
+            die(f"batch entry #{i + 1} is not a mapping")
+        items.append(it)
+    return items
+
+
+def cmd_add(args: argparse.Namespace) -> int:
+    # Build the list of entries to add. Single-add is a batch of one, so both
+    # paths share the same clone -> splice* -> one commit -> one PR flow below.
+    if getattr(args, "batch", None):
+        if args.name or args.source:
+            die("--batch can't be combined with --name/--source; put every entry in the batch file")
+        raw = _load_batch_file(args.batch)
+        entries = [
+            _prepare_entry(
+                it.get("name"), it.get("description"), it.get("source"),
+                it.get("type"), it.get("requires"), args.allow_local,
+            )
+            for it in raw
+        ]
+    else:
+        if not (args.name and args.description and args.source):
+            die("add needs --name, --description, and --source (or --batch <file> for multiple)")
+        entries = [_prepare_entry(
+            args.name, args.description, args.source,
+            args.type, args.requires, args.allow_local,
+        )]
+
+    # Reject duplicate names *within* the batch before touching the catalog.
+    seen: set[str] = set()
+    for e in entries:
+        if e.name in seen:
+            die(f"duplicate entry '{e.name}' in batch")
+        seen.add(e.name)
 
     cfg = load_config()
     if not args.no_pull:
@@ -1157,70 +1228,75 @@ def cmd_add(args: argparse.Namespace) -> int:
 
     # Validate against the persistent clone.
     catalog = load_catalog(catalog_path(cfg))
-    existing = find_exact(iter_entries(catalog), entry.name)
-    if existing:
-        die(f"'{entry.name}' already in catalog (type {existing.type}); use `library use` to refresh or `push` to update")
+    catalog_entries = iter_entries(catalog)
+    for e in entries:
+        existing = find_exact(catalog_entries, e.name)
+        if existing:
+            die(f"'{e.name}' already in catalog (type {existing.type}); use `library use` to refresh or `push` to update")
 
-    known = {(e.type, e.name) for e in iter_entries(catalog)}
-    for r in requires:
-        t, n = r.split(":", 1)
-        if (t, n) not in known:
-            warn(f"required dependency {r} is not in the catalog yet")
+    # A dependency satisfied by another entry in the same batch counts as known.
+    known = {(ce.type, ce.name) for ce in catalog_entries} | {(e.type, e.name) for e in entries}
+    for e in entries:
+        for r in e.requires:
+            t, n = r.split(":", 1)
+            if (t, n) not in known:
+                warn(f"required dependency {r} (for {e.name}) is not in the catalog yet")
 
-    branch = _pr_branch_name("add", entry.name)
+    # Branch name + commit/PR copy differ for a single entry vs a batch.
+    if len(entries) == 1:
+        e = entries[0]
+        branch = _pr_branch_name("add", e.name)
+        commit_msg = f"library: added {e.type} {e.name}"
+        pr_title = f"library: add {e.type} {e.name}"
+        pr_body = f"Adds `{e.name}` ({e.type}) to the catalog.\n\nSource: {e.source}"
+    else:
+        branch = _pr_branch_name("add-batch", f"{len(entries)}-entries")
+        names = ", ".join(e.name for e in entries)
+        commit_msg = f"library: add {len(entries)} entries ({names})"
+        pr_title = f"library: add {len(entries)} entries"
+        body_lines = "\n".join(f"- `{e.name}` ({e.type}) — {e.source}" for e in entries)
+        pr_body = f"Adds {len(entries)} entries to the catalog:\n\n{body_lines}"
 
-    if args.dry_run:
-        repo_dir, cleanup = _pr_clone(cfg.catalog_repo, cfg.catalog_branch)
-        try:
-            yaml_p = repo_dir / cfg.catalog_yaml_path
-            new_text = splice_entry(yaml_p.read_text(), entry)
-            # Safety net: result must still parse and contain the new entry.
-            parsed = yaml.safe_load(new_text) or {}
-            sec = (parsed.get("library", {}) or {}).get(entry.section, []) or []
-            if not any((it or {}).get("name") == entry.name for it in sec):
-                die("internal error: entry missing after splice; aborting")
-            yaml_p.write_text(new_text)
-            _git_in(repo_dir, ["checkout", "-b", branch])
-            _git_in(repo_dir, ["add", cfg.catalog_yaml_path])
-            _git_in(repo_dir, ["commit", "-m", f"library: added {entry.type} {entry.name}"])
-            diff_proc = subprocess.run(
+    repo_dir, cleanup = _pr_clone(cfg.catalog_repo, cfg.catalog_branch)
+    try:
+        yaml_p = repo_dir / cfg.catalog_yaml_path
+        text = yaml_p.read_text()
+        for e in entries:
+            text = splice_entry(text, e)
+        # Safety net: result must still parse and contain every new entry.
+        parsed = yaml.safe_load(text) or {}
+        for e in entries:
+            sec = (parsed.get("library", {}) or {}).get(e.section, []) or []
+            if not any((it or {}).get("name") == e.name for it in sec):
+                die(f"internal error: entry {e.name} missing after splice; aborting")
+        yaml_p.write_text(text)
+        _git_in(repo_dir, ["checkout", "-b", branch])
+        _git_in(repo_dir, ["add", cfg.catalog_yaml_path])
+        _git_in(repo_dir, ["commit", "-m", commit_msg])
+
+        added = [{"type": e.type, "name": e.name, "section": e.section} for e in entries]
+
+        if args.dry_run:
+            diff_text = subprocess.run(
                 ["git", "-C", str(repo_dir), "show", "HEAD"],
                 capture_output=True, text=True,
-            )
-            diff_text = diff_proc.stdout
+            ).stdout
             if args.json:
                 print(json.dumps({
                     "status": "DRY_RUN",
                     "would_change": True,
-                    "added": {"type": entry.type, "name": entry.name, "section": entry.section},
+                    "added": added[0] if len(added) == 1 else added,
                     "branch": branch,
                     "diff": diff_text,
                 }, indent=2))
             else:
                 print(f"[dry-run] would open PR: {branch}\n")
                 print(diff_text)
-        finally:
-            cleanup()
-        return 0
+            return 0
 
-    repo_dir, cleanup = _pr_clone(cfg.catalog_repo, cfg.catalog_branch)
-    try:
-        yaml_p = repo_dir / cfg.catalog_yaml_path
-        new_text = splice_entry(yaml_p.read_text(), entry)
-        # Safety net: result must still parse and contain the new entry.
-        parsed = yaml.safe_load(new_text) or {}
-        sec = (parsed.get("library", {}) or {}).get(entry.section, []) or []
-        if not any((it or {}).get("name") == entry.name for it in sec):
-            die("internal error: entry missing after splice; aborting")
-        yaml_p.write_text(new_text)
-        _git_in(repo_dir, ["checkout", "-b", branch])
-        _git_in(repo_dir, ["add", cfg.catalog_yaml_path])
-        _git_in(repo_dir, ["commit", "-m", f"library: added {entry.type} {entry.name}"])
         pr_info = _create_pr(
             cfg, repo_dir, branch, cfg.catalog_branch,
-            title=f"library: add {entry.type} {entry.name}",
-            body=f"Adds `{entry.name}` ({entry.type}) to the catalog.\n\nSource: {entry.source}",
-            repo_url=cfg.catalog_repo,
+            title=pr_title, body=pr_body, repo_url=cfg.catalog_repo,
         )
     finally:
         cleanup()
@@ -1228,12 +1304,17 @@ def cmd_add(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps({
             "status": "OK",
-            "added": {"type": entry.type, "name": entry.name, "section": entry.section},
+            "added": added[0] if len(added) == 1 else added,
             **pr_info,
         }, indent=2))
         return 0
 
-    print(f"Added [{entry.type}] {entry.name} to {entry.section}.")
+    if len(entries) == 1:
+        print(f"Added [{entries[0].type}] {entries[0].name} to {entries[0].section}.")
+    else:
+        print(f"Added {len(entries)} entries:")
+        for e in entries:
+            print(f"  [{e.type}] {e.name} -> {e.section}")
     if pr_info.get("method") == "gh":
         print(f"  PR opened: {pr_info.get('pr_url')}")
     else:
@@ -1845,10 +1926,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(sp)
     sp.set_defaults(func=cmd_sync)
 
-    sp = sub.add_parser("add", help="register a new entry in the catalog (opens a PR)")
-    sp.add_argument("--name", required=True)
-    sp.add_argument("--description", required=True)
-    sp.add_argument("--source", required=True)
+    sp = sub.add_parser("add", help="register one or more entries in the catalog (opens one PR)")
+    sp.add_argument("--name", help="entry name (single add; omit when using --batch)")
+    sp.add_argument("--description", help="one-line description (single add)")
+    sp.add_argument("--source", help="source URL/path (single add)")
+    sp.add_argument("--batch", help="path to a YAML/JSON file listing multiple entries; "
+                                    "all are added in a single branch + PR")
     sp.add_argument("--type", choices=["skill", "agent", "prompt"], help="inferred from source if omitted")
     sp.add_argument("--requires", help="comma-separated typed refs, e.g. skill:foo,agent:bar")
     sp.add_argument("--allow-local", action="store_true",
