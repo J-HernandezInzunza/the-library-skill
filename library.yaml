@@ -56,6 +56,9 @@ library:
     - name: review-code
       description: Code review staged changes, a branch range, or a named feature area, with severity-ranked findings and an optional hand-off to another CLI agent. Use when the user wants a code review.
       source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/review-code/SKILL.md
+    - name: review-intent
+      description: Reconstruct why a branch or diff exists before any risk or line review — separate the primary deliverable from the secondary and incidental changes that rode along, ground the story in stated intent (branch name, commits, linked ticket) before inference, and end with the bundling tension worth carrying into the review. Use to open a review, when the user asks 'what is this PR trying to do', or to orient before triage.
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/review-intent/SKILL.md
     - name: review-order
       description: Prepare a structured, scannable review map for a branch or diff — grouped by feature and applying the four-pass review order (Types, Data Flow, Business Logic, Edge Cases) with file:line citations. Purely descriptive, no opinions. Use when the user asks to prep a review or wants a checklist to walk changes manually.
       source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/review-order/SKILL.md
