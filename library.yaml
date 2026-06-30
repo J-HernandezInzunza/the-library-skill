@@ -53,6 +53,21 @@ library:
     - name: review-accessibility
       description: detailed accessibility (a11y) review for Vue components and HTML, checking for WCAG compliance and best practices.
       source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/review-accessibility/SKILL.md
+    - name: review-code
+      description: Code review staged changes, a branch range, or a named feature area, with severity-ranked findings and an optional hand-off to another CLI agent. Use when the user wants a code review.
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/review-code/SKILL.md
+    - name: review-order
+      description: Prepare a structured, scannable review map for a branch or diff — grouped by feature and applying the four-pass review order (Types, Data Flow, Business Logic, Edge Cases) with file:line citations. Purely descriptive, no opinions. Use when the user asks to prep a review or wants a checklist to walk changes manually.
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/review-order/SKILL.md
+    - name: review-triage
+      description: Triage a branch or diff by grouping changed files into feature areas, assigning each a High/Medium/Low risk tier, and producing a scannable map of where to spend review time. Use when the user asks to triage a branch, PR, or diff.
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/review-triage/SKILL.md
+    - name: review-warm
+      description: Evaluate every dependency a branch adds or upgrades — client or server, any language — against the WARM check (Worth it, Alive, Right-sized, Maintained securely) and give each a verdict. Use when the user asks to WARM-check a branch or vet new dependencies.
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/review-warm/SKILL.md
+    - name: review-zombies
+      description: Suggest the tests worth writing for a feature or branch diff using the ZOMBIES heuristic (Zero, One, Many, Boundaries, Interface, Exceptions, Simple), listing only the categories that apply. Use when the user wants test ideas for a feature.
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/review-zombies/SKILL.md
     - name: session-retro
       description: Review a finished coding session from its on-disk transcript and distill what the developer taught about the code they like, then propose those learnings as edits to the frontend-code-practices skill. Run at end of session, after the final branch is pushed.
       source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/session-retro/SKILL.md
@@ -62,6 +77,10 @@ library:
       source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/skills/slack-toolkit/SKILL.md
   agents: []
   prompts:
+    - name: review-branch
+      description: Interactive branch-review workflow as a pi prompt. Invoke as `/review-branch [base]`. Builds a structured review map first (risk tiers via review-triage, per-feature reading paths via review-order, dependency verdicts via review-warm), then forks — the user finishes manually or hands risky groups to review-code and review-zombies. The map is the deliverable; agent completion is opt-in.
+      source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/prompts/review-branch.md
+      requires: ["skill:review-code", "skill:review-order", "skill:review-triage", "skill:review-warm", "skill:review-zombies"]
     - name: triage-bug
       description: Interactive bug-triage → investigation workflow as a pi prompt template. Invoke as `/triage-bug <TICKET-KEY>`. Asks before any Jira write. Enforces strict triage→investigate handoff via triage-context.json. Headless counterpart lives at my-engineering-library/workflows/bug-triage/.
       source: https://github.com/J-HernandezInzunza/my-engineering-library/blob/master/prompts/triage-bug.md
