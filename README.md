@@ -70,7 +70,7 @@ The Library separates concerns across three independent pieces so each can evolv
 | **Catalog + sources** | A separate shared repo (e.g., `agent-library`) holding `library.yaml` plus the actual agentics | PR-gated writes; read via a persistent clone at `.catalog-repo/` |
 | **Per-device config** | `library.local.yaml` (gitignored) created once by `library init` | Points the tool at the catalog repo; never committed to either repo |
 
-Each teammate clones the tool read-only and runs `./library init --repo <catalog-url> --branch <branch>` once (or just asks the agent: "set up/initialize the library from `<url>` on `<branch>`"). After that, everyone reads from the same shared catalog. Curation (adding, removing, updating entries) goes through PRs on the catalog repo — the protected branch is never pushed to directly.
+Each teammate clones the tool read-only and runs `./library init --repo <catalog-url> --branch <branch>` once (or just asks the agent: "set up/initialize the library from `<url>` on `<branch>`"). After that, everyone reads from the same shared catalog. Curation (`add`ing, `update`ing, `remove`ing entries) goes through PRs on the catalog repo — the protected branch is never pushed to directly.
 
 ### The Catalog (`library.yaml`, lives in the catalog repo)
 
@@ -115,7 +115,7 @@ autopush: false
 
 - **`catalog.repo`** — clone URL of the shared catalog repo.
 - **`catalog.yaml_path`** — path to `library.yaml` within the catalog repo (default: `library.yaml`).
-- **`catalog.branch`** — the protected branch that `add`/`remove`/`push` open PRs against.
+- **`catalog.branch`** — the protected branch that `add`/`update`/`remove`/`push` open PRs against.
 - **`autopush`** — when `true`, write ops also run `gh pr create` to open the PR automatically. Default `false` prints a compare URL instead.
 
 Install locations are not configured here — they come from `default_dirs` in the catalog's `library.yaml`.
@@ -250,6 +250,22 @@ merged, the entry is in the shared catalog for everyone.
 ./library use deploy --dir <path>     # → an explicit location
 ```
 
+### Update an existing entry
+
+You want to add a dependency (or fix a description/source) on an entry that's already in
+the catalog:
+
+> 🗣 **Ask the agent:** "make the session-retro skill also require backend-code-practices"
+
+```bash
+# ⌨ Or run the CLI:
+./library update session-retro --add-requires skill:backend-code-practices
+```
+
+Like `add`/`remove`, this opens a PR against the catalog repo rather than editing
+`library.yaml` directly — `add` only creates new entries, so editing an existing one
+(most commonly appending to `requires`) goes through `update` instead.
+
 ### Push changes back
 
 You improved the skill locally and want the change upstreamed:
@@ -297,6 +313,7 @@ Two ways to drive it, same result:
 | Install a skill | "install the deploy skill from the library" | `./library use deploy` |
 | Install globally | "install deploy from the library globally" | `./library use deploy --global` |
 | Add an entry | "add this skill to the library: `<url>`" | `./library add --name … --source … --description …` |
+| Update an entry | "make session-retro also require backend-code-practices" | `./library update session-retro --add-requires skill:backend-code-practices` |
 | Push changes back | "push my deploy changes back to the library" | `./library push deploy` |
 | Remove an entry | "remove deploy from the library" | `./library remove deploy` |
 | Sync everything | "sync all my installed library skills" | `./library sync` |
@@ -304,7 +321,7 @@ Two ways to drive it, same result:
 | Update the tool | "update the library tool" | `./library self-update` |
 
 **CLI flags:** `--json` (machine-readable) · `--no-pull` (skip catalog refresh) ·
-`--dry-run` (preview `add`/`remove`/`push`) · `--global`/`--dir` (`use` target) ·
+`--dry-run` (preview `add`/`update`/`remove`/`push`) · `--global`/`--dir` (`use` target) ·
 `--deep` (`doctor` source-liveness).
 
 > **`use`/`sync` and your working directory:** the `default` install scope is
@@ -339,6 +356,7 @@ just self-update           # Update the tool itself (git pull)
 
 # Fuzzy / write ops — route through the agent:
 just add "name: foo, description: bar, source: /path/to/SKILL.md"
+just update "make session-retro also require skill:backend-code-practices"
 just push my-skill         # Push changes back (proposes a PR for GitHub/Bitbucket sources)
 just remove my-skill       # Remove from catalog (proposes a PR)
 just ask "use that PR review thing"   # natural-language / fuzzy intent
@@ -366,6 +384,7 @@ auth/setup gotchas, lives in **[docs/troubleshooting.md](docs/troubleshooting.md
         init.md
         install.md
         add.md
+        update.md
         use.md
         push.md
         remove.md

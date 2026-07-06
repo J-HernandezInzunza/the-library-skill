@@ -777,6 +777,35 @@ def remove_entry(text: str, entry_type: str, name: str) -> str:
     return "\n".join(lines)
 
 
+def replace_entry(text: str, entry_type: str, name: str, new_entry: Entry) -> str:
+    """Replace the named entry's block in place with a freshly rendered one.
+
+    Pure text transform, like splice_entry/remove_entry. Used by `update` to
+    edit an existing entry's description/source/requires without disturbing
+    its position in the section (name and type are assumed unchanged — this
+    is not a rename/retype op; use `remove` + `add` for that). Raises
+    LibraryError if the entry isn't found.
+    """
+    section = PLURAL[entry_type]
+    lines = text.split("\n")
+    sec_idx, _, sec_end = _locate_section(lines, section)
+    starts = _item_starts(lines, sec_idx, sec_end)
+
+    target = None
+    for si in starts:
+        m = _ITEM_NAME_RE.match(lines[si])
+        if m and m.group(1).strip().strip('"\'') == name:
+            target = si
+            break
+    if target is None:
+        raise LibraryError(f"'{name}' not found in {section}")
+
+    later = [s for s in starts if s > target]
+    block_end = later[0] if later else sec_end
+    lines[target:block_end] = render_entry(new_entry)
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------------------- #
 # Push helpers (local-path sources — immediate, no PR)
 # --------------------------------------------------------------------------- #
@@ -1114,6 +1143,28 @@ def cmd_sync(args: argparse.Namespace) -> int:
 # Commands — writes (Phase 3: PR flow)
 # --------------------------------------------------------------------------- #
 
+def _parse_requires_refs(requires_raw: "str | list[str] | None") -> list[str]:
+    """Parse a comma-string (CLI) or list (batch YAML) of typed refs.
+
+    Dies on any ref that isn't `type:name` with a known type. Shared by
+    `_prepare_entry` (new entries) and `cmd_update` (editing `requires` on an
+    existing entry).
+    """
+    if isinstance(requires_raw, str):
+        raw_refs = requires_raw.split(",")
+    else:
+        raw_refs = list(requires_raw or [])
+    requires: list[str] = []
+    for r in raw_refs:
+        r = (r or "").strip()
+        if not r:
+            continue
+        if ":" not in r or r.split(":", 1)[0] not in ("skill", "agent", "prompt"):
+            die(f"invalid requires ref '{r}' (expected type:name)")
+        requires.append(r)
+    return requires
+
+
 def _prepare_entry(
     name: str,
     description: str,
@@ -1155,18 +1206,7 @@ def _prepare_entry(
             msg += f"\n  This file is in a git repo — did you mean:\n    {hint}"
         die(msg)
 
-    if isinstance(requires_raw, str):
-        raw_refs = requires_raw.split(",")
-    else:
-        raw_refs = list(requires_raw or [])
-    requires: list[str] = []
-    for r in raw_refs:
-        r = (r or "").strip()
-        if not r:
-            continue
-        if ":" not in r or r.split(":", 1)[0] not in ("skill", "agent", "prompt"):
-            die(f"invalid requires ref '{r}' (expected type:name)")
-        requires.append(r)
+    requires = _parse_requires_refs(requires_raw)
 
     return Entry(type=typ, name=name, description=description, source=source, requires=requires)
 
@@ -1428,6 +1468,138 @@ def cmd_remove(args: argparse.Namespace) -> int:
         print(f"  deleted local copy: {d}")
     if dependents:
         print("  WARNING still required by: " + ", ".join(f"{d.type}:{d.name}" for d in dependents))
+    if pr_info.get("method") == "gh":
+        print(f"  PR opened: {pr_info.get('pr_url')}")
+    else:
+        print(f"  Branch pushed: {pr_info.get('branch')}")
+        if pr_info.get("compare_url"):
+            print(f"  Open PR at:   {pr_info.get('compare_url')}")
+    return 0
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    """Edit an existing entry's description/source/requires in place (opens a PR).
+
+    Unlike `add` (new entries only) and `remove` (delete), this mutates fields
+    on an entry that already exists — most commonly appending a `requires` ref
+    (e.g. "session-retro also depends on backend-code-practices"). Renaming or
+    changing type isn't supported here (that moves sections/positions); use
+    `remove` + `add` for that.
+    """
+    if not any([
+        args.set_description, args.set_source,
+        args.add_requires, args.remove_requires, args.set_requires is not None,
+    ]):
+        die("update needs at least one of --set-description, --set-source, "
+            "--add-requires, --remove-requires, or --set-requires")
+    if args.set_requires is not None and (args.add_requires or args.remove_requires):
+        die("--set-requires replaces the whole list; can't combine with --add-requires/--remove-requires")
+
+    cfg = load_config()
+    if not args.no_pull:
+        pull_catalog(cfg)
+    catalog = load_catalog(catalog_path(cfg))
+    entries = iter_entries(catalog)
+    entry = find_exact(entries, args.name)
+    if entry is None:
+        die(f"'{args.name}' not found in catalog")
+
+    new_description = args.set_description or entry.description
+    new_source = args.set_source or entry.source
+    if args.set_source:
+        src = parse_source(new_source)
+        if src.kind == "local" and not args.allow_local:
+            msg = (
+                "local-path sources don't resolve for teammates pulling the shared catalog.\n"
+                "  Provide a GitHub/Bitbucket URL, or pass --allow-local for a personal catalog."
+            )
+            hint = _suggest_remote_for_local(src.path)
+            if hint:
+                msg += f"\n  This file is in a git repo — did you mean:\n    {hint}"
+            die(msg)
+
+    if args.set_requires is not None:
+        new_requires = _parse_requires_refs(args.set_requires)
+    else:
+        new_requires = list(entry.requires)
+        for r in _parse_requires_refs(args.add_requires):
+            if r not in new_requires:
+                new_requires.append(r)
+            else:
+                warn(f"{r} already in requires for {entry.name}")
+        for r in _parse_requires_refs(args.remove_requires):
+            if r in new_requires:
+                new_requires.remove(r)
+            else:
+                warn(f"{r} not in requires for {entry.name}; nothing removed")
+
+    # Warn (don't fail) on requires refs that aren't in the catalog yet — same
+    # policy as `add`; the dependency may be landing in a companion PR/batch.
+    known = {(ce.type, ce.name) for ce in entries}
+    for r in new_requires:
+        t, n = r.split(":", 1)
+        if (t, n) not in known:
+            warn(f"required dependency {r} is not in the catalog yet")
+
+    new_entry = Entry(type=entry.type, name=entry.name, description=new_description,
+                       source=new_source, requires=new_requires)
+
+    if (new_entry.description == entry.description and new_entry.source == entry.source
+            and new_entry.requires == entry.requires):
+        if args.json:
+            print(json.dumps({"status": "OK", "name": entry.name, "changed": False}, indent=2))
+        else:
+            print(f"No changes — {entry.name} already matches the requested update.")
+        return 0
+
+    branch = _pr_branch_name("update", entry.name)
+    commit_msg = f"library: updated {entry.type} {entry.name}"
+
+    repo_dir, cleanup = _pr_clone(cfg.catalog_repo, cfg.catalog_branch)
+    try:
+        yaml_p = repo_dir / cfg.catalog_yaml_path
+        text = yaml_p.read_text()
+        new_text = replace_entry(text, entry.type, entry.name, new_entry)
+        # Safety net: result must still parse and reflect the change.
+        parsed = yaml.safe_load(new_text) or {}
+        sec = (parsed.get("library", {}) or {}).get(entry.section, []) or []
+        match = next((it for it in sec if (it or {}).get("name") == entry.name), None)
+        if match is None:
+            die(f"internal error: entry {entry.name} missing after update; aborting")
+        yaml_p.write_text(new_text)
+        _git_in(repo_dir, ["checkout", "-b", branch])
+        _git_in(repo_dir, ["add", cfg.catalog_yaml_path])
+        _git_in(repo_dir, ["commit", "-m", commit_msg])
+
+        if args.dry_run:
+            diff_text = subprocess.run(
+                ["git", "-C", str(repo_dir), "show", "HEAD"],
+                capture_output=True, text=True,
+            ).stdout
+            if args.json:
+                print(json.dumps({
+                    "status": "DRY_RUN", "would_change": True,
+                    "name": entry.name, "branch": branch, "diff": diff_text,
+                }, indent=2))
+            else:
+                print(f"[dry-run] would open PR: {branch}\n")
+                print(diff_text)
+            return 0
+
+        pr_info = _create_pr(
+            cfg, repo_dir, branch, cfg.catalog_branch,
+            title=commit_msg,
+            body=f"Updates `{entry.name}` ({entry.type}) in the catalog.",
+            repo_url=cfg.catalog_repo,
+        )
+    finally:
+        cleanup()
+
+    if args.json:
+        print(json.dumps({"status": "OK", "name": entry.name, "changed": True, **pr_info}, indent=2))
+        return 0
+
+    print(f"Updated [{entry.type}] {entry.name}.")
     if pr_info.get("method") == "gh":
         print(f"  PR opened: {pr_info.get('pr_url')}")
     else:
@@ -1952,6 +2124,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--cwd", help="project dir to anchor relative ('default'-scope) paths to "
                                   "(default: $LIBRARY_CWD or the current working directory)")
     sp.set_defaults(func=cmd_remove)
+
+    sp = sub.add_parser("update", help="edit an existing entry's description/source/requires (opens a PR)")
+    sp.add_argument("name")
+    sp.add_argument("--set-description", help="replace the description")
+    sp.add_argument("--set-source", help="replace the source URL/path")
+    sp.add_argument("--add-requires", help="comma-separated typed refs to add, e.g. skill:foo,agent:bar")
+    sp.add_argument("--remove-requires", help="comma-separated typed refs to remove")
+    sp.add_argument("--set-requires", help="replace the whole requires list (comma-separated typed refs; "
+                                            "pass an empty string to clear it); can't combine with --add/--remove-requires")
+    sp.add_argument("--allow-local", action="store_true",
+                    help="permit a local-path --set-source (personal catalogs only)")
+    sp.add_argument("--dry-run", action="store_true",
+                    help="show what the PR diff would be without pushing")
+    sp.add_argument("--json", action="store_true")
+    sp.add_argument("--no-pull", action="store_true")
+    sp.set_defaults(func=cmd_update)
 
     sp = sub.add_parser("push", help="push a local copy back to its source (opens a PR for GitHub sources)")
     sp.add_argument("name")

@@ -1,6 +1,6 @@
 ---
 name: library
-description: Private skill distribution system. Use when the user wants to install, use, add, push, remove, sync, list, or search for skills, agents, or prompts from their private library catalog. Triggers on /library commands or mentions of library, skill distribution, or agentic management.
+description: Private skill distribution system. Use when the user wants to install, use, add, update, push, remove, sync, list, or search for skills, agents, or prompts from their private library catalog. Triggers on /library commands or mentions of library, skill distribution, or agentic management.
 argument-hint: "[command or prompt] [name or details]"
 ---
 
@@ -20,7 +20,7 @@ The Library is driven by a per-device config (`library.local.yaml`, gitignored) 
 | **Catalog + sources** | a separate repo the config points to | PR-gated writes; read via persistent clone |
 | **Local config** | `library.local.yaml` (gitignored) | per-device; created by `library init` |
 
-**The catalog is read from a persistent clone** (`<tool-dir>/.catalog-repo/`) that is refreshed automatically on most commands. Writes (`add`, `remove`, `push` for remote sources) commit on a branch in an ephemeral temp-clone and open a PR — they never push directly to the protected branch. GitHub and Bitbucket are both supported; for Bitbucket the CLI prints the PR-create URL (there's no `gh`-style auto-open).
+**The catalog is read from a persistent clone** (`<tool-dir>/.catalog-repo/`) that is refreshed automatically on most commands. Writes (`add`, `update`, `remove`, `push` for remote sources) commit on a branch in an ephemeral temp-clone and open a PR — they never push directly to the protected branch. GitHub and Bitbucket are both supported; for Bitbucket the CLI prints the PR-create URL (there's no `gh`-style auto-open).
 
 ## Deterministic CLI vs. Agent
 
@@ -28,9 +28,10 @@ The mechanical parts of the workflow — reading the catalog, parsing sources, r
 
 - **CLI-backed (no LLM needed):** `init`, `self-update`, `list`, `search`, `use`, `sync`, `doctor`. Invoke them by the wrapper's absolute path (e.g. `<tool-dir>/library use <name>`) **from the user's current working directory — do not `cd` into the tool directory first.** They support `--json` (machine-readable) and `--no-pull` (skip the catalog git pull).
   - **Install-location contract:** the catalog's `default` scope is a *relative* path (`.claude/skills/`) that anchors to the directory you invoke from; the `global` scope is an absolute `~/.claude/...` path. So `use <name>` installs into the user's CWD project, `use <name> --global` into home, and `use <name> --dir <path>` into a custom location (relative custom paths also anchor to the CWD). The wrapper captures `$PWD` into `LIBRARY_CWD` so this holds even if the CLI itself runs from elsewhere; pass `--cwd <dir>` to override the anchor explicitly. **Never `cd` into the tool dir to run these — that would anchor `default` installs to the tool dir instead of the user's project.**
-- **Agent-mediated (fallback):** `add`, `push`, `remove`, and any *fuzzy* request (vague name, natural-language intent). The CLI signals when it needs the agent by exiting non-zero with `status: "AMBIGUOUS"` or `status: "NOT_FOUND"`.
-  - `add`, `remove`, and `push` are hybrids: the agent handles only the judgment (type + dependency detection for `add`; destructive-action confirmation for `remove`; choosing the local copy for `push`), then delegates the YAML edit, PR creation, and file ops to `library add|remove|push`.
+- **Agent-mediated (fallback):** `add`, `update`, `push`, `remove`, and any *fuzzy* request (vague name, natural-language intent). The CLI signals when it needs the agent by exiting non-zero with `status: "AMBIGUOUS"` or `status: "NOT_FOUND"`.
+  - `add`, `update`, `remove`, and `push` are hybrids: the agent handles only the judgment (type + dependency detection for `add`; which field(s) to change for `update`; destructive-action confirmation for `remove`; choosing the local copy for `push`), then delegates the YAML edit, PR creation, and file ops to `library add|update|remove|push`.
   - **Adding several agentics in one request → one PR, via `--batch`.** When a single request registers more than one entry (e.g. a prompt plus the skills it requires, or a themed bundle), do **not** loop `library add` once per entry — that opens a separate PR each time. Write a YAML manifest of all the entries and run `library add --batch <file>` so the whole set lands in a single branch and a single PR. A `requires` ref satisfied by another entry in the same batch resolves cleanly, so co-add a dependent and its dependencies together. Only fall back to per-entry `add` calls when the user explicitly wants separate PRs. See [cookbook/add.md](cookbook/add.md) Step 4a.
+  - **Editing an existing entry (e.g. "make X also require skill:Y") is `update`, not `add`.** `add` refuses names that already exist. If the new `requires` ref isn't in the catalog yet, add it first (or in the same session), then `library update <name> --add-requires <ref>`. See [cookbook/update.md](cookbook/update.md).
   - When the judgment is ambiguous (multiple name matches, local-vs-remote source, type/wording conflict), the agent's first move is to **ask the user a single clarifying question** — not to pick the most likely candidate and proceed. Reversibility (PR-gating) is not a substitute for getting identity right.
 
 **When a CLI-backed command is invoked, run the `library` CLI — do not re-implement the mechanics by hand.** The CLI is the source of truth; if something is wrong, fix `library.py`.
@@ -56,6 +57,7 @@ system `python3` — so if system `python3` already has PyYAML, this step can be
 | `/library init`             | Create/repoint the per-device config + clone the catalog (re-runnable) |
 | `/library self-update`      | Pull the latest tool code (`git pull` in the tool dir)  |
 | `/library add <details>`    | Register a new entry (proposes a PR on the catalog repo)|
+| `/library update <name>`    | Edit an existing entry's description/source/requires (proposes a PR) |
 | `/library use <name>`       | Pull from source (install or refresh)                   |
 | `/library push <name>`      | Push local changes back to source (PR for GitHub/Bitbucket sources)|
 | `/library remove <name>`    | Remove from catalog (proposes a PR); optionally purge local |
@@ -72,6 +74,7 @@ Each command has a detailed step-by-step guide. **Read the relevant cookbook fil
 | ----------- | ------------------------------------------------------ | ----------------------------------------------------------- |
 | init        | [cookbook/init.md](cookbook/init.md)                   | Create or repoint the per-device config + clone the catalog (re-runnable; `--force` to switch catalogs) |
 | add         | [cookbook/add.md](cookbook/add.md)                     | User wants to register a new skill/agent/prompt in catalog  |
+| update      | [cookbook/update.md](cookbook/update.md)               | User wants to edit an existing entry's description/source/requires (e.g. add a dependency) |
 | use         | [cookbook/use.md](cookbook/use.md)                     | User wants to pull or refresh a skill from the catalog      |
 | push        | [cookbook/push.md](cookbook/push.md)                   | User improved a skill locally and wants to update the source|
 | remove      | [cookbook/remove.md](cookbook/remove.md)               | User wants to remove an entry from the catalog              |

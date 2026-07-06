@@ -8,8 +8,8 @@ End users who just consume skills don't need any of this.
 - **Tool repo** (this one — `library.py`, `SKILL.md`, `README.md`, cookbooks, `check_docs.py`):
   change via a normal branch + PR.
 - **Catalog repo** (e.g. `agent-library` — the `library.yml` + the agentics): never edited
-  by hand. Changes go through the CLI's `add` / `remove` / `push`, which open PRs against
-  the catalog's protected branch.
+  by hand. Changes go through the CLI's `add` / `update` / `remove` / `push`, which open PRs
+  against the catalog's protected branch.
 
 ## Local checks (tool repo)
 

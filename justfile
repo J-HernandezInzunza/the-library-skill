@@ -71,6 +71,10 @@ install-hooks:
 add prompt:
     claude --dangerously-skip-permissions --model opus "/library add {{prompt}}"
 
+# Edit an existing entry's description/source/requires (proposes a PR)
+update prompt:
+    claude --dangerously-skip-permissions --model opus "/library update {{prompt}}"
+
 # Push local changes back to the source (PR for GitHub sources)
 push name:
     claude --dangerously-skip-permissions --model opus "/library push {{name}}"
