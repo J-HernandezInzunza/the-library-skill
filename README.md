@@ -116,7 +116,7 @@ autopush: false
 - **`catalog.repo`** — clone URL of the shared catalog repo.
 - **`catalog.yaml_path`** — path to `library.yaml` within the catalog repo (default: `library.yaml`).
 - **`catalog.branch`** — the protected branch that `add`/`update`/`remove`/`push` open PRs against.
-- **`autopush`** — when `true`, write ops also run `gh pr create` to open the PR automatically. Default `false` prints a compare URL instead.
+- **`autopush`** — when `true`, write ops also run `gh pr create` to open the PR automatically. On a GitHub catalog this is all-or-nothing: the op either opens the PR or **exits non-zero** (it never silently falls back to just a pushed branch), so "PR opened" is always literally true. Default `false` pushes the branch and prints a compare URL for you to open manually. (Bitbucket has no `gh` equivalent, so it always uses the compare-URL path.)
 
 Install locations are not configured here — they come from `default_dirs` in the catalog's `library.yaml`.
 

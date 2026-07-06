@@ -928,6 +928,13 @@ def _create_pr(
         return {"method": "manual", "branch": branch_name, "compare_url": compare_url}
 
     # autopush: `gh pr create` is GitHub-only; Bitbucket has no CLI equivalent here.
+    #
+    # Determinism contract: when autopush is on, the branch is already pushed, so a
+    # gh failure must NOT silently downgrade to "branch pushed, no PR" — that's the
+    # ambiguity autopush exists to remove. On GitHub we die loudly (with the compare
+    # URL for manual recovery) so the outcome is always "PR opened" or a hard error.
+    # Bitbucket structurally can't autopush (no CLI), so it degrades to manual with a
+    # clear warning rather than dying.
     if host == "github.com" and web:
         _, owner, repo = web
         gh_cmd = [
@@ -938,14 +945,16 @@ def _create_pr(
             "--title", title,
             "--body", body,
         ]
+        recover = f"\n  The branch is pushed; open the PR manually at:\n    {compare_url}" if compare_url else ""
         try:
             gh_proc = subprocess.run(gh_cmd, capture_output=True, text=True)
             if gh_proc.returncode == 0:
                 return {"method": "gh", "pr_url": gh_proc.stdout.strip(), "branch": branch_name}
             last = (gh_proc.stderr.strip().splitlines() or ["unknown"])[-1]
-            warn(f"gh pr create failed: {last}; falling back to compare URL")
+            die(f"autopush is on but `gh pr create` failed: {last}{recover}")
         except FileNotFoundError:
-            warn("gh CLI not found; falling back to compare URL (install `gh` + `gh auth login` for autopush)")
+            die("autopush is on but the `gh` CLI is not installed "
+                f"(install it + `gh auth login`, or set autopush: false).{recover}")
     elif host == "bitbucket.org":
         warn("autopush has no CLI path for Bitbucket; open the PR via the printed URL")
 
@@ -1477,6 +1486,35 @@ def cmd_remove(args: argparse.Namespace) -> int:
     return 0
 
 
+def _compute_updated_entry(base: Entry, args: argparse.Namespace) -> Entry:
+    """Apply the update flags to *base* and return the resulting Entry.
+
+    Pure w.r.t. the catalog: *base* must be the entry as it exists in the clone
+    being written to (see the determinism note in cmd_update). Warns on a
+    redundant --add-requires/--remove-requires rather than failing.
+    """
+    new_description = args.set_description or base.description
+    new_source = args.set_source or base.source
+
+    if args.set_requires is not None:
+        new_requires = _parse_requires_refs(args.set_requires)
+    else:
+        new_requires = list(base.requires)
+        for r in _parse_requires_refs(args.add_requires):
+            if r not in new_requires:
+                new_requires.append(r)
+            else:
+                warn(f"{r} already in requires for {base.name}")
+        for r in _parse_requires_refs(args.remove_requires):
+            if r in new_requires:
+                new_requires.remove(r)
+            else:
+                warn(f"{r} not in requires for {base.name}; nothing removed")
+
+    return Entry(type=base.type, name=base.name, description=new_description,
+                 source=new_source, requires=new_requires)
+
+
 def cmd_update(args: argparse.Namespace) -> int:
     """Edit an existing entry's description/source/requires in place (opens a PR).
 
@@ -1495,19 +1533,10 @@ def cmd_update(args: argparse.Namespace) -> int:
     if args.set_requires is not None and (args.add_requires or args.remove_requires):
         die("--set-requires replaces the whole list; can't combine with --add-requires/--remove-requires")
 
-    cfg = load_config()
-    if not args.no_pull:
-        pull_catalog(cfg)
-    catalog = load_catalog(catalog_path(cfg))
-    entries = iter_entries(catalog)
-    entry = find_exact(entries, args.name)
-    if entry is None:
-        die(f"'{args.name}' not found in catalog")
-
-    new_description = args.set_description or entry.description
-    new_source = args.set_source or entry.source
+    # Validate a replacement source up front — this doesn't depend on the entry's
+    # current state, so fail fast before cloning.
     if args.set_source:
-        src = parse_source(new_source)
+        src = parse_source(args.set_source)
         if src.kind == "local" and not args.allow_local:
             msg = (
                 "local-path sources don't resolve for teammates pulling the shared catalog.\n"
@@ -1518,47 +1547,54 @@ def cmd_update(args: argparse.Namespace) -> int:
                 msg += f"\n  This file is in a git repo — did you mean:\n    {hint}"
             die(msg)
 
-    if args.set_requires is not None:
-        new_requires = _parse_requires_refs(args.set_requires)
-    else:
-        new_requires = list(entry.requires)
-        for r in _parse_requires_refs(args.add_requires):
-            if r not in new_requires:
-                new_requires.append(r)
-            else:
-                warn(f"{r} already in requires for {entry.name}")
-        for r in _parse_requires_refs(args.remove_requires):
-            if r in new_requires:
-                new_requires.remove(r)
-            else:
-                warn(f"{r} not in requires for {entry.name}; nothing removed")
+    cfg = load_config()
+    if not args.no_pull:
+        pull_catalog(cfg)
+    catalog = load_catalog(catalog_path(cfg))
+    # Friendly early exit on an obvious typo, from the persistent clone. The
+    # *authoritative* read happens against the temp-clone below — see the
+    # determinism note there.
+    if find_exact(iter_entries(catalog), args.name) is None:
+        die(f"'{args.name}' not found in catalog")
 
-    # Warn (don't fail) on requires refs that aren't in the catalog yet — same
-    # policy as `add`; the dependency may be landing in a companion PR/batch.
-    known = {(ce.type, ce.name) for ce in entries}
-    for r in new_requires:
-        t, n = r.split(":", 1)
-        if (t, n) not in known:
-            warn(f"required dependency {r} is not in the catalog yet")
-
-    new_entry = Entry(type=entry.type, name=entry.name, description=new_description,
-                       source=new_source, requires=new_requires)
-
-    if (new_entry.description == entry.description and new_entry.source == entry.source
-            and new_entry.requires == entry.requires):
-        if args.json:
-            print(json.dumps({"status": "OK", "name": entry.name, "changed": False}, indent=2))
-        else:
-            print(f"No changes — {entry.name} already matches the requested update.")
-        return 0
-
-    branch = _pr_branch_name("update", entry.name)
-    commit_msg = f"library: updated {entry.type} {entry.name}"
+    branch = _pr_branch_name("update", args.name)
 
     repo_dir, cleanup = _pr_clone(cfg.catalog_repo, cfg.catalog_branch)
     try:
         yaml_p = repo_dir / cfg.catalog_yaml_path
         text = yaml_p.read_text()
+
+        # Determinism: compute the edit against the SAME bytes we're about to
+        # write. Reading the entry's current fields from the persistent clone
+        # (which may be stale) and then overwriting a fresh temp-clone would
+        # silently clobber any change merged upstream since the last pull —
+        # e.g. an `--add-requires` computed from a stale `requires` would drop a
+        # ref another PR just added. So the base entry, the no-op check, and the
+        # requires-known warning all key off the temp-clone.
+        fresh_entries = iter_entries(yaml.safe_load(text) or {})
+        entry = find_exact(fresh_entries, args.name)
+        if entry is None:
+            die(f"'{args.name}' was removed from the catalog upstream; nothing to update")
+
+        new_entry = _compute_updated_entry(entry, args)
+
+        # Warn (don't fail) on requires refs that aren't in the catalog yet — same
+        # policy as `add`; the dependency may be landing in a companion PR/batch.
+        known = {(ce.type, ce.name) for ce in fresh_entries}
+        for r in new_entry.requires:
+            t, n = r.split(":", 1)
+            if (t, n) not in known:
+                warn(f"required dependency {r} is not in the catalog yet")
+
+        if (new_entry.description == entry.description and new_entry.source == entry.source
+                and new_entry.requires == entry.requires):
+            if args.json:
+                print(json.dumps({"status": "OK", "name": entry.name, "changed": False}, indent=2))
+            else:
+                print(f"No changes — {entry.name} already matches the requested update.")
+            return 0
+
+        commit_msg = f"library: updated {entry.type} {entry.name}"
         new_text = replace_entry(text, entry.type, entry.name, new_entry)
         # Safety net: result must still parse and reflect the change.
         parsed = yaml.safe_load(new_text) or {}
