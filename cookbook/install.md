@@ -39,6 +39,7 @@ just bootstrap
 ```
 
 Verify it works:
+
 ```bash
 <tool-dir>/library --help
 ```
