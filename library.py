@@ -51,6 +51,8 @@ os.environ.setdefault("GIT_SSH_COMMAND", "ssh -oBatchMode=yes")
 SKILL_DIR = Path(__file__).resolve().parent
 LOCAL_CONFIG_PATH = SKILL_DIR / "library.local.yaml"
 CATALOG_CLONE_DIR = SKILL_DIR / ".catalog-repo"
+GLOBAL_SKILLS_DIR = Path("~/.claude/skills").expanduser()
+LINK_NAME = "library"  # name the tool is discoverable under in a skills dir
 TYPES = ("skills", "agents", "prompts")
 SINGULAR = {"skills": "skill", "agents": "agent", "prompts": "prompt"}
 PLURAL = {v: k for k, v in SINGULAR.items()}
@@ -1829,9 +1831,81 @@ def _source_alive(src: Source) -> bool:
     return False
 
 
+def _link_state(link: Path) -> tuple[str, Path | None]:
+    """Classify the skills-dir entry for the tool.
+
+    Returns (state, target) where state is one of:
+      ok           — resolves to this clone (symlink, or the clone lives there)
+      missing      — nothing at the path
+      dangling     — symlink whose target no longer exists
+      wrong-target — symlink pointing at a different copy
+      occupied     — a real (non-symlink) file/dir that isn't this clone
+    """
+    if link.is_symlink():
+        raw = Path(os.readlink(link))
+        if not link.exists():
+            return "dangling", raw
+        resolved = link.resolve()
+        return ("ok", resolved) if resolved == SKILL_DIR else ("wrong-target", resolved)
+    if not link.exists():
+        return "missing", None
+    resolved = link.resolve()
+    return ("ok", resolved) if resolved == SKILL_DIR else ("occupied", resolved)
+
+
+def cmd_link(args: argparse.Namespace) -> int:
+    skills_dir = Path(args.dir).expanduser() if args.dir else GLOBAL_SKILLS_DIR
+    link = skills_dir / LINK_NAME
+    state, target = _link_state(link)
+
+    def report(action: str) -> int:
+        if args.json:
+            print(json.dumps({"status": "OK", "action": action,
+                              "link": str(link), "target": str(SKILL_DIR)}, indent=2))
+        else:
+            msgs = {
+                "in-place": f"tool already lives at {link} — no link needed",
+                "already-linked": f"{link} already points at this clone — nothing to do",
+                "created": f"linked {link} -> {SKILL_DIR}",
+                "repaired": f"repaired dangling link: {link} -> {SKILL_DIR}",
+                "repointed": f"repointed {link} -> {SKILL_DIR} (was {target})",
+            }
+            print(msgs[action])
+        return 0
+
+    if state == "ok":
+        return report("already-linked" if link.is_symlink() else "in-place")
+    if state == "occupied":
+        die(f"{link} exists and is not a symlink (a real copy lives there) — "
+            "move it aside first, or run that copy's `library link` instead")
+    if state == "wrong-target" and not args.force:
+        die(f"{link} points at {target}, not this clone ({SKILL_DIR}) — "
+            "pass --force to repoint it")
+
+    if link.is_symlink():
+        link.unlink()  # dangling, or wrong-target with --force
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(SKILL_DIR)
+    action = {"dangling": "repaired", "wrong-target": "repointed"}.get(state, "created")
+    return report(action)
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     errors: list[tuple[str | None, str]] = []
     warns: list[tuple[str | None, str]] = []
+
+    # ── Link health: is the tool discoverable as a skill? ───────────────
+    link = GLOBAL_SKILLS_DIR / LINK_NAME
+    lstate, ltarget = _link_state(link)
+    if lstate == "dangling":
+        errors.append((None, f"skill link {link} is dangling (→ {ltarget}) — run `library link` to repair"))
+    elif lstate == "wrong-target":
+        warns.append((None, f"skill link {link} points at a different copy ({ltarget}); "
+                            f"this clone is {SKILL_DIR} — `library link --force` to repoint"))
+    elif lstate == "occupied":
+        warns.append((None, f"a different copy of the tool lives at {link} (this clone is {SKILL_DIR})"))
+    elif lstate == "missing":
+        warns.append((None, f"tool not linked at {link} — the /library skill won't load globally; run `library link`"))
 
     # ── Phase 5.1: config validation ────────────────────────────────────
     cfg: Config | None = None
@@ -2113,6 +2187,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("self-update", help="update the tool itself (git pull in the tool dir)")
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=cmd_self_update)
+
+    sp = sub.add_parser("link", help="symlink this clone into a skills dir so the /library skill loads (default: ~/.claude/skills)")
+    sp.add_argument("--dir", help="skills directory to link into (default: ~/.claude/skills)")
+    sp.add_argument("--force", action="store_true", help="repoint a symlink that targets a different copy")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_link)
 
     sp = sub.add_parser("list", help="show the catalog with install status")
     add_common(sp)

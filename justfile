@@ -23,6 +23,10 @@ init repo branch:
 self-update:
     @{{lib}} self-update
 
+# Symlink this clone into ~/.claude/skills so the /library skill loads
+link *args:
+    @{{lib}} link {{args}}
+
 # --- Deterministic ops: run the CLI directly (no LLM, no tokens) --------
 
 # List all entries in the catalog with install status

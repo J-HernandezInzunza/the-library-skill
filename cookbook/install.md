@@ -1,6 +1,7 @@
 # Install The Library
 
 ## Context
+
 First-time setup of The Library on a new device. The tool is a read-only clone —
 **no forking required**. The catalog lives in a separate repo (on any git host) pointed
 to by per-device config.
@@ -18,32 +19,47 @@ Verify that `~/.claude/skills/` exists or can be created.
 
 ### 2. Clone the Tool
 
+Clone it wherever the developer keeps their repos — it's a normal working clone,
+updated with `git pull`:
+
 ```bash
-git clone <tool-repo-url> ~/.claude/skills/library
+git clone <tool-repo-url> ~/dev/the-library-skill
 ```
 
-The tool dir can be anywhere; `~/.claude/skills/library` is the conventional location.
+Cloning directly into `~/.claude/skills/library` also works; the link step below
+becomes a no-op.
 
 ### 3. Bootstrap the CLI
 
 The CLI needs PyYAML in a self-contained `.venv`:
 
 ```bash
-cd ~/.claude/skills/library
+cd <tool-dir>
 just bootstrap
 ```
 
 Verify it works:
 ```bash
-~/.claude/skills/library/library --help
+<tool-dir>/library --help
 ```
 
-### 4. Initialize the Config
+### 4. Link the Skill
+
+Symlink the clone into `~/.claude/skills/` so the `/library` skill is discoverable:
+
+```bash
+<tool-dir>/library link
+```
+
+Re-runnable and safe: no-op if already linked (or if the clone lives there directly),
+repairs a dangling link, refuses a real directory. See [cookbook/link.md](link.md).
+
+### 5. Initialize the Config
 
 Point the tool at your team's shared catalog repo:
 
 ```bash
-~/.claude/skills/library/library init \
+<tool-dir>/library init \
   --repo git@github.com:yourorg/agent-library.git \
   --branch main
 ```
@@ -51,16 +67,17 @@ Point the tool at your team's shared catalog repo:
 This creates `library.local.yaml` (gitignored, per-device) and clones the catalog
 repo into `.catalog-repo/`. See [cookbook/init.md](init.md) for all flags.
 
-### 5. Verify
+### 6. Verify
 
 ```bash
-~/.claude/skills/library/library list
+<tool-dir>/library list
 ```
 
 You should see the catalog entries with install status. If the catalog is empty or
-the clone fails, check your SSH/HTTPS auth to the catalog repo.
+the clone fails, check your SSH/HTTPS auth to the catalog repo. `<tool-dir>/library doctor`
+also validates the skill link.
 
-### 6. Done
+### 7. Done
 
 - `/library list` (or `just list`) shows the catalog
 - `/library use <name>` installs a skill

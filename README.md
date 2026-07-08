@@ -165,32 +165,43 @@ gh --version      # optional — needed only for autopush
 
 ### 2. Clone the Tool
 
-```bash
-git clone <tool-repo-url> ~/.claude/skills/library
-```
+Clone it wherever you keep your repos — it's a normal working clone you update with
+`git pull`:
 
-`~/.claude/skills/library` is the conventional location — it makes `/library` available as
-a slash command in Claude Code. Any path works.
-
-Now the `/library` skill is loaded, so you can finish setup **either way:**
-
-> 🗣 **Ask the agent:** in Claude Code, run `/library install` — it walks you through the
-> rest (bootstrap the venv, point the tool at your catalog repo + branch, verify). Have
-> your catalog repo URL and branch handy.
-
-…or run steps 3–5 yourself in a terminal:
+(Cloning directly into `~/.claude/skills/library` also works — step 4 becomes a no-op.)
 
 ### 3. Bootstrap the CLI
 
 One-time per device — create the `.venv` and install PyYAML (no extra tooling needed):
 
 ```bash
-# ⌨ from the tool dir (~/.claude/skills/library):
+# ⌨ from the clone dir:
 python3 -m venv .venv && .venv/bin/pip install pyyaml
 ./library --help          # confirm it runs
 ```
 
-### 4. Initialize the config
+### 4. Link the Skill
+
+Symlink the clone into `~/.claude/skills/` so `/library` loads as a slash command in
+Claude Code:
+
+```bash
+./library link
+```
+
+Re-runnable: it repairs a dangling link automatically and refuses to touch anything
+that isn't a symlink to this tool (`--force` repoints a link at a different copy).
+
+Now the `/library` skill is loaded, so you can finish setup **either way:**
+
+> 🗣 **Ask the agent:** in Claude Code, run `/library install` — it walks you through the
+> rest (point the tool at your catalog repo + branch, verify). Have your catalog repo URL
+> and branch handy.
+> After install, ask your agent to list the skills for you to see catalog entries with install status.
+
+…or run steps 5–6 yourself in a terminal:
+
+### 5. Initialize the config
 
 Point the tool at your team's shared catalog repo (`--branch` is required — no default, so
 nobody silently targets the wrong protected branch):
@@ -203,13 +214,14 @@ This writes `library.local.yaml` (gitignored, per-device) and clones the catalog
 `.catalog-repo/`. See [cookbook/init.md](cookbook/init.md) for all flags (`--yaml-path`,
 `--autopush`, `--force`).
 
-### 5. Verify
+### 6. Verify
 
 ```bash
 ./library list
 ```
 
-You should see the catalog entries with install status. If the clone fails, check your git
+You should see the catalog entries with install status. `./library doctor` also
+validates the skill link along with config and catalog health. If the clone fails, check your git
 auth to the catalog repo — the tool never prompts (see Troubleshooting).
 
 ## Quick Start
@@ -353,6 +365,7 @@ just sync                  # Re-pull all installed items
 just doctor                # Validate catalog integrity
 just doctor --deep         # ...and check every source is reachable
 just self-update           # Update the tool itself (git pull)
+just link                  # Symlink this clone into ~/.claude/skills
 
 # Fuzzy / write ops — route through the agent:
 just add "name: foo, description: bar, source: /path/to/SKILL.md"
@@ -375,7 +388,7 @@ auth/setup gotchas, lives in **[docs/troubleshooting.md](docs/troubleshooting.md
 ## Architecture
 
 ```
-~/.claude/skills/library/     # The Library skill (cloned read-only — never forked)
+~/.claude/skills/library/     # Symlink → your clone of the tool (created by `library link`)
     SKILL.md                  # Agent instructions — the brain
     library.local.yaml        # Per-device config (gitignored; created by `library init`)
     library.example.yaml      # Annotated catalog template (reference only — not read by CLI)
@@ -392,6 +405,7 @@ auth/setup gotchas, lives in **[docs/troubleshooting.md](docs/troubleshooting.md
         sync.md
         search.md
         doctor.md
+        link.md
     library.py                # Deterministic CLI — the mechanics for every catalog op
     library                   # Wrapper that selects .venv python, then runs library.py
     check_docs.py             # Doc/CLI drift guard (run by `just check` + the pre-push hook)

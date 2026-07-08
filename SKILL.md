@@ -26,7 +26,7 @@ The Library is driven by a per-device config (`library.local.yaml`, gitignored) 
 
 The mechanical parts of the workflow — reading the catalog, parsing sources, resolving dependencies, cloning/copying — are handled by a small deterministic CLI (`library.py`, invoked via the `library` wrapper). The agent is only needed for judgment: fuzzy name matching, dependency detection from prose, and conflict narration.
 
-- **CLI-backed (no LLM needed):** `init`, `self-update`, `list`, `search`, `use`, `sync`, `doctor`. Invoke them by the wrapper's absolute path (e.g. `<tool-dir>/library use <name>`) **from the user's current working directory — do not `cd` into the tool directory first.** They support `--json` (machine-readable) and `--no-pull` (skip the catalog git pull).
+- **CLI-backed (no LLM needed):** `init`, `self-update`, `link`, `list`, `search`, `use`, `sync`, `doctor`. Invoke them by the wrapper's absolute path (e.g. `<tool-dir>/library use <name>`) **from the user's current working directory — do not `cd` into the tool directory first.** They support `--json` (machine-readable) and `--no-pull` (skip the catalog git pull).
   - **Install-location contract:** the catalog's `default` scope is a *relative* path (`.claude/skills/`) that anchors to the directory you invoke from; the `global` scope is an absolute `~/.claude/...` path. So `use <name>` installs into the user's CWD project, `use <name> --global` into home, and `use <name> --dir <path>` into a custom location (relative custom paths also anchor to the CWD). The wrapper captures `$PWD` into `LIBRARY_CWD` so this holds even if the CLI itself runs from elsewhere; pass `--cwd <dir>` to override the anchor explicitly. **Never `cd` into the tool dir to run these — that would anchor `default` installs to the tool dir instead of the user's project.**
 - **Agent-mediated (fallback):** `add`, `update`, `push`, `remove`, and any *fuzzy* request (vague name, natural-language intent). The CLI signals when it needs the agent by exiting non-zero with `status: "AMBIGUOUS"` or `status: "NOT_FOUND"`.
   - `add`, `update`, `remove`, and `push` are hybrids: the agent handles only the judgment (type + dependency detection for `add`; which field(s) to change for `update`; destructive-action confirmation for `remove`; choosing the local copy for `push`), then delegates the YAML edit, PR creation, and file ops to `library add|update|remove|push`.
@@ -60,6 +60,7 @@ system `python3` — so if system `python3` already has PyYAML, this step can be
 | `/library install`          | First-time device setup (walks through bootstrap → catalog config → verify) |
 | `/library init`             | Create/repoint the per-device config + clone the catalog (re-runnable) |
 | `/library self-update`      | Pull the latest tool code (`git pull` in the tool dir)  |
+| `/library link`             | Symlink the clone into a skills dir so the skill loads (default: `~/.claude/skills/`) |
 | `/library add <details>`    | Register a new entry (proposes a PR on the catalog repo)|
 | `/library update <name>`    | Edit an existing entry's description/source/requires (proposes a PR) |
 | `/library use <name>`       | Pull from source (install or refresh)                   |
@@ -77,6 +78,7 @@ Each command has a detailed step-by-step guide. **Read the relevant cookbook fil
 | Command     | Cookbook                                               | Use When                                                    |
 | ----------- | ------------------------------------------------------ | ----------------------------------------------------------- |
 | init        | [cookbook/init.md](cookbook/init.md)                   | Create or repoint the per-device config + clone the catalog (re-runnable; `--force` to switch catalogs) |
+| link        | [cookbook/link.md](cookbook/link.md)                   | Make the clone discoverable as a skill (create/repair/repoint the symlink) |
 | add         | [cookbook/add.md](cookbook/add.md)                     | User wants to register a new skill/agent/prompt in catalog  |
 | update      | [cookbook/update.md](cookbook/update.md)               | User wants to edit an existing entry's description/source/requires (e.g. add a dependency) |
 | use         | [cookbook/use.md](cookbook/use.md)                     | User wants to pull or refresh a skill from the catalog      |
