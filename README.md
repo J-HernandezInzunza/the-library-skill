@@ -24,7 +24,7 @@ the catalog, parsing sources, resolving dependencies, cloning/copying) live in a
 single-file CLI (`library.py`). The agent handles only the parts that need judgment: fuzzy
 name matching, dependency detection from prose, and conflict narration. This matters because:
 
-- The high-frequency, read-mostly commands (`list`, `search`, `use`, `sync`, `doctor`) run
+- The high-frequency, read-mostly commands (`list`, `search`, `use`, `sync`, `doctor`) can run
   with **no LLM call at all** — faster, free, and fully deterministic.
 - Destructive, stateful operations (clone, copy, git) are executed by code, not improvised
   by a probabilistic model.
@@ -34,7 +34,7 @@ name matching, dependency detection from prose, and conflict narration. This mat
   Python file.
 
 > The CLI depends only on `python3` + PyYAML (kept in a gitignored `.venv`; run
-> `just bootstrap` once). If you'd rather stay 100% dependency-free, the previous
+> `just bootstrap` once). If you'd rather stay 100% dependency-free, a previous
 > pure-markdown approach is preserved in git history.
 
 ## Why It Exists
@@ -52,7 +52,8 @@ As you build with AI agents, you accumulate skills, custom agents, and prompts �
 ![The Problem: Siloed Teams](images/32_problem_team_sharing.svg)
 
 Existing solutions don't fit:
-- **Global `~/.claude/*`** — exposes everything to every agent. Global is the opposite of specialized.
+
+- **Global `~/.claude/*`** — exposes everything to every agent all the time. Global is the opposite of specialized.
 - **Claude Code plugins** — requires marketplace infrastructure, manifests, and locks you into one platform.
 - **Single monorepo** — doesn't reflect reality. You build agentics in specific codebases for specific use cases.
 
@@ -68,7 +69,7 @@ The Library separates concerns across three independent pieces so each can evolv
 |---|---|---|
 | **Tool** | This repo (`the-library-skill`) | Clone read-only; update via `./library self-update` or `git pull` |
 | **Catalog + sources** | A separate shared repo (e.g., `agent-library`) holding `library.yaml` plus the actual agentics | PR-gated writes; read via a persistent clone at `.catalog-repo/` |
-| **Per-device config** | `library.local.yaml` (gitignored) created once by `library init` | Points the tool at the catalog repo; never committed to either repo |
+| **Per-device config** | `config.local.yaml` (gitignored) created once by `library init` | Points the tool at the catalog repo; never committed to either repo |
 
 Each teammate clones the tool read-only and runs `./library init --repo <catalog-url> --branch <branch>` once (or just asks the agent: "set up/initialize the library from `<url>` on `<branch>`"). After that, everyone reads from the same shared catalog. Curation (`add`ing, `update`ing, `remove`ing entries) goes through PRs on the catalog repo — the protected branch is never pushed to directly.
 
@@ -88,9 +89,9 @@ default_dirs:
 
 library:
   skills:
-    - name: my-skill
+    - name: my-helper-skill
       description: What this skill does
-      source: /Users/me/projects/tools/skills/my-skill/SKILL.md
+      source: https://github.com/myorg/private-skills/blob/main/skills/my-helper-skill/SKILL.md
       requires: [agent:helper-agent]
     - name: remote-skill
       description: A skill from a private repo
@@ -101,7 +102,7 @@ library:
 
 The catalog stores pointers, not copies. Skills live in their source repos. You pull on demand. See `library.example.yaml` in this repo for a fully annotated worked example.
 
-### Per-Device Config (`library.local.yaml`, gitignored)
+### Per-Device Config (`config.local.yaml`, gitignored)
 
 Created once by `library init`. Points the tool at your team's catalog repo and controls the PR workflow:
 
@@ -210,7 +211,7 @@ nobody silently targets the wrong protected branch):
 ./library init --repo git@github.com:yourorg/agent-library.git --branch develop
 ```
 
-This writes `library.local.yaml` (gitignored, per-device) and clones the catalog into
+This writes `config.local.yaml` (gitignored, per-device) and clones the catalog into
 `.catalog-repo/`. See [cookbook/init.md](cookbook/init.md) for all flags (`--yaml-path`,
 `--autopush`, `--force`).
 
@@ -390,7 +391,7 @@ auth/setup gotchas, lives in **[docs/troubleshooting.md](docs/troubleshooting.md
 ```
 ~/.claude/skills/library/     # Symlink → your clone of the tool (created by `library link`)
     SKILL.md                  # Agent instructions — the brain
-    library.local.yaml        # Per-device config (gitignored; created by `library init`)
+    config.local.yaml        # Per-device config (gitignored; created by `library init`)
     library.example.yaml      # Annotated catalog template (reference only — not read by CLI)
     .catalog-repo/            # Persistent clone of the shared catalog repo (gitignored)
     cookbook/                 # Step-by-step guides for each command

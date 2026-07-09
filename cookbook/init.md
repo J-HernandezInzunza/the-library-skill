@@ -1,8 +1,10 @@
 # Initialize The Library Config
 
 ## Context
+
 `<tool-dir>/library init` is the one-time per-device setup that:
-1. Creates `library.local.yaml` (the per-device config — gitignored, never committed)
+
+1. Creates `config.local.yaml` (the per-device config — gitignored, never committed)
 2. Clones the shared catalog repo into `.catalog-repo/` (also gitignored)
 3. Verifies the catalog YAML is present and readable
 
@@ -28,12 +30,13 @@ to a new catalog URL.
 | `--branch` | **Required.** Protected branch that `add`/`remove`/`push` open PRs against (e.g. `main`, `develop`). No default — you must name it so nobody silently targets the wrong branch. |
 | `--yaml-path` | Path to the catalog YAML within the catalog repo. Default: `library.yaml`. |
 | `--autopush` | When set, `add`/`remove`/`push` also run `gh pr create` after pushing the branch. Requires `gh` CLI + auth. Default: off (push branch, print compare URL). |
-| `--force` | Overwrite an existing `library.local.yaml` and re-clone `.catalog-repo/`. |
+| `--force` | Overwrite an existing `config.local.yaml` and re-clone `.catalog-repo/`. |
 | `--json` | Emit machine-readable output. |
 
 ## What It Creates
 
-**`library.local.yaml`** (gitignored):
+**`config.local.yaml`** (gitignored):
+
 ```yaml
 catalog:
   repo: git@github.com:yourorg/agent-library.git

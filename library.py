@@ -49,7 +49,7 @@ os.environ["GIT_ASKPASS"] = shutil.which("true") or "/usr/bin/true"
 os.environ.setdefault("GIT_SSH_COMMAND", "ssh -oBatchMode=yes")
 
 SKILL_DIR = Path(__file__).resolve().parent
-LOCAL_CONFIG_PATH = SKILL_DIR / "library.local.yaml"
+LOCAL_CONFIG_PATH = SKILL_DIR / "config.local.yaml"
 CATALOG_CLONE_DIR = SKILL_DIR / ".catalog-repo"
 GLOBAL_SKILLS_DIR = Path("~/.claude/skills").expanduser()
 LINK_NAME = "library"  # name the tool is discoverable under in a skills dir
@@ -80,12 +80,12 @@ class LibraryError(Exception):
 
 
 # --------------------------------------------------------------------------- #
-# Local config (per-device; gitignored library.local.yaml)
+# Local config (per-device; gitignored config.local.yaml)
 # --------------------------------------------------------------------------- #
 
 @dataclass
 class Config:
-    """Per-device settings, loaded from library.local.yaml.
+    """Per-device settings, loaded from config.local.yaml.
 
     Replaces the old hardcoded ## Variables block in SKILL.md. Never committed
     to the tool repo — each teammate points the tool at the shared catalog repo
@@ -2175,7 +2175,7 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--cwd", help="project dir to anchor relative ('default'-scope) installs to "
                                       "(default: $LIBRARY_CWD or the current working directory)")
 
-    sp = sub.add_parser("init", help="create the per-device local config (library.local.yaml)")
+    sp = sub.add_parser("init", help="create the per-device local config (config.local.yaml)")
     sp.add_argument("--repo", required=True, help="clone URL of the shared catalog repo (e.g. agent-library)")
     sp.add_argument("--yaml-path", dest="yaml_path", help="path to the catalog within that repo (default: library.yaml)")
     sp.add_argument("--branch", required=True, help="protected branch PRs target (e.g. main, develop)")

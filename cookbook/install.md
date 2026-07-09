@@ -65,7 +65,7 @@ Point the tool at your team's shared catalog repo:
   --branch main
 ```
 
-This creates `library.local.yaml` (gitignored, per-device) and clones the catalog
+This creates `config.local.yaml` (gitignored, per-device) and clones the catalog
 repo into `.catalog-repo/`. See [cookbook/init.md](init.md) for all flags.
 
 ### 6. Verify

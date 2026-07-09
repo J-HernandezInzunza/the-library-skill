@@ -21,7 +21,7 @@ Add `--json` to reason over the result, `--no-pull` to skip pulling the catalog 
 
 - Dangling skill link at `~/.claude/skills/library` (symlink target gone) — run
   `<tool-dir>/library link` to repair
-- Missing or malformed `library.local.yaml`
+- Missing or malformed `config.local.yaml`
 - Missing catalog clone (`.catalog-repo/`) — run `<tool-dir>/library list` to auto-clone
 - Catalog clone remote doesn't match `catalog.repo` in config
 - Catalog repo unreachable via `git ls-remote` (network check; ~15s timeout)
