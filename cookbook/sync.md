@@ -16,7 +16,11 @@ re-implement it.
 ```
 
 - Add `--json` if you need to reason over the result.
-- Add `--no-pull` to skip pulling the catalog clone.
+- Add `--no-pull` **only when the user is explicitly offline** — stale catalog metadata
+  can point sync at outdated source URLs or miss new dependencies.
+
+If the CLI prints a staleness warning on stderr (`catalog is N commit(s) behind
+origin/...`), relay it to the user.
 
 ## Report
 

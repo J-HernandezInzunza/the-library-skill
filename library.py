@@ -609,13 +609,15 @@ def main_file_for(entry: Entry, dest: Path) -> Path:
 # Catalog repo sync (Phase 2: replaces git_pull_library)
 # --------------------------------------------------------------------------- #
 
-def pull_catalog(cfg: Config, quiet: bool = True) -> None:
+def pull_catalog(cfg: Config, quiet: bool = True) -> "str | None":
     """Ensure the catalog repo clone is present and up to date.
 
     If CATALOG_CLONE_DIR is absent → clone (shallow, single-branch on
     cfg.catalog_branch). On clone failure → die with auth hint.
     If it already exists → git pull --ff-only. On pull failure → warn and
     continue (stale cache is better than nothing for offline workflows).
+
+    Returns the pull error summary on failure, None on success.
     """
     if not CATALOG_CLONE_DIR.exists():
         proc = subprocess.run(
@@ -631,16 +633,39 @@ def pull_catalog(cfg: Config, quiet: bool = True) -> None:
                 f"could not clone catalog repo: {_git_error_summary(proc.stderr)}\n"
                 "  check your --repo URL and auth, then re-run `library init`"
             )
-        return
+        return None
 
     proc = subprocess.run(
         ["git", "-C", str(CATALOG_CLONE_DIR), "pull", "--ff-only"],
         capture_output=True, text=True,
     )
     if proc.returncode != 0:
-        warn(f"could not pull catalog repo ({proc.stderr.strip()}); using cached copy")
-    elif not quiet:
+        err = _git_error_summary(proc.stderr)
+        warn(f"could not pull catalog repo ({err}); using cached copy")
+        return err
+    if not quiet:
         sys.stdout.write(proc.stdout)
+    return None
+
+
+def catalog_behind(cfg: Config) -> int:
+    """Commits the catalog clone's HEAD is behind origin/<branch>.
+
+    Based on the last-fetched origin ref, so it catches a failed ff-only pull
+    (fetch succeeded, merge didn't) and stale --no-pull runs. Returns 0 when
+    the count can't be determined.
+    """
+    proc = subprocess.run(
+        ["git", "-C", str(CATALOG_CLONE_DIR), "rev-list", "--count",
+         f"HEAD..origin/{cfg.catalog_branch}"],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        return 0
+    try:
+        return int(proc.stdout.strip())
+    except ValueError:
+        return 0
 
 
 def catalog_path(cfg: Config) -> Path:
@@ -983,8 +1008,16 @@ def _install_one(
 
 def cmd_list(args: argparse.Namespace) -> int:
     cfg = load_config()
+    pull_err = None
     if not args.no_pull:
-        pull_catalog(cfg)
+        pull_err = pull_catalog(cfg)
+    behind = catalog_behind(cfg)
+    if behind:
+        reason = f"pull failed: {pull_err}" if pull_err else "catalog was not refreshed"
+        warn(
+            f"catalog is {behind} commit(s) behind origin/{cfg.catalog_branch} "
+            f"({reason}); output may be stale"
+        )
     catalog = load_catalog(catalog_path(cfg))
     entries = iter_entries(catalog)
     rows = []
@@ -1103,8 +1136,16 @@ def cmd_use(args: argparse.Namespace) -> int:
 
 def cmd_sync(args: argparse.Namespace) -> int:
     cfg = load_config()
+    pull_err = None
     if not args.no_pull:
-        pull_catalog(cfg)
+        pull_err = pull_catalog(cfg)
+    behind = catalog_behind(cfg)
+    if behind:
+        reason = f"pull failed: {pull_err}" if pull_err else "catalog was not refreshed"
+        warn(
+            f"catalog is {behind} commit(s) behind origin/{cfg.catalog_branch} "
+            f"({reason}); syncing against stale catalog metadata"
+        )
     catalog = load_catalog(catalog_path(cfg))
     entries = iter_entries(catalog)
 

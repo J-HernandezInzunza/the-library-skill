@@ -17,7 +17,11 @@ Run the CLI from the library tool directory:
 ```
 
 - Add `--json` if you need to reason over the result (e.g. to filter or summarize).
-- Add `--no-pull` to skip pulling the catalog (faster; use when offline or already fresh).
+- Add `--no-pull` **only when the user is explicitly offline**. Never pass it because the
+  catalog seems "already fresh" — you can't know that, and a stale list silently misleads.
+
+If the CLI prints a staleness warning on stderr (`catalog is N commit(s) behind
+origin/...`), relay it to the user — the list may be missing recent catalog changes.
 
 Relay the output to the user. The CLI already groups by type, shows install status
 (`installed (default|global)` or `not installed`), and prints a summary line. No
