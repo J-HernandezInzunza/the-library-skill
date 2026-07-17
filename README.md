@@ -148,7 +148,7 @@ Dependencies are resolved and pulled first, recursively.
 
 - **Claude Code** (or a compatible agent harness that reads `.claude/skills/` — e.g., Pi)
 - **git** — for cloning sources and syncing the catalog
-- **gh** (optional) — GitHub CLI, needed only when `autopush: true` on a GitHub catalog (auto-open PRs). Install: `brew install gh` or see [gh docs](https://cli.github.com)
+- **gh** (optional) — GitHub CLI, needed only when `autopush: true` on a **GitHub** catalog (auto-open PRs). Bitbucket catalogs never need a CLI — Bitbucket is fully supported and always uses the compare-URL flow. Install: `brew install gh` or see [gh docs](https://cli.github.com)
 - **git auth for your host(s)** — an SSH key (recommended) or a credential helper / token, for private catalog and source repos. GitHub: SSH key, `GITHUB_TOKEN`, or `gh auth login`. Bitbucket: SSH key or an app password. The tool is **non-interactive** — it never prompts for credentials (see Troubleshooting).
 - **just** (optional) — for justfile shortcuts. Install: `brew install just` or see [just docs](https://github.com/casey/just)
 - **python3** — for the deterministic CLI. PyYAML is installed into a local `.venv` via `just bootstrap` (one-time).
@@ -183,29 +183,47 @@ python3 -m venv .venv && .venv/bin/pip install pyyaml
 
 ### 4. Link the Skill
 
-Symlink the clone into `~/.claude/skills/` so `/library` loads as a slash command in
-Claude Code:
+**No manual symlinking needed** — the tool creates the symlink for you. From the clone
+dir, run:
 
 ```bash
 ./library link
 ```
 
-Re-runnable: it repairs a dangling link automatically and refuses to touch anything
-that isn't a symlink to this tool (`--force` repoints a link at a different copy).
+This symlinks the clone into `~/.claude/skills/library` so `/library` loads as a slash
+command in Claude Code. Re-runnable: it repairs a dangling link automatically and refuses
+to touch anything that isn't a symlink to this tool (`--force` repoints a link at a
+different copy).
 
-Now the `/library` skill is loaded, so you can finish setup **either way:**
+### 5. Decide How to Finish: Agent or Terminal
 
-> 🗣 **Ask the agent:** in Claude Code, run `/library install` — it walks you through the
-> rest (point the tool at your catalog repo + branch, verify). Have your catalog repo URL
-> and branch handy.
-> After install, ask your agent to list the skills for you to see catalog entries with install status.
+The `/library` skill is now loaded. Pick **one** of two paths — both end in the same
+place:
 
-…or run steps 5–6 yourself in a terminal:
+| Path | What you do | Then |
+|---|---|---|
+| **A — Agent-guided** | In Claude Code, run `/library install` | Skip to step 7 |
+| **B — Terminal** | Run the commands yourself | Continue to step 6 |
 
-### 5. Initialize the config
+> 🗣 **Path A:** `/library install` walks you through the rest (point the tool at your
+> catalog repo + branch, verify). Have your catalog repo URL and branch handy. After
+> install, ask your agent to list the skills to see catalog entries with install status.
 
-Point the tool at your team's shared catalog repo (`--branch` is required — no default, so
-nobody silently targets the wrong protected branch):
+### 6. Initialize the Config (Path B)
+
+Point the tool at your team's shared **catalog repo** — the separate repo that holds
+`library.yaml` and your team's agentics (see [Three-Piece Architecture](#three-piece-architecture)).
+The URL is that repo's clone URL: grab it from the **Clone** button on the repo's GitHub
+or Bitbucket page, or ask whoever maintains your team's catalog. `--branch` is required —
+no default, so nobody silently targets the wrong protected branch.
+
+Real example — Workstand's agent library on Bitbucket:
+
+```bash
+./library init --repo git@bitbucket.org:sedteam/agent-library.git --branch main
+```
+
+Generic GitHub example:
 
 ```bash
 ./library init --repo git@github.com:yourorg/agent-library.git --branch develop
@@ -215,7 +233,7 @@ This writes `config.local.yaml` (gitignored, per-device) and clones the catalog 
 `.catalog-repo/`. See [cookbook/init.md](cookbook/init.md) for all flags (`--yaml-path`,
 `--autopush`, `--force`).
 
-### 6. Verify
+### 7. Verify (Path B)
 
 ```bash
 ./library list
