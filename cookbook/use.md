@@ -17,16 +17,30 @@ to "add `--global`" or otherwise hand them CLI syntax — infer it.
 
 | The user says…                                              | You run                          |
 | ----------------------------------------------------------- | -------------------------------- |
-| "globally", "system-wide", "everywhere", "for all projects" | `use <name> --global`            |
-| "here", "this project", "locally", or says nothing about scope | `use <name>` (default scope)  |
+| "globally", "system-wide", or says nothing about scope      | `use <name>` (global — the default) |
+| "here", "this project", "locally", "just for this repo"     | `use <name> --project`           |
 | "into <path>", "put it in <dir>", "under my dotfiles repo"   | `use <name> --dir <path>`        |
-| "anchored to <project>" / a different project than the CWD  | `use <name> --cwd <dir>`         |
+| "anchored to <project>" / a different project than the CWD  | `use <name> --project --cwd <dir>` |
 
 When scope is genuinely ambiguous (e.g. the user clearly cares but you can't tell which),
 ask **one** short clarifying question — don't default silently. When the user said nothing
-about scope, the default (CWD project) is the right assumption; just report where it landed.
+about scope, global (`~/.claude/…`) is the right assumption; just report where it landed.
 In your confirmation, describe the location in plain terms ("installed globally" /
 "installed in this project"), not by echoing the flag back at them.
+
+**Project-local installs are confirmed before they happen.** The destination of a
+`--project` (or relative `--dir`) install depends on the anchor CWD, which is easy to get
+wrong — so before installing, run the dry-run, tell the user the absolute destination,
+and get a yes:
+
+```bash
+<tool-dir>/library use "<name>" --project --dry-run --json
+```
+
+This resolves the entry, its dependencies, and the exact destination paths without
+installing anything. Show the user where it will land ("this will install into
+`/Users/you/project/.claude/skills/deploy/`"), confirm, then re-run without `--dry-run`.
+Global installs skip this — the destination is unambiguous.
 
 ## Steps
 
@@ -41,15 +55,18 @@ install to the tool dir instead of the user's project):
 ```
 
 Optional flags:
-- `--global` → install to the global dir (`~/.claude/...`) instead of the project default.
+- `--project` → install into the project's `.claude/` instead of the global default.
+- `--global` → explicit form of the default (`~/.claude/...`).
 - `--dir <path>` → install to a custom directory (relative paths anchor to the CWD).
-- `--cwd <dir>` → explicitly set the project dir that `default`/relative paths anchor to.
+- `--cwd <dir>` → explicitly set the project dir that `--project`/relative paths anchor to.
+- `--dry-run` → resolve destination + dependencies without installing.
 - `--no-pull` → skip pulling the catalog clone.
 
-**Install-location contract:** the `default` scope (`.claude/skills/`) is relative and
-anchors to the directory you invoke from (the user's CWD); `global` is absolute
-(`~/.claude/...`). The wrapper captures `$PWD` into `LIBRARY_CWD` so this holds even
-though the CLI itself lives in the tool dir.
+**Install-location contract:** bare `use` installs globally (`~/.claude/...`, absolute,
+CWD-independent). `--project` uses the catalog's `project` scope (`.claude/skills/`), a
+relative path that anchors to the directory you invoke from (the user's CWD). The wrapper
+captures `$PWD` into `LIBRARY_CWD` so this holds even though the CLI itself lives in the
+tool dir.
 
 ### 2. Handle the CLI's response
 

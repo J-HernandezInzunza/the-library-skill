@@ -195,8 +195,12 @@ def default_dirs(catalog: dict[str, Any]) -> dict[str, dict[str, str]]:
 
     The catalog stores each scope as a separate single-key mapping in a list:
         skills:
-          - default: .claude/skills/
+          - project: .claude/skills/
           - global: ~/.claude/skills/
+
+    The scope key ``default`` is a legacy alias for ``project`` (the key predates
+    the global-by-default flip) and is normalized here so the rest of the code
+    only ever sees ``project``/``global``.
     """
     out: dict[str, dict[str, str]] = {}
     raw = catalog.get("default_dirs", {})
@@ -204,7 +208,8 @@ def default_dirs(catalog: dict[str, Any]) -> dict[str, dict[str, str]]:
         scopes: dict[str, str] = {}
         for item in raw.get(section, []) or []:
             if isinstance(item, dict):
-                scopes.update(item)
+                for k, v in item.items():
+                    scopes["project" if k == "default" else k] = v
         out[section] = scopes
     return out
 
@@ -336,7 +341,7 @@ def _suggest_remote_for_local(path: Path | None) -> str | None:
 
 # Set once in main() from --cwd; otherwise resolved lazily from the
 # environment / process cwd. This is the user's *project* working directory,
-# used to anchor relative ('default'-scope) install dirs.
+# used to anchor relative ('project'-scope) install dirs.
 _PROJECT_CWD: Path | None = None
 
 
@@ -346,7 +351,7 @@ def project_cwd() -> Path:
     Priority: explicit ``--cwd`` (set in main) > ``LIBRARY_CWD`` env var (set by
     the ``library`` wrapper, captured before the CLI runs) > ``os.getcwd()``.
 
-    This is the contract that keeps a ``default``-scope install anchored to where
+    This is the contract that keeps a ``project``-scope install anchored to where
     the user invoked the command — never to the tool directory the CLI happens
     to execute from.
     """
@@ -363,7 +368,7 @@ def resolve_install_dir(raw: str) -> Path:
 
     - Absolute paths (including ``~``-expanded, e.g. the ``global`` scope's
       ``~/.claude/...``) are returned as-is — they are CWD-independent.
-    - Relative paths (e.g. the ``default`` scope's ``.claude/skills/``) are
+    - Relative paths (e.g. the ``project`` scope's ``.claude/skills/``) are
       anchored to :func:`project_cwd` — the user's invocation directory.
     """
     p = Path(raw).expanduser()
@@ -382,8 +387,9 @@ def resolve_target_base(
 
     Resolution order:
     1. Explicit --dir / custom path (highest priority).
-    2. Catalog default_dirs[section][scope] ('default' = project-local .claude/
-       anchored to the invocation cwd, 'global' = home ~/.claude/).
+    2. Catalog default_dirs[section][scope] ('global' = home ~/.claude/ — the
+       default — 'project' = project-local .claude/ anchored to the invocation
+       cwd, selected with --project).
 
     Relative paths follow the dir contract in :func:`resolve_install_dir`:
     they anchor to the user's working directory, not the CLI's runtime cwd.
@@ -398,10 +404,14 @@ def resolve_target_base(
 
 
 def installed_scopes(catalog: dict[str, Any], entry: Entry) -> list[str]:
-    """Return scopes ('default'/'global') where the item appears installed."""
+    """Return scopes ('project'/'global') where the item appears installed.
+
+    'global' is listed first when present — it is the primary scope, and
+    `sync` refreshes each item in its first listed scope.
+    """
     found: list[str] = []
     dirs = default_dirs(catalog)[entry.section]
-    for scope, raw in dirs.items():
+    for scope, raw in sorted(dirs.items(), key=lambda kv: kv[0] != "global"):
         base = resolve_install_dir(raw)
         if not base.exists():
             continue
@@ -548,14 +558,20 @@ def _copy_file(src: Path, dst: Path) -> dict[str, Any]:
     return diff
 
 
+def install_dest(entry: Entry, target_base: Path) -> Path:
+    """Final install path for *entry* under *target_base* (dir for skills, file otherwise)."""
+    if entry.type == "skill":
+        return target_base / entry.name
+    return target_base / f"{entry.name}.md"
+
+
 def fetch_local(src: Source, entry: Entry, target_base: Path) -> tuple[Path, dict[str, Any]]:
     ref = src.path
     if ref is None or not ref.exists():
         raise LibraryError(f"local source not found: {src.path}")
+    dest = install_dest(entry, target_base)
     if entry.type == "skill":
-        dest = target_base / entry.name
         return dest, _copy_dir(ref.parent, dest)
-    dest = target_base / f"{entry.name}.md"
     return dest, _copy_file(ref, dest)
 
 
@@ -579,10 +595,9 @@ def fetch_remote(src: Source, entry: Entry, target_base: Path) -> tuple[Path, di
         ref = repo / src.file_path
         if not ref.exists():
             raise LibraryError(f"referenced file missing in repo: {src.file_path}")
+        dest = install_dest(entry, target_base)
         if entry.type == "skill":
-            dest = target_base / entry.name
             return dest, _copy_dir(ref.parent, dest)
-        dest = target_base / f"{entry.name}.md"
         return dest, _copy_file(ref, dest)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -1105,8 +1120,24 @@ def cmd_use(args: argparse.Namespace) -> int:
             print(f'No match for "{args.name}". Try `library search`.')
         return 2
 
-    scope = "global" if args.glob else "default"
+    scope = "project" if args.project else "global"
     order = resolve_deps(entries, entry)
+
+    if args.dry_run:
+        plan = [
+            {"type": e.type, "name": e.name,
+             "dest": str(install_dest(e, resolve_target_base(catalog, e, scope, args.dir)))}
+            for e in order
+        ]
+        if args.json:
+            print(json.dumps({"status": "OK", "dry_run": True, "scope": scope,
+                              "would_install": plan}, indent=2))
+        else:
+            print("Dry run — nothing installed. Would install:")
+            for p in plan:
+                print(f"  [{p['type']}] {p['name']} → {p['dest']}")
+        return 0
+
     try:
         results = [_install_one(catalog, e, scope, args.dir) for e in order]
     except LibraryError as ex:
@@ -2028,6 +2059,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         else:
             errors.append((None, f"catalog file not found at {p}"))
 
+    if catalog:
+        # Legacy scope key: 'default' was renamed to 'project' (still accepted as an alias).
+        legacy = [
+            section for section in TYPES
+            if any(isinstance(item, dict) and "default" in item
+                   for item in (catalog.get("default_dirs", {}).get(section) or []))
+        ]
+        if legacy:
+            warns.append((None,
+                f"default_dirs uses the legacy 'default' scope key ({', '.join(legacy)}) — "
+                f"rename it to 'project' in the catalog"))
+
     if entries:
         # Duplicate names (use/find_exact matches globally, so a dup silently shadows).
         by_name: dict[str, list[Entry]] = {}
@@ -2109,9 +2152,9 @@ catalog:
 autopush: {autopush}
 
 # Install locations come from the catalog's default_dirs:
-#   `use <name>`          -> project-local .claude/ (default scope)
-#   `use <name> --global` -> home ~/.claude/ (global scope)
-#   `use <name> --dir X`  -> custom path
+#   `use <name>`           -> home ~/.claude/ (global scope — the default)
+#   `use <name> --project` -> project-local .claude/ anchored to your CWD
+#   `use <name> --dir X`   -> custom path
 """
 
 
@@ -2213,7 +2256,7 @@ def build_parser() -> argparse.ArgumentParser:
     def add_common(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("--json", action="store_true", help="machine-readable output")
         sp.add_argument("--no-pull", action="store_true", help="skip git pull of the catalog repo")
-        sp.add_argument("--cwd", help="project dir to anchor relative ('default'-scope) installs to "
+        sp.add_argument("--cwd", help="project dir to anchor relative ('project'-scope) installs to "
                                       "(default: $LIBRARY_CWD or the current working directory)")
 
     sp = sub.add_parser("init", help="create the per-device local config (config.local.yaml)")
@@ -2246,8 +2289,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("use", help="install or refresh an entry (exact name)")
     sp.add_argument("name")
-    sp.add_argument("--global", dest="glob", action="store_true", help="install to the global dir")
+    grp = sp.add_mutually_exclusive_group()
+    grp.add_argument("--global", dest="glob", action="store_true",
+                     help="install to the global dir (~/.claude/…) — the default")
+    grp.add_argument("--project", action="store_true",
+                     help="install into the current project's .claude/ instead of globally")
     sp.add_argument("--dir", help="install to a custom directory")
+    sp.add_argument("--dry-run", dest="dry_run", action="store_true",
+                    help="resolve destination and dependencies without installing")
     add_common(sp)
     sp.set_defaults(func=cmd_use)
 

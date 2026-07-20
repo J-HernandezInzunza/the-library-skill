@@ -27,7 +27,8 @@ The Library is driven by a per-device config (`config.local.yaml`, gitignored) t
 The mechanical parts of the workflow — reading the catalog, parsing sources, resolving dependencies, cloning/copying — are handled by a small deterministic CLI (`library.py`, invoked via the `library` wrapper). The agent is only needed for judgment: fuzzy name matching, dependency detection from prose, and conflict narration.
 
 - **CLI-backed (no LLM needed):** `init`, `self-update`, `link`, `list`, `search`, `use`, `sync`, `doctor`. Invoke them by the wrapper's absolute path (e.g. `<tool-dir>/library use <name>`) **from the user's current working directory — do not `cd` into the tool directory first.** They support `--json` (machine-readable) and `--no-pull` (skip the catalog git pull).
-  - **Install-location contract:** the catalog's `default` scope is a _relative_ path (`.claude/skills/`) that anchors to the directory you invoke from; the `global` scope is an absolute `~/.claude/...` path. So `use <name>` installs into the user's CWD project, `use <name> --global` into home, and `use <name> --dir <path>` into a custom location (relative custom paths also anchor to the CWD). The wrapper captures `$PWD` into `LIBRARY_CWD` so this holds even if the CLI itself runs from elsewhere; pass `--cwd <dir>` to override the anchor explicitly. **Never `cd` into the tool dir to run these — that would anchor `default` installs to the tool dir instead of the user's project.**
+  - **Install-location contract:** bare `use <name>` installs **globally** (`~/.claude/...`, absolute, CWD-independent) — that is the default. `use <name> --project` uses the catalog's `project` scope, a _relative_ path (`.claude/skills/`) that anchors to the directory you invoke from (the user's CWD project); `use <name> --dir <path>` installs into a custom location (relative custom paths also anchor to the CWD). The wrapper captures `$PWD` into `LIBRARY_CWD` so this holds even if the CLI itself runs from elsewhere; pass `--cwd <dir>` to override the anchor explicitly. **Never `cd` into the tool dir to run these — that would anchor `--project` installs to the tool dir instead of the user's project.**
+  - **Project-local installs are confirmed first:** before running `use <name> --project` (or a relative `--dir`), run it with `--dry-run --json`, tell the user the absolute destination path(s), and get a yes — the anchor CWD is easy to get wrong. Global installs need no confirmation. See [cookbook/use.md](cookbook/use.md).
 - **Agent-mediated (fallback):** `add`, `update`, `push`, `remove`, and any _fuzzy_ request (vague name, natural-language intent). The CLI signals when it needs the agent by exiting non-zero with `status: "AMBIGUOUS"` or `status: "NOT_FOUND"`.
   - `add`, `update`, `remove`, and `push` are hybrids: the agent handles only the judgment (type + dependency detection for `add`; which field(s) to change for `update`; destructive-action confirmation for `remove`; choosing the local copy for `push`), then delegates the YAML edit, PR creation, and file ops to `library add|update|remove|push`.
   - **Adding several agentics in one request → one PR, via `--batch`.** When a single request registers more than one entry (e.g. a prompt plus the skills it requires, or a themed bundle), do **not** loop `library add` once per entry — that opens a separate PR each time. Write a YAML manifest of all the entries and run `library add --batch <file>` so the whole set lands in a single branch and a single PR. A `requires` ref satisfied by another entry in the same batch resolves cleanly, so co-add a dependent and its dependencies together. Only fall back to per-entry `add` calls when the user explicitly wants separate PRs. See [cookbook/add.md](cookbook/add.md) Step 4a.
@@ -40,7 +41,7 @@ The mechanical parts of the workflow — reading the catalog, parsing sources, r
 
 **When a CLI-backed command is invoked, run the `library` CLI — do not re-implement the mechanics by hand.** The CLI is the source of truth; if something is wrong, fix `library.py`.
 
-**You own the natural-language ↔ flag translation.** The user talks in intent ("install it globally", "just for this project", "put it under my dotfiles", "refresh everything"); you map that to the correct flags (`--global`, default scope, `--dir <path>`, `sync`, …) and run the command. Never instruct the user to pass flags themselves or echo flag syntax back at them — they are not at a terminal, you are. In confirmations, describe outcomes in plain language ("installed globally", "installed in this project"), and only ask a clarifying question when intent is genuinely ambiguous.
+**You own the natural-language ↔ flag translation.** The user talks in intent ("install it globally", "just for this project", "put it under my dotfiles", "refresh everything"); you map that to the correct flags (global default, `--project`, `--dir <path>`, `sync`, …) and run the command. Never instruct the user to pass flags themselves or echo flag syntax back at them — they are not at a terminal, you are. In confirmations, describe outcomes in plain language ("installed globally", "installed in this project"), and only ask a clarifying question when intent is genuinely ambiguous.
 
 ### Bootstrap
 
@@ -169,24 +170,24 @@ When resolving dependencies: look up each reference in the catalog YAML, fetch a
 
 ## Target Directories
 
-By default, items are installed to the **default** directory from the catalog's `default_dirs`:
+By default, items are installed **globally** — the `global` directory from the catalog's `default_dirs`:
 
 ```yaml
 default_dirs:
   skills:
-    - default: .claude/skills/
+    - project: .claude/skills/
     - global: ~/.claude/skills/
   agents:
-    - default: .claude/agents/
+    - project: .claude/agents/
     - global: ~/.claude/agents/
   prompts:
-    - default: .claude/commands/
+    - project: .claude/commands/
     - global: ~/.claude/commands/
 ```
 
-- If the user says "global" or "globally", use the `global` directory.
+- If the user says "here", "this project", or "locally", use the `project` directory (project-local `.claude/`) via `--project` — after confirming the resolved destination with a `--dry-run`.
 - If the user specifies a custom path, use that path.
-- Otherwise, use the `default` directory (project-local `.claude/`).
+- Otherwise (including "global"/"globally" or no scope mentioned), use the `global` directory (`~/.claude/…`).
 
 ## Catalog Repo Sync
 

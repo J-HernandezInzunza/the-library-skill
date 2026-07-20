@@ -12,6 +12,279 @@ If you work in one or two repos, you don't need this. If you install skills from
 
 The Library solves a specific problem: you've built powerful agentics scattered across repos, devices, and teams. They're duplicated, out of sync, and hard to coordinate. This gives you a single reference catalog to distribute them privately.
 
+The sections below get you installed and productive. For the full pitch and design — what
+the catalog looks like, why it's built this way — see [What It Is](#what-it-is) and
+[How It Works](#how-it-works) further down.
+
+## Prerequisites
+
+- **Claude Code** (or a compatible agent harness that reads `.claude/skills/` — e.g., Pi)
+- **git** — for cloning sources and syncing the catalog
+- **gh** (optional) — GitHub CLI, needed only when `autopush: true` on a **GitHub** catalog (auto-open PRs). Bitbucket catalogs never need a CLI — Bitbucket is fully supported and always uses the compare-URL flow. Install: `brew install gh` or see [gh docs](https://cli.github.com)
+- **git auth for your host(s)** — an SSH key (recommended) or a credential helper / token, for private catalog and source repos. GitHub: SSH key, `GITHUB_TOKEN`, or `gh auth login`. Bitbucket: SSH key or an app password. The tool is **non-interactive** — it never prompts for credentials (see Troubleshooting).
+- **just** (optional) — for justfile shortcuts. Install: `brew install just` or see [just docs](https://github.com/casey/just)
+- **python3** — for the deterministic CLI. PyYAML is installed into a local `.venv` via `just bootstrap` (one-time).
+
+## Installation
+
+The tool is a **read-only clone** — no forking required. Your team's catalog lives in a separate shared repo; this repo is just the tool.
+
+### 1. Check Prerequisites
+
+```bash
+git --version       # required
+python3 --version   # required — runs the CLI
+gh --version        # optional — needed only for autopush
+```
+
+### 2. Clone the Tool
+
+Clone it wherever you keep your repos — it's a normal working clone you update with
+`git pull`:
+
+(Cloning directly into `~/.claude/skills/library` also works — step 4 becomes a no-op.)
+
+### 3. Bootstrap the CLI
+
+One-time per device — create the `.venv` and install PyYAML (no extra tooling needed):
+
+```bash
+# ⌨ from the clone dir:
+python3 -m venv .venv && .venv/bin/pip install pyyaml
+./library --help          # confirm it runs
+```
+
+### 4. Link the Skill
+
+**No manual symlinking needed** — the tool creates the symlink for you. From the clone
+dir, run:
+
+```bash
+./library link
+```
+
+This symlinks the clone into `~/.claude/skills/library` so `/library` loads as a slash
+command in Claude Code. Re-runnable: it repairs a dangling link automatically and refuses
+to touch anything that isn't a symlink to this tool (`--force` repoints a link at a
+different copy).
+
+### 5. Decide How to Finish: Agent or Terminal
+
+The `/library` skill is now loaded. Both paths need the same two inputs, so grab them
+now: your **catalog repo clone URL** (the Clone button on the repo's GitHub or Bitbucket
+page) and its **protected branch**. Real example — Workstand's agent library on
+Bitbucket: `git@bitbucket.org:sedteam/agent-library.git`, branch `develop`.
+
+Pick **one** of two paths — both end in the same place:
+
+| Path | What you do | Then |
+|---|---|---|
+| **A — Agent-guided** | In Claude Code, run `/library install` | Done — ask the agent to list the skills to verify |
+| **B — Terminal** | Run the commands yourself | Continue to step 6 |
+
+> 🗣 **Path A:** `/library install` walks you through the rest (point the tool at your
+> catalog repo + branch, verify). When it's done, ask your agent to list the skills —
+> you should see the catalog entries with install status.
+
+### 6. Initialize the Config (Path B)
+
+Point the tool at your team's shared **catalog repo** — the separate repo that holds
+`library.yaml` and your team's agentics (see [Three-Piece Architecture](#three-piece-architecture)).
+The URL is that repo's clone URL: grab it from the **Clone** button on the repo's GitHub
+or Bitbucket page, or ask whoever maintains your team's catalog. `--branch` is required —
+no default, so nobody silently targets the wrong protected branch.
+
+Real example — Workstand's agent library on Bitbucket:
+
+```bash
+./library init --repo git@bitbucket.org:sedteam/agent-library.git --branch develop
+```
+
+Generic GitHub example:
+
+```bash
+./library init --repo git@github.com:yourorg/agent-library.git --branch develop
+```
+
+This writes `config.local.yaml` (gitignored, per-device) and clones the catalog into
+`.catalog-repo/`. See [cookbook/init.md](cookbook/init.md) for all flags (`--yaml-path`,
+`--autopush`, `--force`).
+
+### 7. Verify (Path B)
+
+```bash
+./library list
+```
+
+You should see the catalog entries with install status. `./library doctor` also
+validates the skill link along with config and catalog health. If the clone fails, check your git
+auth to the catalog repo — the tool never prompts (see Troubleshooting).
+
+## Quick Start
+
+![Full Workflow](images/45_solution_full_workflow.svg)
+
+The full loop is **build → catalog → distribute → use** — but if you're joining an
+existing catalog, your first move is usually installing something, so that comes first.
+Each step works two ways — ask the agent in Claude Code, or run the CLI in a terminal.
+Both do the same thing.
+
+### Install a skill from the catalog
+
+If your catalog already has entries. Pull one into your project:
+
+> 🗣 **Ask the agent:** "/library use the deploy skill from the library" (add "just for
+> this project" to put it in the project's `.claude/` instead)
+
+```bash
+# ⌨ Or run the CLI. Bare `use` installs globally — ~/.claude/, cwd-independent:
+./library use deploy                  # → ~/.claude/skills/deploy/
+./library use deploy --project        # → .claude/skills/deploy/ in the dir you run from
+./library use deploy --dir <path>     # → an explicit location
+```
+
+Project installs land relative to where you (or the agent) run from, so the agent
+confirms the resolved destination with you first (`--dry-run` shows it without
+installing).
+
+### Add a skill to the catalog
+
+You built a deploy skill in one of your repos. Register it:
+
+> 🗣 **Ask the agent:** "/library add the deploy skill to the library — it's at
+> `https://github.com/yourorg/infra-tools/blob/main/skills/deploy/SKILL.md`"
+
+```bash
+# ⌨ Or run the CLI (from the tool dir, ~/.claude/skills/library):
+./library add --name deploy --type skill \
+  --description "Deploys the app to staging/prod" \
+  --source https://github.com/yourorg/infra-tools/blob/main/skills/deploy/SKILL.md
+```
+
+Either way, the CLI creates a branch (`library/add-deploy-<ts>`), pushes it, and prints a
+PR URL (or auto-opens the PR if `autopush: true` on a GitHub catalog). Once the PR is
+merged, the entry is in the shared catalog for everyone.
+
+### Update an existing entry
+
+You want to add a dependency (or fix a description/source) on an entry that's already in
+the catalog:
+
+> 🗣 **Ask the agent:** "make the session-retro skill also require backend-code-practices"
+
+```bash
+# ⌨ Or run the CLI:
+./library update session-retro --add-requires skill:backend-code-practices
+```
+
+Like `add`/`remove`, this opens a PR against the catalog repo rather than editing
+`library.yaml` directly — `add` only creates new entries, so editing an existing one
+(most commonly appending to `requires`) goes through `update` instead.
+
+### Push changes back
+
+You improved the skill locally and want the change upstreamed:
+
+> 🗣 **Ask the agent:** "/library push my deploy skill changes back to the library"
+
+```bash
+# ⌨ Or run the CLI:
+./library push deploy
+```
+
+For remote sources (GitHub or Bitbucket) this opens a PR branch and prints the PR URL —
+the protected branch is never pushed to directly. (GitHub can auto-open the PR with `gh`
+when `autopush: true`.) Local-path sources are overwritten in place immediately (no PR).
+
+### Sync everything
+
+> 🗣 **Ask the agent:** "/library sync all my library skills"
+
+```bash
+# ⌨ Or run the CLI:
+./library sync
+```
+
+Each refreshed item reports a change summary (`~` modified · `+` added · `-` removed,
+or `no changes` / `new install`) by diffing the incoming source against the
+currently-installed copy *before* overwriting it. Note this is "source vs. installed,"
+not "since last sync" — local edits to an installed copy show up as modified and get
+overwritten.
+
+## Commands
+
+Two ways to drive it, same result:
+
+- **In Claude Code (most common):** ask in natural language. The agent loads the `library`
+  skill, picks the command, and runs the CLI for you — handling the fuzzy parts (vague
+  names, dependency detection, source resolution, confirmations).
+- **In a terminal:** run the CLI directly for fast, deterministic, no-LLM operations.
+
+| Task | 🗣 Ask the agent (Claude Code) | ⌨ Terminal (CLI) |
+| ---- | ----------------------------- | ---------------- |
+| First-time setup | "set up the library from `<url>` on the `<branch>` branch" | `./library init --repo <url> --branch <branch>` |
+| List the catalog | "what's in the skill library?" | `./library list` |
+| Search | "search the library for a jira skill" | `./library search jira` |
+| Install a skill (global) | "install the deploy skill from the library" | `./library use deploy` |
+| Install into this project | "install deploy just for this project" | `./library use deploy --project` |
+| Add an entry | "add this skill to the library: `<url>`" | `./library add --name … --source … --description …` |
+| Update an entry | "make session-retro also require backend-code-practices" | `./library update session-retro --add-requires skill:backend-code-practices` |
+| Push changes back | "push my deploy changes back to the library" | `./library push deploy` |
+| Remove an entry | "remove deploy from the library" | `./library remove deploy` |
+| Sync everything | "sync all my installed library skills" | `./library sync` |
+| Health check | "check the library catalog for problems" | `./library doctor` |
+| Update the tool | "update the library tool" | `./library self-update` |
+
+**CLI flags:** `--json` (machine-readable) · `--no-pull` (skip catalog refresh) ·
+`--dry-run` (preview `add`/`update`/`remove`/`push`, or resolve a `use` destination
+without installing) · `--project`/`--dir` (`use` target; default is global) ·
+`--deep` (`doctor` source-liveness).
+
+> **`use --project` and your working directory:** bare `use` installs globally
+> (`~/.claude/…`) and doesn't care where you run it. `--project` installs are
+> *relative to the directory you run the command from* — run them from your project so
+> skills land in that project's `.claude/`. The agent handles this for you: it anchors
+> to your current project, never the tool dir, and confirms the destination before a
+> project install.
+
+> The CLI examples use `./library …`, which runs the wrapper from the tool dir
+> (`~/.claude/skills/library`) — it isn't on your `PATH` by default. You can also use the
+> `just` shortcuts below, or symlink `library` onto your `PATH` if you prefer a bare
+> `library …`. The agent always invokes it by full path, so prompts just work.
+
+### Justfile Shortcuts
+
+The included `justfile` lets you run library commands from your terminal.
+
+```bash
+just bootstrap             # One-time: create .venv + install PyYAML for the CLI
+
+# First-time setup:
+just init <catalog-url> <branch>   # Create per-device config + clone catalog repo
+
+# Deterministic — run the CLI directly (no LLM, no tokens):
+just list                  # List catalog
+just search "keyword"      # Search by keyword
+just use my-skill          # Pull a skill (exact name) → ~/.claude/... (global)
+just use-project my-skill  # Pull into the .claude/ of the dir you run from
+just sync                  # Re-pull all installed items
+just doctor                # Validate catalog integrity
+just doctor --deep         # ...and check every source is reachable
+just self-update           # Update the tool itself (git pull)
+just link                  # Symlink this clone into ~/.claude/skills
+
+# Fuzzy / write ops — route through the agent:
+just add "name: foo, description: bar, source: /path/to/SKILL.md"
+just update "make session-retro also require skill:backend-code-practices"
+just push my-skill         # Push changes back (proposes a PR for GitHub/Bitbucket sources)
+just remove my-skill       # Remove from catalog (proposes a PR)
+just ask "use that PR review thing"   # natural-language / fuzzy intent
+```
+
+> **Note:** The agent-backed recipes use `--dangerously-skip-permissions` because the agent
+> needs filesystem and git access. The CLI-backed recipes (`list`/`search`/`use`/`sync`/`doctor`)
+> run locally with no agent at all. Review the `justfile` to change this behavior.
+
 ## What It Is
 
 The Library is a single skill whose only job is to manage other skills. It's a catalog of references — local file paths and GitHub repo URLs — that point to where your agentics live. Nothing is copied or installed until you ask for it.
@@ -78,13 +351,13 @@ Each teammate clones the tool read-only and runs `./library init --repo <catalog
 ```yaml
 default_dirs:
   skills:
-    - default: .claude/skills/
+    - project: .claude/skills/
     - global: ~/.claude/skills/
   agents:
-    - default: .claude/agents/
+    - project: .claude/agents/
     - global: ~/.claude/agents/
   prompts:
-    - default: .claude/commands/
+    - project: .claude/commands/
     - global: ~/.claude/commands/
 
 library:
@@ -143,260 +416,6 @@ requires: [skill:base-utils, agent:reviewer, prompt:task-router]
 ```
 
 Dependencies are resolved and pulled first, recursively.
-
-## Prerequisites
-
-- **Claude Code** (or a compatible agent harness that reads `.claude/skills/` — e.g., Pi)
-- **git** — for cloning sources and syncing the catalog
-- **gh** (optional) — GitHub CLI, needed only when `autopush: true` on a **GitHub** catalog (auto-open PRs). Bitbucket catalogs never need a CLI — Bitbucket is fully supported and always uses the compare-URL flow. Install: `brew install gh` or see [gh docs](https://cli.github.com)
-- **git auth for your host(s)** — an SSH key (recommended) or a credential helper / token, for private catalog and source repos. GitHub: SSH key, `GITHUB_TOKEN`, or `gh auth login`. Bitbucket: SSH key or an app password. The tool is **non-interactive** — it never prompts for credentials (see Troubleshooting).
-- **just** (optional) — for justfile shortcuts. Install: `brew install just` or see [just docs](https://github.com/casey/just)
-- **python3** — for the deterministic CLI. PyYAML is installed into a local `.venv` via `just bootstrap` (one-time).
-
-## Installation
-
-The tool is a **read-only clone** — no forking required. Your team's catalog lives in a separate shared repo; this repo is just the tool.
-
-### 1. Check Prerequisites
-
-```bash
-git --version     # required
-gh --version      # optional — needed only for autopush
-```
-
-### 2. Clone the Tool
-
-Clone it wherever you keep your repos — it's a normal working clone you update with
-`git pull`:
-
-(Cloning directly into `~/.claude/skills/library` also works — step 4 becomes a no-op.)
-
-### 3. Bootstrap the CLI
-
-One-time per device — create the `.venv` and install PyYAML (no extra tooling needed):
-
-```bash
-# ⌨ from the clone dir:
-python3 -m venv .venv && .venv/bin/pip install pyyaml
-./library --help          # confirm it runs
-```
-
-### 4. Link the Skill
-
-**No manual symlinking needed** — the tool creates the symlink for you. From the clone
-dir, run:
-
-```bash
-./library link
-```
-
-This symlinks the clone into `~/.claude/skills/library` so `/library` loads as a slash
-command in Claude Code. Re-runnable: it repairs a dangling link automatically and refuses
-to touch anything that isn't a symlink to this tool (`--force` repoints a link at a
-different copy).
-
-### 5. Decide How to Finish: Agent or Terminal
-
-The `/library` skill is now loaded. Pick **one** of two paths — both end in the same
-place:
-
-| Path | What you do | Then |
-|---|---|---|
-| **A — Agent-guided** | In Claude Code, run `/library install` | Skip to step 7 |
-| **B — Terminal** | Run the commands yourself | Continue to step 6 |
-
-> 🗣 **Path A:** `/library install` walks you through the rest (point the tool at your
-> catalog repo + branch, verify). Have your catalog repo URL and branch handy. After
-> install, ask your agent to list the skills to see catalog entries with install status.
-
-### 6. Initialize the Config (Path B)
-
-Point the tool at your team's shared **catalog repo** — the separate repo that holds
-`library.yaml` and your team's agentics (see [Three-Piece Architecture](#three-piece-architecture)).
-The URL is that repo's clone URL: grab it from the **Clone** button on the repo's GitHub
-or Bitbucket page, or ask whoever maintains your team's catalog. `--branch` is required —
-no default, so nobody silently targets the wrong protected branch.
-
-Real example — Workstand's agent library on Bitbucket:
-
-```bash
-./library init --repo git@bitbucket.org:sedteam/agent-library.git --branch main
-```
-
-Generic GitHub example:
-
-```bash
-./library init --repo git@github.com:yourorg/agent-library.git --branch develop
-```
-
-This writes `config.local.yaml` (gitignored, per-device) and clones the catalog into
-`.catalog-repo/`. See [cookbook/init.md](cookbook/init.md) for all flags (`--yaml-path`,
-`--autopush`, `--force`).
-
-### 7. Verify (Path B)
-
-```bash
-./library list
-```
-
-You should see the catalog entries with install status. `./library doctor` also
-validates the skill link along with config and catalog health. If the clone fails, check your git
-auth to the catalog repo — the tool never prompts (see Troubleshooting).
-
-## Quick Start
-
-![Full Workflow](images/45_solution_full_workflow.svg)
-
-Here's the typical workflow: **build → catalog → distribute → use**. Each step works two
-ways — ask the agent in Claude Code, or run the CLI in a terminal. Both do the same thing.
-
-### Add a skill to the catalog
-
-You built a deploy skill in one of your repos. Register it:
-
-> 🗣 **Ask the agent:** "/library add the deploy skill to the library — it's at
-> `https://github.com/yourorg/infra-tools/blob/main/skills/deploy/SKILL.md`"
-
-```bash
-# ⌨ Or run the CLI (from the tool dir, ~/.claude/skills/library):
-./library add --name deploy --type skill \
-  --description "Deploys the app to staging/prod" \
-  --source https://github.com/yourorg/infra-tools/blob/main/skills/deploy/SKILL.md
-```
-
-Either way, the CLI creates a branch (`library/add-deploy-<ts>`), pushes it, and prints a
-PR URL (or auto-opens the PR if `autopush: true` on a GitHub catalog). Once the PR is
-merged, the entry is in the shared catalog for everyone.
-
-### Use it in another project
-
-> 🗣 **Ask the agent:** "/library use the deploy skill from the library" (add "globally" to put
-> it in `~/.claude/`)
-
-```bash
-# ⌨ Or run the CLI. Heads up: bare `use` installs into the .claude/ of the
-# directory you run it from (the `default` scope), so be explicit unless you're
-# already in your project:
-./library use deploy --global         # → ~/.claude/skills/deploy/  (cwd-independent)
-./library use deploy --dir <path>     # → an explicit location
-```
-
-### Update an existing entry
-
-You want to add a dependency (or fix a description/source) on an entry that's already in
-the catalog:
-
-> 🗣 **Ask the agent:** "make the session-retro skill also require backend-code-practices"
-
-```bash
-# ⌨ Or run the CLI:
-./library update session-retro --add-requires skill:backend-code-practices
-```
-
-Like `add`/`remove`, this opens a PR against the catalog repo rather than editing
-`library.yaml` directly — `add` only creates new entries, so editing an existing one
-(most commonly appending to `requires`) goes through `update` instead.
-
-### Push changes back
-
-You improved the skill locally and want the change upstreamed:
-
-> 🗣 **Ask the agent:** "/library push my deploy skill changes back to the library"
-
-```bash
-# ⌨ Or run the CLI:
-./library push deploy
-```
-
-For remote sources (GitHub or Bitbucket) this opens a PR branch and prints the PR URL —
-the protected branch is never pushed to directly. (GitHub can auto-open the PR with `gh`
-when `autopush: true`.) Local-path sources are overwritten in place immediately (no PR).
-
-### Sync everything
-
-> 🗣 **Ask the agent:** "/library sync all my library skills"
-
-```bash
-# ⌨ Or run the CLI:
-./library sync
-```
-
-Each refreshed item reports a change summary (`~` modified · `+` added · `-` removed,
-or `no changes` / `new install`) by diffing the incoming source against the
-currently-installed copy *before* overwriting it. Note this is "source vs. installed,"
-not "since last sync" — local edits to an installed copy show up as modified and get
-overwritten.
-
-## Commands
-
-Two ways to drive it, same result:
-
-- **In Claude Code (most common):** ask in natural language. The agent loads the `library`
-  skill, picks the command, and runs the CLI for you — handling the fuzzy parts (vague
-  names, dependency detection, source resolution, confirmations).
-- **In a terminal:** run the CLI directly for fast, deterministic, no-LLM operations.
-
-| Task | 🗣 Ask the agent (Claude Code) | ⌨ Terminal (CLI) |
-| ---- | ----------------------------- | ---------------- |
-| First-time setup | "set up the library from `<url>` on the `<branch>` branch" | `./library init --repo <url> --branch <branch>` |
-| List the catalog | "what's in the skill library?" | `./library list` |
-| Search | "search the library for a jira skill" | `./library search jira` |
-| Install a skill | "install the deploy skill from the library" | `./library use deploy` |
-| Install globally | "install deploy from the library globally" | `./library use deploy --global` |
-| Add an entry | "add this skill to the library: `<url>`" | `./library add --name … --source … --description …` |
-| Update an entry | "make session-retro also require backend-code-practices" | `./library update session-retro --add-requires skill:backend-code-practices` |
-| Push changes back | "push my deploy changes back to the library" | `./library push deploy` |
-| Remove an entry | "remove deploy from the library" | `./library remove deploy` |
-| Sync everything | "sync all my installed library skills" | `./library sync` |
-| Health check | "check the library catalog for problems" | `./library doctor` |
-| Update the tool | "update the library tool" | `./library self-update` |
-
-**CLI flags:** `--json` (machine-readable) · `--no-pull` (skip catalog refresh) ·
-`--dry-run` (preview `add`/`update`/`remove`/`push`) · `--global`/`--dir` (`use` target) ·
-`--deep` (`doctor` source-liveness).
-
-> **`use`/`sync` and your working directory:** the `default` install scope is
-> *relative to the directory you run the command from*. Run them from your project (so
-> skills land in that project's `.claude/`), or pass `--global` / `--dir`. The agent
-> handles this for you; it always anchors to your current project, never the tool dir.
-
-> The CLI examples use `./library …`, which runs the wrapper from the tool dir
-> (`~/.claude/skills/library`) — it isn't on your `PATH` by default. You can also use the
-> `just` shortcuts below, or symlink `library` onto your `PATH` if you prefer a bare
-> `library …`. The agent always invokes it by full path, so prompts just work.
-
-### Justfile Shortcuts
-
-The included `justfile` lets you run library commands from your terminal.
-
-```bash
-just bootstrap             # One-time: create .venv + install PyYAML for the CLI
-
-# First-time setup:
-just init <catalog-url> <branch>   # Create per-device config + clone catalog repo
-
-# Deterministic — run the CLI directly (no LLM, no tokens):
-just list                  # List catalog
-just search "keyword"      # Search by keyword
-just use my-skill          # Pull a skill (exact name)
-just use-global my-skill   # Pull into ~/.claude/...
-just sync                  # Re-pull all installed items
-just doctor                # Validate catalog integrity
-just doctor --deep         # ...and check every source is reachable
-just self-update           # Update the tool itself (git pull)
-just link                  # Symlink this clone into ~/.claude/skills
-
-# Fuzzy / write ops — route through the agent:
-just add "name: foo, description: bar, source: /path/to/SKILL.md"
-just update "make session-retro also require skill:backend-code-practices"
-just push my-skill         # Push changes back (proposes a PR for GitHub/Bitbucket sources)
-just remove my-skill       # Remove from catalog (proposes a PR)
-just ask "use that PR review thing"   # natural-language / fuzzy intent
-```
-
-> **Note:** The agent-backed recipes use `--dangerously-skip-permissions` because the agent
-> needs filesystem and git access. The CLI-backed recipes (`list`/`search`/`use`/`sync`/`doctor`)
-> run locally with no agent at all. Review the `justfile` to change this behavior.
 
 ## Troubleshooting
 

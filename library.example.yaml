@@ -5,17 +5,18 @@
 # as `library.yaml` at its root. Copy this structure there and
 # replace every placeholder (myworkspace / myorg / paths) with your own.
 
-# Where `use`/`sync` install items. `default` = project-local .claude/, used unless
-# the user passes --global (home ~/.claude/) or --dir <path>.
+# Where `use`/`sync` install items. `global` (home ~/.claude/) is where bare `use`
+# installs; `project` = project-local .claude/, selected with --project. --dir <path>
+# overrides both. (`default` is accepted as a legacy alias for `project`.)
 default_dirs:
   skills:
-    - default: .claude/skills/
+    - project: .claude/skills/
     - global: ~/.claude/skills/
   agents:
-    - default: .claude/agents/
+    - project: .claude/agents/
     - global: ~/.claude/agents/
   prompts:
-    - default: .claude/commands/
+    - project: .claude/commands/
     - global: ~/.claude/commands/
 
 library:

@@ -5,7 +5,7 @@ Refresh every locally installed skill, agent, and prompt by re-pulling from its 
 A fast "make sure everything is up to date" command. The catalog is read from
 `.catalog-repo/` — the persistent local clone of the catalog repo.
 
-This is fully deterministic — the `library` CLI finds every installed item (default +
+This is fully deterministic — the `library` CLI finds every installed item (project +
 global), re-pulls each from source, and pulls any missing dependencies. Do **not**
 re-implement it.
 

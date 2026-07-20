@@ -35,7 +35,7 @@ deleting local copies.
 <tool-dir>/library remove "<name>" [--purge] [--json]
 ```
 
-- `--purge` → also immediately delete the installed copy from the default and global dirs.
+- `--purge` → also immediately delete the installed copy from the project and global dirs.
 - Without `--purge`, local copies are left in place (you can remove them manually or via
   `<tool-dir>/library use` when you later re-add the entry).
 

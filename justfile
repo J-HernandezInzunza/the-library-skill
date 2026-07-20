@@ -37,13 +37,13 @@ list:
 search keyword:
     @{{lib}} search "{{keyword}}"
 
-# Pull a skill from the catalog by exact name (install or refresh)
+# Pull a skill from the catalog by exact name → ~/.claude/... (global, the default)
 use name:
     @{{lib}} use "{{name}}"
 
-# Pull a skill into the global dir (~/.claude/...)
-use-global name:
-    @{{lib}} use "{{name}}" --global
+# Pull a skill into the .claude/ of the directory you run from
+use-project name:
+    @{{lib}} use "{{name}}" --project
 
 # Sync all installed items (re-pull from source)
 sync:

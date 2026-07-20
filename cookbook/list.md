@@ -24,5 +24,5 @@ If the CLI prints a staleness warning on stderr (`catalog is N commit(s) behind
 origin/...`), relay it to the user — the list may be missing recent catalog changes.
 
 Relay the output to the user. The CLI already groups by type, shows install status
-(`installed (default|global)` or `not installed`), and prints a summary line. No
+(`installed (project|global)` or `not installed`), and prints a summary line. No
 further work is needed unless the user asks a follow-up question about a specific entry.

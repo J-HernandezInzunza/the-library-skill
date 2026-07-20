@@ -29,7 +29,7 @@ to a new catalog URL.
 | `--repo` | Clone URL of the shared catalog repo. **Required.** Use SSH (`git@github.com:org/repo.git`) for private repos. |
 | `--branch` | **Required.** Protected branch that `add`/`remove`/`push` open PRs against (e.g. `main`, `develop`). No default — you must name it so nobody silently targets the wrong branch. |
 | `--yaml-path` | Path to the catalog YAML within the catalog repo. Default: `library.yaml`. |
-| `--autopush` | When set, `add`/`remove`/`push` also run `gh pr create` after pushing the branch. Requires `gh` CLI + auth. Default: off (push branch, print compare URL). |
+| `--autopush` | When set, `add`/`remove`/`push` also run `gh pr create` after pushing the branch. Requires `gh` CLI + auth. Default: off (push branch, print compare URL). **Maintainers only** — don't prompt for this during setup; only relevant if the user curates the catalog on GitHub. |
 | `--force` | Overwrite an existing `config.local.yaml` and re-clone `.catalog-repo/`. |
 | `--json` | Emit machine-readable output. |
 
@@ -45,9 +45,9 @@ catalog:
 autopush: false
 ```
 
-Install locations come from the catalog's `default_dirs`: `use <name>` installs to the
-project-local `.claude/` (default scope), `use <name> --global` to home `~/.claude/`, and
-`use <name> --dir <path>` to a custom location.
+Install locations come from the catalog's `default_dirs`: `use <name>` installs globally
+to home `~/.claude/`, `use <name> --project` to the project-local `.claude/` (the
+catalog's `project` scope), and `use <name> --dir <path>` to a custom location.
 
 **`.catalog-repo/`** (gitignored): a shallow clone of the catalog repo used for reads.
 

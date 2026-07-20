@@ -11,8 +11,9 @@ to by per-device config.
 ### 1. Check Prerequisites
 
 ```bash
-git --version   # git is required
-gh --version    # optional — needed only for autopush (auto-open PRs)
+git --version       # required
+python3 --version   # required — runs the CLI
+gh --version        # optional — needed only for autopush (auto-open PRs)
 ```
 
 Verify that `~/.claude/skills/` exists or can be created.
@@ -57,13 +58,20 @@ repairs a dangling link, refuses a real directory. See [cookbook/link.md](link.m
 
 ### 5. Initialize the Config
 
-Point the tool at your team's shared catalog repo:
+Point the tool at your team's shared catalog repo. **Ask the user for the catalog repo
+URL and its protected branch — never assume a default branch** (teams differ: e.g.
+Workstand's catalog uses `develop`, not `main`):
 
 ```bash
 <tool-dir>/library init \
   --repo git@github.com:yourorg/agent-library.git \
-  --branch main
+  --branch <branch>
 ```
+
+**Don't ask about `--autopush`.** It only matters for catalog **maintainers** — people
+who curate entries (`add`/`update`/`remove`) on a GitHub catalog and want PRs auto-opened
+via `gh`. The default (off) is right for everyone else. Only offer it if the user says
+they maintain the catalog.
 
 This creates `config.local.yaml` (gitignored, per-device) and clones the catalog
 repo into `.catalog-repo/`. See [cookbook/init.md](init.md) for all flags.
