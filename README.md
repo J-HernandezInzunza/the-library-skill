@@ -70,10 +70,13 @@ different copy).
 
 ### 5. Decide How to Finish: Agent or Terminal
 
-The `/library` skill is now loaded. Both paths need the same two inputs, so grab them
-now: your **catalog repo clone URL** (the Clone button on the repo's GitHub or Bitbucket
-page) and its **protected branch**. Real example — Workstand's agent library on
-Bitbucket: `git@bitbucket.org:sedteam/agent-library.git`, branch `develop`.
+The `/library` skill is now loaded. Both of the following paths need the same two inputs,
+
+For Workstand's agent library use the following real example:
+Clone URL: `git@bitbucket.org:sedteam/agent-library.git`
+Branch: `develop`.
+
+Otherwise go grab these now: your **catalog repo clone URL** (the Clone button on the repo's GitHub or Bitbucket page) and its **protected branch**.
 
 Pick **one** of two paths — both end in the same place:
 
