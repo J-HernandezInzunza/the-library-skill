@@ -24,6 +24,7 @@ the catalog looks like, why it's built this way — see [What It Is](#what-it-is
 - **git auth for your host(s)** — an SSH key (recommended) or a credential helper / token, for private catalog and source repos. GitHub: SSH key, `GITHUB_TOKEN`, or `gh auth login`. Bitbucket: SSH key or an app password. The tool is **non-interactive** — it never prompts for credentials (see Troubleshooting).
 - **just** (optional) — for justfile shortcuts. Install: `brew install just` or see [just docs](https://github.com/casey/just)
 - **python3** — for the deterministic CLI. PyYAML is installed into a local `.venv` via `just bootstrap` (one-time).
+- **Windows: use [WSL](https://learn.microsoft.com/windows/wsl/install)** — the `library` wrapper, the venv bin paths, and `library link` (which creates a symlink) assume a Unix shell, so run everything from inside WSL. Native PowerShell/cmd is not supported; Git Bash mostly works but the venv lands in `.venv/Scripts/` there, so the wrapper misses its bundled Python — WSL avoids that.
 
 ## Installation
 
