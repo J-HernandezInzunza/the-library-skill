@@ -60,6 +60,13 @@ the pure logic in `library.py` — `parse_source`, `splice_entry` / `remove_entr
 `_remote_web` — which the hook/CI could then run alongside `check_docs.py`. Contributions
 welcome.
 
+## Roadmap
+
+Ideas, feature requests, and work we decided *not* to do yet live in
+**[roadmap.md](roadmap.md)**. Each entry records what it is, why not now, and what it would
+unlock or depend on. Park an idea there rather than losing it in a PR comment — a
+one-paragraph entry beats a lost idea.
+
 ## Conventions
 
 - The deterministic CLI is the source of truth for mechanics; the agent layer only handles

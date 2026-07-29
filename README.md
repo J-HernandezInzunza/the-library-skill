@@ -454,7 +454,7 @@ auth/setup gotchas, lives in **[docs/troubleshooting.md](docs/troubleshooting.md
     justfile                  # Terminal shortcuts (CLI direct + agent fallback)
     .githooks/pre-push        # Local checks before push (enable: `just install-hooks`)
     ci-examples/              # CI templates for the catalog repo (doctor on PRs)
-    docs/                     # Human docs: troubleshooting, contributing
+    docs/                     # Human docs: troubleshooting, contributing, roadmap
     .venv/                    # PyYAML for the CLI (gitignored)
     README.md                 # This file
 ```
@@ -465,6 +465,10 @@ Working on the tool, or maintaining a catalog? See **[docs/contributing.md](docs
 The short version: run `just check` before pushing (Python compile + doc/CLI drift), enable
 the pre-push hook once with `just install-hooks`, and let catalog integrity (`doctor`) run in
 CI on the catalog repo — template in `ci-examples/`.
+
+Got an idea, or a feature you want that isn't here? **[docs/roadmap.md](docs/roadmap.md)** is
+where deferred work and feature requests are collected, each with what it is, why it isn't
+being done now, and what it would unlock.
 
 ## Design Principles
 
