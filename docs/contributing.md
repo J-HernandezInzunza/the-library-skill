@@ -55,10 +55,26 @@ same file.
 
 ## Tests
 
-There is no unit-test suite yet. The highest-value addition would be `pytest` coverage of
-the pure logic in `library.py` — `parse_source`, `splice_entry` / `remove_entry`, and
-`_remote_web` — which the hook/CI could then run alongside `check_docs.py`. Contributions
-welcome.
+`tests/test_library.py` is a stdlib `unittest` suite — `just bootstrap` installs PyYAML and
+nothing else. They're plain `unittest.TestCase` classes, so `pytest tests/` collects them too
+if you have pytest; the `.venv` deliberately doesn't ship it.
+
+```bash
+just test
+# or, without just:
+.venv/bin/python -m unittest discover -s tests -t . -v
+```
+
+`just check` and the pre-push hook both run it, so tests are covered by the same gate as
+compile and doc drift.
+
+**Tests never touch your real environment.** `TempTool` builds a throwaway tool directory and
+redirects `library.py`'s path globals — the config file, the catalog clone, the global skills
+dir, the project cwd — plus `$HOME`, so even a `~/.claude/...` path expanded inside the CLI
+lands in the sandbox. `TempTool.path()` raises `SandboxEscape` on any path that resolves
+outside it, which is what turns a hardcoded real path into a loud failure rather than a write
+to your machine. Git-touching tests use `TempGitRepo`: a work tree whose origin is a local
+`--bare` repo, never a real remote.
 
 ## Roadmap
 

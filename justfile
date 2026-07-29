@@ -57,10 +57,15 @@ doctor *args:
 check-docs:
     @{{justfile_directory()}}/.venv/bin/python {{justfile_directory()}}/check_docs.py
 
-# All fast pre-push checks: Python compiles + doc/CLI drift (no network). Run by the hook.
+# Run the unit-test suite (stdlib unittest — no extra dependency)
+test:
+    @{{justfile_directory()}}/.venv/bin/python -m unittest discover -s {{justfile_directory()}}/tests -t {{justfile_directory()}} -v
+
+# All fast pre-push checks: Python compiles + doc/CLI drift + tests (no network). Run by the hook.
 check:
     @{{justfile_directory()}}/.venv/bin/python -m py_compile {{justfile_directory()}}/library.py {{justfile_directory()}}/check_docs.py
     @{{justfile_directory()}}/.venv/bin/python {{justfile_directory()}}/check_docs.py
+    @{{justfile_directory()}}/.venv/bin/python -m unittest discover -s {{justfile_directory()}}/tests -t {{justfile_directory()}}
 
 # Enable the committed git hooks (pre-push runs `check`). One-time per clone.
 install-hooks:
