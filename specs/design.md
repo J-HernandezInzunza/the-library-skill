@@ -1,7 +1,7 @@
 # Design — Personal Catalogs
 
-Implements [requirements.md](requirements.md). Read that first; requirement ids (R4.2, D5, …)
-are referenced throughout. Line references are to `library.py` at the time of writing.
+Implements [requirements.md](requirements.md). Read that first; requirement ids (R6.2, D8, …) are
+referenced throughout. Line references are to `library.py` at the time of writing.
 
 ## 1. Shape of the change
 
@@ -19,59 +19,75 @@ class Config:                                          # :86
     autopush: bool = False
 ```
 
-Every command then calls `load_config()` → `pull_catalog(cfg)` → `load_catalog(catalog_path(cfg))`
-→ `iter_entries(catalog)`, and every write clones `cfg.catalog_repo` at `cfg.catalog_branch`,
-splices `cfg.catalog_yaml_path`, and opens a PR.
+Every command calls `load_config()` → `pull_catalog(cfg)` → `load_catalog(catalog_path(cfg))` →
+`iter_entries(catalog)`, and every write clones `cfg.catalog_repo` at `cfg.catalog_branch`, splices
+`cfg.catalog_yaml_path`, and opens a PR.
 
 The change turns that one implicit catalog into a list of explicit ones:
 
 ```
-                     BEFORE                                    AFTER
+                   BEFORE                                      AFTER
 
  load_config() ──▶ Config(repo, yaml_path, branch)   load_config() ──▶ Config
- pull_catalog(cfg)                                                     ├─ catalogs: [Catalog]  (precedence order)
- load_catalog(catalog_path(cfg))                                       ├─ remote: Catalog|None (the shared one)
- iter_entries(catalog) ──▶ [Entry]                                     ├─ dirs: effective install dirs
-                                                                       └─ entries() ──▶ [Entry]  (each knows .catalog)
-                                                       resolve(name) / shadows(name)
-                                                       write_target(requested) ──▶ Catalog
+ pull_catalog(cfg)                                                     ├─ catalogs: [Catalog]   (precedence order)
+ load_catalog(catalog_path(cfg))                                       ├─ dirs: effective install dirs
+ iter_entries(catalog) ──▶ [Entry]                                     └─ entries() ──▶ [Entry]  (each knows .catalog)
+                                                     resolve(name) / shadows(name)
+                                                     write_target(requested) ──▶ Catalog
+                                                     apply_catalog_edit(cat, …) ──▶ local | pr | direct
 ```
 
-Three additions carry the whole feature:
+Four additions carry the feature:
 
-1. **`Catalog`** — a dataclass with a `kind` of `remote` (repo + yaml_path + branch, persistent
-   clone, PR writes) or `local` (a file path, direct writes).
+1. **`Catalog`** — a dataclass with a `kind` of `local` (a file path) or `remote` (repo +
+   yaml_path + branch, its own persistent clone), plus `protected` and `writable`.
 2. **`Entry.catalog`** — provenance, so any command can report which catalog an entry came from.
-3. **Two write paths** behind one `write_target()` — the existing PR flow for remote, a direct
-   file write for local.
+3. **Three write modes** behind one `apply_catalog_edit()` seam, derived from `kind` × `protected`.
+4. **Install dirs owned by the tool**, not by any catalog.
 
-**Guiding constraint:** with a legacy singular `catalog:` config, `load_config()` yields exactly
-one remote catalog and every code path must produce output identical to today (R2.1, R2.3). The
-tests in Phase 1 pin that down before anything moves.
+**Guiding constraint:** with a legacy singular `catalog:` config, `load_config()` yields exactly one
+protected remote catalog and every code path must produce output identical to today (R2.1, R2.3).
+The tests in Phase 1 pin that down before anything moves.
+
+**Two things this revision deliberately made *simpler* than the last:**
+
+- Dependencies resolve within one catalog (D9), so `resolve_deps` keeps its signature and just
+  receives a narrower entry list. The whole "catalog leak" validation concept is deleted — it
+  collapses into the ordinary dangling-dependency check.
+- Install dirs no longer merge across catalogs (D7), so there is one mapping computed from two
+  inputs (builtin, config override) instead of a four-layer overlay that had to reason about which
+  catalog was authoritative.
 
 ## 2. Config model
 
-`config.local.yaml` after the change (new form):
+`config.local.yaml`, canonical form:
 
 ```yaml
 catalogs:
   - id: personal
-    path: ~/dev/my-agentics/library.yaml   # file, or a dir containing library.yaml (R1.9)
-    git_commit: false                       # commit + push the catalog file after a write (R4.5)
+    path: ~/dev/my-agentics/library.yaml    # file, or a dir containing library.yaml (R1.11)
+    git_commit: false                        # commit + push after a write (R6.7)
+  - id: personal-remote
+    repo: git@github.com:me/my-agentics.git
+    yaml_path: library.yaml
+    branch: main
+    protected: false                         # -> direct commit, no PR (D8)
   - id: shared
     repo: git@github.com:yourorg/agent-library.git
     yaml_path: library.yaml
     branch: main
-    writable: true                          # default true (R1.10)
+    protected: true                          # -> branch + PR (the default)
+    writable: true
 
-autopush: false                             # unchanged — PR-mode writes only (R1.12)
-default_add_catalog: personal               # optional (R5.4)
-default_dirs:                               # optional override (R10.2)
+autopush: false                              # single setting, pr-mode writes only (D15)
+default_add_catalog: personal
+default_dirs:                                # the ONLY place install dirs come from (D7)
   skills:
     - project: .claude/skills/
+    - global: ~/.claude/skills/
 ```
 
-Legacy form, still valid and still the default `init` output (R2.1, R2.9):
+Legacy form, still accepted forever (R2.1) though `init` no longer emits it (R3.9):
 
 ```yaml
 catalog:
@@ -85,15 +101,16 @@ autopush: false
 
 ```python
 def _normalize_catalogs(data: dict) -> list[dict]:
-    """Legacy `catalog:` mapping or new `catalogs:` list -> list of raw catalog dicts.
+    """Legacy `catalog:` mapping or canonical `catalogs:` list -> list of raw catalog dicts.
 
+    Legacy becomes [{"id": "shared", "repo": …, "yaml_path": …, "branch": …,
+                     "protected": True}].
     Both present -> die (ambiguous, R2.2). Neither -> die with the init hint.
     """
 ```
 
-The legacy mapping becomes `[{"id": "shared", "repo": ..., "yaml_path": ..., "branch": ...}]`.
-That one function is the entire backwards-compatibility story for the config — everything
-downstream sees a list and never knows which form was on disk.
+One function is the entire read-time backwards-compatibility story; everything downstream sees a
+list and never learns which form was on disk.
 
 `Config` becomes:
 
@@ -104,41 +121,43 @@ class Config:
     autopush: bool = False
     default_add_catalog: str = ""
     dirs: dict[str, dict[str, str]] = field(default_factory=dict)   # effective (§6)
+    legacy_shape: bool = False           # drives doctor's migration hint (R14.9)
 
     @property
-    def remote(self) -> Catalog | None   # the one remote catalog, or None (personal-only)
-    @property
-    def active(self) -> list[Catalog]    # not skipped
+    def active(self) -> list[Catalog]     # not skipped
     @property
     def writable(self) -> list[Catalog]
-    def by_id(self, cid: str) -> Catalog # raises LibraryError listing valid ids (R3.4)
-    def entries(self) -> list[Entry]     # all active catalogs, precedence order, stamped
+    @property
+    def remotes(self) -> list[Catalog]
+    def by_id(self, cid: str) -> Catalog  # raises LibraryError listing valid ids (R4.4)
+    def entries(self) -> list[Entry]      # all active catalogs, precedence order, stamped
+    def entries_of(self, cid: str) -> list[Entry]   # one catalog — the dep-resolution scope (D9)
     def resolve(self, name, catalog=None) -> Entry | None
     def shadows(self, name) -> list[Entry]
 ```
 
 `Config.missing_keys` (`:99`, used by `cmd_doctor` at `:1992`) is replaced by
-`Config.problems(data) -> list[str]`, which returns every registry validation failure rather
-than only absent keys — `doctor` needs the full list (R12.3) and `load_config` can die on the
-first. Both call sites move together.
+`Config.problems(data) -> list[str]`, returning every registry validation failure rather than only
+absent keys — `doctor` needs the full list (R14.3) while `load_config` dies on the first. Both call
+sites move together.
 
 ### Validation
 
-Enforced in one place so `load_config` and `doctor` agree (R1.2–R1.5, R12.3):
+One function shared by `load_config` and `doctor` so they cannot disagree (R1.3–R1.11, R14.3):
 
 | Rule | Failure |
 | ---- | ------- |
 | `id` present, non-empty, unique | die |
 | exactly one of `path` / `repo` | die naming the id |
-| remote catalog has `yaml_path` **and** `branch` | die (matches today's required keys) |
-| at most one remote catalog | die: "one remote catalog is supported; register additional catalogs with `path:`" (R1.5) |
+| remote has `yaml_path` **and** `branch` | die naming the id |
+| no two remotes share `repo` + `branch` | die (they would contend for one clone, R1.7) |
 | `catalog:` and `catalogs:` both present | die (R2.2) |
-| `yaml_path` is relative, no `..`, no `:` | die (existing check at `:112`, unchanged) |
-| local `path` is absolute or `~`-prefixed | die |
+| `yaml_path` relative, no `..`, no `:` | die (existing check at `:112`, unchanged) |
+| local `path` absolute or `~`-prefixed | die (R1.10) |
 
-The last rule is deliberate. Install dirs *do* anchor relative paths to the user's CWD
-(`project_cwd`, `:348`), and a relative catalog path would inherit that ambiguity for something
-that is machine-global, not project-local. Requiring an absolute path removes the question.
+The last rule is deliberate. Install dirs *do* anchor relative paths to the invocation CWD
+(`project_cwd`, `:348`); a catalog location is machine-global, so inheriting that ambiguity would be
+a trap.
 
 ## 3. Catalog model
 
@@ -150,7 +169,7 @@ SHARED_ID = "shared"
 @dataclass
 class Catalog:
     id: str
-    kind: str                    # "remote" | "local"
+    kind: str                    # "local" | "remote"
     writable: bool = True
     # local
     path_raw: str = ""
@@ -159,23 +178,31 @@ class Catalog:
     repo: str = ""
     yaml_path: str = ""
     branch: str = ""
+    protected: bool = True
     # runtime
     data: dict[str, Any] = field(default_factory=dict)
-    skipped: str = ""            # non-empty = excluded, and why (R1.8)
+    skipped: str = ""            # non-empty = excluded, and why (R1.16)
 
     @property
     def is_remote(self) -> bool: return self.kind == "remote"
 
     @property
+    def write_mode(self) -> str:
+        """local | pr | direct  (R6.1)"""
+        if not self.is_remote:
+            return "local"
+        return "pr" if self.protected else "direct"
+
+    @property
+    def clone_dir(self) -> Path | None:
+        """CATALOG_CLONE_DIR for id 'shared' (R2.8), else CATALOGS_DIR / id."""
+
+    @property
     def yaml_file(self) -> Path:
-        """local: the expanded path. remote: CATALOG_CLONE_DIR / yaml_path."""
+        """local: the expanded path. remote: clone_dir / yaml_path."""
 
     @property
-    def root(self) -> Path:      # dir containing yaml_file (git ops for local catalogs)
-        return self.yaml_file.parent
-
-    @property
-    def label(self) -> str:      # "personal" / "shared" for messages
+    def root(self) -> Path: return self.yaml_file.parent
 ```
 
 `Entry` gains one defaulted field so existing construction sites are untouched:
@@ -188,103 +215,97 @@ class Entry:
     description: str
     source: str
     requires: list[str] = field(default_factory=list)
-    catalog: str = ""            # NEW — originating catalog id (R3.6)
+    catalog: str = ""            # NEW — originating catalog id (R4.6)
 ```
 
-`iter_entries(catalog_data)` keeps its signature (it is the pure YAML→entries function, also
-called on a temp-clone's parsed text at `:1648`); a thin
-`iter_catalog_entries(cat: Catalog) -> list[Entry]` stamps `catalog=cat.id`. Keeping the pure
-one unchanged matters — `cmd_update`'s determinism path depends on it.
+`iter_entries(catalog_data)` keeps its signature — it is the pure YAML→entries function, also called
+on a temp-clone's parsed text at `:1648`, and `cmd_update`'s determinism path depends on that. A thin
+`iter_catalog_entries(cat)` stamps `catalog=cat.id`.
 
 ### Clone layout
 
-`CATALOG_CLONE_DIR` (`.catalog-repo/`) stays exactly where it is and continues to hold the one
-remote catalog (R2.8). No existing developer's clone is invalidated. When multiple remote
-catalogs land later, they go under `.catalogs/<id>/` and `.catalog-repo/` is kept as the
-`shared` alias — the layout is reserved now so the deferred work is additive.
+```
+<tool-dir>/.catalog-repo/        # id "shared" — unchanged, no re-clone for anyone (R2.8)
+<tool-dir>/.catalogs/<id>/       # every other remote catalog (R5.1)
+```
 
-`pull_catalog`, `catalog_behind`, and `catalog_path` (`:627`, `:666`, `:686`) change from taking
-`cfg` to taking a `Catalog`, and become no-ops for local catalogs:
+Both gitignored (R5.2) — `.gitignore` gains `.catalogs/` alongside the existing `.catalog-repo/`.
+Keeping `.catalog-repo/` as the `shared` special case is the cheapest possible migration: zero
+existing clones are invalidated.
+
+The three catalog helpers become catalog-scoped and no-op for local catalogs:
 
 ```python
 def pull_catalog(cat: Catalog, quiet: bool = True) -> str | None   # None for local
 def catalog_behind(cat: Catalog) -> int                            # 0 for local
 def catalog_yaml(cat: Catalog) -> Path                             # replaces catalog_path(cfg)
-def pull_all(cfg: Config) -> dict[str, str | None]                 # {id: err}, best-effort
+def pull_all(cfg: Config) -> dict[str, str | None]                 # {id: err}, best-effort (R5.4-5.6)
 ```
 
 ## 4. Discovery
 
 ```python
 def load_config(path: Path | None = None) -> Config:
-    """Load, normalize, validate, then hydrate each catalog's data. Dies on a bad
-    registry; warns and skips a bad *local catalog* (R1.8)."""
+    """Load, normalize, validate, hydrate. Dies on a bad registry; warns and skips
+    a catalog whose source can't be read (R1.16)."""
 ```
-
-Order of operations, and what each does on failure:
 
 | Step | On failure |
 | ---- | ---------- |
 | 1. Read `config.local.yaml` (or `path`) | die with the existing `library init` hint (`:125`) |
-| 2. Normalize legacy `catalog:` → `catalogs:` (§2) | die if both or neither present |
+| 2. Normalize legacy → canonical (§2); record `legacy_shape` | die if both or neither form present |
 | 3. Validate the registry (§2 table) | die with the specific problem |
 | 4. Build `Catalog` objects in registry order | — |
-| 5. Hydrate the remote catalog from `CATALOG_CLONE_DIR` if the clone exists | leave `data` empty; commands that need it report as today (`init` clones, `doctor` warns) |
-| 6. Hydrate each local catalog from its path (dir → `dir/library.yaml`) | `skipped = "<reason>"`, `warn()`, continue (R1.8) |
-| 7. Compute effective install dirs (§6) | — |
+| 5. Hydrate each catalog: local from its path, remote from its clone **if the clone exists** | `skipped = "<reason>"`, `warn()`, continue (R1.16) |
+| 6. Compute effective install dirs (§6) | — |
 
-Step 5 deliberately does not clone. `pull_catalog` already owns clone-if-absent for the remote
-catalog and dies with an auth hint (`:637-651`); keeping that where it is means `load_config`
-stays cheap and offline, and `doctor` can still report on a config whose clone is missing.
+Step 5 deliberately does not clone. `pull_catalog` already owns clone-if-absent and dies with an auth
+hint (`:637-651`); leaving that there keeps `load_config` cheap and offline, and lets `doctor` report
+on a config whose clones are missing.
 
-`path` is injectable for tests (R15.5), as is `CATALOG_CLONE_DIR` via a module-level indirection
-so a test can point the whole tool at a temp tree without touching the developer's real config.
+`path`, `CATALOG_CLONE_DIR`, and `CATALOGS_DIR` are injectable for tests (R18.5) so a test can point
+the whole tool at a temp tree.
 
 ## 5. Precedence and shadowing
 
 `resolve(name)` = first match in `entries()`. `shadows(name)` = the rest. Personal-first ordering
-(D4) is purely the order `load_config()` builds the list in. `find_exact` (`:234`) stays as a
-pure list scan and keeps working, because the list is already in precedence order — it is used
-on non-`Config` entry lists (`:1356`, `:1631`, `:1649`) and must not grow a `Config` dependency.
-
-One helper so every command phrases shadowing identically:
+(D4) is purely the order `load_config()` builds the list in. `find_exact` (`:234`) stays a pure list
+scan and keeps working, because the list is already in precedence order — it is used on non-`Config`
+entry lists (`:1356`, `:1631`, `:1649`, `:1727`) and must not grow a `Config` dependency.
 
 ```python
 def shadow_note(cfg: Config, entry: Entry) -> str:
     """'' when unshadowed, else 'shadows <id>[, <id>]'."""
 ```
 
-Used by `use` (R8.5), `push` (R9.2), `list` (R7.2), `add` (R5.7), and `doctor` (R12.4).
+Used by `use` (R10.3), `push` (R11.2), `list` (R9.2), `add` (R7.7), and `doctor` (R14.5).
 
-Within-catalog duplicates stay an error; cross-catalog duplicates become a warning (R3.5,
-R12.4). This is the one place today's logic must be *split* rather than extended: the duplicate
-scan at `:2076-2081` runs over all entries at once, so left alone it would flag every
-intentional shadow as an error. It becomes a per-catalog loop for errors plus a new
-cross-catalog pass for warnings.
+Within-catalog duplicates stay an error; cross-catalog duplicates become a warning (R4.5, R14.5).
+This is the one place today's logic must be *split* rather than extended: the duplicate scan at
+`:2076-2081` runs over all entries at once, so left alone it would flag every intentional shadow as
+an error. It becomes a per-catalog loop for errors plus a cross-catalog pass for warnings.
 
-## 6. Effective install dirs
+**Shadowing does not participate in dependency resolution** (D9) — see §7.
 
-A built-in default is introduced so a scaffolded personal catalog with no `default_dirs` works
-(R10.7) — today an absent block silently yields empty scope maps and `resolve_target_base`
-raises "no 'global' dir configured".
+## 6. Install directories
+
+Per D7 the tool owns this outright. Two inputs, one output:
 
 ```python
-BUILTIN_DEFAULT_DIRS = {                    # mirrors library.example.yaml
+BUILTIN_DEFAULT_DIRS = {                    # mirrors library.example.yaml (R12.1)
     "skills":  {"project": ".claude/skills/",   "global": "~/.claude/skills/"},
     "agents":  {"project": ".claude/agents/",   "global": "~/.claude/agents/"},
     "prompts": {"project": ".claude/commands/", "global": "~/.claude/commands/"},
 }
 
-def effective_dirs(catalogs: list[Catalog], override: dict | None) -> dict[str, dict[str, str]]:
-    """builtin <- remote catalog's default_dirs (or the highest-precedence catalog
-    that declares one, when there is no remote) <- config override. Per section,
-    per scope (R10.2)."""
+def effective_dirs(override: dict | None) -> dict[str, dict[str, str]]:
+    """BUILTIN_DEFAULT_DIRS <- config `default_dirs` override, per section per scope."""
 ```
 
-`default_dirs()` (`:193`) is reused unchanged for each overlay, so the `default` → `project`
-legacy normalization (R10.6) keeps applying everywhere.
+No catalog is consulted. `default_dirs()` (`:193`) is reused to parse the config override, so the
+`default` → `project` legacy normalization (R12.8) still applies there.
 
-Two signatures lose their catalog argument in favor of the resolved mapping:
+Two signatures lose their catalog argument:
 
 ```python
 # before                                          # after
@@ -293,45 +314,78 @@ installed_scopes(catalog, entry)                    installed_scopes(dirs, entry
 ```
 
 Call sites: `:1016`, `:1040`, `:1129`, `:1185`, `:1528`, `:1735`, `:1740`. Both are internal, and
-`--dir` / `--project` / `--global` precedence and the `resolve_install_dir` CWD-anchoring
-contract (`:366`) are untouched (R10.4).
+`--dir` / `--project` / `--global` precedence plus the `resolve_install_dir` CWD-anchoring contract
+(`:366`) are untouched (R12.6).
 
-Rationale, restated because it is the decision most likely to be questioned later: install
-location is a property of the machine and the project, not of who published the entry (D7).
-Per-catalog dirs would give `installed_scopes` a different base per entry, so `sync` could no
-longer answer "what is installed" in one scan, and `remove --purge` would have to consult the
-originating catalog of an entry it is deleting from a catalog.
+### The compatibility hazard, and how migration absorbs it
 
-## 7. Write paths
+Today the **shared catalog's** `default_dirs` decides where things install. Ignoring it is a real
+behavior change for any team whose catalog sets non-standard paths — installs would silently move.
+Two mechanisms cover it:
+
+- `catalog migrate` (§9) **lifts** the shared catalog's `default_dirs` into the config override, so
+  behavior is preserved by construction (R3.4).
+- Until then, `doctor` warns that a catalog's block is being ignored and prints the paths actually in
+  effect (R12.5, R14.6).
+
+That is why R2.9 is worded as "either preserve via migration or warn and name the paths" — silence is
+the one unacceptable outcome.
+
+## 7. Dependency resolution
+
+`resolve_deps(entries, target)` (`:435`) keeps its signature. The only change is what gets passed:
+
+```python
+# before — every entry in the one catalog
+order = resolve_deps(entries, entry)
+
+# after — every entry in the RESOLVED ENTRY'S OWN catalog (D9, R10.4)
+order = resolve_deps(cfg.entries_of(entry.catalog), entry)
+```
+
+Everything else falls out:
+
+- A `requires` ref that names an entry in a different catalog is simply not found, so the existing
+  `warn(f"dependency {ref} not found in catalog …")` fires (`:457`) — the behavior users already
+  understand.
+- `doctor`'s dangling-dependency check scopes `known` per catalog, so the same condition is an error
+  there (R14.4). The previously-designed "catalog leak" check is **deleted**; it was only necessary
+  because deps could cross catalogs.
+- Cycle detection (`_find_cycles`, `:1863`) also runs per catalog and can no longer produce a cycle
+  that spans catalogs.
+
+**Consequence to document, not hide** (R16.5): copying a shared entry into a personal catalog means
+copying its dependencies too, or `doctor` will flag them dangling. A `copy` command that moves an
+entry plus its dependency closure is the obvious follow-up and is on the roadmap.
+
+## 8. Write paths
 
 ### Targeting
 
-One helper, so `add`, `update`, and `remove` cannot drift apart:
-
 ```python
 def write_target(cfg: Config, requested: str | None) -> Catalog:
-    """1. requested            -> by_id, assert writable          (R5.1, R4.9)
-       2. exactly one writable -> that one  [the legacy path]      (R5.2)
-       3. default_add_catalog  -> by_id if usable and writable     (R5.4)
-       4. otherwise            -> raise AmbiguousCatalog(ids)      (R5.3)
+    """1. requested            -> by_id, assert writable          (R7.1, R6.11)
+       2. exactly one writable -> that one  [the legacy path]      (R7.2)
+       3. default_add_catalog  -> by_id if usable and writable     (R7.4)
+       4. otherwise            -> raise AmbiguousCatalog(ids)      (R7.3)
     """
 ```
 
-Step 2 precedes step 3 deliberately: a stale `default_add_catalog` pointing at a skipped catalog
-must not break a write when there is only one writable catalog anyway (R5.5).
+Step 2 precedes step 3 deliberately: a stale `default_add_catalog` pointing at a skipped catalog must
+not break a write when there is only one writable catalog anyway (R7.5).
 
-`AmbiguousCatalog` is a distinct exception so the command can emit the payload the agent keys
-off, reusing the existing "the agent must decide" convention (exit 2, like `AMBIGUOUS`):
+`AmbiguousCatalog` is a distinct exception so commands can emit the payload the agent keys off,
+reusing the existing "the agent must decide" convention (exit 2, like `AMBIGUOUS`):
 
 ```json
 { "status": "AMBIGUOUS_CATALOG", "catalogs": ["personal", "shared"] }
 ```
 
-### Two modes behind one seam
+### Three modes behind one seam
 
-The existing write bodies (`cmd_add` `:1383-1425`, `cmd_remove` `:1501-1521`, `cmd_update`
-`:1636-1706`) each inline clone → splice → branch → commit → PR. That block is extracted so both
-modes share the splice and the safety net:
+The write bodies (`cmd_add` `:1383-1425`, `cmd_remove` `:1501-1521`, `cmd_update` `:1636-1706`) each
+inline clone → splice → verify → branch → commit → PR. That block is extracted so all three modes
+share the splice and the safety net:
 
 ```python
 def apply_catalog_edit(
@@ -342,143 +396,131 @@ def apply_catalog_edit(
     branch_op: str, branch_name_hint: str,
     cfg: Config, dry_run: bool,
 ) -> dict[str, Any]:
-    """Apply *edit* to the catalog file and return a result dict.
-
-    remote -> _pr_clone, edit, verify, write, branch, commit, PR   (mode="pr")
-    local  -> optional ff-only pull, read, edit, verify, write,
-              optional commit+push                                 (mode="local")
-    """
 ```
 
-`edit` and `verify` are the pieces that already exist per command; only the surrounding
-plumbing differs. Result keys:
+| Mode | Flow | Result keys |
+| ---- | ---- | ----------- |
+| `local` | optional ff-only pull (if `git_commit`) → read → edit → verify → write → optional commit + push | `mode`, `catalog`, `path`, `committed`, `pushed` |
+| `pr` | `_pr_clone` → edit → verify → write → branch → commit → `_create_pr` | `mode`, `catalog`, plus today's `method`, `branch`, `pr_url` / `compare_url` (R6.3) |
+| `direct` | ff-only pull in the clone → edit → verify → write → commit → push `branch` | `mode`, `catalog`, `branch`, `committed`, `pushed` |
 
-| Key | `mode: "pr"` | `mode: "local"` |
-| --- | ------------ | --------------- |
-| `mode` | `"pr"` | `"local"` |
-| `catalog` | catalog id | catalog id |
-| `method`, `branch`, `pr_url` / `compare_url` | as today (R2.4) | absent (R4.3) |
-| `committed`, `pushed` | absent | booleans (R4.5–R4.7) |
-| `path` | absent | the file written |
+`edit` and `verify` already exist per command; only the plumbing differs.
 
-This is why R14.2 exists: `SKILL.md` currently tells the agent to report outcomes strictly from
-`method` (`:40`). A local write has no `method`, so without that rule change the agent would
-either misreport or fall through to a "PR opened" claim. The agent must read `mode` first.
+This is why R16.2 exists: `SKILL.md` currently tells the agent to report outcomes strictly from
+`method` (`:40`). Only `pr` mode has a `method`, so without that rule change the agent would either
+misreport a local write or fall through to a false "PR opened" claim. The agent must read `mode`
+first.
 
-### Local write flow
+### Determinism and failure policy
 
-```
-git_commit? -> git pull --ff-only in cat.root   (warn + continue on failure, R4.8)
-read cat.yaml_file  ──┐
-apply edit            │  one read, one write — same bytes in and out (R4.10)
-verify parsed YAML    │
-write cat.yaml_file ──┘
-git_commit? -> add + commit + push              (warn on push failure, R4.7)
-```
+Every mode computes its edit from the same bytes it writes back (R6.12). For `local` and `direct`
+that is a single read/write pair on the same file, which gives them `cmd_update`'s determinism
+guarantee (`:1641-1647`) for free — there is no persistent-clone-vs-temp-clone gap to be stale
+across. For `local` mode the early-exit existence check and the authoritative read become the same
+read.
 
-The single read/write pair gives local catalogs the determinism guarantee `cmd_update` documents
-for the PR flow (`:1641-1647`) for free: there is no persistent-clone-vs-temp-clone gap to be
-stale across. For a local catalog the early-exit existence check and the authoritative read
-become the same read.
+`git_commit` and `direct`-mode push failures **never fail the write** (R6.9): the file is already on
+disk, and reporting a failed write when the edit succeeded is a lie the user would act on. They warn
+and report `pushed: false`.
 
-`git_commit` failures never fail the write, because the file is already on disk (R4.6, R4.7) —
-reporting a failed write when the edit succeeded would be a lie the user would act on.
-
-## 8. Derived `--allow-local`
-
-`_prepare_entry` (`:1251`) takes `allow_local: bool` and refuses local-path sources
-(`:1282-1290`). It gains the destination catalog instead:
-
-```python
-def _prepare_entry(..., dest: Catalog, allow_local: bool) -> Entry:
-    # local source is fine when the destination catalog is local (R6.1)
-    if src.kind == "local" and dest.is_remote and not allow_local:
-        die(...)   # existing message + hint, now naming dest.id (R6.4)
-```
-
-`--allow-local` keeps working unchanged for the shared catalog (R6.3). The same rule applies to
-`cmd_update`'s `--set-source` validation (`:1612-1622`), which must move after
-`write_target()` — today it runs before `load_config()` to fail fast, and it cannot know the
-destination until the target is resolved. Source *existence* validation stays where it is.
-
-## 9. Command-by-command
-
-New flag, uniform: `--catalog <id>` on `list`, `search`, `use`, `sync`, `add`, `update`,
-`remove`, `push`.
-
-| Command | Change |
-| ------- | ------ |
-| `list` | Catalog column, shadow markers, and per-catalog summary lines **only when `len(cfg.active) > 1`** (R7.1–R7.3). Install status computed against the resolved winner only. Staleness warning names the catalog when >1 active (R7.7). JSON gains `catalog`, `shadowed_by`. `--catalog` filters. |
-| `search` | Matches across catalogs; rows labeled when >1 active (R7.4). JSON gains `catalog`. |
-| `use` | `cfg.resolve()` instead of `find_exact`; deps resolve across catalogs (R8.2); each result record carries its catalog (R8.3); shadow note on the target (R8.5); candidates labeled (R8.4); `--dry-run` reports catalogs (R8.7). `AMBIGUOUS`/`NOT_FOUND` shape and exit 2 unchanged. |
-| `sync` | Installed scan once against effective dirs; refresh from each item's resolved catalog and report it (R8.8); `--catalog` scopes the run; `pull_all` so the remote pull stays best-effort. `PARTIAL` semantics unchanged. |
-| `add` | `write_target()` for the destination; `apply_catalog_edit` for the write; `AMBIGUOUS_CATALOG` on ambiguity; duplicate check against the destination catalog, cross-catalog shadow warning (R5.7); `--batch` targets one catalog (R5.10). |
-| `update` | Same targeting; `--set-source` local-path rule moves after targeting (§8); resolution requires `--catalog` on a cross-catalog name (R5.8). |
-| `remove` | Same targeting; dependents scanned across catalogs (R5.9); `--purge` uses effective dirs **and the fixed scope names** (§11). |
-| `push` | Resolves by precedence, accepts `--catalog`; warns naming both candidate sources when shadowed (R9.2); `--from` scope names fixed (§11). Local-source and remote-source push behavior otherwise unchanged. |
-| `doctor` | Per-catalog content checks, registry validation, shadow warnings, catalog-leak errors, ineffective-`default_dirs` warning, shared-catalog-local-source warning; remote-only checks skipped when personal-only (R12). |
-| `init` | Unchanged behavior (R2.9). Internally uses `cfg.remote` where it used `cfg.catalog_*`. Output gains a closing pointer to `catalog init` for a personal catalog. |
-| `link`, `self-update` | Unchanged. |
-| `catalog` | **New** command group (§10). |
-
-## 10. `catalog` command group
+## 9. `catalog` command group
 
 ```
 library catalog list [--json]
-library catalog add --id <id> --path <path> [--read-only] [--git-commit]
-                    [--position first|last] [--json]
-library catalog remove <id> [--json]
+library catalog add  --id <id> (--path <path> | --repo <url> --branch <br> [--yaml-path <p>])
+                     [--read-only] [--git-commit] [--protected]
+                     [--position first|last] [--json]
+library catalog remove <id> [--purge-clone] [--json]
 library catalog init <path> [--id <id>] [--position first|last] [--git-commit] [--json]
+library catalog migrate [--dry-run] [--json]
 ```
 
-- `add` parses the target file as a catalog **before** touching the config (R13.3) and refuses a
-  duplicate id.
-- `remove` errors on an unknown id and refuses to remove the last remaining catalog (R13.4).
-- `init` scaffolds, then registers (R13.5), refusing to overwrite an existing file (R13.6):
+- `add` verifies the target is a readable, parseable catalog **before** touching the config (R15.4) —
+  cloning a remote one to check. It writes `protected: false` explicitly for a new remote catalog
+  unless `--protected` (D8, R15.5).
+- `remove` errors on unknown id, refuses to remove the last catalog, and leaves the clone unless
+  `--purge-clone` (R15.6).
+- `init` scaffolds then registers (R15.7), refusing to overwrite (R15.8):
 
   ```yaml
-  # Personal library catalog — local to this machine (or a repo you sync yourself).
-  # Registered in the tool's config.local.yaml. Add entries with:
-  #   library add --catalog <id> --name … --description … --source …
+  # Personal library catalog. Registered in the tool's config.local.yaml.
+  # Add entries with: library add --catalog <id> --name … --description … --source …
   library:
     skills: []
     agents: []
     prompts: []
   ```
 
-  No `default_dirs`: a personal catalog's block is ignored while a remote catalog exists (R10.3),
-  and including it would trip the `doctor` warning immediately. The built-in default (§6) makes
-  it unnecessary.
-- Config writes go through one `write_config(data)` that `safe_dump`s the mapping under a
-  regenerated header comment (D12), re-reads it, and re-validates before reporting success
-  (R13.8). Migration from the legacy `catalog:` mapping happens here (R13.7): normalize, insert,
-  write the new `catalogs:` form.
-- `--position first|last` sets precedence relative to the existing catalogs. Default `first`, so
-  a newly registered personal catalog shadows the shared one — matching D4's intent, and the
-  reason someone registers one.
+  No `default_dirs` — a catalog's block is ignored (D7) and including it would trip the `doctor`
+  warning immediately.
+- `migrate` implements R3: legacy → canonical, lift `default_dirs`, idempotent, `--dry-run`.
+- `--position` defaults to `first`, so a newly registered personal catalog shadows the shared one —
+  which is why someone registers one.
+- All config writes go through one `write_config(data)` that `safe_dump`s under a regenerated header
+  comment (D13), then re-reads and re-validates before reporting success (R15.10). `catalog add` and
+  `catalog init` migrate a legacy config as part of the operation (R15.9).
 
-`catalog` becomes a CLI subcommand, so `check_docs.py` (which derives the canonical set from
-`build_parser`, `:36-39`) will fail until `library catalog` appears in a code span in both
-`SKILL.md` and `README.md` (R14.11).
+`catalog` is a new CLI subcommand, so `check_docs.py` (which derives the canonical set from
+`build_parser`, `:36-39`) fails until `library catalog` appears in a code span in **both** `SKILL.md`
+and `README.md` (R16.11). It currently reports 12 commands; this makes 13.
 
-## 11. Pre-existing bug fixes
+## 10. Command-by-command
 
-Both are in the scope-name handling that §6 rewrites, so they are fixed here rather than
-inherited (D11, R11). Each is its own commit with its own regression test.
+New flag, uniform: `--catalog <id>` on `list`, `search`, `use`, `sync`, `add`, `update`, `remove`,
+`push`.
+
+| Command | Change |
+| ------- | ------ |
+| `list` | Catalog column, shadow markers, per-catalog summary, and per-catalog staleness warnings **only when `len(cfg.active) > 1`** (R9.1–R9.3, R5.8). Install status against the resolved winner only. JSON gains `catalog`, `shadowed_by`. `--catalog` filters. |
+| `search` | Matches across catalogs; rows labeled when >1 active (R9.4). JSON gains `catalog`. |
+| `use` | `cfg.resolve()` instead of `find_exact`; deps from `cfg.entries_of(entry.catalog)` (§7); shadow note on the target; candidates labeled; `--dry-run` reports catalogs. `AMBIGUOUS` / `NOT_FOUND` shape and exit 2 unchanged. |
+| `sync` | Installed scan once against effective dirs; refresh from each item's resolved catalog and report it; `--catalog` scopes the run; `pull_all` keeps pulls best-effort. `PARTIAL` semantics unchanged. |
+| `add` | `write_target()` → `apply_catalog_edit()`; `AMBIGUOUS_CATALOG` on ambiguity; duplicate check against the destination catalog; cross-catalog shadow warning; `--batch` targets one catalog. |
+| `update` | Same targeting; `--set-source` local-path rule moves after targeting (§11); requires `--catalog` on a cross-catalog name. |
+| `remove` | Same targeting; dependents scanned within the destination catalog (D9); `--purge` uses effective dirs and the fixed scope names (§12). |
+| `push` | Resolves by precedence, accepts `--catalog`; warns naming both candidate sources when shadowed. Local-source and remote-source push behavior otherwise unchanged. |
+| `doctor` | Per-catalog content checks, registry validation, per-remote clone/auth/staleness, shadow warnings, catalog-scoped dangling deps, ineffective-`default_dirs` warnings, legacy-shape hint (R14). |
+| `init` | Now emits the canonical `catalogs:` form (R3.9). Otherwise unchanged; output gains a pointer to `catalog init`. |
+| `link`, `self-update` | Unchanged. |
+| `catalog` | **New** (§9). |
+
+## 11. Derived `--allow-local`
+
+`_prepare_entry` (`:1251`) takes `allow_local: bool` and refuses local-path sources (`:1282-1290`).
+It gains the destination catalog:
+
+```python
+def _prepare_entry(..., dest: Catalog, allow_local: bool) -> Entry:
+    # a local source is fine only for a LOCAL catalog (D10, R8.1)
+    if src.kind == "local" and dest.is_remote and not allow_local:
+        die(...)   # existing message + repo-URL hint, now naming dest.id (R8.4)
+```
+
+Keying on `is_remote` rather than "is shared" is the point: a *remote personal* catalog exists to
+resolve on another machine, so a local path breaks it exactly as it breaks the shared one.
+
+The same rule applies to `cmd_update`'s `--set-source` validation (`:1612-1622`), which must move
+after `write_target()` — today it runs before `load_config()` to fail fast and cannot know the
+destination. Source *existence* validation stays where it is.
+
+## 12. Pre-existing bug fixes
+
+Both sit in the scope-name handling §6 rewrites, so they are fixed here rather than inherited (D12,
+R13). Each is its own commit with its own regression test.
 
 **B1 — `remove --purge` never deletes project-scope copies** (`:1526`):
 
 ```python
-for scope in ("default", "global"):        # "default" is normalized to "project" by default_dirs()
+for scope in ("default", "global"):     # "default" is normalized to "project" by default_dirs()
     try:
         base = resolve_target_base(catalog, entry, scope, None)
     except LibraryError:
-        continue                            # <- swallows the failure silently
+        continue                         # <- swallows the failure silently
 ```
 
-`default_dirs()` maps the legacy key `default` → `project` (`:212`), so `dirs.get("default")`
-is always `None`, `resolve_target_base` raises, and the `except` swallows it. Only the global
-copy is ever deleted. Fix: iterate `("project", "global")`.
+`default_dirs()` maps `default` → `project` (`:212`), so `dirs.get("default")` is always `None`,
+`resolve_target_base` raises, and the `except` swallows it. Only the global copy is ever deleted.
+Fix: iterate `("project", "global")`.
 
 **B2 — `push --from` mishandles scope names** (`:1732`, help text `:2352`):
 
@@ -487,133 +529,138 @@ if args.frm and args.frm not in ("default", "global"):
     scope_base = Path(args.frm).expanduser()      # "project" lands here -> treated as a path
 else:
     scopes = [args.frm] if args.frm else installed_scopes(catalog, entry)
-    ...
     scope_base = resolve_target_base(catalog, entry, scopes[0], None)   # "default" -> raises,
                                                                         # outside any handler
 ```
 
-`installed_scopes` returns `project`/`global` (`:407`), so `--from project` — the name the tool
-itself prints — is misread as a relative path, and `--from default` raises an unhandled
-`LibraryError` (the `try` starts at `:1790`). Fix: treat `("project", "global", "default")` as
-scope names, normalize `default` → `project`, and correct the help text and cookbooks (R11.5).
+`installed_scopes` returns `project`/`global` (`:407`), so `--from project` — the name the tool itself
+prints — is misread as a relative path, and `--from default` raises an unhandled `LibraryError` (the
+`try` starts at `:1790`). Fix: treat `("project", "global", "default")` as scope names, normalize
+`default` → `project`, correct the help text and cookbooks (R13.5).
 
-## 12. Backwards compatibility
+## 13. Backwards compatibility
 
 | Guarantee | Mechanism |
 | --------- | --------- |
-| Legacy `catalog:` config keeps working, no `init` re-run | `_normalize_catalogs` (§2) — one function, the whole story (R2.1) |
+| Legacy config keeps working, nothing forced | `_normalize_catalogs` (§2); migration is opt-in (R3.10) |
 | Identical human output with one catalog | Every new output element gated on `len(cfg.active) > 1` |
-| JSON stays compatible | Additive keys only (`catalog`, `shadowed_by`, `mode`, `catalogs`). `mode: "pr"` results keep every existing key (R2.4) |
+| JSON stays compatible | Additive keys only (`catalog`, `shadowed_by`, `mode`, `catalogs`). `pr`-mode results keep every existing key (R6.3) |
 | Flags keep meaning | No existing flag's semantics change; `--catalog` is new and optional |
-| Catalog file format unchanged | No new keys; `splice_entry` / `remove_entry` / `replace_entry` behavior untouched (R2.6) |
-| Existing clone not invalidated | `.catalog-repo/` stays the remote catalog's clone (R2.8) |
+| Catalog file format unchanged | No new keys; the three splice functions' behavior untouched (R2.6) |
+| Existing clone not invalidated | `.catalog-repo/` stays the `shared` clone (R2.8) |
 | Exit codes preserved | 0/1/2/3; `AMBIGUOUS_CATALOG` reuses 2 (R2.7) |
-| `init` output still valid | `init` keeps writing the legacy form, which normalizes cleanly (R2.9) |
+| **Install locations don't silently move** | Migration lifts the catalog's `default_dirs` (R3.4); until then `doctor` warns and names the effective paths (R12.5) |
 
-The single-catalog equivalence cases are encoded as tests (R15.4), not merely asserted here.
+Single-catalog equivalence is encoded as tests (R18.4), not merely asserted here.
 
-## 13. Failure modes
+## 14. Failure modes
 
 | Situation | Behavior | Req |
 | --------- | -------- | --- |
 | No config file | die with the existing `library init` hint | R2 |
-| Legacy `catalog:` only | Single remote catalog, silent | R2.1 |
+| Legacy `catalog:` only | One protected remote catalog, silent; `doctor` hints at migrate | R2.1, R14.9 |
 | `catalog:` and `catalogs:` both present | die (ambiguous) | R2.2 |
-| Registry shape error (missing id, both path+repo, duplicate id, two remotes) | die naming the offender | R1.2–R1.5 |
-| Local catalog path missing / unreadable / malformed YAML | warn naming the id, skip, continue | R1.8 |
-| Relative local catalog path | die | §2 |
-| Personal-only config (no remote) | Valid; clone/auth/staleness checks skipped | R1.7, R12.8 |
-| Remote clone absent | `pull_catalog` clones or dies with auth hint (unchanged); `doctor` warns | R12.1 |
-| `--catalog` unknown or skipped id | die listing available ids | R3.4 |
-| Write to `writable: false` catalog | refuse before touching the file | R4.9 |
-| Ambiguous write target | exit 2, `AMBIGUOUS_CATALOG` | R5.3 |
-| Stale `default_add_catalog`, one writable catalog | succeed using it | R5.5 |
-| `git_commit` on a non-repo | warn, file still written | R4.6 |
-| `git_commit` push fails | warn, `pushed: false`, write reported as succeeded | R4.7 |
-| Name in >1 catalog on `update` / `remove` | refuse, require `--catalog` | R5.8 |
-| Shared entry requires a personal-only entry | `doctor` error (catalog leak) | R12.5 |
-| Personal catalog declares `default_dirs` | `doctor` warning, block ignored | R10.3 |
-| Shared catalog holds local-path sources | `doctor` warning | R12.7 |
+| Registry shape error | die naming the offender | R1.3–R1.10 |
+| Two remotes sharing repo + branch | die (clone contention) | R1.7 |
+| Local path missing / unreadable / malformed YAML | warn naming the id, skip, continue | R1.16 |
+| Remote catalog with no clone yet | skip for reads with a warning; `pull_catalog` clones on use | R1.16, R5.3 |
+| Relative local catalog path | die | R1.10 |
+| No remote catalogs at all | Valid; clone/auth/staleness checks skipped | R1.9, R14.8 |
+| `--catalog` unknown or skipped id | die listing available ids | R4.4 |
+| Write to `writable: false` catalog | refuse before touching the file | R6.11 |
+| Ambiguous write target | exit 2, `AMBIGUOUS_CATALOG` | R7.3 |
+| Stale `default_add_catalog`, one writable catalog | succeed using it | R7.5 |
+| `git_commit` on a non-repo | warn, file still written | R6.8 |
+| Commit or push fails (`local` or `direct`) | warn, `pushed: false`, write reported successful | R6.9 |
+| One remote's pull fails | warn, use cached copy, other catalogs proceed | R5.4, R5.5 |
+| Name in >1 catalog on `update` / `remove` | refuse, require `--catalog` | R7.8 |
+| `requires` names an entry in another catalog | warn at install, error in `doctor` | R10.4, R14.4 |
+| Any catalog declares `default_dirs` | ignored; `doctor` warns and names effective paths | R12.5 |
+| Remote catalog holds local-path sources | `doctor` warns | R14.7 |
 
-## 14. Agent layer
+## 15. Agent layer
 
 | File | Change |
 | ---- | ------ |
-| `SKILL.md` | Catalog model section (remote/shared vs local/personal, precedence, shadowing, the two write modes); `catalog` in the Commands and Cookbook tables; `--catalog` noted on entry-level commands; **the PR-reporting rule extended to read `mode` first** (R14.2); the local-source paragraph (`:110-114`) updated for the derived rule |
-| `cookbook/catalog.md` | **New.** List / register / init / remove; explaining precedence and shadowing; when to suggest a personal catalog (work not ready to share, no write access to the shared repo, machine-local paths) |
-| `cookbook/add.md` | Handle `AMBIGUOUS_CATALOG` by asking, then re-running with `--catalog`; local sources need no `--allow-local` for a personal catalog; batch targets one catalog; report `mode` correctly |
-| `cookbook/update.md` | Same targeting + `--set-source` local rule + `mode` reporting |
-| `cookbook/use.md` | `--catalog`; relaying the shadow note; catalog-labeled candidates |
-| `cookbook/remove.md` | `--catalog` required on a cross-catalog name; **scope names corrected** (R11.5, R14.7) |
+| `SKILL.md` | Catalog model section (local vs remote, shared vs personal, precedence, shadowing, the three write modes); `catalog` in the Commands and Cookbook tables; `--catalog` noted on entry-level commands; **the PR-reporting rule extended to read `mode` first** (R16.2); the local-source paragraph (`:110-114`) updated for the derived rule; a note that deps must live in the same catalog |
+| `cookbook/catalog.md` | **New.** list / add / init / remove / migrate; explaining precedence and shadowing; when to suggest a personal catalog, and local vs remote |
+| `cookbook/add.md` | `AMBIGUOUS_CATALOG` → ask, then re-run with `--catalog`; local sources need no `--allow-local` for a local catalog; deps must be in the same catalog; `mode`-based outcome reporting; batch targets one catalog |
+| `cookbook/update.md` | Same targeting, `--set-source` rule, `mode` reporting |
+| `cookbook/use.md` | `--catalog`; relaying the shadow note; catalog-labeled candidates; dep-scope warning |
+| `cookbook/remove.md` | `--catalog` on cross-catalog names; **scope names corrected** (R13.5) |
 | `cookbook/push.md` | Shadowed-source warning; **`--from` scope names corrected** |
 | `cookbook/list.md`, `search.md`, `sync.md` | `--catalog`; new columns; per-catalog staleness |
-| `cookbook/doctor.md` | New checks and which are errors vs warnings |
-| `cookbook/init.md` | `init` configures the shared catalog; point at `catalog init` for a personal one (R14.8) |
-| `justfile` | `catalogs`, `catalog-add`, `catalog-init`, `catalog-remove`, `test`; flag pass-through on `list`/`search`/`use`/`sync` so `--catalog` works; `test` added to `check` |
-| `README.md` | Personal Catalogs section: config schema, `catalog init`, worked shadowing example, one-remote limitation; updated command table and architecture tree |
-| `docs/contributing.md` | Replace the "no unit-test suite yet" note with how to run the suite; document the two write modes |
-| `library.example.yaml` | Note that `local-only-skill` belongs in a personal catalog |
+| `cookbook/doctor.md` | New checks, and which are errors vs warnings |
+| `cookbook/init.md` | `init` configures the shared catalog; canonical config shape; pointer to `catalog init` and `catalog migrate` |
+| `justfile` | `catalogs`, `catalog-add`, `catalog-init`, `catalog-remove`, `catalog-migrate`, `test`; flag pass-through on `list`/`search`/`use`/`sync`; `test` added to `check` |
+| `README.md` | Personal Catalogs section: config schema, `catalog init`, worked shadowing example, **where install dirs come from now**; updated command table and architecture tree; pointer to `docs/roadmap.md` |
+| `docs/contributing.md` | Replace "no unit-test suite yet" with how to run it; document the three write modes; point at `docs/roadmap.md` |
+| `docs/roadmap.md` | **New** (R17) — the durable home for deferred work |
+| `.gitignore` | Add `.catalogs/` |
+| `library.example.yaml` | Note that `local-only-skill` belongs in a local catalog, and that a catalog's `default_dirs` block is ignored |
 
-## 15. Test strategy
+## 16. Test strategy
 
-`tests/test_library.py`, `unittest.TestCase` classes (stdlib, pytest-compatible per D10), run by
-`just test` and wired into `just check` so the offline pre-push hook covers them (R15.1).
+`tests/test_library.py`, `unittest.TestCase` classes (stdlib, pytest-compatible per D11), run by
+`just test` and wired into `just check` so the offline pre-push hook covers them (R18.1).
 
-No network, no touching the real `~/.claude` or the real `config.local.yaml` (R15.5): every test
-builds catalogs and configs in a `tempfile.TemporaryDirectory()` and injects paths. `git_commit`
-and PR-adjacent paths use throwaway local git repos with a local `--bare` remote (R15.6);
-`fetch_remote` and `_create_pr`'s network calls stay untested.
+No network, no touching the real `~/.claude` or the real `config.local.yaml` (R18.5): every test
+builds catalogs and configs in a `tempfile.TemporaryDirectory()` and injects paths. Git-touching
+tests use throwaway local repos with a local `--bare` remote (R18.6); `fetch_remote` and
+`_create_pr`'s network calls stay untested.
 
-Landing **before** the refactor (R15.3) — the safety net, written against today's code, and
-these must keep passing unchanged:
+Landing **before** the refactor (R18.3) — the safety net, written against today's code, and these must
+keep passing unchanged:
 
-- `splice_entry` — alphabetical insertion at head/middle/tail, `[]` → block conversion,
-  duplicate rejection, comment and blank-line preservation, trailing-blank-line back-up
+- `splice_entry` — insertion at head/middle/tail, `[]` → block conversion, duplicate rejection,
+  comment and blank-line preservation, trailing-blank-line back-up
 - `remove_entry` — head/middle/tail, empty-section collapse back to `[]`, not-found error
-- `replace_entry` — in-place field edit keeps position, not-found error
+- `replace_entry` — in-place edit keeps position, not-found error
 - round-trip: splice → remove returns the original bytes
-- `parse_source` — GitHub blob/raw, Bitbucket src/raw, `?at=`/`#lines` stripping, `.git`
-  suffix, absolute and `~` local paths, unrecognized format
+- `parse_source` — GitHub blob/raw, Bitbucket src/raw, `?at=`/`#lines` stripping, `.git` suffix,
+  absolute and `~` local paths, unrecognized format
 - `_remote_web` — SSH, HTTPS, `ssh://`, trailing `.git` and `/`
-- `resolve_deps` — deps-first order, diamond dedupe, cycle survival
+- `resolve_deps` — deps-first order, diamond dedupe, missing dep warns, cycle terminates
 - `default_dirs` — flattening, and the `default` → `project` alias
-- `resolve_install_dir` / `project_cwd` — absolute passthrough, relative anchoring to the
-  injected CWD rather than the tool dir
-- `_compute_updated_entry` — set/add/remove requires, redundant-op warnings
+- `resolve_install_dir` / `project_cwd` — absolute passthrough, relative anchored to the injected CWD
+- `_compute_updated_entry` — set / add / remove requires, redundant-op warnings
 
-Landing per phase after (R15.4):
+Landing per phase after (R18.4):
 
-- config normalization: legacy `catalog:` → one remote catalog; both forms present → die; every
-  registry validation error in §2
-- local catalog hydration: dir vs file path, missing, unreadable, malformed → skipped + warned,
-  other catalogs unaffected
-- `resolve` / `shadows` / `by_id`, and `--catalog` restriction
-- `effective_dirs`: builtin fallback, remote overlay, personal-only highest-precedence overlay,
-  config override, personal block ignored
+- config normalization: legacy → one protected remote catalog; both forms → die; every validation
+  error in §2
+- migration: legacy → canonical, `default_dirs` lift, idempotency, `--dry-run`, refusal cases
+- hydration: local dir vs file path, missing/unreadable/malformed → skipped + warned with other
+  catalogs unaffected; remote with no clone → skipped
+- `resolve` / `shadows` / `by_id` / `entries_of`, and `--catalog` restriction
+- **catalog-scoped deps**: a `requires` ref satisfied only in another catalog warns at install and is
+  a `doctor` error; the same ref inside one catalog resolves
+- `effective_dirs`: builtin alone, config override merge, and a catalog's block having **no** effect
 - `write_target`: all four branches, including the stale-`default_add_catalog` case
-- `apply_catalog_edit` local mode: file written, verify assertion fires, `git_commit` commit +
-  push, non-repo warning, push-failure warning with the write still reported successful
-- derived `--allow-local`: accepted for a local destination, refused for remote, `--allow-local`
-  still overrides
-- B1 and B2 regressions (§11): `--purge` deletes a project-scope copy; `--from project` and
-  `--from default` both resolve
-- **single-catalog equivalence** (R2.3): golden stdout for `list`, `search`, and `doctor` against
-  a fixture catalog with a legacy config, asserted unchanged across every phase
+- `apply_catalog_edit`: all three modes — `local` writes the file with no branch; `pr` keeps every
+  existing key; `direct` commits and pushes the branch with no PR; verify aborts before writing;
+  `git_commit` non-repo and push-failure warnings with the write still successful
+- derived `--allow-local`: accepted for a local destination, refused for remote (shared *and*
+  personal), `--allow-local` still overrides
+- B1 and B2 regressions (§12)
+- **single-catalog equivalence** (R2.3): golden stdout for `list`, `search`, `doctor` against a legacy
+  config, asserted unchanged across every phase
 
-## 16. Risks
+## 17. Risks
 
 | Risk | Absorbed by |
 | ---- | ----------- |
-| The refactor silently changes output for existing users | Golden single-catalog stdout tests written first (§15); every new output element gated on `len(active) > 1` |
-| The agent claims "PR opened" for a local write | `mode` in every write result, and R14.2 rewriting SKILL.md's reporting rule — the rule change is a requirement, not a doc nicety |
+| The refactor silently changes output for existing users | Golden single-catalog stdout tests written first (§16); every new output element gated on `len(active) > 1` |
+| **Install locations silently move** when catalog `default_dirs` stops being honored | Migration lifts the block (R3.4); `doctor` warns and names effective paths until then (R12.5); R2.9 forbids silence |
+| The agent claims "PR opened" for a `local` or `direct` write | `mode` in every write result, and R16.2 rewriting SKILL.md's reporting rule — a requirement, not a doc nicety |
 | `doctor`'s duplicate check inverted, making intentional shadows errors | Explicit split into per-catalog (error) and cross-catalog (warning) passes, each tested (§5) |
-| A personal write accidentally opens a PR on the team repo | `write_target` refuses to guess when >1 writable (R5.3); `--position first` means the personal catalog is the one shadowing, not the one being written to by accident |
-| `git_commit` clobbers a change from another device | ff-only pull before the write (R4.8); the single read/write pair means the edit is computed from the post-pull bytes |
-| Extending the config becomes a second thing that can be "wrong" | One validation function shared by `load_config` and `doctor` (§2, R12.3); `catalog add` validates before writing (R13.3) |
-| Scope creep into multiple remote catalogs | Rejected explicitly at load time with a message naming the supported alternative (R1.5); clone layout reserved but unimplemented |
-| `check_docs.py` fails the pre-push hook on the `catalog` command | R14.11 makes documenting it in both files an acceptance criterion, and it lands in the same phase as the command |
+| A personal write accidentally opens a PR on the team repo | `write_target` refuses to guess when >1 writable (R7.3); `catalog add` writes `protected: false` explicitly for new remotes (D8) |
+| `direct`-mode push clobbers another device's change | ff-only pull before the write (R6.10); the single read/write pair computes the edit from post-pull bytes |
+| Personal catalogs become unusable because their deps live in the shared catalog | D9 is a deliberate simplification; the friction is documented (R16.5) and a `copy` command with dependency closure is on the roadmap |
+| Clone count and pull latency grow with remote catalogs | One pull per remote per command, best-effort; `--no-pull` skips all; cost stated plainly in the non-functional requirements |
+| `check_docs.py` fails the pre-push hook on the `catalog` command | R16.11 makes documenting it an acceptance criterion, and it lands in the same commit as the command (T7.1) |
 
-**Left deliberately simple:** `config.local.yaml` is rewritten with `safe_dump` plus a header
-(D12) rather than text-spliced — it is machine-owned, unlike the hand-authored, PR-reviewed
-catalogs; `find_exact` and `iter_entries` keep their pure signatures so `cmd_update`'s
+**Left deliberately simple:** `config.local.yaml` is rewritten with `safe_dump` plus a header (D13)
+rather than text-spliced — it is machine-owned, unlike the hand-authored, PR-reviewed catalogs;
+`find_exact`, `iter_entries`, and `resolve_deps` keep their pure signatures so `cmd_update`'s
 determinism path is untouched; and `.catalog-repo/` is left exactly where it is.
