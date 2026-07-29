@@ -190,6 +190,35 @@ LEGACY_CONFIG = {
 }
 
 
+def make_entry(
+    name: str,
+    *,
+    etype: str = "skill",
+    description: str = "Desc",
+    source: str = "",
+    requires: list[str] | None = None,
+) -> library.Entry:
+    return library.Entry(
+        type=etype,
+        name=name,
+        description=description,
+        source=source or f"./{name}",
+        requires=list(requires or []),
+    )
+
+
+def entry_names(text: str, section: str = "skills") -> list[str]:
+    """Entry names in *section*, in file order — for ordering assertions."""
+    lines = text.split("\n")
+    sec_idx, _, sec_end = library._locate_section(lines, section)
+    out = []
+    for i in library._item_starts(lines, sec_idx, sec_end):
+        m = library._ITEM_NAME_RE.match(lines[i])
+        if m:
+            out.append(m.group(1).strip().strip("\"'"))
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # Harness self-tests — these are the R18.5 guarantee, not decoration
 # --------------------------------------------------------------------------- #
@@ -285,6 +314,532 @@ class TestTempGitRepo(unittest.TestCase):
         url = self.repo.git("remote", "get-url", "origin").stdout.strip()
         self.assertEqual(Path(url), self.repo.remote)
         self.assertTrue(self.repo.remote.is_dir())
+
+
+# --------------------------------------------------------------------------- #
+# Catalog text splice (R18.3)
+#
+# The write path is a text splicer, so these assert whole-file bytes: a catalog is
+# hand-authored and PR-reviewed, and preserving its comments, blank lines, and
+# indentation is the contract. `default_dirs` deliberately carries its own nested
+# `skills:` key, which must not be mistaken for the one under `library:`.
+# --------------------------------------------------------------------------- #
+
+CATALOG = """\
+# Team catalog — hand-authored. The CLI splices text so this comment survives writes.
+default_dirs:
+  skills:
+    - project: .claude/skills/
+    - global: ~/.claude/skills/
+
+library:
+  skills:
+    # keep alphabetical
+    - name: alpha
+      description: First skill
+      source: ./alpha
+
+    - name: gamma
+      description: Third skill
+      source: ./gamma
+      requires: ["skill:alpha"]
+  agents: []
+  prompts:
+    - name: solo
+      description: Only prompt
+      source: ./solo
+"""
+
+THREE = """\
+library:
+  skills:
+    - name: alpha
+      description: A
+      source: ./alpha
+    - name: beta
+      description: B
+      source: ./beta
+    - name: gamma
+      description: C
+      source: ./gamma
+  agents: []
+  prompts: []
+"""
+
+SINGLE = """\
+library:
+  skills:
+    - name: alpha
+      description: A
+      source: ./alpha
+  agents: []
+  prompts: []
+"""
+
+TRAILING_BLANK = """\
+library:
+  skills:
+    - name: alpha
+      description: A
+      source: ./alpha
+
+  agents: []
+"""
+
+QUOTED = """\
+library:
+  skills:
+    - name: "yaml-lint"
+      description: Quoted name
+      source: ./yaml-lint
+  agents: []
+  prompts: []
+"""
+
+
+class TestRenderEntry(unittest.TestCase):
+    def test_indentation_and_property_order(self) -> None:
+        self.assertEqual(
+            library.render_entry(make_entry("thing", description="Does things")),
+            [
+                "    - name: thing",
+                "      description: Does things",
+                "      source: ./thing",
+            ],
+        )
+
+    def test_requires_renders_flow_style_and_is_omitted_when_empty(self) -> None:
+        self.assertEqual(
+            library.render_entry(make_entry("thing", requires=["skill:alpha", "prompt:solo"]))[-1],
+            '      requires: ["skill:alpha", "prompt:solo"]',
+        )
+        self.assertEqual(len(library.render_entry(make_entry("thing"))), 3)
+
+    def test_values_are_quoted_only_when_yaml_needs_it(self) -> None:
+        rendered = library.render_entry(make_entry("thing", description="Fixes: things"))
+        self.assertEqual(rendered[1], "      description: 'Fixes: things'")
+
+    def test_multiline_value_is_rejected(self) -> None:
+        with self.assertRaises(library.LibraryError):
+            library.render_entry(make_entry("thing", description="line one\nline two"))
+
+
+class TestSpliceEntry(unittest.TestCase):
+    maxDiff = None
+
+    def test_inserts_at_head_below_the_section_comment(self) -> None:
+        self.assertEqual(
+            library.splice_entry(CATALOG, make_entry("aardvark", description="Zeroth skill")),
+            """\
+# Team catalog — hand-authored. The CLI splices text so this comment survives writes.
+default_dirs:
+  skills:
+    - project: .claude/skills/
+    - global: ~/.claude/skills/
+
+library:
+  skills:
+    # keep alphabetical
+    - name: aardvark
+      description: Zeroth skill
+      source: ./aardvark
+    - name: alpha
+      description: First skill
+      source: ./alpha
+
+    - name: gamma
+      description: Third skill
+      source: ./gamma
+      requires: ["skill:alpha"]
+  agents: []
+  prompts:
+    - name: solo
+      description: Only prompt
+      source: ./solo
+""",
+        )
+
+    def test_inserts_in_the_middle_directly_above_the_next_entry(self) -> None:
+        # The blank line separating alpha from gamma stays where it is, so the new
+        # entry lands below it and butts against gamma.
+        self.assertEqual(
+            library.splice_entry(CATALOG, make_entry("beta", description="Second skill")),
+            """\
+# Team catalog — hand-authored. The CLI splices text so this comment survives writes.
+default_dirs:
+  skills:
+    - project: .claude/skills/
+    - global: ~/.claude/skills/
+
+library:
+  skills:
+    # keep alphabetical
+    - name: alpha
+      description: First skill
+      source: ./alpha
+
+    - name: beta
+      description: Second skill
+      source: ./beta
+    - name: gamma
+      description: Third skill
+      source: ./gamma
+      requires: ["skill:alpha"]
+  agents: []
+  prompts:
+    - name: solo
+      description: Only prompt
+      source: ./solo
+""",
+        )
+
+    def test_appends_at_tail_before_the_next_section(self) -> None:
+        self.assertEqual(
+            library.splice_entry(CATALOG, make_entry("zeta", description="Last skill")),
+            """\
+# Team catalog — hand-authored. The CLI splices text so this comment survives writes.
+default_dirs:
+  skills:
+    - project: .claude/skills/
+    - global: ~/.claude/skills/
+
+library:
+  skills:
+    # keep alphabetical
+    - name: alpha
+      description: First skill
+      source: ./alpha
+
+    - name: gamma
+      description: Third skill
+      source: ./gamma
+      requires: ["skill:alpha"]
+    - name: zeta
+      description: Last skill
+      source: ./zeta
+  agents: []
+  prompts:
+    - name: solo
+      description: Only prompt
+      source: ./solo
+""",
+        )
+
+    def test_appending_backs_up_over_a_trailing_blank_line(self) -> None:
+        self.assertEqual(
+            library.splice_entry(TRAILING_BLANK, make_entry("beta", description="B")),
+            """\
+library:
+  skills:
+    - name: alpha
+      description: A
+      source: ./alpha
+    - name: beta
+      description: B
+      source: ./beta
+
+  agents: []
+""",
+        )
+
+    def test_converts_an_empty_inline_section_to_a_block(self) -> None:
+        self.assertEqual(
+            library.splice_entry(CATALOG, make_entry("helper", etype="agent", description="An agent")),
+            """\
+# Team catalog — hand-authored. The CLI splices text so this comment survives writes.
+default_dirs:
+  skills:
+    - project: .claude/skills/
+    - global: ~/.claude/skills/
+
+library:
+  skills:
+    # keep alphabetical
+    - name: alpha
+      description: First skill
+      source: ./alpha
+
+    - name: gamma
+      description: Third skill
+      source: ./gamma
+      requires: ["skill:alpha"]
+  agents:
+    - name: helper
+      description: An agent
+      source: ./helper
+  prompts:
+    - name: solo
+      description: Only prompt
+      source: ./solo
+""",
+        )
+
+    def test_orders_case_insensitively(self) -> None:
+        spliced = library.splice_entry(CATALOG, make_entry("Beta"))
+        self.assertEqual(entry_names(spliced), ["alpha", "Beta", "gamma"])
+
+    def test_rejects_a_duplicate_name(self) -> None:
+        with self.assertRaises(library.LibraryError) as ctx:
+            library.splice_entry(CATALOG, make_entry("alpha"))
+        self.assertIn("already exists", str(ctx.exception))
+
+    def test_rejects_a_duplicate_of_a_quoted_name(self) -> None:
+        self.assertEqual(entry_names(QUOTED), ["yaml-lint"])
+        with self.assertRaises(library.LibraryError):
+            library.splice_entry(QUOTED, make_entry("yaml-lint"))
+
+    def test_rejects_a_missing_section(self) -> None:
+        with self.assertRaises(library.LibraryError) as ctx:
+            library.splice_entry("library:\n  skills: []\n", make_entry("p", etype="prompt"))
+        self.assertIn("prompts", str(ctx.exception))
+
+    def test_rejects_a_catalog_with_no_library_key(self) -> None:
+        with self.assertRaises(library.LibraryError) as ctx:
+            library.splice_entry("default_dirs: {}\n", make_entry("alpha"))
+        self.assertIn("library", str(ctx.exception))
+
+
+class TestRemoveEntry(unittest.TestCase):
+    maxDiff = None
+
+    def test_removes_the_head_entry_and_the_blank_line_below_it(self) -> None:
+        self.assertEqual(
+            library.remove_entry(CATALOG, "skill", "alpha"),
+            """\
+# Team catalog — hand-authored. The CLI splices text so this comment survives writes.
+default_dirs:
+  skills:
+    - project: .claude/skills/
+    - global: ~/.claude/skills/
+
+library:
+  skills:
+    # keep alphabetical
+    - name: gamma
+      description: Third skill
+      source: ./gamma
+      requires: ["skill:alpha"]
+  agents: []
+  prompts:
+    - name: solo
+      description: Only prompt
+      source: ./solo
+""",
+        )
+
+    def test_removes_a_middle_entry(self) -> None:
+        self.assertEqual(
+            library.remove_entry(THREE, "skill", "beta"),
+            """\
+library:
+  skills:
+    - name: alpha
+      description: A
+      source: ./alpha
+    - name: gamma
+      description: C
+      source: ./gamma
+  agents: []
+  prompts: []
+""",
+        )
+
+    def test_removes_the_tail_entry_including_its_requires_line(self) -> None:
+        self.assertEqual(
+            library.remove_entry(CATALOG, "skill", "gamma"),
+            """\
+# Team catalog — hand-authored. The CLI splices text so this comment survives writes.
+default_dirs:
+  skills:
+    - project: .claude/skills/
+    - global: ~/.claude/skills/
+
+library:
+  skills:
+    # keep alphabetical
+    - name: alpha
+      description: First skill
+      source: ./alpha
+
+  agents: []
+  prompts:
+    - name: solo
+      description: Only prompt
+      source: ./solo
+""",
+        )
+
+    def test_emptied_section_collapses_to_inline_brackets(self) -> None:
+        self.assertEqual(
+            library.remove_entry(SINGLE, "skill", "alpha"),
+            """\
+library:
+  skills: []
+  agents: []
+  prompts: []
+""",
+        )
+
+    def test_collapse_discards_a_comment_left_inside_the_section(self) -> None:
+        # Current behavior: collapsing wipes everything between the section key and
+        # the next sibling, so a section-level comment does not survive emptying.
+        commented = """\
+library:
+  skills:
+    # nothing here yet is fine
+    - name: alpha
+      description: A
+      source: ./alpha
+  agents: []
+"""
+        self.assertEqual(
+            library.remove_entry(commented, "skill", "alpha"),
+            """\
+library:
+  skills: []
+  agents: []
+""",
+        )
+
+    def test_rejects_an_unknown_name(self) -> None:
+        with self.assertRaises(library.LibraryError) as ctx:
+            library.remove_entry(CATALOG, "skill", "nope")
+        self.assertIn("not found", str(ctx.exception))
+
+
+class TestReplaceEntry(unittest.TestCase):
+    maxDiff = None
+
+    def test_replaces_in_place_and_drops_a_removed_requires_line(self) -> None:
+        self.assertEqual(
+            library.replace_entry(
+                CATALOG, "skill", "gamma",
+                make_entry("gamma", description="Rewritten", source="./gamma-v2"),
+            ),
+            """\
+# Team catalog — hand-authored. The CLI splices text so this comment survives writes.
+default_dirs:
+  skills:
+    - project: .claude/skills/
+    - global: ~/.claude/skills/
+
+library:
+  skills:
+    # keep alphabetical
+    - name: alpha
+      description: First skill
+      source: ./alpha
+
+    - name: gamma
+      description: Rewritten
+      source: ./gamma-v2
+  agents: []
+  prompts:
+    - name: solo
+      description: Only prompt
+      source: ./solo
+""",
+        )
+
+    def test_keeps_position_when_replacing_a_middle_entry(self) -> None:
+        replaced = library.replace_entry(
+            THREE, "skill", "beta", make_entry("beta", description="B2", requires=["skill:alpha"])
+        )
+        self.assertEqual(entry_names(replaced), ["alpha", "beta", "gamma"])
+        self.assertIn('      requires: ["skill:alpha"]', replaced)
+
+    def test_consumes_the_blank_line_below_a_non_final_entry(self) -> None:
+        # Current behavior: the replaced span runs to the next entry's first line, so
+        # blank-line spacing after the edited entry is absorbed.
+        self.assertEqual(
+            library.replace_entry(
+                CATALOG, "skill", "alpha",
+                make_entry("alpha", description="Rewritten", requires=["skill:gamma"]),
+            ),
+            """\
+# Team catalog — hand-authored. The CLI splices text so this comment survives writes.
+default_dirs:
+  skills:
+    - project: .claude/skills/
+    - global: ~/.claude/skills/
+
+library:
+  skills:
+    # keep alphabetical
+    - name: alpha
+      description: Rewritten
+      source: ./alpha
+      requires: ["skill:gamma"]
+    - name: gamma
+      description: Third skill
+      source: ./gamma
+      requires: ["skill:alpha"]
+  agents: []
+  prompts:
+    - name: solo
+      description: Only prompt
+      source: ./solo
+""",
+        )
+
+    def test_discards_a_comment_inside_the_replaced_block(self) -> None:
+        commented = """\
+library:
+  skills:
+    - name: alpha
+      description: A
+      # pinned to a fork on purpose
+      source: ./alpha
+  agents: []
+"""
+        self.assertEqual(
+            library.replace_entry(commented, "skill", "alpha", make_entry("alpha", description="A2")),
+            """\
+library:
+  skills:
+    - name: alpha
+      description: A2
+      source: ./alpha
+  agents: []
+""",
+        )
+
+    def test_rejects_an_unknown_name(self) -> None:
+        with self.assertRaises(library.LibraryError) as ctx:
+            library.replace_entry(CATALOG, "skill", "nope", make_entry("nope"))
+        self.assertIn("not found", str(ctx.exception))
+
+
+class TestSpliceRoundTrip(unittest.TestCase):
+    maxDiff = None
+
+    def test_splice_then_remove_restores_the_original_bytes(self) -> None:
+        for name in ("aardvark", "beta", "zeta"):  # head, middle, tail
+            with self.subTest(position=name):
+                spliced = library.splice_entry(CATALOG, make_entry(name))
+                self.assertNotEqual(spliced, CATALOG)
+                self.assertEqual(library.remove_entry(spliced, "skill", name), CATALOG)
+
+    def test_round_trip_through_an_empty_inline_section_restores_it(self) -> None:
+        spliced = library.splice_entry(CATALOG, make_entry("helper", etype="agent"))
+        self.assertEqual(library.remove_entry(spliced, "agent", "helper"), CATALOG)
+
+    def test_round_trip_loses_a_trailing_blank_line_in_the_section(self) -> None:
+        # Known asymmetry in current behavior, pinned so a refactor can't change it
+        # silently: splice backs up over the trailing blank, remove then deletes
+        # through to the next section and takes the blank with it.
+        spliced = library.splice_entry(TRAILING_BLANK, make_entry("beta", description="B"))
+        self.assertEqual(
+            library.remove_entry(spliced, "skill", "beta"),
+            """\
+library:
+  skills:
+    - name: alpha
+      description: A
+      source: ./alpha
+  agents: []
+""",
+        )
 
 
 if __name__ == "__main__":
