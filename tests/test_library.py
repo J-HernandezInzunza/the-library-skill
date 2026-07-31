@@ -842,5 +842,143 @@ library:
         )
 
 
+# --------------------------------------------------------------------------- #
+# Source parsing and clone-URL derivation (R18.3)
+# --------------------------------------------------------------------------- #
+
+class TestParseSource(unittest.TestCase):
+    def test_github_blob_url(self) -> None:
+        self.assertEqual(
+            library.parse_source("https://github.com/acme/tools/blob/main/skills/alpha/SKILL.md"),
+            library.Source(kind="github", org="acme", repo="tools", branch="main",
+                           file_path="skills/alpha/SKILL.md"),
+        )
+
+    def test_github_raw_url(self) -> None:
+        self.assertEqual(
+            library.parse_source(
+                "https://raw.githubusercontent.com/acme/tools/main/skills/alpha/SKILL.md"),
+            library.Source(kind="github", org="acme", repo="tools", branch="main",
+                           file_path="skills/alpha/SKILL.md"),
+        )
+
+    def test_bitbucket_src_url(self) -> None:
+        self.assertEqual(
+            library.parse_source("https://bitbucket.org/acme/tools/src/develop/agents/bot.md"),
+            library.Source(kind="bitbucket", org="acme", repo="tools", branch="develop",
+                           file_path="agents/bot.md"),
+        )
+
+    def test_bitbucket_raw_url(self) -> None:
+        self.assertEqual(
+            library.parse_source("https://bitbucket.org/acme/tools/raw/develop/agents/bot.md"),
+            library.Source(kind="bitbucket", org="acme", repo="tools", branch="develop",
+                           file_path="agents/bot.md"),
+        )
+
+    def test_strips_a_git_suffix_from_the_repo(self) -> None:
+        src = library.parse_source("https://github.com/acme/tools.git/blob/main/alpha/SKILL.md")
+        self.assertEqual(src.repo, "tools")
+
+    def test_strips_query_and_fragment_noise_from_the_path(self) -> None:
+        cases = {
+            "https://bitbucket.org/acme/tools/src/main/alpha/SKILL.md?at=refs%2Fheads%2Fmain":
+                "alpha/SKILL.md",
+            "https://bitbucket.org/acme/tools/src/main/alpha/SKILL.md#lines-4:20":
+                "alpha/SKILL.md",
+            "https://github.com/acme/tools/blob/main/alpha/SKILL.md#L4-L20":
+                "alpha/SKILL.md",
+        }
+        for url, expected in cases.items():
+            with self.subTest(url=url):
+                self.assertEqual(library.parse_source(url).file_path, expected)
+
+    def test_absolute_local_path(self) -> None:
+        self.assertEqual(
+            library.parse_source("/srv/agentics/alpha/SKILL.md"),
+            library.Source(kind="local", path=Path("/srv/agentics/alpha/SKILL.md")),
+        )
+
+    def test_tilde_local_path_is_expanded(self) -> None:
+        tool = TempTool()
+        self.addCleanup(tool.stop)
+        src = library.parse_source("~/dev/agentics/alpha/SKILL.md")
+        self.assertEqual(src.kind, "local")
+        self.assertEqual(src.path, tool.home / "dev/agentics/alpha/SKILL.md")
+
+    def test_surrounding_whitespace_is_ignored(self) -> None:
+        src = library.parse_source("  https://github.com/acme/tools/blob/main/alpha/SKILL.md\n")
+        self.assertEqual(src.org, "acme")
+
+    def test_unrecognized_formats_raise(self) -> None:
+        cases = [
+            "./alpha/SKILL.md",                                       # relative is not "local"
+            "alpha/SKILL.md",
+            "",
+            "http://github.com/acme/tools/blob/main/alpha/SKILL.md",  # http, not https
+            "https://github.com/acme/tools/raw/main/alpha/SKILL.md",  # GitHub's /raw/ web form
+            "https://gitlab.com/acme/tools/blob/main/alpha/SKILL.md",
+            "https://github.com/acme/tools",                          # repo root, no file
+        ]
+        for source in cases:
+            with self.subTest(source=source):
+                with self.assertRaises(library.LibraryError) as ctx:
+                    library.parse_source(source)
+                self.assertIn("unrecognized source format", str(ctx.exception))
+
+    def test_parent_path_and_filename(self) -> None:
+        nested = library.parse_source("https://github.com/acme/tools/blob/main/skills/alpha/SKILL.md")
+        self.assertEqual(nested.parent_path, "skills/alpha")
+        self.assertEqual(nested.filename, "SKILL.md")
+        top = library.parse_source("https://github.com/acme/tools/blob/main/AGENT.md")
+        self.assertEqual(top.parent_path, "")
+        self.assertEqual(top.filename, "AGENT.md")
+
+
+class TestCloneUrls(unittest.TestCase):
+    def test_ssh_comes_first_so_private_repos_resolve_by_key(self) -> None:
+        src = library.parse_source("https://github.com/acme/tools/blob/main/alpha/SKILL.md")
+        self.assertEqual(src.clone_urls(), [
+            "git@github.com:acme/tools.git",
+            "https://github.com/acme/tools.git",
+        ])
+
+    def test_bitbucket_kind_uses_the_bitbucket_host(self) -> None:
+        src = library.parse_source("https://bitbucket.org/acme/tools/src/main/alpha/SKILL.md")
+        self.assertEqual(src.clone_urls(), [
+            "git@bitbucket.org:acme/tools.git",
+            "https://bitbucket.org/acme/tools.git",
+        ])
+
+
+class TestRemoteWeb(unittest.TestCase):
+    def test_recognized_clone_urls(self) -> None:
+        cases = {
+            "git@github.com:acme/tools.git": ("github.com", "acme", "tools"),
+            "git@github.com:acme/tools": ("github.com", "acme", "tools"),
+            "https://github.com/acme/tools.git": ("github.com", "acme", "tools"),
+            "https://github.com/acme/tools": ("github.com", "acme", "tools"),
+            "https://github.com/acme/tools/": ("github.com", "acme", "tools"),
+            "git@bitbucket.org:acme/tools.git/": ("bitbucket.org", "acme", "tools"),
+            "ssh://git@bitbucket.org/acme/tools.git": ("bitbucket.org", "acme", "tools"),
+            "  git@github.com:acme/tools.git  ": ("github.com", "acme", "tools"),
+        }
+        for url, expected in cases.items():
+            with self.subTest(url=url):
+                self.assertEqual(library._remote_web(url), expected)
+
+    def test_host_is_returned_verbatim_not_filtered(self) -> None:
+        # Callers decide what to do per host (only github.com / bitbucket.org get web
+        # URLs); this helper does not reject other hosts.
+        self.assertEqual(library._remote_web("git@gitlab.com:acme/tools.git"),
+                         ("gitlab.com", "acme", "tools"))
+
+    def test_unparseable_urls_return_none(self) -> None:
+        for url in ("/srv/agentics", "file:///tmp/repo.git", "http://github.com/acme/tools",
+                    "acme/tools", ""):
+            with self.subTest(url=url):
+                self.assertIsNone(library._remote_web(url))
+
+
 if __name__ == "__main__":
     unittest.main()
