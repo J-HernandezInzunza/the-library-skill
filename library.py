@@ -85,40 +85,221 @@ class LibraryError(Exception):
 # Local config (per-device; gitignored config.local.yaml)
 # --------------------------------------------------------------------------- #
 
+def _normalize_catalogs(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Legacy `catalog:` mapping or canonical `catalogs:` list -> raw catalog dicts.
+
+    The entire read-time backwards-compatibility story lives in this one function: a
+    legacy config becomes a single protected remote catalog with id 'shared', and
+    nothing downstream ever learns which shape was on disk. Assumes the config has
+    already passed `Config.problems` — exactly one of the two forms is present.
+    """
+    if "catalogs" in (data or {}):
+        return [dict(item) for item in (data.get("catalogs") or []) if isinstance(item, dict)]
+    cat = (data or {}).get("catalog") or {}
+    return [{
+        "id": SHARED_ID,
+        "repo": cat.get("repo"),
+        "yaml_path": cat.get("yaml_path"),
+        "branch": cat.get("branch"),
+        "protected": True,  # the team catalog keeps its PR gate
+    }]
+
+
+def _catalog_from_raw(item: dict[str, Any]) -> Catalog:
+    """Build a Catalog from a raw registry item that has already been validated."""
+    cid = str(item["id"]).strip()
+    writable = bool(item.get("writable", True))
+    if item.get("path"):
+        return Catalog(
+            id=cid, kind="local", writable=writable,
+            path_raw=str(item["path"]),
+            git_commit=bool(item.get("git_commit", False)),
+        )
+    return Catalog(
+        id=cid, kind="remote", writable=writable,
+        repo=str(item["repo"]),
+        yaml_path=str(item["yaml_path"]),
+        branch=str(item["branch"]),
+        protected=bool(item.get("protected", True)),
+    )
+
+
 @dataclass
 class Config:
     """Per-device settings, loaded from config.local.yaml.
 
-    Replaces the old hardcoded ## Variables block in SKILL.md. Never committed
-    to the tool repo — each teammate points the tool at the shared catalog repo
-    (agent-library) here. Write ops branch + PR against `catalog_branch`.
-    """
-    catalog_repo: str            # clone URL of the catalog repo (agent-library)
-    catalog_yaml_path: str       # path to the catalog file within that repo
-    catalog_branch: str          # protected branch that PRs target
-    autopush: bool = False       # if true, write ops also run `gh pr create`
+    Replaces the old hardcoded ## Variables block in SKILL.md. Never committed to
+    the tool repo — each teammate points the tool at the shared catalog repo
+    (agent-library) here.
 
+    Holds the catalog registry in precedence order, highest first, so the first
+    match for a name wins and a personal catalog registered ahead of the shared one
+    shadows it.
+    """
+    catalogs: list[Catalog] = field(default_factory=list)
+    autopush: bool = False        # if true, pr-mode writes also run `gh pr create`
+    default_add_catalog: str = ""  # write destination when --catalog is omitted
+    dirs: dict[str, dict[str, str]] = field(default_factory=dict)  # install dirs
+    legacy_shape: bool = False    # config still uses the singular `catalog:` mapping
+
+    # ── registry views ──────────────────────────────────────────────────
+    @property
+    def active(self) -> list[Catalog]:
+        """Catalogs usable this run — everything that hydrated successfully."""
+        return [c for c in self.catalogs if not c.skipped]
+
+    @property
+    def writable(self) -> list[Catalog]:
+        return [c for c in self.active if c.writable]
+
+    @property
+    def remotes(self) -> list[Catalog]:
+        """Every remote catalog, skipped ones included — a missing clone is exactly
+        the case that still needs a clone/pull attempt."""
+        return [c for c in self.catalogs if c.is_remote]
+
+    def by_id(self, cid: str) -> Catalog:
+        """The active catalog *cid*, or raise listing what is available."""
+        for c in self.active:
+            if c.id == cid:
+                return c
+        available = ", ".join(c.id for c in self.active) or "none"
+        raise LibraryError(f"unknown catalog '{cid}' (available: {available})")
+
+    # ── entry resolution ────────────────────────────────────────────────
+    def entries(self) -> list[Entry]:
+        """Every active catalog's entries, in precedence order, stamped with origin."""
+        out: list[Entry] = []
+        for c in self.active:
+            out.extend(iter_catalog_entries(c))
+        return out
+
+    def entries_of(self, cid: str) -> list[Entry]:
+        """One catalog's entries — the scope dependencies resolve within."""
+        return iter_catalog_entries(self.by_id(cid))
+
+    def resolve(self, name: str, catalog: str | None = None) -> Entry | None:
+        """First entry named *name* by precedence, or within one catalog if given."""
+        return find_exact(self.entries_of(catalog) if catalog else self.entries(), name)
+
+    def shadows(self, name: str) -> list[Entry]:
+        """Entries named *name* that lost to the resolved one, in precedence order."""
+        return [e for e in self.entries() if e.name == name][1:]
+
+    # ── transitional single-catalog accessors ───────────────────────────
+    # The commands still read these three; they go away once each one reads the
+    # catalog list directly.
+    @property
+    def _first_remote(self) -> Catalog:
+        for c in self.remotes:
+            return c
+        raise LibraryError("no remote catalog is configured")
+
+    @property
+    def catalog_repo(self) -> str:
+        return self._first_remote.repo
+
+    @property
+    def catalog_yaml_path(self) -> str:
+        return self._first_remote.yaml_path
+
+    @property
+    def catalog_branch(self) -> str:
+        return self._first_remote.branch
+
+    # ── validation ──────────────────────────────────────────────────────
     @staticmethod
-    def missing_keys(data: dict[str, Any]) -> list[str]:
-        """Required keys absent from *data* (non-dying; used by doctor)."""
-        cat = (data or {}).get("catalog") or {}
-        return [f"catalog.{k}" for k in ("repo", "yaml_path", "branch") if not cat.get(k)]
+    def problems(data: dict[str, Any]) -> list[str]:
+        """Every registry validation failure in *data*, worst first.
+
+        One implementation shared by `load_config`, which dies on the first, and
+        `doctor`, which reports them all — so the two can never disagree about what
+        a valid registry is. Messages are noun phrases, so a caller can prefix them
+        with the config path.
+        """
+        data = data or {}
+        has_legacy, has_list = "catalog" in data, "catalogs" in data
+        if has_legacy and has_list:
+            return ["both 'catalog:' and 'catalogs:' are present — keep one; they are ambiguous"]
+        if not has_legacy and not has_list:
+            return ["neither 'catalog:' nor 'catalogs:' is present"]
+
+        if has_legacy:
+            legacy = data.get("catalog")
+            if not isinstance(legacy, dict):
+                return ["'catalog:' is not a mapping"]
+            missing = [f"catalog.{k}" for k in ("repo", "yaml_path", "branch") if not legacy.get(k)]
+            if missing:
+                return [f"missing {', '.join(missing)}"]
+        elif not isinstance(data.get("catalogs"), list):
+            return ["'catalogs:' is not a list"]
+        elif not data.get("catalogs"):
+            return ["'catalogs:' is empty"]
+
+        out: list[str] = []
+        seen_ids: set[str] = set()
+        clones: dict[tuple[str, str], str] = {}
+        for i, item in enumerate(_normalize_catalogs(data) if has_legacy
+                                 else data.get("catalogs") or []):
+            if not isinstance(item, dict):
+                out.append(f"catalogs[{i}] is not a mapping")
+                continue
+            cid = str(item.get("id") or "").strip()
+            label = f"'{cid}'" if cid else f"catalogs[{i}]"
+            if not cid:
+                out.append(f"catalogs[{i}] has no 'id'")
+            elif cid in seen_ids:
+                out.append(f"duplicate catalog id '{cid}'")
+            else:
+                seen_ids.add(cid)
+
+            has_path, has_repo = bool(item.get("path")), bool(item.get("repo"))
+            if has_path and has_repo:
+                out.append(f"catalog {label} declares both 'path' and 'repo' — pick one")
+                continue
+            if not has_path and not has_repo:
+                out.append(f"catalog {label} declares neither 'path' nor 'repo'")
+                continue
+
+            if has_repo:
+                for key in ("yaml_path", "branch"):
+                    if not item.get(key):
+                        out.append(f"remote catalog {label} has no '{key}'")
+                yaml_path = str(item.get("yaml_path") or "")
+                if yaml_path and (yaml_path.startswith("/") or ":" in yaml_path
+                                  or ".." in Path(yaml_path).parts):
+                    out.append(f"catalog {label} has invalid yaml_path {yaml_path!r}: use a "
+                               "relative path inside the repo (no leading '/', no '..', no ':')")
+                # Two remotes on the same repo+branch would contend for one clone.
+                clone_key = (str(item["repo"]), str(item.get("branch") or ""))
+                if clone_key in clones:
+                    out.append(f"catalogs {label} and '{clones[clone_key]}' share repo and "
+                               "branch; they would contend for one clone")
+                else:
+                    clones[clone_key] = cid or f"catalogs[{i}]"
+            else:
+                # A catalog location is machine-global, so — unlike an install dir —
+                # it must not inherit the invocation cwd as an anchor.
+                path = str(item.get("path") or "")
+                if not (path.startswith("/") or path.startswith("~")):
+                    out.append(f"catalog {label} path {path!r} must be absolute or start with '~'")
+        return out
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Config":
-        missing = cls.missing_keys(data)
-        if missing:
-            die(f"{LOCAL_CONFIG_PATH} is missing {', '.join(missing)} — run `library init` to (re)create it")
-        cat = data["catalog"]
-        yaml_path = str(cat["yaml_path"])
-        if yaml_path.startswith("/") or ":" in yaml_path or ".." in Path(yaml_path).parts:
-            die(f"invalid catalog.yaml_path {yaml_path!r}: use a relative path inside "
-                "the repo (no leading '/', no '..', no ':')")
+        problems = cls.problems(data)
+        if problems:
+            more = "\n  run `library doctor` for the full list" if len(problems) > 1 else ""
+            die(f"{LOCAL_CONFIG_PATH} is invalid: {problems[0]}{more}\n"
+                "  or run `library init` to (re)create the config")
         return cls(
-            catalog_repo=str(cat["repo"]),
-            catalog_yaml_path=yaml_path,
-            catalog_branch=str(cat["branch"]),
+            catalogs=[_catalog_from_raw(item) for item in _normalize_catalogs(data)],
             autopush=bool(data.get("autopush", False)),
+            default_add_catalog=str(data.get("default_add_catalog") or ""),
+            # The config's own override for now; becomes the effective mapping once
+            # the tool owns install dirs.
+            dirs=default_dirs(data),
+            legacy_shape="catalog" in data,
         )
 
 
@@ -2074,9 +2255,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 raw_cfg = yaml.safe_load(fh) or {}
             if not isinstance(raw_cfg, dict):
                 raise ValueError("expected a YAML mapping")
-            missing = Config.missing_keys(raw_cfg)
-            if missing:
-                errors.append((None, f"config at {LOCAL_CONFIG_PATH} is missing {', '.join(missing)} — run `library init`"))
+            problems = Config.problems(raw_cfg)
+            if problems:
+                for problem in problems:
+                    errors.append((None, f"config at {LOCAL_CONFIG_PATH}: {problem}"))
             else:
                 cfg = Config.from_dict(raw_cfg)
         except Exception as ex:

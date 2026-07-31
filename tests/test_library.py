@@ -1759,5 +1759,243 @@ class TestEntryProvenance(unittest.TestCase):
         self.assertEqual(library.iter_catalog_entries(local_catalog()), [])
 
 
+# --------------------------------------------------------------------------- #
+# Config normalization and registry validation (R1, R2.1, R2.2)
+# --------------------------------------------------------------------------- #
+
+REMOTE_ITEM = {"id": "shared", "repo": "git@github.com:acme/agentics.git",
+               "yaml_path": "library.yaml", "branch": "main"}
+LOCAL_ITEM = {"id": "personal", "path": "/srv/personal/library.yaml"}
+
+
+class TestConfigNormalization(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+
+    def load(self, data: dict[str, Any]) -> library.Config:
+        self.tool.write_config(data)
+        return library.load_config()
+
+    def test_legacy_mapping_becomes_one_protected_remote_catalog(self) -> None:
+        cfg = self.load(LEGACY_CONFIG)
+        self.assertEqual(len(cfg.catalogs), 1)
+        cat = cfg.catalogs[0]
+        self.assertEqual(
+            (cat.id, cat.kind, cat.repo, cat.yaml_path, cat.branch),
+            ("shared", "remote", LEGACY_CONFIG["catalog"]["repo"], "library.yaml", "main"),
+        )
+        self.assertTrue(cat.protected)  # the team catalog keeps its PR gate
+        self.assertTrue(cat.writable)
+        self.assertEqual(cat.write_mode, "pr")
+        self.assertEqual(cat.clone_dir, self.tool.clone_dir)
+        self.assertTrue(cfg.legacy_shape)
+
+    def test_legacy_mapping_still_answers_the_single_catalog_accessors(self) -> None:
+        cfg = self.load(LEGACY_CONFIG)
+        self.assertEqual(
+            (cfg.catalog_repo, cfg.catalog_yaml_path, cfg.catalog_branch),
+            (LEGACY_CONFIG["catalog"]["repo"], "library.yaml", "main"),
+        )
+
+    def test_canonical_list_keeps_registry_order_as_precedence(self) -> None:
+        cfg = self.load({"catalogs": [LOCAL_ITEM, REMOTE_ITEM]})
+        self.assertEqual([c.id for c in cfg.catalogs], ["personal", "shared"])
+        self.assertEqual([c.kind for c in cfg.catalogs], ["local", "remote"])
+        self.assertFalse(cfg.legacy_shape)
+
+    def test_per_catalog_fields_are_read(self) -> None:
+        cfg = self.load({"catalogs": [
+            {**LOCAL_ITEM, "git_commit": True, "writable": False},
+            {**REMOTE_ITEM, "id": "personal-remote", "protected": False},
+        ]})
+        local, remote = cfg.catalogs
+        self.assertEqual((local.git_commit, local.writable), (True, False))
+        self.assertEqual((remote.protected, remote.write_mode), (False, "direct"))
+
+    def test_defaults_apply_when_flags_are_absent(self) -> None:
+        local, remote = self.load({"catalogs": [LOCAL_ITEM, REMOTE_ITEM]}).catalogs
+        self.assertEqual((local.writable, local.git_commit), (True, False))
+        self.assertEqual((remote.writable, remote.protected), (True, True))
+
+    def test_top_level_settings_are_read(self) -> None:
+        cfg = self.load({"catalogs": [LOCAL_ITEM, REMOTE_ITEM],
+                         "autopush": True, "default_add_catalog": "personal"})
+        self.assertTrue(cfg.autopush)
+        self.assertEqual(cfg.default_add_catalog, "personal")
+
+    def test_config_default_dirs_override_is_parsed_with_the_legacy_alias(self) -> None:
+        cfg = self.load({"catalogs": [REMOTE_ITEM],
+                         "default_dirs": {"skills": [{"default": ".claude/skills/"}]}})
+        self.assertEqual(cfg.dirs["skills"], {"project": ".claude/skills/"})
+
+    def test_a_local_only_registry_is_valid(self) -> None:
+        # R1.9: a developer with no team catalog runs entirely on a personal one.
+        cfg = self.load({"catalogs": [LOCAL_ITEM]})
+        self.assertEqual([c.id for c in cfg.active], ["personal"])
+        self.assertEqual(cfg.remotes, [])
+        with self.assertRaises(library.LibraryError):
+            cfg.catalog_repo  # nothing remote to answer with
+
+    def test_registry_views(self) -> None:
+        cfg = self.load({"catalogs": [
+            {**LOCAL_ITEM, "writable": False},
+            REMOTE_ITEM,
+            {**REMOTE_ITEM, "id": "extra", "branch": "develop"},
+        ]})
+        self.assertEqual([c.id for c in cfg.active], ["personal", "shared", "extra"])
+        self.assertEqual([c.id for c in cfg.writable], ["shared", "extra"])
+        self.assertEqual([c.id for c in cfg.remotes], ["shared", "extra"])
+        self.assertEqual(cfg.by_id("extra").branch, "develop")
+
+    def test_a_skipped_catalog_leaves_active_but_stays_a_remote(self) -> None:
+        # A remote whose clone is missing is skipped for reads but must still be
+        # reachable for a clone/pull attempt.
+        cfg = self.load({"catalogs": [LOCAL_ITEM, REMOTE_ITEM]})
+        cfg.catalogs[1].skipped = "no clone yet"
+        self.assertEqual([c.id for c in cfg.active], ["personal"])
+        self.assertEqual([c.id for c in cfg.remotes], ["shared"])
+        with self.assertRaises(library.LibraryError) as ctx:
+            cfg.by_id("shared")
+        self.assertIn("available: personal", str(ctx.exception))
+
+
+class TestConfigValidation(unittest.TestCase):
+    """The §2 validation table, shared by load_config (dies on the first problem)
+    and doctor (reports them all)."""
+
+    def problems(self, data: dict[str, Any]) -> list[str]:
+        return library.Config.problems(data)
+
+    def test_a_valid_config_has_no_problems(self) -> None:
+        self.assertEqual(self.problems({"catalogs": [LOCAL_ITEM, REMOTE_ITEM]}), [])
+        self.assertEqual(self.problems(LEGACY_CONFIG), [])
+
+    def test_both_config_forms_is_ambiguous(self) -> None:
+        found = self.problems({**LEGACY_CONFIG, "catalogs": [REMOTE_ITEM]})
+        self.assertEqual(len(found), 1)
+        self.assertIn("both 'catalog:' and 'catalogs:'", found[0])
+
+    def test_neither_config_form(self) -> None:
+        self.assertIn("neither", self.problems({"autopush": False})[0])
+
+    def test_catalogs_must_be_a_non_empty_list(self) -> None:
+        self.assertIn("not a list", self.problems({"catalogs": {"id": "x"}})[0])
+        self.assertIn("empty", self.problems({"catalogs": []})[0])
+
+    def test_legacy_form_missing_keys(self) -> None:
+        found = self.problems({"catalog": {"repo": "git@github.com:a/b.git"}})
+        self.assertEqual(found, ["missing catalog.yaml_path, catalog.branch"])
+
+    def test_item_without_an_id_is_named_by_position(self) -> None:
+        found = self.problems({"catalogs": [dict(REMOTE_ITEM, id=None)]})
+        self.assertIn("catalogs[0] has no 'id'", found)
+
+    def test_item_with_both_path_and_repo(self) -> None:
+        found = self.problems({"catalogs": [{**REMOTE_ITEM, "path": "/srv/x.yaml"}]})
+        self.assertIn("catalog 'shared' declares both 'path' and 'repo' — pick one", found)
+
+    def test_item_with_neither_path_nor_repo(self) -> None:
+        found = self.problems({"catalogs": [{"id": "orphan"}]})
+        self.assertIn("catalog 'orphan' declares neither 'path' nor 'repo'", found)
+
+    def test_remote_missing_yaml_path_or_branch(self) -> None:
+        found = self.problems({"catalogs": [{"id": "r", "repo": "git@github.com:a/b.git"}]})
+        self.assertCountEqual(found, ["remote catalog 'r' has no 'yaml_path'",
+                                      "remote catalog 'r' has no 'branch'"])
+
+    def test_duplicate_id(self) -> None:
+        found = self.problems({"catalogs": [LOCAL_ITEM, {**LOCAL_ITEM, "path": "/srv/other.yaml"}]})
+        self.assertIn("duplicate catalog id 'personal'", found)
+
+    def test_two_remotes_sharing_repo_and_branch_contend_for_one_clone(self) -> None:
+        found = self.problems({"catalogs": [REMOTE_ITEM, {**REMOTE_ITEM, "id": "twin"}]})
+        self.assertEqual(len(found), 1)
+        self.assertIn("share repo and branch", found[0])
+
+    def test_the_same_repo_on_a_different_branch_is_fine(self) -> None:
+        self.assertEqual(
+            self.problems({"catalogs": [REMOTE_ITEM,
+                                        {**REMOTE_ITEM, "id": "twin", "branch": "develop"}]}),
+            [],
+        )
+
+    def test_relative_local_path_is_rejected(self) -> None:
+        for path in ("relative/library.yaml", "./library.yaml", "library.yaml"):
+            with self.subTest(path=path):
+                found = self.problems({"catalogs": [{"id": "p", "path": path}]})
+                self.assertIn(f"catalog 'p' path {path!r} must be absolute or start with '~'",
+                              found)
+
+    def test_absolute_and_tilde_local_paths_are_accepted(self) -> None:
+        for path in ("/srv/library.yaml", "~/dev/library.yaml"):
+            with self.subTest(path=path):
+                self.assertEqual(self.problems({"catalogs": [{"id": "p", "path": path}]}), [])
+
+    def test_bad_yaml_path(self) -> None:
+        for bad in ("/etc/library.yaml", "../escape.yaml", "c:library.yaml"):
+            with self.subTest(yaml_path=bad):
+                found = self.problems({"catalogs": [{**REMOTE_ITEM, "yaml_path": bad}]})
+                self.assertTrue(any("invalid yaml_path" in f for f in found), found)
+
+    def test_non_mapping_item(self) -> None:
+        self.assertIn("catalogs[1] is not a mapping",
+                      self.problems({"catalogs": [REMOTE_ITEM, "oops"]}))
+
+    def test_every_problem_is_reported_not_just_the_first(self) -> None:
+        found = self.problems({"catalogs": [
+            {"id": "p", "path": "relative.yaml"},
+            {"repo": "git@github.com:a/b.git", "yaml_path": "library.yaml"},
+        ]})
+        self.assertCountEqual(found, [
+            "catalog 'p' path 'relative.yaml' must be absolute or start with '~'",
+            "catalogs[1] has no 'id'",
+            "remote catalog catalogs[1] has no 'branch'",
+        ])
+
+
+class TestConfigLoadFailures(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+
+    def assert_dies(self, data: dict[str, Any], *fragments: str) -> None:
+        self.tool.write_config(data)
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit) as ctx:
+                library.load_config()
+        self.assertEqual(ctx.exception.code, 1)
+        for fragment in fragments:
+            self.assertIn(fragment, err.getvalue())
+
+    def test_both_forms_present_dies(self) -> None:
+        self.assert_dies({**LEGACY_CONFIG, "catalogs": [REMOTE_ITEM]},
+                         "both 'catalog:' and 'catalogs:'")
+
+    def test_missing_config_keeps_the_init_hint(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit):
+                library.load_config()
+        self.assertIn("library init --repo", err.getvalue())
+
+    def test_shape_error_dies_and_points_at_doctor_when_there_are_several(self) -> None:
+        self.assert_dies({"catalogs": [{"id": "p", "path": "rel.yaml"}, {"id": "p2"}]},
+                         "is invalid:", "library doctor")
+
+    def test_doctor_reports_every_registry_problem(self) -> None:
+        self.tool.write_config({"catalogs": [
+            {"id": "p", "path": "relative.yaml"},
+            {"id": "p", "repo": "git@github.com:a/b.git", "yaml_path": "library.yaml"},
+        ]})
+        code, out, _ = run_cli("doctor", "--no-pull", "--json")
+        payload = json.loads(out)
+        self.assertEqual(code, 1)
+        messages = [e["message"] for e in payload["errors"]]
+        self.assertTrue(any("must be absolute" in m for m in messages), messages)
+        self.assertTrue(any("duplicate catalog id 'p'" in m for m in messages), messages)
+        self.assertTrue(any("has no 'branch'" in m for m in messages), messages)
+        self.assertTrue(all(str(self.tool.config_path) in m for m in messages), messages)
+
+
 if __name__ == "__main__":
     unittest.main()
