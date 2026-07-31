@@ -1648,5 +1648,116 @@ library:
         self.assertIn("not installed locally", err)
 
 
+# --------------------------------------------------------------------------- #
+# Catalog model (R4.6, R6.1, design §3)
+# --------------------------------------------------------------------------- #
+
+def local_catalog(cid: str = "personal", path: str | Path = "/srv/personal.yaml", **kw: Any):
+    return library.Catalog(id=cid, kind="local", path_raw=str(path), **kw)
+
+
+def remote_catalog(cid: str = library.SHARED_ID, **kw: Any):
+    fields = dict(repo="git@github.com:acme/agentics.git", yaml_path="library.yaml",
+                  branch="main")
+    fields.update(kw)
+    return library.Catalog(id=cid, kind="remote", **fields)
+
+
+class TestCatalogModel(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+
+    def test_defaults_preserve_todays_guarantees(self) -> None:
+        # protected defaults true so a catalog normalized from the legacy config keeps
+        # its PR gate; writable defaults true so nothing becomes read-only by accident.
+        cat = remote_catalog()
+        self.assertTrue(cat.protected)
+        self.assertTrue(cat.writable)
+        self.assertFalse(cat.git_commit)
+        self.assertEqual((cat.data, cat.skipped), ({}, ""))
+
+    def test_is_remote(self) -> None:
+        self.assertTrue(remote_catalog().is_remote)
+        self.assertFalse(local_catalog().is_remote)
+
+    def test_write_mode_for_all_three_combinations(self) -> None:
+        self.assertEqual(local_catalog().write_mode, "local")
+        self.assertEqual(remote_catalog(protected=True).write_mode, "pr")
+        self.assertEqual(remote_catalog(protected=False).write_mode, "direct")
+
+    def test_a_local_catalog_is_local_mode_even_when_git_backed(self) -> None:
+        self.assertEqual(local_catalog(git_commit=True).write_mode, "local")
+
+    def test_clone_dir_keeps_the_existing_shared_clone(self) -> None:
+        self.assertEqual(remote_catalog(library.SHARED_ID).clone_dir, self.tool.clone_dir)
+
+    def test_clone_dir_for_other_remotes_is_per_id(self) -> None:
+        self.assertEqual(remote_catalog("personal-remote").clone_dir,
+                         library.CATALOGS_DIR / "personal-remote")
+
+    def test_local_catalogs_have_no_clone(self) -> None:
+        self.assertIsNone(local_catalog().clone_dir)
+
+    def test_yaml_file_for_a_remote_catalog(self) -> None:
+        cat = remote_catalog(yaml_path="catalogs/library.yaml")
+        self.assertEqual(cat.yaml_file, self.tool.clone_dir / "catalogs/library.yaml")
+        self.assertEqual(cat.root, self.tool.clone_dir / "catalogs")
+
+    def test_yaml_file_for_a_local_file_path(self) -> None:
+        path = self.tool.root / "personal" / "mine.yaml"
+        path.parent.mkdir()
+        path.write_text("library: {}\n")
+        cat = local_catalog(path=path)
+        self.assertEqual(cat.yaml_file, path)
+        self.assertEqual(cat.root, path.parent)
+
+    def test_yaml_file_for_a_local_directory_path(self) -> None:
+        # R1.11: a directory means library.yaml inside it.
+        d = self.tool.root / "personal"
+        d.mkdir()
+        (d / "library.yaml").write_text("library: {}\n")
+        self.assertEqual(local_catalog(path=d).yaml_file, d / "library.yaml")
+
+    def test_yaml_file_expands_a_tilde_path(self) -> None:
+        cat = local_catalog(path="~/dev/agentics/library.yaml")
+        self.assertEqual(cat.yaml_file, self.tool.home / "dev/agentics/library.yaml")
+
+    def test_a_nonexistent_local_path_is_treated_as_a_file(self) -> None:
+        missing = self.tool.root / "nope" / "library.yaml"
+        self.assertEqual(local_catalog(path=missing).yaml_file, missing)
+
+
+class TestEntryProvenance(unittest.TestCase):
+    CATALOG_DATA = {"library": {
+        "skills": [{"name": "alpha", "description": "A", "source": "./alpha",
+                    "requires": ["skill:beta"]}],
+        "agents": [{"name": "bot", "description": "B", "source": "./bot"}],
+    }}
+
+    def test_iter_entries_stays_pure_and_leaves_catalog_unset(self) -> None:
+        entries = library.iter_entries(self.CATALOG_DATA)
+        self.assertEqual([e.catalog for e in entries], ["", ""])
+
+    def test_iter_catalog_entries_stamps_the_catalog_id(self) -> None:
+        cat = local_catalog("personal")
+        cat.data = self.CATALOG_DATA
+        entries = library.iter_catalog_entries(cat)
+        self.assertEqual([(e.type, e.name, e.catalog) for e in entries],
+                         [("skill", "alpha", "personal"), ("agent", "bot", "personal")])
+        self.assertEqual(entries[0].requires, ["skill:beta"])
+
+    def test_stamping_does_not_leak_between_catalogs(self) -> None:
+        first, second = local_catalog("one"), local_catalog("two")
+        first.data = second.data = self.CATALOG_DATA
+        self.assertEqual([e.catalog for e in library.iter_catalog_entries(first)],
+                         ["one", "one"])
+        self.assertEqual([e.catalog for e in library.iter_catalog_entries(second)],
+                         ["two", "two"])
+
+    def test_an_empty_catalog_yields_nothing(self) -> None:
+        self.assertEqual(library.iter_catalog_entries(local_catalog()), [])
+
+
 if __name__ == "__main__":
     unittest.main()

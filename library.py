@@ -50,9 +50,11 @@ os.environ.setdefault("GIT_SSH_COMMAND", "ssh -oBatchMode=yes")
 
 SKILL_DIR = Path(__file__).resolve().parent
 LOCAL_CONFIG_PATH = SKILL_DIR / "config.local.yaml"
-CATALOG_CLONE_DIR = SKILL_DIR / ".catalog-repo"
+CATALOG_CLONE_DIR = SKILL_DIR / ".catalog-repo"  # the 'shared' catalog's clone
+CATALOGS_DIR = SKILL_DIR / ".catalogs"           # every other remote catalog's clone
 GLOBAL_SKILLS_DIR = Path("~/.claude/skills").expanduser()
 LINK_NAME = "library"  # name the tool is discoverable under in a skills dir
+SHARED_ID = "shared"   # conventional id of the team catalog; keeps CATALOG_CLONE_DIR
 TYPES = ("skills", "agents", "prompts")
 SINGULAR = {"skills": "skill", "agents": "agent", "prompts": "prompt"}
 PLURAL = {v: k for k, v in SINGULAR.items()}
@@ -169,10 +171,78 @@ class Entry:
     description: str
     source: str
     requires: list[str] = field(default_factory=list)
+    catalog: str = ""  # id of the catalog this came from (stamped by iter_catalog_entries)
 
     @property
     def section(self) -> str:
         return PLURAL[self.type]
+
+
+@dataclass
+class Catalog:
+    """One configured catalog: a local file on disk, or a remote repo with a clone.
+
+    The shared team catalog is just the conventional case — a remote catalog with
+    id 'shared' and protected: true. Everything else about a catalog (where it
+    lives, whether it can be written, how a write reaches it) follows from these
+    fields, so no command needs to special-case "the" catalog.
+    """
+    id: str
+    kind: str  # "local" | "remote"
+    writable: bool = True
+    # local
+    path_raw: str = ""
+    git_commit: bool = False  # commit + push the catalog file after a write
+    # remote
+    repo: str = ""
+    yaml_path: str = ""
+    branch: str = ""
+    protected: bool = True  # never pushed to directly; writes go through a PR
+    # runtime
+    data: dict[str, Any] = field(default_factory=dict)  # parsed catalog YAML
+    skipped: str = ""  # non-empty = excluded from this run, and why
+
+    @property
+    def is_remote(self) -> bool:
+        return self.kind == "remote"
+
+    @property
+    def write_mode(self) -> str:
+        """How a write reaches this catalog: local | pr | direct.
+
+        Derived, never configured: a local catalog is edited in place, a protected
+        remote gets a branch + PR, an unprotected remote is committed and pushed.
+        """
+        if not self.is_remote:
+            return "local"
+        return "pr" if self.protected else "direct"
+
+    @property
+    def clone_dir(self) -> Path | None:
+        """Persistent clone for a remote catalog, or None for a local one.
+
+        The shared catalog keeps .catalog-repo/ so no existing clone is invalidated.
+        """
+        if not self.is_remote:
+            return None
+        return CATALOG_CLONE_DIR if self.id == SHARED_ID else CATALOGS_DIR / self.id
+
+    @property
+    def yaml_file(self) -> Path:
+        """The catalog file itself.
+
+        local: the configured path, or library.yaml inside it when it's a directory.
+        remote: yaml_path within the persistent clone.
+        """
+        if self.is_remote:
+            return self.clone_dir / self.yaml_path
+        p = Path(self.path_raw).expanduser()
+        return p / "library.yaml" if p.is_dir() else p
+
+    @property
+    def root(self) -> Path:
+        """Directory holding the catalog file — the git work tree for a git-backed one."""
+        return self.yaml_file.parent
 
 
 def load_catalog(path: Path | None = None) -> dict[str, Any]:
@@ -228,6 +298,19 @@ def iter_entries(catalog: dict[str, Any]) -> list[Entry]:
                     requires=list(raw.get("requires", []) or []),
                 )
             )
+    return entries
+
+
+def iter_catalog_entries(cat: Catalog) -> list[Entry]:
+    """Entries from *cat*, each stamped with its originating catalog id.
+
+    Thin wrapper so `iter_entries` stays the pure YAML→entries function it is
+    today — it is also called on a temp clone's parsed text during a write, where
+    there is no Catalog object to stamp from.
+    """
+    entries = iter_entries(cat.data)
+    for e in entries:
+        e.catalog = cat.id
     return entries
 
 
