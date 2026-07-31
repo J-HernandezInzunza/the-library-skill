@@ -18,6 +18,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -59,13 +60,16 @@ class TempTool:
         self.project = self.root / "project"
         self.clone_dir = self.tool_dir / ".catalog-repo"
         self.config_path = self.tool_dir / "config.local.yaml"
-        for d in (self.tool_dir, self.home, self.project, self.clone_dir):
+        # clone_dir is deliberately NOT created: "the clone is absent" is a real state
+        # the code branches on, and a pre-made empty directory would hide it.
+        for d in (self.tool_dir, self.home, self.project):
             d.mkdir(parents=True)
 
         self._stack = contextlib.ExitStack()
         self._patch("SKILL_DIR", self.tool_dir)
         self._patch("LOCAL_CONFIG_PATH", self.config_path)
         self._patch("CATALOG_CLONE_DIR", self.clone_dir)
+        self._patch("CATALOGS_DIR", self.tool_dir / ".catalogs")
         self._patch("GLOBAL_SKILLS_DIR", self.home / ".claude" / "skills")
         # project_cwd() caches into this global; pre-seeding it keeps relative
         # ('project'-scope) install dirs anchored inside the sandbox.
@@ -74,9 +78,29 @@ class TempTool:
             "HOME": str(self.home),
             "LIBRARY_CWD": str(self.project),
         }))
+        self._assert_every_path_global_is_redirected()
 
     def _patch(self, name: str, value: Any) -> None:
         self._stack.enter_context(patch.object(library, name, value))
+
+    def _assert_every_path_global_is_redirected(self) -> None:
+        """Fail at setup if library.py has a path global this harness doesn't redirect.
+
+        `path()` only guards paths a test hands it; a module global the CLI writes to
+        directly would escape unnoticed. This is what caught CATALOGS_DIR still
+        pointing at the developer's real clone.
+        """
+        for name, value in vars(library).items():
+            if not name.isupper() or not isinstance(value, Path):
+                continue
+            try:
+                value.resolve().relative_to(self.root)
+            except ValueError:
+                self.stop()
+                raise SandboxEscape(
+                    f"library.{name} is {value}, outside the sandbox — "
+                    "add it to TempTool's patch list"
+                ) from None
 
     def stop(self) -> None:
         self._stack.close()
@@ -360,7 +384,7 @@ class TestTempToolIsolation(unittest.TestCase):
     def test_path_globals_point_into_the_sandbox(self) -> None:
         self.assertEqual(library.LOCAL_CONFIG_PATH, self.tool.config_path)
         self.assertEqual(library.CATALOG_CLONE_DIR, self.tool.clone_dir)
-        for p in (library.SKILL_DIR, library.CATALOG_CLONE_DIR,
+        for p in (library.SKILL_DIR, library.CATALOG_CLONE_DIR, library.CATALOGS_DIR,
                   library.LOCAL_CONFIG_PATH, library.GLOBAL_SKILLS_DIR):
             self.assert_inside(p)
 
@@ -381,7 +405,7 @@ class TestTempToolIsolation(unittest.TestCase):
         cfg = library.load_config()
         self.assertEqual(cfg.catalog_repo, LEGACY_CONFIG["catalog"]["repo"])
         self.assertEqual(cfg.catalog_branch, "main")
-        self.assert_inside(library.catalog_path(cfg))
+        self.assert_inside(library.catalog_yaml(cfg.catalogs[0]))
 
     def test_guard_rejects_the_real_environment(self) -> None:
         for outside in (REAL_HOME,
@@ -1775,7 +1799,25 @@ class TestConfigNormalization(unittest.TestCase):
 
     def load(self, data: dict[str, Any]) -> library.Config:
         self.tool.write_config(data)
-        return library.load_config()
+        with captured_warnings() as msgs:
+            cfg = library.load_config()
+        self.warnings = msgs
+        return cfg
+
+    def real_local(self, cid: str = "personal", **kw: Any) -> dict[str, Any]:
+        """A local registry item whose file actually exists, so it hydrates."""
+        path = self.tool.root / f"{cid}.yaml"
+        path.write_text("library:\n  skills: []\n")
+        return {"id": cid, "path": str(path), **kw}
+
+    def real_remote(self, cid: str = library.SHARED_ID, branch: str = "main",
+                    **kw: Any) -> dict[str, Any]:
+        """A remote registry item with a populated clone, so it hydrates."""
+        clone = library.Catalog(id=cid, kind="remote").clone_dir
+        clone.mkdir(parents=True, exist_ok=True)
+        (clone / "library.yaml").write_text("library:\n  skills: []\n")
+        return {"id": cid, "repo": f"git@github.com:acme/{cid}.git",
+                "yaml_path": "library.yaml", "branch": branch, **kw}
 
     def test_legacy_mapping_becomes_one_protected_remote_catalog(self) -> None:
         cfg = self.load(LEGACY_CONFIG)
@@ -1831,7 +1873,7 @@ class TestConfigNormalization(unittest.TestCase):
 
     def test_a_local_only_registry_is_valid(self) -> None:
         # R1.9: a developer with no team catalog runs entirely on a personal one.
-        cfg = self.load({"catalogs": [LOCAL_ITEM]})
+        cfg = self.load({"catalogs": [self.real_local()]})
         self.assertEqual([c.id for c in cfg.active], ["personal"])
         self.assertEqual(cfg.remotes, [])
         with self.assertRaises(library.LibraryError):
@@ -1839,9 +1881,9 @@ class TestConfigNormalization(unittest.TestCase):
 
     def test_registry_views(self) -> None:
         cfg = self.load({"catalogs": [
-            {**LOCAL_ITEM, "writable": False},
-            REMOTE_ITEM,
-            {**REMOTE_ITEM, "id": "extra", "branch": "develop"},
+            self.real_local(writable=False),
+            self.real_remote(),
+            self.real_remote("extra", branch="develop"),
         ]})
         self.assertEqual([c.id for c in cfg.active], ["personal", "shared", "extra"])
         self.assertEqual([c.id for c in cfg.writable], ["shared", "extra"])
@@ -1851,13 +1893,197 @@ class TestConfigNormalization(unittest.TestCase):
     def test_a_skipped_catalog_leaves_active_but_stays_a_remote(self) -> None:
         # A remote whose clone is missing is skipped for reads but must still be
         # reachable for a clone/pull attempt.
-        cfg = self.load({"catalogs": [LOCAL_ITEM, REMOTE_ITEM]})
+        cfg = self.load({"catalogs": [self.real_local(), self.real_remote()]})
         cfg.catalogs[1].skipped = "no clone yet"
         self.assertEqual([c.id for c in cfg.active], ["personal"])
         self.assertEqual([c.id for c in cfg.remotes], ["shared"])
         with self.assertRaises(library.LibraryError) as ctx:
             cfg.by_id("shared")
         self.assertIn("available: personal", str(ctx.exception))
+
+
+class TestCatalogHydration(unittest.TestCase):
+    """R1.16 — a catalog whose source can't be read is skipped with a reason, never fatal."""
+
+    SAMPLE = "library:\n  skills:\n    - name: alpha\n      description: A\n      source: /srv/a\n"
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+
+    def load(self, *items: dict[str, Any]) -> tuple[library.Config, list[str]]:
+        self.tool.write_config({"catalogs": list(items)})
+        with captured_warnings() as msgs:
+            cfg = library.load_config()
+        return cfg, msgs
+
+    def local_file(self, cid: str = "personal", text: str | None = None) -> dict[str, Any]:
+        path = self.tool.root / f"{cid}.yaml"
+        path.write_text(self.SAMPLE if text is None else text)
+        return {"id": cid, "path": str(path)}
+
+    def populated_clone(self, cid: str = library.SHARED_ID) -> dict[str, Any]:
+        clone = library.Catalog(id=cid, kind="remote").clone_dir
+        clone.mkdir(parents=True, exist_ok=True)
+        (clone / "library.yaml").write_text(self.SAMPLE)
+        return {"id": cid, "repo": f"git@github.com:acme/{cid}.git",
+                "yaml_path": "library.yaml", "branch": "main"}
+
+    def test_local_catalog_hydrates_from_a_file_path(self) -> None:
+        cfg, warnings = self.load(self.local_file())
+        cat = cfg.catalogs[0]
+        self.assertEqual(cat.skipped, "")
+        self.assertEqual([e.name for e in library.iter_catalog_entries(cat)], ["alpha"])
+        self.assertEqual(warnings, [])
+
+    def test_local_catalog_hydrates_from_a_directory_path(self) -> None:
+        d = self.tool.root / "agentics"
+        d.mkdir()
+        (d / "library.yaml").write_text(self.SAMPLE)
+        cfg, _ = self.load({"id": "personal", "path": str(d)})
+        self.assertEqual(cfg.catalogs[0].skipped, "")
+        self.assertEqual([e.name for e in cfg.entries()], ["alpha"])
+
+    def test_remote_catalog_hydrates_from_its_clone(self) -> None:
+        cfg, _ = self.load(self.populated_clone())
+        self.assertEqual(cfg.catalogs[0].skipped, "")
+        self.assertEqual([e.name for e in cfg.entries()], ["alpha"])
+
+    def test_a_remote_with_no_clone_is_skipped_not_fatal(self) -> None:
+        cfg, _ = self.load(self.local_file(), {"id": "shared",
+                                               "repo": "git@github.com:acme/agentics.git",
+                                               "yaml_path": "library.yaml", "branch": "main"})
+        shared = cfg.by_id  # by_id must not see it
+        self.assertIn("not cloned yet", cfg.catalogs[1].skipped)
+        with self.assertRaises(library.LibraryError):
+            shared("shared")
+
+    def test_a_missing_local_path_is_skipped(self) -> None:
+        cfg, warnings = self.load(self.local_file(),
+                                  {"id": "ghost", "path": str(self.tool.root / "nope.yaml")})
+        self.assertIn("catalog file not found", cfg.catalogs[1].skipped)
+        self.assertTrue(any("'ghost' skipped" in w for w in warnings), warnings)
+
+    def test_malformed_yaml_is_skipped(self) -> None:
+        cfg, warnings = self.load(self.local_file(),
+                                  self.local_file("broken", "library:\n  skills: [unclosed\n"))
+        self.assertIn("could not read", cfg.catalogs[1].skipped)
+        self.assertTrue(any("'broken' skipped" in w for w in warnings), warnings)
+
+    def test_a_non_mapping_catalog_is_skipped(self) -> None:
+        cfg, _ = self.load(self.local_file(), self.local_file("listy", "- one\n- two\n"))
+        self.assertIn("malformed", cfg.catalogs[1].skipped)
+
+    @unittest.skipIf(os.geteuid() == 0, "root can read anything")
+    def test_an_unreadable_file_is_skipped(self) -> None:
+        item = self.local_file("locked")
+        path = Path(item["path"])
+        path.chmod(0o000)
+        self.addCleanup(path.chmod, 0o644)
+        cfg, _ = self.load(self.local_file(), item)
+        self.assertIn("could not read", cfg.catalogs[1].skipped)
+
+    def test_one_broken_catalog_does_not_break_the_others(self) -> None:
+        # The whole point of R1.16: a read from a healthy catalog still works.
+        cfg, _ = self.load({"id": "ghost", "path": str(self.tool.root / "nope.yaml")},
+                           self.local_file("good"))
+        self.assertEqual([c.id for c in cfg.active], ["good"])
+        self.assertEqual([e.name for e in cfg.entries()], ["alpha"])
+
+    def test_a_single_catalog_config_stays_silent(self) -> None:
+        # R2.3: with one catalog the command already reports the problem or clones on
+        # demand, so hydration must not add output to today's behavior.
+        _, warnings = self.load({"id": "shared", "repo": "git@github.com:acme/agentics.git",
+                                 "yaml_path": "library.yaml", "branch": "main"})
+        self.assertEqual(warnings, [])
+
+
+class TestCatalogGitHelpers(unittest.TestCase):
+    """R5 — pull, staleness, and path resolution scoped to one catalog."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+
+    def bare_repo(self, name: str) -> TempGitRepo:
+        repo = TempGitRepo(self.tool.root, name=name)
+        repo.commit("library.yaml", "library:\n  skills: []\n")
+        repo.push()
+        return repo
+
+    def remote_for(self, repo: TempGitRepo, cid: str) -> library.Catalog:
+        return library.Catalog(id=cid, kind="remote", repo=str(repo.remote),
+                               yaml_path="library.yaml", branch="main")
+
+    def test_local_catalogs_need_no_git_at_all(self) -> None:
+        cat = library.Catalog(id="personal", kind="local",
+                              path_raw=str(self.tool.root / "personal.yaml"))
+
+        def boom(*a: Any, **k: Any) -> None:
+            raise AssertionError(f"a local catalog must not shell out to git: {a}")
+
+        with patch.object(library.subprocess, "run", boom):
+            self.assertIsNone(library.pull_catalog(cat))
+            self.assertEqual(library.catalog_behind(cat), 0)
+
+    def test_pull_clones_a_missing_clone_under_the_per_id_dir(self) -> None:
+        repo = self.bare_repo("upstream")
+        cat = self.remote_for(repo, "personal-remote")
+        self.assertFalse(library.CATALOGS_DIR.exists())
+        self.assertIsNone(library.pull_catalog(cat))
+        self.assertEqual(cat.clone_dir, library.CATALOGS_DIR / "personal-remote")
+        self.assertTrue((cat.clone_dir / "library.yaml").is_file())
+
+    def test_pull_keeps_the_shared_catalog_in_the_existing_clone_dir(self) -> None:
+        repo = self.bare_repo("upstream")
+        cat = self.remote_for(repo, library.SHARED_ID)
+        library.pull_catalog(cat)
+        self.assertEqual(cat.clone_dir, self.tool.clone_dir)
+        self.assertTrue((self.tool.clone_dir / "library.yaml").is_file())
+
+    def test_pull_fast_forwards_an_existing_clone(self) -> None:
+        repo = self.bare_repo("upstream")
+        cat = self.remote_for(repo, library.SHARED_ID)
+        library.pull_catalog(cat)
+        self.assertEqual(library.catalog_behind(cat), 0)
+        repo.commit("library.yaml", "library:\n  skills: []\n  agents: []\n")
+        repo.push()
+        self.assertIsNone(library.pull_catalog(cat))
+        self.assertIn("agents", (cat.clone_dir / "library.yaml").read_text())
+
+    def test_a_failed_pull_warns_and_keeps_the_cached_copy(self) -> None:
+        repo = self.bare_repo("upstream")
+        cat = self.remote_for(repo, library.SHARED_ID)
+        library.pull_catalog(cat)
+        shutil.rmtree(repo.remote)  # origin is gone; the cached clone is all we have
+        with captured_warnings() as msgs:
+            err = library.pull_catalog(cat)
+        self.assertTrue(err)
+        self.assertTrue(any("using cached copy" in m for m in msgs), msgs)
+        self.assertTrue((cat.clone_dir / "library.yaml").is_file())
+
+    def test_pull_all_continues_past_one_failure(self) -> None:
+        good, bad = self.bare_repo("good"), self.bare_repo("bad")
+        good_cat = self.remote_for(good, library.SHARED_ID)
+        bad_cat = self.remote_for(bad, "flaky")
+        library.pull_catalog(good_cat)
+        library.pull_catalog(bad_cat)
+        shutil.rmtree(bad.remote)
+        cfg = library.Config(catalogs=[bad_cat, good_cat])
+        with captured_warnings():
+            results = library.pull_all(cfg)
+        self.assertIsNone(results[library.SHARED_ID])
+        self.assertTrue(results["flaky"])
+
+    def test_pull_all_skips_local_catalogs_entirely(self) -> None:
+        local = library.Catalog(id="personal", kind="local", path_raw="/srv/p.yaml")
+        self.assertEqual(library.pull_all(library.Config(catalogs=[local])), {})
+
+    def test_catalog_yaml_resolves_either_kind(self) -> None:
+        local = library.Catalog(id="p", kind="local", path_raw="~/dev/library.yaml")
+        remote = library.Catalog(id="shared", kind="remote", yaml_path="catalogs/lib.yaml")
+        self.assertEqual(library.catalog_yaml(local), self.tool.home / "dev/library.yaml")
+        self.assertEqual(library.catalog_yaml(remote), self.tool.clone_dir / "catalogs/lib.yaml")
 
 
 class TestConfigValidation(unittest.TestCase):

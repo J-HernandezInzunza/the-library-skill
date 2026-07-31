@@ -303,8 +303,38 @@ class Config:
         )
 
 
+def _hydrate(cat: Catalog) -> None:
+    """Load *cat*'s catalog data, or record why it can't be used.
+
+    Deliberately does not clone: `pull_catalog` owns clone-if-absent and dies with
+    an auth hint, so leaving that there keeps `load_config` cheap and offline, and
+    lets `doctor` report on a config whose clones are missing.
+    """
+    if cat.is_remote and not cat.clone_dir.exists():
+        cat.skipped = f"not cloned yet at {cat.clone_dir}"
+        return
+    path = cat.yaml_file
+    if not path.exists():
+        cat.skipped = f"catalog file not found at {path}"
+        return
+    try:
+        with path.open() as fh:
+            data = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError) as ex:
+        cat.skipped = f"could not read {path}: {ex}"
+        return
+    if not isinstance(data, dict):
+        cat.skipped = f"{path} is malformed (expected a YAML mapping)"
+        return
+    cat.data = data
+
+
 def load_config() -> Config:
-    """Load + validate the per-device config, or die with a setup hint."""
+    """Load, validate, and hydrate the per-device config, or die with a setup hint.
+
+    Dies on a bad registry; a catalog whose *source* can't be read is skipped with a
+    reason rather than fatal, so one broken catalog never breaks a read from another.
+    """
     if not LOCAL_CONFIG_PATH.exists():
         die(
             f"no local config at {LOCAL_CONFIG_PATH}\n"
@@ -314,7 +344,14 @@ def load_config() -> Config:
         data = yaml.safe_load(fh) or {}
     if not isinstance(data, dict):
         die(f"{LOCAL_CONFIG_PATH} is malformed (expected a YAML mapping)")
-    return Config.from_dict(data)
+    cfg = Config.from_dict(data)
+    for cat in cfg.catalogs:
+        _hydrate(cat)
+        # With a single catalog the command itself already reports the problem (or
+        # clones on demand), so warning here would add output to today's behavior.
+        if cat.skipped and len(cfg.catalogs) > 1:
+            warn(f"catalog '{cat.id}' skipped: {cat.skipped}")
+    return cfg
 
 
 _VAR_RE = re.compile(r"^\s*-\s*\*\*(\w+)\*\*:\s*`([^`]+)`")
@@ -429,11 +466,11 @@ class Catalog:
 def load_catalog(path: Path | None = None) -> dict[str, Any]:
     """Load the catalog YAML from *path*.
 
-    If path is omitted, falls back to catalog_path(load_config()) — requires
+    If path is omitted, falls back to catalog_yaml(load_config()._first_remote) — requires
     a valid local config and an existing catalog clone.
     """
     if path is None:
-        path = catalog_path(load_config())
+        path = catalog_yaml(load_config()._first_remote)
     if not path.exists():
         die(f"catalog not found at {path}")
     with path.open() as fh:
@@ -888,22 +925,27 @@ def main_file_for(entry: Entry, dest: Path) -> Path:
 # Catalog repo sync (Phase 2: replaces git_pull_library)
 # --------------------------------------------------------------------------- #
 
-def pull_catalog(cfg: Config, quiet: bool = True) -> "str | None":
-    """Ensure the catalog repo clone is present and up to date.
+def pull_catalog(cat: Catalog, quiet: bool = True) -> "str | None":
+    """Ensure *cat*'s clone is present and up to date. No-op for a local catalog.
 
-    If CATALOG_CLONE_DIR is absent → clone (shallow, single-branch on
-    cfg.catalog_branch). On clone failure → die with auth hint.
-    If it already exists → git pull --ff-only. On pull failure → warn and
-    continue (stale cache is better than nothing for offline workflows).
+    If the clone is absent → clone (shallow, single-branch on cat.branch). On clone
+    failure → die with auth hint. If it already exists → git pull --ff-only. On pull
+    failure → warn and continue (stale cache is better than nothing for offline
+    workflows).
 
     Returns the pull error summary on failure, None on success.
     """
-    if not CATALOG_CLONE_DIR.exists():
+    if not cat.is_remote:
+        return None  # a local catalog is read straight from disk
+
+    clone_dir = cat.clone_dir
+    if not clone_dir.exists():
+        clone_dir.parent.mkdir(parents=True, exist_ok=True)
         proc = subprocess.run(
             [
                 "git", "clone", "--depth", "1", "--single-branch",
-                "--branch", cfg.catalog_branch,
-                cfg.catalog_repo, str(CATALOG_CLONE_DIR),
+                "--branch", cat.branch,
+                cat.repo, str(clone_dir),
             ],
             capture_output=True, text=True,
         )
@@ -915,7 +957,7 @@ def pull_catalog(cfg: Config, quiet: bool = True) -> "str | None":
         return None
 
     proc = subprocess.run(
-        ["git", "-C", str(CATALOG_CLONE_DIR), "pull", "--ff-only"],
+        ["git", "-C", str(clone_dir), "pull", "--ff-only"],
         capture_output=True, text=True,
     )
     if proc.returncode != 0:
@@ -927,16 +969,27 @@ def pull_catalog(cfg: Config, quiet: bool = True) -> "str | None":
     return None
 
 
-def catalog_behind(cfg: Config) -> int:
-    """Commits the catalog clone's HEAD is behind origin/<branch>.
+def pull_all(cfg: Config) -> dict[str, "str | None"]:
+    """Refresh every remote catalog best-effort; returns {catalog id: pull error}.
+
+    One catalog's pull failure warns and leaves its cached copy in place, so the
+    other catalogs and the command still proceed.
+    """
+    return {cat.id: pull_catalog(cat) for cat in cfg.remotes}
+
+
+def catalog_behind(cat: Catalog) -> int:
+    """Commits *cat*'s clone is behind origin/<branch>. 0 for a local catalog.
 
     Based on the last-fetched origin ref, so it catches a failed ff-only pull
     (fetch succeeded, merge didn't) and stale --no-pull runs. Returns 0 when
     the count can't be determined.
     """
+    if not cat.is_remote:
+        return 0
     proc = subprocess.run(
-        ["git", "-C", str(CATALOG_CLONE_DIR), "rev-list", "--count",
-         f"HEAD..origin/{cfg.catalog_branch}"],
+        ["git", "-C", str(cat.clone_dir), "rev-list", "--count",
+         f"HEAD..origin/{cat.branch}"],
         capture_output=True, text=True,
     )
     if proc.returncode != 0:
@@ -947,9 +1000,13 @@ def catalog_behind(cfg: Config) -> int:
         return 0
 
 
-def catalog_path(cfg: Config) -> Path:
-    """Absolute path to the catalog YAML inside the persistent clone."""
-    return CATALOG_CLONE_DIR / cfg.catalog_yaml_path
+def catalog_yaml(cat: Catalog) -> Path:
+    """Absolute path to *cat*'s catalog file, wherever it lives.
+
+    Saves every caller from knowing whether a catalog is a local file or a path
+    inside a persistent clone.
+    """
+    return cat.yaml_file
 
 
 # --------------------------------------------------------------------------- #
@@ -1289,15 +1346,15 @@ def cmd_list(args: argparse.Namespace) -> int:
     cfg = load_config()
     pull_err = None
     if not args.no_pull:
-        pull_err = pull_catalog(cfg)
-    behind = catalog_behind(cfg)
+        pull_err = pull_catalog(cfg._first_remote)
+    behind = catalog_behind(cfg._first_remote)
     if behind:
         reason = f"pull failed: {pull_err}" if pull_err else "catalog was not refreshed"
         warn(
             f"catalog is {behind} commit(s) behind origin/{cfg.catalog_branch} "
             f"({reason}); output may be stale"
         )
-    catalog = load_catalog(catalog_path(cfg))
+    catalog = load_catalog(catalog_yaml(cfg._first_remote))
     entries = iter_entries(catalog)
     rows = []
     for e in entries:
@@ -1335,8 +1392,8 @@ def cmd_list(args: argparse.Namespace) -> int:
 def cmd_search(args: argparse.Namespace) -> int:
     cfg = load_config()
     if not args.no_pull:
-        pull_catalog(cfg)
-    catalog = load_catalog(catalog_path(cfg))
+        pull_catalog(cfg._first_remote)
+    catalog = load_catalog(catalog_yaml(cfg._first_remote))
     entries = iter_entries(catalog)
     matches = fuzzy_candidates(entries, args.keyword)
 
@@ -1362,8 +1419,8 @@ def cmd_search(args: argparse.Namespace) -> int:
 def cmd_use(args: argparse.Namespace) -> int:
     cfg = load_config()
     if not args.no_pull:
-        pull_catalog(cfg)
-    catalog = load_catalog(catalog_path(cfg))
+        pull_catalog(cfg._first_remote)
+    catalog = load_catalog(catalog_yaml(cfg._first_remote))
     entries = iter_entries(catalog)
 
     entry = find_exact(entries, args.name)
@@ -1433,15 +1490,15 @@ def cmd_sync(args: argparse.Namespace) -> int:
     cfg = load_config()
     pull_err = None
     if not args.no_pull:
-        pull_err = pull_catalog(cfg)
-    behind = catalog_behind(cfg)
+        pull_err = pull_catalog(cfg._first_remote)
+    behind = catalog_behind(cfg._first_remote)
     if behind:
         reason = f"pull failed: {pull_err}" if pull_err else "catalog was not refreshed"
         warn(
             f"catalog is {behind} commit(s) behind origin/{cfg.catalog_branch} "
             f"({reason}); syncing against stale catalog metadata"
         )
-    catalog = load_catalog(catalog_path(cfg))
+    catalog = load_catalog(catalog_yaml(cfg._first_remote))
     entries = iter_entries(catalog)
 
     installed: list[tuple[Entry, str]] = []
@@ -1611,10 +1668,10 @@ def cmd_add(args: argparse.Namespace) -> int:
 
     cfg = load_config()
     if not args.no_pull:
-        pull_catalog(cfg)
+        pull_catalog(cfg._first_remote)
 
     # Validate against the persistent clone.
-    catalog = load_catalog(catalog_path(cfg))
+    catalog = load_catalog(catalog_yaml(cfg._first_remote))
     catalog_entries = iter_entries(catalog)
     for e in entries:
         existing = find_exact(catalog_entries, e.name)
@@ -1714,8 +1771,8 @@ def cmd_add(args: argparse.Namespace) -> int:
 def cmd_remove(args: argparse.Namespace) -> int:
     cfg = load_config()
     if not args.no_pull:
-        pull_catalog(cfg)
-    catalog = load_catalog(catalog_path(cfg))
+        pull_catalog(cfg._first_remote)
+    catalog = load_catalog(catalog_yaml(cfg._first_remote))
     entries = iter_entries(catalog)
     entry = find_exact(entries, args.name)
     if entry is None:
@@ -1887,8 +1944,8 @@ def cmd_update(args: argparse.Namespace) -> int:
 
     cfg = load_config()
     if not args.no_pull:
-        pull_catalog(cfg)
-    catalog = load_catalog(catalog_path(cfg))
+        pull_catalog(cfg._first_remote)
+    catalog = load_catalog(catalog_yaml(cfg._first_remote))
     # Friendly early exit on an obvious typo, from the persistent clone. The
     # *authoritative* read happens against the temp-clone below — see the
     # determinism note there.
@@ -1986,8 +2043,8 @@ def cmd_update(args: argparse.Namespace) -> int:
 def cmd_push(args: argparse.Namespace) -> int:
     cfg = load_config()
     if not getattr(args, "no_pull", False):
-        pull_catalog(cfg)
-    catalog = load_catalog(catalog_path(cfg))
+        pull_catalog(cfg._first_remote)
+    catalog = load_catalog(catalog_yaml(cfg._first_remote))
     entry = find_exact(iter_entries(catalog), args.name)
     if entry is None:
         die(f"'{args.name}' not found in catalog")
@@ -2318,8 +2375,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     if cfg is not None and CATALOG_CLONE_DIR.exists():
         if not args.no_pull:
-            pull_catalog(cfg)  # safe: clone exists, worst case is a warn
-        p = catalog_path(cfg)
+            pull_catalog(cfg._first_remote)  # safe: clone exists, worst case is a warn
+        p = catalog_yaml(cfg._first_remote)
         if p.exists():
             catalog = load_catalog(p)
             entries = iter_entries(catalog)
@@ -2455,10 +2512,10 @@ def cmd_init(args: argparse.Namespace) -> int:
             shutil.rmtree(CATALOG_CLONE_DIR)
     if not CATALOG_CLONE_DIR.exists():
         sys.stderr.write(f"Cloning catalog repo → {CATALOG_CLONE_DIR} ...\n")
-        pull_catalog(cfg)  # clones if absent; dies on failure with auth hint
+        pull_catalog(cfg._first_remote)  # clones if absent; dies on failure with auth hint
 
     # Verify the catalog YAML exists inside the clone.
-    cp = catalog_path(cfg)
+    cp = catalog_yaml(cfg._first_remote)
     if not cp.exists():
         die(
             f"catalog file not found at {cp}\n"
