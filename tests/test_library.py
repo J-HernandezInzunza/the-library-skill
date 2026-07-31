@@ -13,7 +13,9 @@ remote (R18.6).
 
 from __future__ import annotations
 
+import argparse
 import contextlib
+import io
 import os
 import subprocess
 import tempfile
@@ -205,6 +207,22 @@ def make_entry(
         source=source or f"./{name}",
         requires=list(requires or []),
     )
+
+
+def update_args(**kwargs: Any) -> argparse.Namespace:
+    """The `update` flags as argparse leaves them — every one defaults to None."""
+    flags = dict(set_description=None, set_source=None, set_requires=None,
+                 add_requires=None, remove_requires=None)
+    flags.update(kwargs)
+    return argparse.Namespace(**flags)
+
+
+@contextlib.contextmanager
+def captured_warnings():
+    """Collect library.warn() messages instead of printing them."""
+    msgs: list[str] = []
+    with patch.object(library, "warn", msgs.append):
+        yield msgs
 
 
 def entry_names(text: str, section: str = "skills") -> list[str]:
@@ -978,6 +996,233 @@ class TestRemoteWeb(unittest.TestCase):
                     "acme/tools", ""):
             with self.subTest(url=url):
                 self.assertIsNone(library._remote_web(url))
+
+
+# --------------------------------------------------------------------------- #
+# Dependency resolution (R18.3)
+# --------------------------------------------------------------------------- #
+
+class TestResolveDeps(unittest.TestCase):
+    @staticmethod
+    def order(entries: list[library.Entry], target: library.Entry) -> list[str]:
+        return [e.name for e in library.resolve_deps(entries, target)]
+
+    def test_dependencies_come_before_the_target(self) -> None:
+        dep = make_entry("dep")
+        target = make_entry("target", requires=["skill:dep"])
+        self.assertEqual(self.order([dep, target], target), ["dep", "target"])
+
+    def test_transitive_dependencies_resolve_depth_first(self) -> None:
+        base = make_entry("base")
+        mid = make_entry("mid", requires=["skill:base"])
+        target = make_entry("target", requires=["skill:mid"])
+        self.assertEqual(self.order([base, mid, target], target), ["base", "mid", "target"])
+
+    def test_diamond_dependency_appears_once(self) -> None:
+        base = make_entry("base")
+        left = make_entry("left", requires=["skill:base"])
+        right = make_entry("right", requires=["skill:base"])
+        target = make_entry("target", requires=["skill:left", "skill:right"])
+        self.assertEqual(
+            self.order([base, left, right, target], target),
+            ["base", "left", "right", "target"],
+        )
+
+    def test_refs_are_typed_so_a_name_can_exist_in_two_sections(self) -> None:
+        skill_alpha = make_entry("alpha", description="the skill")
+        prompt_alpha = make_entry("alpha", etype="prompt", description="the prompt")
+        target = make_entry("target", requires=["prompt:alpha"])
+        resolved = library.resolve_deps([skill_alpha, prompt_alpha, target], target)
+        self.assertEqual([(e.type, e.name) for e in resolved],
+                         [("prompt", "alpha"), ("skill", "target")])
+
+    def test_whitespace_around_a_ref_is_tolerated(self) -> None:
+        dep = make_entry("dep")
+        target = make_entry("target", requires=["skill: dep"])
+        self.assertEqual(self.order([dep, target], target), ["dep", "target"])
+
+    def test_missing_dependency_warns_and_installs_the_target_anyway(self) -> None:
+        target = make_entry("target", requires=["skill:nope"])
+        with captured_warnings() as msgs:
+            self.assertEqual(self.order([target], target), ["target"])
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("skill:nope", msgs[0])
+        self.assertIn("not found in catalog", msgs[0])
+
+    def test_malformed_ref_warns_and_continues(self) -> None:
+        dep = make_entry("dep")
+        target = make_entry("target", requires=["dep", "skill:dep"])
+        with captured_warnings() as msgs:
+            self.assertEqual(self.order([dep, target], target), ["dep", "target"])
+        self.assertIn("malformed dependency ref", msgs[0])
+
+    def test_cycle_terminates_and_warns(self) -> None:
+        left = make_entry("left", requires=["skill:right"])
+        right = make_entry("right", requires=["skill:left"])
+        with captured_warnings() as msgs:
+            resolved = self.order([left, right], left)
+        self.assertEqual(resolved, ["right", "left"])  # target still last
+        self.assertTrue(any("cycle detected" in m for m in msgs), msgs)
+
+    def test_self_reference_terminates(self) -> None:
+        solo = make_entry("solo", requires=["skill:solo"])
+        with captured_warnings() as msgs:
+            self.assertEqual(self.order([solo], solo), ["solo"])
+        self.assertTrue(any("cycle detected" in m for m in msgs), msgs)
+
+
+# --------------------------------------------------------------------------- #
+# Install directories and the CWD-anchoring contract (R18.3)
+#
+# SKILL.md promises a 'project'-scope install lands in the directory the user ran
+# from, never the tool directory the CLI executes from. Phase 5 rewrites the
+# surrounding signatures, so that contract is pinned here first.
+# --------------------------------------------------------------------------- #
+
+class TestDefaultDirs(unittest.TestCase):
+    def test_flattens_the_list_of_single_key_mappings(self) -> None:
+        self.assertEqual(
+            library.default_dirs({"default_dirs": {
+                "skills": [{"project": ".claude/skills/"}, {"global": "~/.claude/skills/"}],
+                "agents": [{"global": "~/.claude/agents/"}],
+            }}),
+            {
+                "skills": {"project": ".claude/skills/", "global": "~/.claude/skills/"},
+                "agents": {"global": "~/.claude/agents/"},
+                "prompts": {},
+            },
+        )
+
+    def test_default_is_a_legacy_alias_for_project(self) -> None:
+        dirs = library.default_dirs({"default_dirs": {"skills": [{"default": ".claude/skills/"}]}})
+        self.assertEqual(dirs["skills"], {"project": ".claude/skills/"})
+
+    def test_every_section_is_present_even_when_unconfigured(self) -> None:
+        self.assertEqual(library.default_dirs({}),
+                         {"skills": {}, "agents": {}, "prompts": {}})
+
+    def test_multi_key_mapping_and_non_mapping_items(self) -> None:
+        dirs = library.default_dirs({"default_dirs": {
+            "skills": [{"project": "a/", "global": "b/"}, "junk", None],
+        }})
+        self.assertEqual(dirs["skills"], {"project": "a/", "global": "b/"})
+
+
+class TestInstallDirAnchoring(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+
+    def test_absolute_path_passes_through(self) -> None:
+        self.assertEqual(library.resolve_install_dir("/srv/agentics/skills"),
+                         Path("/srv/agentics/skills"))
+
+    def test_tilde_path_is_absolute_and_not_cwd_anchored(self) -> None:
+        self.assertEqual(library.resolve_install_dir("~/.claude/skills/"),
+                         self.tool.home / ".claude/skills")
+
+    def test_relative_path_anchors_to_the_project_cwd_not_the_tool_dir(self) -> None:
+        resolved = library.resolve_install_dir(".claude/skills/")
+        self.assertEqual(resolved, self.tool.project / ".claude/skills")
+        self.assertFalse(str(resolved).startswith(str(library.SKILL_DIR)))
+
+    def test_env_var_anchors_when_no_explicit_cwd_was_given(self) -> None:
+        env_dir = self.tool.root / "from-env"
+        env_dir.mkdir()
+        with patch.object(library, "_PROJECT_CWD", None), \
+             patch.dict(os.environ, {"LIBRARY_CWD": str(env_dir)}):
+            self.assertEqual(library.project_cwd(), env_dir)
+
+    def test_process_cwd_is_the_last_resort(self) -> None:
+        cwd_dir = self.tool.root / "from-cwd"
+        cwd_dir.mkdir()
+        previous = Path.cwd()
+        self.addCleanup(os.chdir, previous)
+        os.chdir(cwd_dir)
+        env = {k: v for k, v in os.environ.items() if k != "LIBRARY_CWD"}
+        with patch.object(library, "_PROJECT_CWD", None), \
+             patch.dict(os.environ, env, clear=True):
+            self.assertEqual(library.project_cwd().resolve(), cwd_dir.resolve())
+
+    def test_explicit_cwd_flag_wins_over_the_env_var(self) -> None:
+        flag_dir = self.tool.root / "from-flag"
+        flag_dir.mkdir()
+        seen: list[Path] = []
+
+        def stub(args: argparse.Namespace) -> int:
+            seen.append(library.project_cwd())
+            return 0
+
+        # main() pins _PROJECT_CWD from --cwd before dispatching, so every dir
+        # resolution in the run agrees on one anchor.
+        with patch.object(library, "_PROJECT_CWD", None), \
+             patch.dict(os.environ, {"LIBRARY_CWD": str(self.tool.project)}), \
+             patch.object(library, "cmd_list", stub):
+            self.assertEqual(library.main(["list", "--cwd", str(flag_dir)]), 0)
+        self.assertEqual(seen, [flag_dir])
+
+
+# --------------------------------------------------------------------------- #
+# update's entry computation (R18.3)
+# --------------------------------------------------------------------------- #
+
+class TestComputeUpdatedEntry(unittest.TestCase):
+    def setUp(self) -> None:
+        self.base = make_entry("alpha", description="Old", source="/srv/alpha",
+                               requires=["skill:one", "skill:two"])
+
+    def test_sets_description_and_source_leaving_requires_untouched(self) -> None:
+        updated = library._compute_updated_entry(
+            self.base, update_args(set_description="New", set_source="/srv/new"))
+        self.assertEqual((updated.description, updated.source), ("New", "/srv/new"))
+        self.assertEqual(updated.requires, ["skill:one", "skill:two"])
+        self.assertEqual((updated.type, updated.name), ("skill", "alpha"))
+
+    def test_requires_list_is_copied_not_shared_with_the_base_entry(self) -> None:
+        updated = library._compute_updated_entry(self.base, update_args(set_description="New"))
+        updated.requires.append("skill:three")
+        self.assertEqual(self.base.requires, ["skill:one", "skill:two"])
+
+    def test_set_requires_replaces_the_whole_list(self) -> None:
+        updated = library._compute_updated_entry(
+            self.base, update_args(set_requires="agent:bot,prompt:solo"))
+        self.assertEqual(updated.requires, ["agent:bot", "prompt:solo"])
+
+    def test_empty_set_requires_clears_the_list(self) -> None:
+        updated = library._compute_updated_entry(self.base, update_args(set_requires=""))
+        self.assertEqual(updated.requires, [])
+
+    def test_add_requires_appends_in_order(self) -> None:
+        updated = library._compute_updated_entry(
+            self.base, update_args(add_requires="skill:three, agent:bot"))
+        self.assertEqual(updated.requires,
+                         ["skill:one", "skill:two", "skill:three", "agent:bot"])
+
+    def test_add_and_remove_in_one_call(self) -> None:
+        updated = library._compute_updated_entry(
+            self.base, update_args(add_requires="skill:three", remove_requires="skill:one"))
+        self.assertEqual(updated.requires, ["skill:two", "skill:three"])
+
+    def test_redundant_add_warns_and_does_not_duplicate(self) -> None:
+        with captured_warnings() as msgs:
+            updated = library._compute_updated_entry(
+                self.base, update_args(add_requires="skill:one"))
+        self.assertEqual(updated.requires, ["skill:one", "skill:two"])
+        self.assertEqual(msgs, ["skill:one already in requires for alpha"])
+
+    def test_removing_an_absent_ref_warns_and_changes_nothing(self) -> None:
+        with captured_warnings() as msgs:
+            updated = library._compute_updated_entry(
+                self.base, update_args(remove_requires="skill:nope"))
+        self.assertEqual(updated.requires, ["skill:one", "skill:two"])
+        self.assertEqual(msgs, ["skill:nope not in requires for alpha; nothing removed"])
+
+    def test_an_invalid_ref_is_fatal(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit) as ctx:
+                library._compute_updated_entry(self.base, update_args(add_requires="bogus"))
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertIn("invalid requires ref", err.getvalue())
 
 
 if __name__ == "__main__":
