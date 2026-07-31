@@ -98,3 +98,35 @@ discovered rather than configured.
 
 **Unlocks / depends on.** Would pair with per-project discovery above, which is where an
 unvetted catalog could first appear.
+
+---
+
+## Text-splice fidelity around comments and blank lines
+
+**What.** The write path splices catalog text rather than re-dumping YAML, specifically so
+hand-authored comments and spacing survive a write. It doesn't fully deliver that. Three
+asymmetries, all pinned by tests in `tests/test_library.py` (search for the test names):
+
+- `update` **destroys a comment inside the entry it edits** — `replace_entry` overwrites the whole
+  span from the entry's first line to the next entry's, so a `# pinned to a fork on purpose` note
+  above a `source:` is gone after an unrelated description edit. This is the one with real user
+  impact: the comment explains *why* the entry looks the way it does, and the person who wrote it
+  isn't necessarily the person running `update`.
+  (`test_discards_a_comment_inside_the_replaced_block`)
+- `remove` and `update` **absorb the blank line below a non-final entry**, so spacing degrades over
+  successive writes. (`test_consumes_the_blank_line_below_a_non_final_entry`)
+- **splice → remove is not byte-exact when a section ends in a blank line**: splice backs up over
+  the trailing blank, remove then deletes through to the next section and takes it along.
+  (`test_round_trip_loses_a_trailing_blank_line_in_the_section`)
+
+**Why not now.** Each is a behavior change to the three splice functions every write command goes
+through, and the personal-catalogs work already routes all three write modes over that same code.
+Changing splice semantics in the middle of that is how you get a regression nobody can bisect. The
+tests exist now, so a later fix is verifiable rather than speculative — which is exactly the state a
+roadmap item wants to be in.
+
+**Unlocks / depends on.** Depends on nothing beyond the current test suite. The fix for the first
+item is the narrow one: bound the replaced span to the entry's own property lines instead of running
+to the next entry's start, leaving interior comments where they are. The other two are spacing
+polish and could stay as-is indefinitely. Anyone attempting this should expect the pinning tests to
+need updating, and should say so in the commit — a golden change is otherwise a red flag.
