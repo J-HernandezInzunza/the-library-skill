@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
 import os
 import subprocess
 import tempfile
@@ -180,6 +181,113 @@ class TempGitRepo:
     def remote_text(self, rel: str) -> str:
         """Contents of *rel* at the branch tip on the bare remote."""
         return self._run("git", "-C", str(self.remote), "show", f"{self.branch}:{rel}").stdout
+
+
+def run_cli(*argv: str) -> tuple[int, str, str]:
+    """Invoke the CLI in-process, returning (exit_code, stdout, stderr)."""
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            code = library.main(list(argv))
+        except SystemExit as ex:  # die() or argparse
+            code = ex.code if isinstance(ex.code, int) else 1
+    return code, out.getvalue(), err.getvalue()
+
+
+@contextlib.contextmanager
+def stubbed_gh(returncode: int = 0):
+    """Answer `gh auth status` from a canned result.
+
+    Whether `gh` is installed and authenticated is a property of the developer's
+    machine, and `doctor`'s output must not depend on it. Every other subprocess
+    call runs for real — they all target local paths, so the suite stays offline.
+    """
+    real = subprocess.run
+
+    def fake(cmd: Any, *a: Any, **kw: Any) -> subprocess.CompletedProcess[str]:
+        if cmd and cmd[0] == "gh":
+            return subprocess.CompletedProcess(cmd, returncode, "", "")
+        return real(cmd, *a, **kw)
+
+    with patch.object(library.subprocess, "run", fake):
+        yield
+
+
+def install_golden_fixture(tool: TempTool, catalog_text: str) -> TempGitRepo:
+    """Set up a legacy-shape config plus a catalog clone backed by a local bare repo.
+
+    Deliberately end-to-end rather than stubbed: the clone, its `origin`, and
+    `git ls-remote` are all real git against local paths, so `doctor`'s clone,
+    origin-match, and reachability checks run for real without a network. The tool
+    link is created too, so `doctor` emits no warning naming a temp path.
+    """
+    repo = TempGitRepo(tool.tool_dir, name=".catalog-repo")
+    repo.commit("library.yaml", catalog_text, "add catalog")
+    repo.push()
+    tool.write_config({
+        "catalog": {
+            "repo": str(repo.remote),
+            "yaml_path": "library.yaml",
+            "branch": "main",
+        },
+        "autopush": False,
+    })
+    skills = tool.home / ".claude" / "skills"
+    skills.mkdir(parents=True, exist_ok=True)
+    (skills / library.LINK_NAME).symlink_to(tool.tool_dir)
+    return repo
+
+
+GOLDEN_CATALOG = """\
+# Fixture catalog for the single-catalog golden tests.
+default_dirs:
+  skills:
+    - project: .claude/skills/
+    - global: ~/.claude/skills/
+  agents:
+    - project: .claude/agents/
+    - global: ~/.claude/agents/
+  prompts:
+    - project: .claude/commands/
+    - global: ~/.claude/commands/
+
+library:
+  skills:
+    - name: backend-code-practices
+      description: Backend conventions for Spring Boot services
+      source: https://github.com/acme/agentics/blob/main/skills/backend-code-practices/SKILL.md
+    - name: session-retro
+      description: Distill a finished session into durable style learnings
+      source: https://github.com/acme/agentics/blob/main/skills/session-retro/SKILL.md
+      requires: ["skill:backend-code-practices"]
+  agents:
+    - name: sql-review
+      description: Reviews SQL migrations and stored procedures
+      source: https://github.com/acme/agentics/blob/main/agents/sql-review.md
+  prompts:
+    - name: grill-me
+      description: Interrogate a plan for its load-bearing decisions
+      source: https://github.com/acme/agentics/blob/main/prompts/grill-me.md
+"""
+
+# Same shape, seeded with the problems doctor is supposed to report: a duplicate
+# name, a dangling dependency, and an out-of-order section.
+BROKEN_CATALOG = """\
+library:
+  skills:
+    - name: session-retro
+      description: Distill a finished session into durable style learnings
+      source: https://github.com/acme/agentics/blob/main/skills/session-retro/SKILL.md
+      requires: ["skill:missing-dep"]
+    - name: backend-code-practices
+      description: Backend conventions for Spring Boot services
+      source: https://github.com/acme/agentics/blob/main/skills/backend-code-practices/SKILL.md
+    - name: session-retro
+      description: A second entry with the same name
+      source: https://github.com/acme/agentics/blob/main/skills/retro/SKILL.md
+  agents: []
+  prompts: []
+"""
 
 
 LEGACY_CONFIG = {
@@ -1223,6 +1331,141 @@ class TestComputeUpdatedEntry(unittest.TestCase):
                 library._compute_updated_entry(self.base, update_args(add_requires="bogus"))
         self.assertEqual(ctx.exception.code, 1)
         self.assertIn("invalid requires ref", err.getvalue())
+
+
+# --------------------------------------------------------------------------- #
+# Single-catalog golden output (R2.3, R2.4, R18.4)
+#
+# THE BACKWARDS-COMPATIBILITY CONTRACT. With a legacy singular `catalog:` config,
+# human output stays byte-identical and every --json key keeps its name and meaning.
+# Later phases gate each new output element on len(cfg.active) > 1 precisely so these
+# keep passing untouched: if one of them fails, the change is wrong, not the golden.
+# The single sanctioned edit is T4.1 adding doctor's ignored-`default_dirs` warning.
+#
+# Every golden below was captured from actual CLI output, not written by hand.
+# --------------------------------------------------------------------------- #
+
+GOLDEN_LIST = """
+Skills
+  backend-code-practices  not installed           Backend conventions for Spring Boot services
+  session-retro           not installed           Distill a finished session into durable style learnings
+
+Agents
+  sql-review  not installed           Reviews SQL migrations and stored procedures
+
+Prompts
+  grill-me  not installed           Interrogate a plan for its load-bearing decisions
+
+4 entries · 0 installed · 4 not installed
+"""
+
+GOLDEN_SEARCH_HIT = """\
+Results for "retro":
+
+  [skill] session-retro  Distill a finished session into durable style learnings
+
+Run `library use <name>` to install one.
+"""
+
+GOLDEN_SEARCH_MISS = 'No results for "zzz". Try a broader keyword or `library list`.\n'
+
+GOLDEN_DOCTOR_CLEAN = "All checks passed — 4 catalog entries, no problems found.\n"
+
+GOLDEN_DOCTOR_PROBLEMS = """\
+  ERROR  [session-retro] duplicate name in skill, skill
+  ERROR  [session-retro] dangling dependency 'skill:missing-dep'
+  WARN   [-] skills not alphabetically sorted
+
+2 errors · 1 warnings
+"""
+
+
+class TestSingleCatalogGoldens(unittest.TestCase):
+    maxDiff = None
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        install_golden_fixture(self.tool, GOLDEN_CATALOG)
+
+    def test_list_output(self) -> None:
+        code, out, err = run_cli("list", "--no-pull")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, GOLDEN_LIST)
+
+    def test_search_hit_output(self) -> None:
+        code, out, err = run_cli("search", "retro", "--no-pull")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, GOLDEN_SEARCH_HIT)
+
+    def test_search_miss_output(self) -> None:
+        code, out, err = run_cli("search", "zzz", "--no-pull")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, GOLDEN_SEARCH_MISS)
+
+    def test_doctor_output_when_clean(self) -> None:
+        with stubbed_gh():
+            code, out, err = run_cli("doctor", "--no-pull")
+        self.assertEqual((code, out), (0, GOLDEN_DOCTOR_CLEAN))
+
+    def test_list_json_keys(self) -> None:
+        code, out, _ = run_cli("list", "--no-pull", "--json")
+        payload = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(payload), 4)
+        for item in payload:
+            self.assertEqual(
+                sorted(item),
+                ["description", "installed", "name", "requires", "scopes", "source", "type"],
+            )
+        retro = next(i for i in payload if i["name"] == "session-retro")
+        self.assertEqual(retro["requires"], ["skill:backend-code-practices"])
+        self.assertEqual((retro["installed"], retro["scopes"]), (False, []))
+
+    def test_search_json_keys(self) -> None:
+        code, out, _ = run_cli("search", "retro", "--no-pull", "--json")
+        payload = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertEqual([sorted(i) for i in payload],
+                         [["description", "name", "source", "type"]])
+
+    def test_doctor_json_keys(self) -> None:
+        with stubbed_gh():
+            code, out, _ = run_cli("doctor", "--no-pull", "--json")
+        payload = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertEqual(sorted(payload), ["entries", "errors", "status", "warnings"])
+        self.assertEqual((payload["status"], payload["entries"]), ("OK", 4))
+        self.assertEqual((payload["errors"], payload["warnings"]), ([], []))
+
+
+class TestSingleCatalogDoctorProblems(unittest.TestCase):
+    maxDiff = None
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        install_golden_fixture(self.tool, BROKEN_CATALOG)
+
+    def test_problem_report_output_and_exit_code(self) -> None:
+        with stubbed_gh():
+            code, out, _ = run_cli("doctor", "--no-pull")
+        self.assertEqual(code, 1)
+        self.assertEqual(out, GOLDEN_DOCTOR_PROBLEMS)
+
+    def test_problem_json_shape(self) -> None:
+        with stubbed_gh():
+            code, out, _ = run_cli("doctor", "--no-pull", "--json")
+        payload = json.loads(out)
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["status"], "PROBLEMS")
+        self.assertEqual(payload["entries"], 3)
+        for item in payload["errors"] + payload["warnings"]:
+            self.assertEqual(sorted(item), ["entry", "message"])
+        self.assertEqual([e["message"] for e in payload["errors"]], [
+            "duplicate name in skill, skill",
+            "dangling dependency 'skill:missing-dep'",
+        ])
 
 
 if __name__ == "__main__":
