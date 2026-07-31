@@ -19,7 +19,7 @@ one place, and warn the user that push *overwrites* the source with their local 
 ### 1. Preview the change (optional, remote sources only)
 
 ```bash
-<tool-dir>/library push "<name>" [--from default|global|<path>] [--message "<msg>"] --dry-run
+<tool-dir>/library push "<name>" [--from project|global|<path>] [--message "<msg>"] --dry-run
 ```
 
 `--dry-run` shows the exact diff the PR would contain without pushing anything.
@@ -27,11 +27,13 @@ one place, and warn the user that push *overwrites* the source with their local 
 ### 2. Push via the CLI
 
 ```bash
-<tool-dir>/library push "<name>" [--from default|global|<path>] [--message "<msg>"] [--no-pull] [--json]
+<tool-dir>/library push "<name>" [--from project|global|<path>] [--message "<msg>"] [--no-pull] [--json]
 ```
 
-- `--from` → required only if the item is installed in **both** the default and global
-  dirs (the CLI errors and asks). Otherwise it auto-detects.
+- `--from` → required only if the item is installed in **both** the project and global
+  dirs (the CLI errors and asks). Otherwise it auto-detects. The scope names are
+  `project` and `global` — the same names `list` prints; `default` is accepted as a
+  legacy alias for `project`. Anything else is treated as a filesystem path.
 - `--message` → commit message for remote sources (default: `library: updated <name>`).
 - `--no-pull` → skip refreshing the catalog clone before looking up the entry (faster;
   use only if you know the catalog is current).

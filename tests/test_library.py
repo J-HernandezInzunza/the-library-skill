@@ -1556,5 +1556,97 @@ class TestRemovePurgeScopes(unittest.TestCase):
             self.assertTrue(target.exists(), f"{target} was deleted without --purge")
 
 
+class TestPushFromScopeNames(unittest.TestCase):
+    """R13.2–R13.4 — `push --from` must accept the scope names the tool itself prints.
+
+    Only ("default", "global") were treated as scopes, so `--from project` — the name
+    `list` and `installed_scopes` both print — was misread as a relative filesystem
+    path, and `--from default` reached `resolve_target_base` with a scope key that
+    `default_dirs()` had already normalized away, raising outside any handler.
+
+    Each case pushes to a local-path source, so the assertion is "which local copy did
+    it read" without a clone: `_push_local` copies into the source dir and reports it.
+    """
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        # A catalog whose one entry has a local-path source inside the sandbox.
+        self.source_dir = self.tool.root / "sources" / "session-retro"
+        self.source_dir.mkdir(parents=True)
+        (self.source_dir / "SKILL.md").write_text("# upstream copy\n")
+        install_golden_fixture(self.tool, f"""\
+default_dirs:
+  skills:
+    - project: .claude/skills/
+    - global: ~/.claude/skills/
+
+library:
+  skills:
+    - name: session-retro
+      description: Distill a finished session into durable style learnings
+      source: {self.source_dir / "SKILL.md"}
+  agents: []
+  prompts: []
+""")
+
+    def install(self, scope: str, marker: str) -> Path:
+        root = self.tool.project if scope == "project" else self.tool.home
+        target = root / ".claude" / "skills" / "session-retro"
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "SKILL.md").write_text(marker)
+        return target
+
+    def push(self, *extra: str) -> dict[str, Any]:
+        code, out, err = run_cli("push", "session-retro", "--no-pull", "--json", *extra)
+        self.assertEqual(code, 0, err)
+        return json.loads(out)
+
+    def test_from_project_resolves_to_the_project_scope(self) -> None:
+        self.install("project", "# project copy\n")
+        self.assertTrue(self.push("--from", "project")["changed"])
+        self.assertEqual((self.source_dir / "SKILL.md").read_text(), "# project copy\n")
+
+    def test_from_default_is_a_legacy_alias_for_project(self) -> None:
+        self.install("project", "# project copy\n")
+        self.assertTrue(self.push("--from", "default")["changed"])
+        self.assertEqual((self.source_dir / "SKILL.md").read_text(), "# project copy\n")
+
+    def test_from_global_still_resolves_to_the_global_scope(self) -> None:
+        self.install("global", "# global copy\n")
+        self.assertTrue(self.push("--from", "global")["changed"])
+        self.assertEqual((self.source_dir / "SKILL.md").read_text(), "# global copy\n")
+
+    def test_from_project_wins_over_a_same_named_directory_in_the_cwd(self) -> None:
+        # The regression that made this a real bug and not just a message nit: with a
+        # ./project/ directory present, --from project silently pushed from *that*.
+        decoy = self.tool.project / "project" / "session-retro"
+        decoy.mkdir(parents=True)
+        (decoy / "SKILL.md").write_text("# decoy copy\n")
+        self.install("project", "# project copy\n")
+        self.assertTrue(self.push("--from", "project")["changed"])
+        self.assertEqual((self.source_dir / "SKILL.md").read_text(), "# project copy\n")
+
+    def test_from_an_explicit_path_is_still_a_path(self) -> None:
+        elsewhere = self.tool.root / "elsewhere"
+        (elsewhere / "session-retro").mkdir(parents=True)
+        (elsewhere / "session-retro" / "SKILL.md").write_text("# path copy\n")
+        self.assertTrue(self.push("--from", str(elsewhere))["changed"])
+        self.assertEqual((self.source_dir / "SKILL.md").read_text(), "# path copy\n")
+
+    def test_multi_scope_install_without_from_asks_which(self) -> None:
+        self.install("project", "# project copy\n")
+        self.install("global", "# global copy\n")
+        code, _, err = run_cli("push", "session-retro", "--no-pull", "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("installed in multiple places", err)
+        self.assertIn("project|global", err)
+
+    def test_not_installed_anywhere_is_a_clean_error(self) -> None:
+        code, _, err = run_cli("push", "session-retro", "--no-pull", "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("not installed locally", err)
+
+
 if __name__ == "__main__":
     unittest.main()

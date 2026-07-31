@@ -1728,15 +1728,17 @@ def cmd_push(args: argparse.Namespace) -> int:
     if entry is None:
         die(f"'{args.name}' not found in catalog")
 
-    # Locate which local copy to push.
-    if args.frm and args.frm not in ("default", "global"):
+    # Locate which local copy to push. Anything that isn't a scope name is a path.
+    if args.frm and args.frm not in ("project", "global", "default"):
         scope_base = Path(args.frm).expanduser()
     else:
-        scopes = [args.frm] if args.frm else installed_scopes(catalog, entry)
+        # 'default' is the legacy alias for 'project' (see default_dirs).
+        frm = "project" if args.frm == "default" else args.frm
+        scopes = [frm] if frm else installed_scopes(catalog, entry)
         if not scopes:
             die(f"'{entry.name}' is not installed locally; nothing to push")
         if len(scopes) > 1 and not args.frm:
-            die(f"'{entry.name}' installed in multiple places ({', '.join(scopes)}); pass --from default|global")
+            die(f"'{entry.name}' installed in multiple places ({', '.join(scopes)}); pass --from project|global")
         scope_base = resolve_target_base(catalog, entry, scopes[0], None)
 
     if entry.type == "skill":
@@ -2349,7 +2351,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("push", help="push a local copy back to its source (opens a PR for GitHub sources)")
     sp.add_argument("name")
-    sp.add_argument("--from", dest="frm", help="which local copy: default | global | <path>")
+    sp.add_argument("--from", dest="frm",
+                    help="which local copy: project | global | <path> ('default' = project)")
     sp.add_argument("--message", help="commit message (GitHub sources)")
     sp.add_argument("--no-pull", action="store_true", help="skip refreshing the catalog clone")
     sp.add_argument("--dry-run", action="store_true",
