@@ -1468,5 +1468,93 @@ class TestSingleCatalogDoctorProblems(unittest.TestCase):
         ])
 
 
+# --------------------------------------------------------------------------- #
+# Pre-existing bug fixes (R13)
+# --------------------------------------------------------------------------- #
+
+class TestRemovePurgeScopes(unittest.TestCase):
+    """R13.1 — `remove --purge` must delete the project-scope copy, not just the global one.
+
+    The purge loop iterated ("default", "global"). `default_dirs()` normalizes the
+    legacy `default` key to `project`, so `dirs.get("default")` was always None,
+    `resolve_target_base` raised, and the surrounding `except LibraryError: continue`
+    swallowed it — the project-scope copy was never deleted and nothing said so.
+
+    Runs the real CLI end to end: the catalog clone, the write, and the branch push
+    all go to a local bare repo, and `autopush: false` means no `gh` call.
+    """
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        install_golden_fixture(self.tool, GOLDEN_CATALOG)
+
+    def scope_base(self, scope: str, section: str = "skills") -> Path:
+        leaf = "commands" if section == "prompts" else section
+        root = self.tool.project if scope == "project" else self.tool.home
+        return root / ".claude" / leaf
+
+    def install(self, scope: str, name: str, section: str = "skills") -> Path:
+        base = self.scope_base(scope, section)
+        base.mkdir(parents=True, exist_ok=True)
+        if section == "skills":
+            target = base / name
+            target.mkdir()
+            (target / "SKILL.md").write_text("# installed copy\n")
+        else:
+            target = base / f"{name}.md"
+            target.write_text("# installed copy\n")
+        return target
+
+    def purge(self, name: str) -> dict[str, Any]:
+        code, out, err = run_cli("remove", name, "--purge", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual(payload["removed"]["name"], name)
+        return payload
+
+    def test_purges_the_project_scope_copy(self) -> None:
+        target = self.install("project", "session-retro")
+        payload = self.purge("session-retro")
+        self.assertFalse(target.exists(), "project-scope copy survived --purge")
+        self.assertEqual(payload["deleted"], [str(target)])
+
+    def test_purges_the_global_scope_copy(self) -> None:
+        target = self.install("global", "session-retro")
+        payload = self.purge("session-retro")
+        self.assertFalse(target.exists())
+        self.assertEqual(payload["deleted"], [str(target)])
+
+    def test_purges_both_scopes_in_one_run(self) -> None:
+        targets = [self.install("project", "session-retro"),
+                   self.install("global", "session-retro")]
+        payload = self.purge("session-retro")
+        for target in targets:
+            self.assertFalse(target.exists(), f"{target} survived --purge")
+        self.assertCountEqual(payload["deleted"], [str(t) for t in targets])
+
+    def test_purges_a_file_type_entry_in_both_scopes(self) -> None:
+        targets = [self.install("project", "grill-me", "prompts"),
+                   self.install("global", "grill-me", "prompts")]
+        payload = self.purge("grill-me")
+        for target in targets:
+            self.assertFalse(target.exists(), f"{target} survived --purge")
+        self.assertCountEqual(payload["deleted"], [str(t) for t in targets])
+
+    def test_no_installed_copy_is_a_no_op(self) -> None:
+        payload = self.purge("session-retro")
+        self.assertEqual(payload["deleted"], [])
+
+    def test_local_copies_survive_without_the_flag(self) -> None:
+        targets = [self.install("project", "session-retro"),
+                   self.install("global", "session-retro")]
+        code, out, err = run_cli("remove", "session-retro", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["deleted"], [])
+        for target in targets:
+            self.assertTrue(target.exists(), f"{target} was deleted without --purge")
+
+
 if __name__ == "__main__":
     unittest.main()

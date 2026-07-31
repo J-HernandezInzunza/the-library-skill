@@ -1523,7 +1523,7 @@ def cmd_remove(args: argparse.Namespace) -> int:
     # --purge: delete local copies immediately (unrelated to the PR)
     deleted: list[str] = []
     if args.purge:
-        for scope in ("default", "global"):
+        for scope in ("project", "global"):
             try:
                 base = resolve_target_base(catalog, entry, scope, None)
             except LibraryError:
