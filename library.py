@@ -303,13 +303,14 @@ class Config:
         )
 
 
-def _hydrate(cat: Catalog) -> None:
+def _hydrate_one(cat: Catalog) -> None:
     """Load *cat*'s catalog data, or record why it can't be used.
 
     Deliberately does not clone: `pull_catalog` owns clone-if-absent and dies with
     an auth hint, so leaving that there keeps `load_config` cheap and offline, and
     lets `doctor` report on a config whose clones are missing.
     """
+    cat.data, cat.skipped = {}, ""  # idempotent: safe to re-run after a pull
     if cat.is_remote and not cat.clone_dir.exists():
         cat.skipped = f"not cloned yet at {cat.clone_dir}"
         return
@@ -345,13 +346,73 @@ def load_config() -> Config:
     if not isinstance(data, dict):
         die(f"{LOCAL_CONFIG_PATH} is malformed (expected a YAML mapping)")
     cfg = Config.from_dict(data)
-    for cat in cfg.catalogs:
-        _hydrate(cat)
-        # With a single catalog the command itself already reports the problem (or
-        # clones on demand), so warning here would add output to today's behavior.
-        if cat.skipped and len(cfg.catalogs) > 1:
-            warn(f"catalog '{cat.id}' skipped: {cat.skipped}")
+    hydrate_all(cfg)
     return cfg
+
+
+def hydrate_all(cfg: Config, quiet: bool = False) -> None:
+    """(Re-)read every catalog's file. Idempotent, so it can run again after a pull.
+
+    A catalog that can't be read is skipped with a reason. With a single catalog the
+    command itself still reports the problem (or clones on demand), so warning here
+    would add output to today's behavior — hence the gate.
+    """
+    for cat in cfg.catalogs:
+        _hydrate_one(cat)
+        if cat.skipped and not quiet and len(cfg.catalogs) > 1:
+            warn(f"catalog '{cat.id}' skipped: {cat.skipped}")
+
+
+def refresh_catalogs(cfg: Config, no_pull: bool) -> dict[str, "str | None"]:
+    """Bring every catalog up to date for a read command; {catalog id: pull error}.
+
+    Hydration in `load_config` runs before any clone or pull, so a refreshed clone
+    has to be re-read — otherwise a first run would see the pre-clone state.
+    """
+    if no_pull:
+        return {}
+    errors = pull_all(cfg)
+    hydrate_all(cfg, quiet=True)  # load_config already warned about any skip
+    return errors
+
+
+def require_entries(cfg: Config) -> list[Entry]:
+    """Every active catalog's entries, or die when none could be read.
+
+    Preserves today's hard failure: with one catalog configured, an unreadable
+    catalog is fatal rather than an empty list. Hydration only downgrades that to a
+    skip when another catalog can still serve the request.
+    """
+    if not cfg.active:
+        if len(cfg.catalogs) == 1:
+            cat = cfg.catalogs[0]
+            path = catalog_yaml(cat)
+            die(f"catalog not found at {path}" if not path.exists() else cat.skipped)
+        die("no readable catalog: " + "; ".join(
+            f"{c.id} ({c.skipped})" for c in cfg.catalogs))
+    return cfg.entries()
+
+
+def _dirs_catalog(cfg: Config) -> dict[str, Any]:
+    """The catalog dict install-dir resolution still reads `default_dirs` from.
+
+    Transitional: install dirs become the tool's own next, at which point
+    `resolve_target_base` and `installed_scopes` stop taking a catalog at all.
+    """
+    return cfg.active[0].data if cfg.active else {}
+
+
+def staleness_warnings(cfg: Config, pull_errors: dict[str, "str | None"], syncing: bool = False) -> None:
+    """Warn per remote catalog whose clone is behind its branch."""
+    for cat in cfg.remotes:
+        behind = catalog_behind(cat)
+        if not behind:
+            continue
+        reason = (f"pull failed: {pull_errors[cat.id]}" if pull_errors.get(cat.id)
+                  else "catalog was not refreshed")
+        tail = ("syncing against stale catalog metadata" if syncing
+                else "output may be stale")
+        warn(f"catalog is {behind} commit(s) behind origin/{cat.branch} ({reason}); {tail}")
 
 
 _VAR_RE = re.compile(r"^\s*-\s*\*\*(\w+)\*\*:\s*`([^`]+)`")
@@ -1344,18 +1405,10 @@ def _install_one(
 
 def cmd_list(args: argparse.Namespace) -> int:
     cfg = load_config()
-    pull_err = None
-    if not args.no_pull:
-        pull_err = pull_catalog(cfg._first_remote)
-    behind = catalog_behind(cfg._first_remote)
-    if behind:
-        reason = f"pull failed: {pull_err}" if pull_err else "catalog was not refreshed"
-        warn(
-            f"catalog is {behind} commit(s) behind origin/{cfg.catalog_branch} "
-            f"({reason}); output may be stale"
-        )
-    catalog = load_catalog(catalog_yaml(cfg._first_remote))
-    entries = iter_entries(catalog)
+    pull_errors = refresh_catalogs(cfg, args.no_pull)
+    staleness_warnings(cfg, pull_errors)
+    entries = require_entries(cfg)
+    catalog = _dirs_catalog(cfg)
     rows = []
     for e in entries:
         scopes = installed_scopes(catalog, e)
@@ -1391,11 +1444,8 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 def cmd_search(args: argparse.Namespace) -> int:
     cfg = load_config()
-    if not args.no_pull:
-        pull_catalog(cfg._first_remote)
-    catalog = load_catalog(catalog_yaml(cfg._first_remote))
-    entries = iter_entries(catalog)
-    matches = fuzzy_candidates(entries, args.keyword)
+    refresh_catalogs(cfg, args.no_pull)
+    matches = fuzzy_candidates(require_entries(cfg), args.keyword)
 
     if args.json:
         print(json.dumps(
@@ -1418,10 +1468,9 @@ def cmd_search(args: argparse.Namespace) -> int:
 
 def cmd_use(args: argparse.Namespace) -> int:
     cfg = load_config()
-    if not args.no_pull:
-        pull_catalog(cfg._first_remote)
-    catalog = load_catalog(catalog_yaml(cfg._first_remote))
-    entries = iter_entries(catalog)
+    refresh_catalogs(cfg, args.no_pull)
+    entries = require_entries(cfg)
+    catalog = _dirs_catalog(cfg)
 
     entry = find_exact(entries, args.name)
     if entry is None:
@@ -1488,18 +1537,10 @@ def cmd_use(args: argparse.Namespace) -> int:
 
 def cmd_sync(args: argparse.Namespace) -> int:
     cfg = load_config()
-    pull_err = None
-    if not args.no_pull:
-        pull_err = pull_catalog(cfg._first_remote)
-    behind = catalog_behind(cfg._first_remote)
-    if behind:
-        reason = f"pull failed: {pull_err}" if pull_err else "catalog was not refreshed"
-        warn(
-            f"catalog is {behind} commit(s) behind origin/{cfg.catalog_branch} "
-            f"({reason}); syncing against stale catalog metadata"
-        )
-    catalog = load_catalog(catalog_yaml(cfg._first_remote))
-    entries = iter_entries(catalog)
+    pull_errors = refresh_catalogs(cfg, args.no_pull)
+    staleness_warnings(cfg, pull_errors, syncing=True)
+    entries = require_entries(cfg)
+    catalog = _dirs_catalog(cfg)
 
     installed: list[tuple[Entry, str]] = []
     for e in entries:
@@ -1667,12 +1708,10 @@ def cmd_add(args: argparse.Namespace) -> int:
         seen.add(e.name)
 
     cfg = load_config()
-    if not args.no_pull:
-        pull_catalog(cfg._first_remote)
+    refresh_catalogs(cfg, args.no_pull)
 
-    # Validate against the persistent clone.
-    catalog = load_catalog(catalog_yaml(cfg._first_remote))
-    catalog_entries = iter_entries(catalog)
+    # Validate against the registry's current contents.
+    catalog_entries = require_entries(cfg)
     for e in entries:
         existing = find_exact(catalog_entries, e.name)
         if existing:
@@ -1770,10 +1809,9 @@ def cmd_add(args: argparse.Namespace) -> int:
 
 def cmd_remove(args: argparse.Namespace) -> int:
     cfg = load_config()
-    if not args.no_pull:
-        pull_catalog(cfg._first_remote)
-    catalog = load_catalog(catalog_yaml(cfg._first_remote))
-    entries = iter_entries(catalog)
+    refresh_catalogs(cfg, args.no_pull)
+    entries = require_entries(cfg)
+    catalog = _dirs_catalog(cfg)
     entry = find_exact(entries, args.name)
     if entry is None:
         die(f"'{args.name}' not found in catalog")
@@ -1943,13 +1981,10 @@ def cmd_update(args: argparse.Namespace) -> int:
             die(msg)
 
     cfg = load_config()
-    if not args.no_pull:
-        pull_catalog(cfg._first_remote)
-    catalog = load_catalog(catalog_yaml(cfg._first_remote))
-    # Friendly early exit on an obvious typo, from the persistent clone. The
-    # *authoritative* read happens against the temp-clone below — see the
-    # determinism note there.
-    if find_exact(iter_entries(catalog), args.name) is None:
+    refresh_catalogs(cfg, args.no_pull)
+    # Friendly early exit on an obvious typo, from the registry. The *authoritative*
+    # read happens against the temp-clone below — see the determinism note there.
+    if find_exact(require_entries(cfg), args.name) is None:
         die(f"'{args.name}' not found in catalog")
 
     branch = _pr_branch_name("update", args.name)
@@ -2042,10 +2077,9 @@ def cmd_update(args: argparse.Namespace) -> int:
 
 def cmd_push(args: argparse.Namespace) -> int:
     cfg = load_config()
-    if not getattr(args, "no_pull", False):
-        pull_catalog(cfg._first_remote)
-    catalog = load_catalog(catalog_yaml(cfg._first_remote))
-    entry = find_exact(iter_entries(catalog), args.name)
+    refresh_catalogs(cfg, getattr(args, "no_pull", False))
+    catalog = _dirs_catalog(cfg)
+    entry = find_exact(require_entries(cfg), args.name)
     if entry is None:
         die(f"'{args.name}' not found in catalog")
 
