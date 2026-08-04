@@ -77,6 +77,12 @@ Each is a place the code does something tasks.md or design.md doesn't say, with 
 10. **T1.5's doctor golden substitutes `<CONFIG>`** for the sandbox config path, the one
     machine-specific span in the R12.5 warning. A second golden pins the all-clear
     rendering for a catalog with no `default_dirs`.
+10a. **`--json` keys are added unconditionally, not gated on catalog count**, so a payload
+    has one stable shape for the agent instead of keys that appear only on a
+    multi-catalog machine. This grows T1.5's key-set assertions each time a key lands.
+    Originally a judgment call; now written into R2.4 and tasks.md's invariant, so the
+    remaining payload changes in T5.3–T5.5 and Phase 6 are pre-authorized. Human output
+    keeps its byte-identical guarantee with no such allowance.
 11. **`migrated_config` carries over unrecognized top-level keys** rather than emitting
     only known fields — a migration that silently drops a setting is worse than one that
     keeps something redundant. An existing config `default_dirs` wins over the catalog's.
@@ -87,10 +93,12 @@ Each is a place the code does something tasks.md or design.md doesn't say, with 
 
 ## Corrections the specs need
 
-- **tasks.md's per-commit invariant cites `main`.** On this branch `main` is 12 tool
-  commits behind, with `library.py` differing by ~1900 lines, so diffing against it
-  produces entirely spurious results. Compare against the last commit before the change
-  under test instead.
+- ~~tasks.md's per-commit invariant cites `main`~~ — **fixed.** It now says to compare
+  against the last commit predating the change under test. On this branch `main` was 12
+  tool commits behind, with `library.py` differing by ~1900 lines, so diffing against it
+  produced entirely spurious results.
+- ~~The invariant didn't distinguish human output from `--json` key sets~~ — **fixed** in
+  R2.4 and tasks.md (see deviation 10a).
 - **T0.1** should note `docs/roadmap.md` already exists.
 - **T1.1's file list** should include `.githooks/pre-push`.
 - **T3.4** should say the transitional accessors survive into Phase 6 rather than being

@@ -7,9 +7,20 @@ it satisfies, and how to verify before committing. Tasks within a phase are orde
 order.
 
 **Invariant for every commit.** `just check` passes (it runs `py_compile`, `check_docs.py`, and —
-from T1.1 — the test suite), and with a legacy singular `catalog:` config the output of `list`,
-`search`, and `doctor` is unchanged from `main`. Any commit that changes single-catalog output before
-Phase 6 is a bug, not a feature.
+from T1.1 — the test suite), and with a legacy singular `catalog:` config the **human-readable**
+output of `list`, `search`, and `doctor` is unchanged. Any commit that changes single-catalog human
+output before Phase 6 is a bug, not a feature.
+
+Two carve-outs, both narrow:
+
+- **`--json` key sets may grow.** A new payload key may be added unconditionally (R2.4), so the
+  key-set assertions in T1.5 are expected to change when one lands. Say so in the commit message.
+  Existing keys never change name, type, or meaning.
+- **T4.1's `doctor` golden** gains the ignored-`default_dirs` warning. That is the only
+  human-output golden change in the plan.
+
+Compare against the last commit that predates the change under test, not against `main` — on a
+long-lived branch `main` can be many tool commits behind and produces spurious diffs.
 
 Commit style follows the repo's recent history: `feat(scope): …`, `fix(scope): …`,
 `refactor(scope): …`, `docs(scope): …`, `test(scope): …`.
@@ -228,7 +239,9 @@ This is the one phase that can change behavior for an existing team, so migratio
 
 ## Phase 5 — Reads go multi-catalog (first user-visible change)
 
-Every output addition is gated on `len(cfg.active) > 1`, so T1.5's goldens keep passing.
+Every **human** output addition is gated on more than one catalog, so T1.5's stdout goldens keep
+passing. New `--json` keys are added unconditionally for a stable payload shape (R2.4), so the
+key-set assertions do change — that is expected, not a regression.
 
 ### T5.1 — `--catalog` plumbing and the shadow helper
 - **Files:** `library.py`, `tests/test_library.py`

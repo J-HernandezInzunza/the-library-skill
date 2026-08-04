@@ -122,6 +122,11 @@ Acceptance criteria:
    unchanged.
 4. WHEN exactly one catalog is configured THEN each command's `--json` payload SHALL remain
    backwards compatible: existing keys keep their names, types, and meanings. New keys MAY be added.
+   A new key MAY be present unconditionally rather than gated on catalog count, so a payload has one
+   stable shape for the agent to read — this is the one place the "gate every addition on more than
+   one catalog" rule does not apply. Consequently, adding a key is *expected* to update the key-set
+   assertions in R18.4's golden tests, and doing so is not a golden regression. Human-readable
+   output has no such allowance: it stays byte-identical (R2.3).
 5. Existing flags SHALL keep their current meaning: `--json`, `--no-pull`, `--cwd`, `--project`,
    `--global`, `--dir`, `--dry-run`, `--batch`, `--type`, `--requires`, `--allow-local`, `--purge`,
    `--from`, `--message`, `--deep`, `--force`, `--autopush`, `--yaml-path`, `--repo`, `--branch`,
