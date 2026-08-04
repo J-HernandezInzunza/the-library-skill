@@ -3802,6 +3802,122 @@ class TestAddTargetsACatalog(unittest.TestCase):
         self.assertEqual(payload["status"], "AMBIGUOUS_CATALOG")
 
 
+class TestUpdateTargetsACatalog(unittest.TestCase):
+    """R7.1, R7.8, R6.12 — `update` edits the copy the caller meant, or asks which."""
+
+    maxDiff = None
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.repo = install_two_catalog_fixture(self.tool)
+        self.personal = self.tool.root / "personal" / "library.yaml"
+        self.clone = library.CATALOG_CLONE_DIR / "library.yaml"
+
+    def update(self, name: str, *extra: str, expect: int = 0) -> dict[str, Any]:
+        code, out, err = run_cli("update", name, *extra, "--no-pull", "--json")
+        self.assertEqual(code, expect, err or out)
+        self.stderr = err
+        return json.loads(out) if out else {}
+
+    # ── targeting ───────────────────────────────────────────────────────
+    def test_a_name_in_one_catalog_needs_no_flag(self) -> None:
+        # `scratch-thing` is only in personal, so precedence settles it (R7.8) even
+        # though two writable catalogs exist — this is not an `add`.
+        payload = self.update("scratch-thing", "--set-description", "Rewritten")
+        self.assertEqual((payload["catalog"], payload["mode"]), ("personal", "local"))
+        self.assertIn("Rewritten", self.personal.read_text())
+
+    def test_the_edit_touches_only_the_destination_file(self) -> None:
+        before_clone = self.clone.read_text()
+        before_remote = self.repo.remote_text("library.yaml")
+        self.update("scratch-thing", "--set-description", "Rewritten")
+        self.assertEqual(self.clone.read_text(), before_clone)
+        self.assertEqual(self.repo.remote_text("library.yaml"), before_remote)
+
+    def test_a_cross_catalog_name_refuses_without_the_flag(self) -> None:
+        # `session-retro` is in both. Editing the winner silently would leave the user
+        # staring at an unchanged entry of the same name.
+        payload = self.update("session-retro", "--set-description", "Rewritten", expect=2)
+        self.assertEqual(payload, {"status": "AMBIGUOUS_CATALOG",
+                                   "catalogs": ["personal", "shared"]})
+        self.assertNotIn("Rewritten", self.personal.read_text())
+
+    def test_the_human_refusal_names_the_catalogs_and_the_flag(self) -> None:
+        code, out, _ = run_cli("update", "session-retro", "--set-description", "x", "--no-pull")
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "'session-retro' exists in personal, shared; pass "
+                              "--catalog <id> to say which copy to update.\n")
+
+    def test_the_flag_settles_a_cross_catalog_name(self) -> None:
+        payload = self.update("session-retro", "--set-description", "Mine now",
+                              "--catalog", "personal")
+        self.assertEqual(payload["catalog"], "personal")
+        self.assertIn("Mine now", self.personal.read_text())
+        self.assertNotIn("Mine now", self.repo.remote_text("library.yaml"))
+
+    def test_the_flag_can_point_at_the_shared_copy_instead(self) -> None:
+        payload = self.update("session-retro", "--set-description", "Team copy",
+                              "--catalog", "shared")
+        self.assertEqual((payload["catalog"], payload["mode"]), ("shared", "pr"))
+        self.assertNotIn("Team copy", self.personal.read_text())
+
+    def test_a_read_only_destination_is_refused(self) -> None:
+        cfg = yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())
+        cfg["catalogs"][0]["writable"] = False
+        self.tool.write_config(cfg)
+        code, _, err = run_cli("update", "scratch-thing", "--set-description", "x",
+                               "--no-pull", "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("read-only", err)
+
+    def test_a_missing_name_is_still_a_plain_error(self) -> None:
+        code, _, err = run_cli("update", "no-such-entry", "--set-description", "x",
+                               "--no-pull", "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("'no-such-entry' not found in catalog", err)
+
+    # ── behaviour that must survive the retargeting ─────────────────────
+    def test_the_already_matches_no_op_still_short_circuits(self) -> None:
+        payload = self.update("scratch-thing", "--set-description", "Personal scratch skill")
+        self.assertEqual((payload["changed"], payload["name"]), (False, "scratch-thing"))
+        self.assertEqual(self.personal.read_text(), PERSONAL_CATALOG)
+
+    def test_the_no_op_says_so_in_human_output(self) -> None:
+        code, out, _ = run_cli("update", "scratch-thing", "--set-description",
+                               "Personal scratch skill", "--no-pull")
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "No changes — scratch-thing already matches the "
+                              "requested update.\n")
+
+    def test_the_upstream_removal_guard_still_fires_in_pr_mode(self) -> None:
+        # The persistent clone still lists `grill-me`; the branch tip no longer does.
+        # pr mode reads a fresh temp clone, so it must notice and refuse.
+        other = self.tool.root / "other"
+        subprocess.run(["git", "clone", "--quiet", str(self.repo.remote), str(other)], check=True)
+        for kv in (("user.name", "Other"), ("user.email", "o@example.invalid")):
+            subprocess.run(["git", "-C", str(other), "config", *kv], check=True)
+        text = (other / "library.yaml").read_text()
+        (other / "library.yaml").write_text(library.remove_entry(text, "prompt", "grill-me"))
+        subprocess.run(["git", "-C", str(other), "commit", "--quiet", "-am", "drop"], check=True)
+        subprocess.run(["git", "-C", str(other), "push", "--quiet"], check=True)
+
+        code, _, err = run_cli("update", "grill-me", "--set-description", "x",
+                               "--catalog", "shared", "--no-pull", "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("was removed from the catalog upstream", err)
+
+    def test_add_requires_is_computed_from_the_destination_copy(self) -> None:
+        # R6.12 — the personal copy of session-retro has no `requires`; the shared one
+        # does. Editing the personal copy must not inherit the shared list.
+        payload = self.update("session-retro", "--catalog", "personal",
+                              "--add-requires", "skill:scratch-thing")
+        self.assertTrue(payload["changed"])
+        entry = library.find_exact(
+            library.iter_entries(yaml.safe_load(self.personal.read_text())), "session-retro")
+        self.assertEqual(entry.requires, ["skill:scratch-thing"])
+
+
 class TestDerivedAllowLocal(unittest.TestCase):
     """R8.1–R8.5 — a local path is fine for a local catalog, broken for any remote one."""
 

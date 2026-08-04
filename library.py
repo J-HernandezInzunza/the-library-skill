@@ -545,14 +545,33 @@ def write_target(cfg: Config, requested: "str | None") -> Catalog:
     raise AmbiguousCatalog([c.id for c in writable])
 
 
-def report_ambiguous_catalog(ex: AmbiguousCatalog, as_json: bool) -> int:
-    """Hand the choice back to the caller at exit 2, the code that already means "decide"."""
+def report_ambiguous_catalog(ex: AmbiguousCatalog, as_json: bool,
+                             lead: "str | None" = None) -> int:
+    """Hand the choice back to the caller at exit 2, the code that already means "decide".
+
+    One payload shape for two situations the caller resolves the same way: no obvious
+    destination for a new entry, and an existing name held by several catalogs. *lead*
+    replaces the human wording for the second.
+    """
     if as_json:
         print(json.dumps({"status": "AMBIGUOUS_CATALOG", "catalogs": ex.catalogs}, indent=2))
+    elif lead:
+        print(lead)
     else:
         print("More than one catalog can be written to: " + ", ".join(ex.catalogs))
         print("Pass --catalog <id>, or set default_add_catalog in config.local.yaml.")
     return 2
+
+
+def cross_catalog_conflict(cfg: Config, name: str) -> "AmbiguousCatalog | None":
+    """The catalogs holding *name* when more than one does, else None (R7.8).
+
+    `update` and `remove` rewrite an entry that already exists, so precedence alone is
+    not enough to act on: silently editing the winning copy would leave the user looking
+    at an unchanged entry of the same name and no explanation.
+    """
+    holders = list(dict.fromkeys(e.catalog for e in cfg.entries() if e.name == name))
+    return AmbiguousCatalog(holders) if len(holders) > 1 else None
 
 
 def shadow_note(cfg: Config, entry: Entry) -> str:
@@ -2489,10 +2508,19 @@ def cmd_update(args: argparse.Namespace) -> int:
     if base is None:
         die(f"'{args.name}' not found in catalog")
 
+    if not getattr(args, "catalog", None):
+        clash = cross_catalog_conflict(cfg, args.name)
+        if clash:
+            return report_ambiguous_catalog(
+                clash, args.json,
+                lead=f"'{args.name}' exists in {', '.join(clash.catalogs)}; pass "
+                     "--catalog <id> to say which copy to update.")
+
+    # The destination is the catalog the entry resolved from — `update` edits something
+    # that already exists, so `default_add_catalog` (a rule for *new* entries) has no say.
+    # `write_target` is here for its writability refusal (R6.11).
     try:
-        cat = write_target(cfg, getattr(args, "catalog", None))
-    except AmbiguousCatalog as ex:
-        return report_ambiguous_catalog(ex, args.json)
+        cat = write_target(cfg, base.catalog)
     except LibraryError as ex:
         die(str(ex))
 
@@ -2505,13 +2533,18 @@ def cmd_update(args: argparse.Namespace) -> int:
             _refuse_local_source(src.path, cat, multi_catalog(cfg))
 
     def edit(text: str) -> "str | None":
-        # Determinism: compute the edit against the SAME bytes we're about to
-        # write. Reading the entry's current fields from one copy of the catalog
+        # Determinism (R6.12): compute the edit against the SAME bytes we're about
+        # to write. Reading the entry's current fields from one copy of the catalog
         # and then overwriting another would silently clobber any change merged
         # upstream since the last pull — e.g. an `--add-requires` computed from a
         # stale `requires` would drop a ref another PR just added. So the base
         # entry, the no-op check, and the requires-known warning all key off the
         # text handed in here, whichever mode produced it.
+        #
+        # In `pr` mode that text comes from a fresh temp clone, which is why the
+        # registry read above can only be a friendly typo check. In `local` and
+        # `direct` mode there is no second copy — the two reads are the same file,
+        # so the guarantee holds by construction rather than by discipline.
         fresh_entries = iter_entries(yaml.safe_load(text) or {})
         entry = find_exact(fresh_entries, args.name)
         if entry is None:

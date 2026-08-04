@@ -9,7 +9,7 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 
 ## Status
 
-22 of 37 tasks landed. Phases 0–5 complete; Phase 6 in progress.
+23 of 37 tasks landed. Phases 0–5 complete; Phase 6 in progress.
 
 | Task | Status | Commit |
 | ---- | ------ | ------ |
@@ -35,8 +35,9 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 | T6.1 `write_target` + ambiguity contract | done | `5dfab60` |
 | T6.2 `apply_catalog_edit`, three write modes | done | `617ac3f` |
 | T6.3 `add` targets a catalog | done | `2b62fb3` |
-| T6.4 derived `--allow-local` | done | |
-| T6.5–T6.7 writes target a catalog | todo | |
+| T6.4 derived `--allow-local` | done | `bf529a4` |
+| T6.5 `update` targets a catalog | done | |
+| T6.6–T6.7 writes target a catalog | todo | |
 | T7.1–T7.3 catalog management commands | todo | |
 | T8.1–T8.2 doctor | todo | |
 | T9.1–T9.6 agent layer + docs | todo | |
@@ -168,6 +169,18 @@ Each is a place the code does something tasks.md or design.md doesn't say, with 
     instead of two. Consequence: with *both* a broken config and a bad `--source`, the
     config error now surfaces first. Argument-presence checks still run before anything
     is loaded, so no well-formed invocation changed (confirmed by the baseline probe).
+27. **`update` targets the resolved entry's catalog, not `write_target`'s choice.** Design
+    §10 says "same targeting" as `add`, but `default_add_catalog` is a rule for *new*
+    entries: under it, `update foo` with `default_add_catalog: personal` would try to
+    rewrite an entry that only exists in `shared` inside `personal`, where the splice has
+    nothing to replace. R7.8's "resolve by precedence" settles it — `write_target` is still
+    called, with `base.catalog`, purely for its `writable: false` refusal (R6.11), so its
+    ambiguity branch is unreachable from `update`.
+28. **A cross-catalog name reuses the `AMBIGUOUS_CATALOG` payload** at exit 2 rather than
+    inventing a status. Both situations are resolved the same way — pick a catalog, re-run
+    with `--catalog` — so the agent has one shape to handle. Only the human wording differs
+    (`report_ambiguous_catalog(..., lead=...)`), since `default_add_catalog` is no remedy
+    here.
 
 ## Corrections the specs need
 
@@ -193,6 +206,11 @@ Established while working the plan; worth reusing.
 - **Pass arguments explicitly** in comparison loops. `./library $cmd` and `set -- $a` did
   not word-split here, so both sides printed the same argparse error and reported
   IDENTICAL. A vacuous pass is worse than a visible diff.
+- **Anchor a mutation with a single-line check, or verify the replacement in Python.**
+  `grep -F` treats a multi-line pattern as one pattern *per line*, so a harness that
+  confirms "the mutation applied" that way can report a false pass on a perl substitution
+  that silently matched nothing. Two mutations looked survivable for this reason; both
+  failed correctly once applied with an asserted `str.replace`.
 - **Mutation-check new tests.** Break the behavior the test claims to pin (indent width,
   dependency order, a dropped `--json` key), confirm the intended tests fail and only
   those, then revert. A mutation that doesn't apply proves nothing — verify it landed.
