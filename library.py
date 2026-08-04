@@ -89,6 +89,19 @@ class LibraryError(Exception):
     """
 
 
+class AmbiguousCatalog(Exception):
+    """A write has no single obvious destination; `catalogs` are the usable choices.
+
+    Its own type rather than a LibraryError because this is not a failure: the
+    decision belongs to whoever asked, so commands report it and exit 2 — the same
+    "you decide" convention `use` follows for an ambiguous name.
+    """
+
+    def __init__(self, catalogs: list[str]) -> None:
+        super().__init__("more than one writable catalog: " + ", ".join(catalogs))
+        self.catalogs = catalogs
+
+
 # --------------------------------------------------------------------------- #
 # Local config (per-device; gitignored config.local.yaml)
 # --------------------------------------------------------------------------- #
@@ -503,6 +516,42 @@ def resolved_entries(cfg: Config, args: argparse.Namespace) -> list[Entry]:
     """Entries to resolve against: one catalog when restricted, else all in precedence."""
     only = catalog_restriction(cfg, args)
     return cfg.entries_of(only) if only else require_entries(cfg)
+
+
+def write_target(cfg: Config, requested: "str | None") -> Catalog:
+    """The catalog a write lands in, or raise AmbiguousCatalog with the choices.
+
+    A named catalog wins, then the sole writable one, then `default_add_catalog`. The
+    default is matched *within* the writable list rather than looked up on its own, so
+    a stale one — naming a catalog that is now missing, skipped, or read-only — is
+    simply ignored. That makes R7.5 structural: it can neither break the only write
+    possible on this machine nor turn a genuine choice into a lookup error.
+    """
+    if requested:
+        cat = cfg.by_id(requested)  # raises listing the available ids
+        if not cat.writable:
+            raise LibraryError(f"catalog '{cat.id}' is read-only (writable: false)")
+        return cat
+
+    writable = cfg.writable
+    if not writable:
+        raise LibraryError("no writable catalog is configured; nothing can be written")
+    if len(writable) == 1:
+        return writable[0]
+    for cat in writable:
+        if cat.id == cfg.default_add_catalog:
+            return cat
+    raise AmbiguousCatalog([c.id for c in writable])
+
+
+def report_ambiguous_catalog(ex: AmbiguousCatalog, as_json: bool) -> int:
+    """Hand the choice back to the caller at exit 2, the code that already means "decide"."""
+    if as_json:
+        print(json.dumps({"status": "AMBIGUOUS_CATALOG", "catalogs": ex.catalogs}, indent=2))
+    else:
+        print("More than one catalog can be written to: " + ", ".join(ex.catalogs))
+        print("Pass --catalog <id>, or set default_add_catalog in config.local.yaml.")
+    return 2
 
 
 def shadow_note(cfg: Config, entry: Entry) -> str:

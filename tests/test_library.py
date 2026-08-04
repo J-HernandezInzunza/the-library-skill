@@ -3240,5 +3240,114 @@ library:
                          ("OK", [], []))
 
 
+class TestWriteTarget(unittest.TestCase):
+    """R7.1–R7.5, R6.11 — the four branches of design §8's targeting, in order."""
+
+    def cfg(self, *catalogs: library.Catalog, default: str = "") -> library.Config:
+        return library.Config(catalogs=list(catalogs), default_add_catalog=default)
+
+    # ── branch 1: an explicit --catalog ─────────────────────────────────
+    def test_a_named_catalog_wins_over_the_default_and_the_count(self) -> None:
+        cfg = self.cfg(local_catalog(), remote_catalog(), default=library.SHARED_ID)
+        self.assertEqual(library.write_target(cfg, "personal").id, "personal")
+
+    def test_an_unknown_name_raises_listing_the_available_ids(self) -> None:
+        cfg = self.cfg(local_catalog(), remote_catalog())
+        with self.assertRaises(library.LibraryError) as ctx:
+            library.write_target(cfg, "bogus")
+        self.assertIn("unknown catalog 'bogus'", str(ctx.exception))
+        self.assertIn("available: personal, shared", str(ctx.exception))
+
+    def test_a_skipped_catalog_cannot_be_named(self) -> None:
+        cfg = self.cfg(local_catalog(skipped="file not found"), remote_catalog())
+        with self.assertRaises(library.LibraryError) as ctx:
+            library.write_target(cfg, "personal")
+        self.assertIn("available: shared", str(ctx.exception))
+
+    def test_a_read_only_catalog_is_refused_when_named(self) -> None:
+        # R6.11: the refusal happens here, before any caller touches a file.
+        cfg = self.cfg(local_catalog(writable=False), remote_catalog())
+        with self.assertRaises(library.LibraryError) as ctx:
+            library.write_target(cfg, "personal")
+        self.assertIn("read-only", str(ctx.exception))
+
+    # ── branch 2: exactly one writable (the legacy path) ────────────────
+    def test_the_sole_writable_catalog_is_used(self) -> None:
+        cfg = self.cfg(remote_catalog())
+        self.assertEqual(library.write_target(cfg, None).id, library.SHARED_ID)
+
+    def test_a_stale_default_does_not_break_a_single_writable_catalog(self) -> None:
+        # R7.5 — each of these defaults is unusable, and none of them may stop the one
+        # write that is possible.
+        for label, catalogs in (
+            ("missing", [remote_catalog()]),
+            ("skipped", [remote_catalog(), local_catalog(skipped="file not found")]),
+            ("read-only", [remote_catalog(), local_catalog(writable=False)]),
+        ):
+            with self.subTest(default=label):
+                cfg = self.cfg(*catalogs, default="personal")
+                self.assertEqual(library.write_target(cfg, None).id, library.SHARED_ID)
+
+    def test_read_only_catalogs_do_not_count_toward_ambiguity(self) -> None:
+        cfg = self.cfg(local_catalog(writable=False), remote_catalog())
+        self.assertEqual(library.write_target(cfg, None).id, library.SHARED_ID)
+
+    # ── branch 3: default_add_catalog ───────────────────────────────────
+    def test_the_default_picks_among_several_writable_catalogs(self) -> None:
+        cfg = self.cfg(local_catalog(), remote_catalog(), default=library.SHARED_ID)
+        self.assertEqual(library.write_target(cfg, None).id, library.SHARED_ID)
+
+    def test_a_default_naming_an_unregistered_catalog_leaves_a_real_choice(self) -> None:
+        # Matching the default inside the writable list, rather than looking it up on
+        # its own, is what keeps a stale setting from degrading a choice the caller can
+        # still make into an unknown-catalog error they cannot act on.
+        cfg = self.cfg(local_catalog(), remote_catalog(), default="retired")
+        with self.assertRaises(library.AmbiguousCatalog) as ctx:
+            library.write_target(cfg, None)
+        self.assertEqual(ctx.exception.catalogs, ["personal", library.SHARED_ID])
+
+    def test_a_default_naming_a_read_only_catalog_is_ignored(self) -> None:
+        cfg = self.cfg(local_catalog(), remote_catalog(),
+                       local_catalog("archive", writable=False), default="archive")
+        with self.assertRaises(library.AmbiguousCatalog) as ctx:
+            library.write_target(cfg, None)
+        self.assertEqual(ctx.exception.catalogs, ["personal", library.SHARED_ID])
+
+    # ── branch 4: ambiguous ─────────────────────────────────────────────
+    def test_several_writable_catalogs_with_no_default_are_ambiguous(self) -> None:
+        cfg = self.cfg(local_catalog(), remote_catalog())
+        with self.assertRaises(library.AmbiguousCatalog) as ctx:
+            library.write_target(cfg, None)
+        self.assertEqual(ctx.exception.catalogs, ["personal", library.SHARED_ID])
+
+    def test_no_writable_catalog_at_all_is_an_error_not_a_choice(self) -> None:
+        # Offering an empty list of choices would leave the agent nothing to pick.
+        cfg = self.cfg(local_catalog(writable=False), remote_catalog(writable=False))
+        with self.assertRaises(library.LibraryError) as ctx:
+            library.write_target(cfg, None)
+        self.assertIn("no writable catalog", str(ctx.exception))
+
+    # ── the payload commands hand back ──────────────────────────────────
+    def report(self, as_json: bool) -> tuple[int, str]:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = library.report_ambiguous_catalog(
+                library.AmbiguousCatalog(["personal", "shared"]), as_json)
+        return code, buf.getvalue()
+
+    def test_the_json_payload_shape_and_exit_2(self) -> None:
+        code, out = self.report(True)
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(out),
+                         {"status": "AMBIGUOUS_CATALOG", "catalogs": ["personal", "shared"]})
+
+    def test_the_human_report_names_the_choices_and_how_to_settle_them(self) -> None:
+        code, out = self.report(False)
+        self.assertEqual(code, 2)
+        self.assertIn("personal, shared", out)
+        self.assertIn("--catalog", out)
+        self.assertIn("default_add_catalog", out)
+
+
 if __name__ == "__main__":
     unittest.main()

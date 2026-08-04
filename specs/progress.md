@@ -9,7 +9,7 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 
 ## Status
 
-18 of 37 tasks landed. Phases 0–5 complete; Phase 6 is next.
+19 of 37 tasks landed. Phases 0–5 complete; Phase 6 in progress.
 
 | Task | Status | Commit |
 | ---- | ------ | ------ |
@@ -31,8 +31,9 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 | T5.2 `list` provenance + shadowing | done | `f084b2c` |
 | T5.3 `search` across catalogs | done | `11f236a` |
 | T5.4 `use` across catalogs, deps within one | done | `cb58541` |
-| T5.5 `sync` across catalogs | done | |
-| T6.1–T6.7 writes target a catalog | todo | |
+| T5.5 `sync` across catalogs | done | `3c6edda` |
+| T6.1 `write_target` + ambiguity contract | done | |
+| T6.2–T6.7 writes target a catalog | todo | |
 | T7.1–T7.3 catalog management commands | todo | |
 | T8.1–T8.2 doctor | todo | |
 | T9.1–T9.6 agent layer + docs | todo | |
@@ -110,6 +111,16 @@ Each is a place the code does something tasks.md or design.md doesn't say, with 
     doesn't mention dependencies, but it refreshes them alongside each item, so D9 and
     R10.4 apply here for the same reason they do in `use`. A `requires` ref naming
     another catalog's entry warns as dangling rather than installing across catalogs.
+16. **`write_target` matches `default_add_catalog` inside the writable list** instead of
+    design §8's standalone `by_id` lookup. Same outcomes, but R7.5 stops depending on
+    branch order: a stale default is ignored rather than raising, so it can neither break
+    a single-writable machine nor turn a real choice into an unknown-catalog error the
+    agent cannot act on. Design §8's "step 2 precedes step 3 deliberately" paragraph
+    therefore describes a subtlety the code no longer has. Proven by mutation: swapping
+    the branches changes nothing, while restoring the `by_id` lookup fails a test.
+17. **No writable catalog at all is a `LibraryError`, not an `AmbiguousCatalog`.** R7.3
+    only covers "more than one", and handing the agent an empty list of choices would
+    leave it nothing to pick. Reachable only by marking every catalog `writable: false`.
 
 ## Corrections the specs need
 
@@ -138,6 +149,13 @@ Established while working the plan; worth reusing.
 - **Mutation-check new tests.** Break the behavior the test claims to pin (indent width,
   dependency order, a dropped `--json` key), confirm the intended tests fail and only
   those, then revert. A mutation that doesn't apply proves nothing — verify it landed.
+  A mutation that applies and the suite still passes is worth more than the ones that
+  fail: it means the test doesn't pin what its name claims. In T6.1 it exposed a comment
+  asserting an ordering guarantee the code didn't actually depend on (deviation 16).
+- **Revert mutations from a scratchpad copy, never `git checkout`.** A
+  `trap 'git checkout -- library.py' EXIT` harness silently discarded the uncommitted
+  implementation along with the mutation, and the next "clean" run failed for a reason
+  that looked like a real bug. `cp` the file aside first and restore from that.
 - **`find -newermt '-15 minutes'` silently matches nothing on macOS.** Use absolute
   timestamps or `ls -lt` when checking what a command touched.
 - **Never run a write command against the real environment.** `sync`, `use`, and `add`
