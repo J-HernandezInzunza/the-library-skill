@@ -294,6 +294,49 @@ library:
       source: https://github.com/acme/agentics/blob/main/prompts/grill-me.md
 """
 
+# A personal catalog that shadows one shared entry and adds one of its own.
+PERSONAL_CATALOG = """\
+library:
+  skills:
+    - name: scratch-thing
+      description: Personal scratch skill
+      source: /srv/personal/scratch/SKILL.md
+    - name: session-retro
+      description: My iterated copy of session-retro
+      source: /srv/personal/session-retro/SKILL.md
+  agents: []
+  prompts: []
+"""
+
+
+def install_two_catalog_fixture(tool: TempTool, personal_text: str = PERSONAL_CATALOG,
+                                shared_text: str = GOLDEN_CATALOG) -> TempGitRepo:
+    """A personal local catalog ahead of the shared remote one, in precedence order.
+
+    `personal` first means it shadows `shared` — the reason someone registers one.
+    """
+    repo = TempGitRepo(tool.tool_dir, name=".catalog-repo")
+    repo.commit("library.yaml", shared_text)
+    repo.push()
+    personal = tool.root / "personal" / "library.yaml"
+    personal.parent.mkdir(parents=True, exist_ok=True)
+    personal.write_text(personal_text)
+    tool.write_config({
+        "catalogs": [
+            {"id": "personal", "path": str(personal)},
+            {"id": "shared", "repo": str(repo.remote),
+             "yaml_path": "library.yaml", "branch": "main"},
+        ],
+        "autopush": False,
+    })
+    skills = tool.home / ".claude" / "skills"
+    skills.mkdir(parents=True, exist_ok=True)
+    link = skills / library.LINK_NAME
+    if not link.exists():
+        link.symlink_to(tool.tool_dir)
+    return repo
+
+
 # The same entries with no default_dirs block — what `catalog init` scaffolds, and the
 # shape that produces no ignored-dirs warning.
 GOLDEN_CATALOG_NO_DIRS = "library:" + GOLDEN_CATALOG.split("\nlibrary:", 1)[1]
@@ -2562,6 +2605,147 @@ class TestInitEmitsCanonicalConfig(unittest.TestCase):
         code, out, _ = run_cli("catalog", "migrate", "--json")
         self.assertEqual(code, 0)
         self.assertFalse(json.loads(out)["changed"])
+
+
+# --------------------------------------------------------------------------- #
+# --catalog restriction and shadow reporting (R4.1–R4.4)
+# --------------------------------------------------------------------------- #
+
+class TestPrecedenceAndShadowing(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        install_two_catalog_fixture(self.tool)
+        self.cfg = library.load_config()
+
+    def test_resolve_picks_the_highest_precedence_entry(self) -> None:
+        entry = self.cfg.resolve("session-retro")
+        self.assertEqual(entry.catalog, "personal")
+        self.assertEqual(entry.description, "My iterated copy of session-retro")
+
+    def test_resolve_can_be_restricted_to_one_catalog(self) -> None:
+        entry = self.cfg.resolve("session-retro", "shared")
+        self.assertEqual(entry.catalog, "shared")
+        self.assertEqual(entry.description, "Distill a finished session into durable style learnings")
+
+    def test_restricted_resolve_does_not_fall_back_to_other_catalogs(self) -> None:
+        self.assertIsNone(self.cfg.resolve("grill-me", "personal"))
+        self.assertIsNotNone(self.cfg.resolve("grill-me"))
+
+    def test_entries_are_in_precedence_order_with_provenance(self) -> None:
+        seen = [(e.name, e.catalog) for e in self.cfg.entries()]
+        self.assertEqual(seen[:2], [("scratch-thing", "personal"), ("session-retro", "personal")])
+        self.assertIn(("session-retro", "shared"), seen)
+        self.assertTrue(all(e.catalog for e in self.cfg.entries()))
+
+    def test_shadows_lists_the_losers_in_precedence_order(self) -> None:
+        losers = self.cfg.shadows("session-retro")
+        self.assertEqual([e.catalog for e in losers], ["shared"])
+
+    def test_shadows_is_empty_for_an_unshadowed_name(self) -> None:
+        self.assertEqual(self.cfg.shadows("grill-me"), [])
+        self.assertEqual(self.cfg.shadows("scratch-thing"), [])
+
+    def test_shadow_note_names_the_losing_catalogs(self) -> None:
+        self.assertEqual(library.shadow_note(self.cfg, self.cfg.resolve("session-retro")),
+                         "shadows shared")
+        self.assertEqual(library.shadow_note(self.cfg, self.cfg.resolve("grill-me")), "")
+
+    def test_shadow_note_dedupes_and_orders_several_losers(self) -> None:
+        cfg = library.Config(catalogs=[
+            library.Catalog(id="a", kind="local", data={"library": {"skills": [
+                {"name": "dup", "description": "", "source": "/x"}]}}),
+            library.Catalog(id="b", kind="local", data={"library": {"skills": [
+                {"name": "dup", "description": "", "source": "/x"}],
+                "agents": [{"name": "dup", "description": "", "source": "/x"}]}}),
+            library.Catalog(id="c", kind="local", data={"library": {"skills": [
+                {"name": "dup", "description": "", "source": "/x"}]}}),
+        ])
+        self.assertEqual(library.shadow_note(cfg, cfg.resolve("dup")), "shadows b, c")
+
+    def test_by_id_error_lists_the_available_ids(self) -> None:
+        with self.assertRaises(library.LibraryError) as ctx:
+            self.cfg.by_id("nope")
+        self.assertIn("unknown catalog 'nope'", str(ctx.exception))
+        self.assertIn("available: personal, shared", str(ctx.exception))
+
+
+class TestCatalogFlag(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        install_two_catalog_fixture(self.tool)
+
+    def names(self, *argv: str) -> list[str]:
+        code, out, err = run_cli(*argv, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        return [item["name"] for item in json.loads(out)]
+
+    def test_list_restricted_to_one_catalog(self) -> None:
+        self.assertEqual(self.names("list", "--catalog", "personal"),
+                         ["scratch-thing", "session-retro"])
+        self.assertEqual(
+            self.names("list", "--catalog", "shared"),
+            ["backend-code-practices", "session-retro", "sql-review", "grill-me"],
+        )
+
+    def test_list_unrestricted_spans_catalogs(self) -> None:
+        listed = self.names("list")
+        self.assertEqual(listed.count("session-retro"), 2)  # both copies are listed
+        self.assertIn("scratch-thing", listed)
+        self.assertIn("grill-me", listed)
+
+    def test_search_honors_the_restriction(self) -> None:
+        self.assertEqual(self.names("search", "retro", "--catalog", "personal"), ["session-retro"])
+        self.assertEqual(self.names("search", "scratch", "--catalog", "shared"), [])
+
+    def test_use_restricted_to_a_catalog_that_lacks_the_name_is_not_found(self) -> None:
+        code, out, _ = run_cli("use", "grill-me", "--catalog", "personal", "--no-pull", "--json")
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(out)["status"], "NOT_FOUND")
+
+    def test_an_unknown_catalog_dies_listing_the_available_ids(self) -> None:
+        for argv in (["list"], ["search", "retro"], ["use", "session-retro"], ["sync"],
+                     ["remove", "session-retro"], ["push", "session-retro"]):
+            with self.subTest(command=argv[0]):
+                code, _, err = run_cli(*argv, "--catalog", "bogus", "--no-pull", "--json")
+                self.assertEqual(code, 1)
+                self.assertIn("unknown catalog 'bogus'", err)
+                self.assertIn("available: personal, shared", err)
+
+    def test_a_skipped_catalog_is_not_addressable(self) -> None:
+        # The personal catalog's file disappears: it is skipped, so naming it errors
+        # rather than silently resolving against everything.
+        (self.tool.root / "personal" / "library.yaml").unlink()
+        code, _, err = run_cli("list", "--catalog", "personal", "--no-pull", "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("unknown catalog 'personal'", err)
+        self.assertIn("available: shared", err)
+
+
+class TestCatalogFlagOnLegacyConfig(unittest.TestCase):
+    """R2.3 — with one catalog, `--catalog shared` must behave exactly like omitting it."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        install_golden_fixture(self.tool, GOLDEN_CATALOG)
+
+    def assert_same(self, *argv: str) -> None:
+        plain = run_cli(*argv, "--no-pull")
+        restricted = run_cli(*argv, "--catalog", "shared", "--no-pull")
+        self.assertEqual(plain, restricted)
+
+    def test_list_search_and_use_are_unaffected(self) -> None:
+        self.assert_same("list")
+        self.assert_same("list", "--json")
+        self.assert_same("search", "retro")
+        self.assert_same("use", "nonexistent-thing", "--json")
+
+    def test_naming_the_only_catalog_still_resolves_entries(self) -> None:
+        code, out, _ = run_cli("list", "--catalog", "shared", "--no-pull", "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(len(json.loads(out)), 4)
 
 
 if __name__ == "__main__":

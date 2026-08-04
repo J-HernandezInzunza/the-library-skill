@@ -474,6 +474,39 @@ def effective_dirs(override: dict[str, dict[str, str]] | None) -> dict[str, dict
     return out
 
 
+def catalog_restriction(cfg: Config, args: argparse.Namespace) -> "str | None":
+    """The validated `--catalog` id to resolve within, or None for full precedence.
+
+    Dies listing the available ids when the catalog is unknown or was skipped this
+    run, so a typo never silently falls back to searching everything.
+    """
+    cid = getattr(args, "catalog", None)
+    if not cid:
+        return None
+    try:
+        return cfg.by_id(cid).id
+    except LibraryError as ex:
+        die(str(ex))
+
+
+def resolved_entries(cfg: Config, args: argparse.Namespace) -> list[Entry]:
+    """Entries to resolve against: one catalog when restricted, else all in precedence."""
+    only = catalog_restriction(cfg, args)
+    return cfg.entries_of(only) if only else require_entries(cfg)
+
+
+def shadow_note(cfg: Config, entry: Entry) -> str:
+    """'' when nothing is shadowed, else 'shadows <id>[, <id>]'.
+
+    Shadowing is the point of a personal catalog, so it is always reported rather
+    than being silent — the user should know which copy they just got.
+    """
+    losers = cfg.shadows(entry.name)
+    if not losers:
+        return ""
+    return "shadows " + ", ".join(dict.fromkeys(e.catalog for e in losers))
+
+
 def staleness_warnings(cfg: Config, pull_errors: dict[str, "str | None"], syncing: bool = False) -> None:
     """Warn per remote catalog whose clone is behind its branch."""
     for cat in cfg.remotes:
@@ -1480,7 +1513,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     cfg = load_config()
     pull_errors = refresh_catalogs(cfg, args.no_pull)
     staleness_warnings(cfg, pull_errors)
-    entries = require_entries(cfg)
+    entries = resolved_entries(cfg, args)
     dirs = cfg.dirs
     rows = []
     for e in entries:
@@ -1518,7 +1551,7 @@ def cmd_list(args: argparse.Namespace) -> int:
 def cmd_search(args: argparse.Namespace) -> int:
     cfg = load_config()
     refresh_catalogs(cfg, args.no_pull)
-    matches = fuzzy_candidates(require_entries(cfg), args.keyword)
+    matches = fuzzy_candidates(resolved_entries(cfg, args), args.keyword)
 
     if args.json:
         print(json.dumps(
@@ -1542,7 +1575,7 @@ def cmd_search(args: argparse.Namespace) -> int:
 def cmd_use(args: argparse.Namespace) -> int:
     cfg = load_config()
     refresh_catalogs(cfg, args.no_pull)
-    entries = require_entries(cfg)
+    entries = resolved_entries(cfg, args)
     dirs = cfg.dirs
 
     entry = find_exact(entries, args.name)
@@ -1612,7 +1645,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
     cfg = load_config()
     pull_errors = refresh_catalogs(cfg, args.no_pull)
     staleness_warnings(cfg, pull_errors, syncing=True)
-    entries = require_entries(cfg)
+    entries = resolved_entries(cfg, args)
     dirs = cfg.dirs
 
     installed: list[tuple[Entry, str]] = []
@@ -1784,7 +1817,7 @@ def cmd_add(args: argparse.Namespace) -> int:
     refresh_catalogs(cfg, args.no_pull)
 
     # Validate against the registry's current contents.
-    catalog_entries = require_entries(cfg)
+    catalog_entries = resolved_entries(cfg, args)
     for e in entries:
         existing = find_exact(catalog_entries, e.name)
         if existing:
@@ -1883,7 +1916,7 @@ def cmd_add(args: argparse.Namespace) -> int:
 def cmd_remove(args: argparse.Namespace) -> int:
     cfg = load_config()
     refresh_catalogs(cfg, args.no_pull)
-    entries = require_entries(cfg)
+    entries = resolved_entries(cfg, args)
     dirs = cfg.dirs
     entry = find_exact(entries, args.name)
     if entry is None:
@@ -2057,7 +2090,7 @@ def cmd_update(args: argparse.Namespace) -> int:
     refresh_catalogs(cfg, args.no_pull)
     # Friendly early exit on an obvious typo, from the registry. The *authoritative*
     # read happens against the temp-clone below — see the determinism note there.
-    if find_exact(require_entries(cfg), args.name) is None:
+    if find_exact(resolved_entries(cfg, args), args.name) is None:
         die(f"'{args.name}' not found in catalog")
 
     branch = _pr_branch_name("update", args.name)
@@ -2152,7 +2185,7 @@ def cmd_push(args: argparse.Namespace) -> int:
     cfg = load_config()
     refresh_catalogs(cfg, getattr(args, "no_pull", False))
     dirs = cfg.dirs
-    entry = find_exact(require_entries(cfg), args.name)
+    entry = find_exact(resolved_entries(cfg, args), args.name)
     if entry is None:
         die(f"'{args.name}' not found in catalog")
 
@@ -2763,6 +2796,10 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--cwd", help="project dir to anchor relative ('project'-scope) installs to "
                                       "(default: $LIBRARY_CWD or the current working directory)")
 
+    def add_catalog_flag(sp: argparse.ArgumentParser) -> None:
+        sp.add_argument("--catalog", metavar="<id>",
+                        help="restrict to one registered catalog, bypassing precedence")
+
     sp = sub.add_parser("init", help="create the per-device local config (config.local.yaml)")
     sp.add_argument("--repo", required=True, help="clone URL of the shared catalog repo (e.g. agent-library)")
     sp.add_argument("--yaml-path", dest="yaml_path", help="path to the catalog within that repo (default: library.yaml)")
@@ -2784,11 +2821,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("list", help="show the catalog with install status")
     add_common(sp)
+    add_catalog_flag(sp)
     sp.set_defaults(func=cmd_list)
 
     sp = sub.add_parser("search", help="find entries by keyword")
     sp.add_argument("keyword")
     add_common(sp)
+    add_catalog_flag(sp)
     sp.set_defaults(func=cmd_search)
 
     sp = sub.add_parser("use", help="install or refresh an entry (exact name)")
@@ -2802,10 +2841,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dry-run", dest="dry_run", action="store_true",
                     help="resolve destination and dependencies without installing")
     add_common(sp)
+    add_catalog_flag(sp)
     sp.set_defaults(func=cmd_use)
 
     sp = sub.add_parser("sync", help="re-pull every installed item")
     add_common(sp)
+    add_catalog_flag(sp)
     sp.set_defaults(func=cmd_sync)
 
     sp = sub.add_parser("add", help="register one or more entries in the catalog (opens one PR)")
@@ -2822,6 +2863,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="show what the PR diff would be without pushing")
     sp.add_argument("--json", action="store_true")
     sp.add_argument("--no-pull", action="store_true")
+    add_catalog_flag(sp)
     sp.set_defaults(func=cmd_add)
 
     sp = sub.add_parser("remove", help="remove an entry from the catalog (opens a PR)")
@@ -2833,6 +2875,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-pull", action="store_true")
     sp.add_argument("--cwd", help="project dir to anchor relative ('default'-scope) paths to "
                                   "(default: $LIBRARY_CWD or the current working directory)")
+    add_catalog_flag(sp)
     sp.set_defaults(func=cmd_remove)
 
     sp = sub.add_parser("update", help="edit an existing entry's description/source/requires (opens a PR)")
@@ -2849,6 +2892,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="show what the PR diff would be without pushing")
     sp.add_argument("--json", action="store_true")
     sp.add_argument("--no-pull", action="store_true")
+    add_catalog_flag(sp)
     sp.set_defaults(func=cmd_update)
 
     sp = sub.add_parser("push", help="push a local copy back to its source (opens a PR for GitHub sources)")
@@ -2860,6 +2904,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dry-run", action="store_true",
                     help="show what the PR diff would be without pushing (GitHub sources only)")
     sp.add_argument("--json", action="store_true")
+    add_catalog_flag(sp)
     sp.set_defaults(func=cmd_push)
 
     sp = sub.add_parser("catalog", help="manage the catalog registry in config.local.yaml")
