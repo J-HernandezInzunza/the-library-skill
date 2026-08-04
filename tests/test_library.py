@@ -3802,6 +3802,156 @@ class TestAddTargetsACatalog(unittest.TestCase):
         self.assertEqual(payload["status"], "AMBIGUOUS_CATALOG")
 
 
+class TestDerivedAllowLocal(unittest.TestCase):
+    """R8.1–R8.5 — a local path is fine for a local catalog, broken for any remote one."""
+
+    maxDiff = None
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources" / "handmade"
+        self.src.mkdir(parents=True)
+        (self.src / "SKILL.md").write_text("# handmade\n")
+        self.personal = self.tool.root / "personal" / "library.yaml"
+
+    def register(self, personal_kind: str) -> None:
+        """Two catalogs: `personal` local or remote, `shared` always the remote one."""
+        shared = TempGitRepo(self.tool.tool_dir, name=".catalog-repo")
+        shared.commit("library.yaml", GOLDEN_CATALOG)
+        shared.push()
+        self.personal.parent.mkdir(parents=True, exist_ok=True)
+        self.personal.write_text(PERSONAL_CATALOG)
+        if personal_kind == "local":
+            first: dict[str, Any] = {"id": "personal", "path": str(self.personal)}
+        else:
+            mine = TempGitRepo(self.tool.root, name="personal-remote")
+            mine.commit("library.yaml", PERSONAL_CATALOG)
+            mine.push()
+            self.mine = mine
+            first = {"id": "personal", "repo": str(mine.remote),
+                     "yaml_path": "library.yaml", "branch": "main", "protected": False}
+        self.tool.write_config({
+            "catalogs": [first, {"id": "shared", "repo": str(shared.remote),
+                                 "yaml_path": "library.yaml", "branch": "main"}],
+            "autopush": False,
+        })
+        if personal_kind == "remote":
+            # These tests run --no-pull, which skips the clone-on-demand, so seed it.
+            library.pull_catalog(library.Catalog(
+                id="personal", kind="remote", repo=str(self.mine.remote),
+                yaml_path="library.yaml", branch="main"))
+
+    def add_local_source(self, *extra: str, source: "str | None" = None) -> tuple[int, str, str]:
+        return run_cli("add", "--name", "handmade", "--description", "Made here",
+                       "--source", source or str(self.src / "SKILL.md"),
+                       *extra, "--no-pull", "--json")
+
+    # ── the destination decides ─────────────────────────────────────────
+    def test_a_local_catalog_accepts_a_path_with_no_flag(self) -> None:
+        self.register("local")
+        code, out, err = self.add_local_source("--catalog", "personal")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["mode"], "local")
+        self.assertIn(str(self.src / "SKILL.md"), self.personal.read_text())
+
+    def test_a_remote_personal_catalog_refuses_it_just_like_shared(self) -> None:
+        # R8.2 — "personal" is not the test; "resolves elsewhere" is. A remote personal
+        # catalog is pulled on another machine, where the path means nothing.
+        self.register("remote")
+        for cid in ("personal", "shared"):
+            with self.subTest(catalog=cid):
+                code, _, err = self.add_local_source("--catalog", cid)
+                self.assertEqual(code, 1)
+                self.assertIn("local-path sources don't resolve", err)
+                self.assertIn(f"catalog '{cid}'", err)
+                self.assertIn("point this at a local", err)
+
+    def test_allow_local_still_overrides_for_a_remote_destination(self) -> None:
+        self.register("remote")
+        code, out, err = self.add_local_source("--catalog", "personal", "--allow-local")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["mode"], "direct")
+
+    def test_the_repo_url_hint_still_appears(self) -> None:
+        # The source sits inside a git repo, so the refusal offers the remote URL.
+        self.register("remote")
+        repo = TempGitRepo(self.tool.root, name="source-repo")
+        repo.git("remote", "set-url", "origin", "git@github.com:acme/agentics.git")
+        repo.commit("skills/handmade/SKILL.md", "# handmade\n")
+        code, _, err = self.add_local_source(
+            "--catalog", "shared", source=str(repo.work / "skills/handmade/SKILL.md"))
+        self.assertEqual(code, 1)
+        self.assertIn("This file is in a git repo — did you mean:", err)
+        self.assertIn("github.com/acme/agentics", err)
+
+    def test_a_nonexistent_path_is_rejected_for_either_destination(self) -> None:
+        # R8.5 — existence validation is unconditional; the derived rule only governs
+        # whether a *resolvable* path is acceptable.
+        for kind in ("local", "remote"):
+            with self.subTest(personal=kind):
+                self.tool.stop()
+                self.setUp()
+                self.register(kind)
+                code, _, err = self.add_local_source(
+                    "--catalog", "personal", source=str(self.tool.root / "gone/SKILL.md"))
+                self.assertEqual(code, 1)
+                self.assertIn("local source not found", err)
+
+    # ── update --set-source obeys the same rule ─────────────────────────
+    def test_set_source_accepts_a_path_for_a_local_catalog(self) -> None:
+        self.register("local")
+        code, out, err = run_cli("update", "scratch-thing", "--set-source",
+                                 str(self.src / "SKILL.md"), "--catalog", "personal",
+                                 "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(json.loads(out)["changed"])
+        self.assertIn(str(self.src / "SKILL.md"), self.personal.read_text())
+
+    def test_set_source_refuses_a_path_for_a_remote_catalog(self) -> None:
+        self.register("remote")
+        code, _, err = run_cli("update", "session-retro", "--set-source",
+                               str(self.src / "SKILL.md"), "--catalog", "shared",
+                               "--no-pull", "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("local-path sources don't resolve", err)
+
+    def test_set_source_still_honours_allow_local(self) -> None:
+        self.register("remote")
+        code, out, err = run_cli("update", "scratch-thing", "--set-source",
+                                 str(self.src / "SKILL.md"), "--catalog", "personal",
+                                 "--allow-local", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(json.loads(out)["changed"])
+
+
+class TestLocalSourceOnASingleCatalog(unittest.TestCase):
+    """R2.3 — the refusal keeps today's exact wording when there is nothing to choose."""
+
+    TODAY = ("local-path sources don't resolve for teammates pulling the shared catalog.\n"
+             "  Provide a GitHub/Bitbucket URL, or pass --allow-local for a personal catalog.\n")
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        install_golden_fixture(self.tool, GOLDEN_CATALOG)
+        self.src = self.tool.root / "sources" / "handmade"
+        self.src.mkdir(parents=True)
+        (self.src / "SKILL.md").write_text("# handmade\n")
+
+    def test_add_prints_the_message_verbatim(self) -> None:
+        code, _, err = run_cli("add", "--name", "handmade", "--description", "d",
+                               "--source", str(self.src / "SKILL.md"), "--no-pull", "--json")
+        self.assertEqual(code, 1)
+        self.assertEqual(err, "error: " + self.TODAY)
+
+    def test_update_prints_the_message_verbatim(self) -> None:
+        code, _, err = run_cli("update", "session-retro", "--set-source",
+                               str(self.src / "SKILL.md"), "--no-pull", "--json")
+        self.assertEqual(code, 1)
+        self.assertEqual(err, "error: " + self.TODAY)
+
+
 class TestAddOnASingleCatalog(unittest.TestCase):
     """R2.3 — with one catalog nothing about `add` changes, including its messages."""
 

@@ -2117,13 +2117,40 @@ def _parse_requires_refs(requires_raw: "str | list[str] | None") -> list[str]:
     return requires
 
 
+def _refuse_local_source(path: "Path | None", dest: Catalog, multi: bool) -> "NoReturn":  # type: ignore[name-defined]
+    """Die on a local-path source that won't resolve for whoever else pulls *dest*.
+
+    R8.4 wants the destination named, but with one catalog configured there is no other
+    destination to name and no local catalog to point at, so the message stays exactly
+    as it is today (R2.3). Shared by `add` and `update --set-source` so the two can't
+    drift apart.
+    """
+    if multi:
+        msg = (
+            f"local-path sources don't resolve for anyone else pulling catalog '{dest.id}'.\n"
+            "  Provide a GitHub/Bitbucket URL, pass --allow-local, or point this at a local\n"
+            "  catalog, which accepts paths."
+        )
+    else:
+        msg = (
+            "local-path sources don't resolve for teammates pulling the shared catalog.\n"
+            "  Provide a GitHub/Bitbucket URL, or pass --allow-local for a personal catalog."
+        )
+    hint = _suggest_remote_for_local(path)
+    if hint:
+        msg += f"\n  This file is in a git repo — did you mean:\n    {hint}"
+    die(msg)
+
+
 def _prepare_entry(
     name: str,
     description: str,
     source: str,
     typ: str | None,
     requires_raw: "str | list[str] | None",
+    dest: Catalog,
     allow_local: bool,
+    multi: bool = False,
 ) -> Entry:
     """Validate one entry's fields and return an Entry. Dies on any problem.
 
@@ -2146,17 +2173,11 @@ def _prepare_entry(
     if src.kind == "local" and (src.path is None or not src.path.exists()):
         die(f"local source not found: {source}")
 
-    # The catalog is shared, so a local-path source won't resolve for teammates.
-    # Refuse it by default; suggest the remote URL when the file is in a git repo.
-    if src.kind == "local" and not allow_local:
-        msg = (
-            "local-path sources don't resolve for teammates pulling the shared catalog.\n"
-            "  Provide a GitHub/Bitbucket URL, or pass --allow-local for a personal catalog."
-        )
-        hint = _suggest_remote_for_local(src.path)
-        if hint:
-            msg += f"\n  This file is in a git repo — did you mean:\n    {hint}"
-        die(msg)
+    # A local path only resolves on this machine, so it is fine for a local catalog and
+    # broken for any remote one — a *remote personal* catalog exists to be pulled
+    # elsewhere, so a path breaks it exactly as it breaks the shared catalog (D10, R8.1).
+    if src.kind == "local" and dest.is_remote and not allow_local:
+        _refuse_local_source(src.path, dest, multi)
 
     requires = _parse_requires_refs(requires_raw)
 
@@ -2186,9 +2207,10 @@ def _load_batch_file(path_str: str) -> list[dict[str, Any]]:
 
 
 def cmd_add(args: argparse.Namespace) -> int:
-    # Build the list of entries to add. Single-add is a batch of one, so both
-    # paths share the same clone -> splice* -> one commit -> one PR flow below.
+    # Read the request before touching the catalog. Single-add is a batch of one, so both
+    # paths share the same edit -> verify -> one write flow below.
     batch_catalog = ""
+    raw: list[dict[str, Any]]
     if getattr(args, "batch", None):
         if args.name or args.source:
             die("--batch can't be combined with --name/--source; put every entry in the batch file")
@@ -2203,27 +2225,11 @@ def cmd_add(args: argparse.Namespace) -> int:
         if batch_catalog and args.catalog and batch_catalog != args.catalog:
             die(f"batch file targets catalog '{batch_catalog}' but --catalog says "
                 f"'{args.catalog}'; one batch targets one catalog")
-        entries = [
-            _prepare_entry(
-                it.get("name"), it.get("description"), it.get("source"),
-                it.get("type"), it.get("requires"), args.allow_local,
-            )
-            for it in raw
-        ]
     else:
         if not (args.name and args.description and args.source):
             die("add needs --name, --description, and --source (or --batch <file> for multiple)")
-        entries = [_prepare_entry(
-            args.name, args.description, args.source,
-            args.type, args.requires, args.allow_local,
-        )]
-
-    # Reject duplicate names *within* the batch before touching the catalog.
-    seen: set[str] = set()
-    for e in entries:
-        if e.name in seen:
-            die(f"duplicate entry '{e.name}' in batch")
-        seen.add(e.name)
+        raw = [{"name": args.name, "description": args.description, "source": args.source,
+                "type": args.type, "requires": args.requires}]
 
     cfg = load_config()
     refresh_catalogs(cfg, args.no_pull)
@@ -2236,11 +2242,29 @@ def cmd_add(args: argparse.Namespace) -> int:
     except LibraryError as ex:
         die(str(ex))
 
+    # Entry validation needs the destination: whether a local-path source is acceptable
+    # follows from where the entry is going (R8.1), so it can't run before targeting.
+    multi = multi_catalog(cfg)
+    entries = [
+        _prepare_entry(
+            it.get("name"), it.get("description"), it.get("source"),
+            it.get("type"), it.get("requires"), cat, args.allow_local, multi,
+        )
+        for it in raw
+    ]
+
+    # Reject duplicate names *within* the batch before touching the catalog.
+    seen: set[str] = set()
+    for e in entries:
+        if e.name in seen:
+            die(f"duplicate entry '{e.name}' in batch")
+        seen.add(e.name)
+
     # Validate against the destination catalog's current contents — not the merged
     # list. A name held by a *different* catalog is a shadowing decision (warned about
     # below), not a duplicate; only the destination can actually collide.
     dest_entries = cfg.entries_of(cat.id)
-    label = f"catalog '{cat.id}'" if multi_catalog(cfg) else "catalog"
+    label = f"catalog '{cat.id}'" if multi else "catalog"
     for e in entries:
         existing = find_exact(dest_entries, e.name)
         if existing:
@@ -2457,20 +2481,6 @@ def cmd_update(args: argparse.Namespace) -> int:
     if args.set_requires is not None and (args.add_requires or args.remove_requires):
         die("--set-requires replaces the whole list; can't combine with --add-requires/--remove-requires")
 
-    # Validate a replacement source up front — this doesn't depend on the entry's
-    # current state, so fail fast before cloning.
-    if args.set_source:
-        src = parse_source(args.set_source)
-        if src.kind == "local" and not args.allow_local:
-            msg = (
-                "local-path sources don't resolve for teammates pulling the shared catalog.\n"
-                "  Provide a GitHub/Bitbucket URL, or pass --allow-local for a personal catalog."
-            )
-            hint = _suggest_remote_for_local(src.path)
-            if hint:
-                msg += f"\n  This file is in a git repo — did you mean:\n    {hint}"
-            die(msg)
-
     cfg = load_config()
     refresh_catalogs(cfg, args.no_pull)
     # Friendly early exit on an obvious typo, from the registry. The *authoritative*
@@ -2485,6 +2495,14 @@ def cmd_update(args: argparse.Namespace) -> int:
         return report_ambiguous_catalog(ex, args.json)
     except LibraryError as ex:
         die(str(ex))
+
+    # A replacement source doesn't depend on the entry's current state, but whether a
+    # local path is acceptable depends on the destination — so this waits for it rather
+    # than failing fast the way it used to.
+    if args.set_source:
+        src = parse_source(args.set_source)
+        if src.kind == "local" and cat.is_remote and not args.allow_local:
+            _refuse_local_source(src.path, cat, multi_catalog(cfg))
 
     def edit(text: str) -> "str | None":
         # Determinism: compute the edit against the SAME bytes we're about to

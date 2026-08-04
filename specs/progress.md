@@ -9,7 +9,7 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 
 ## Status
 
-21 of 37 tasks landed. Phases 0–5 complete; Phase 6 in progress.
+22 of 37 tasks landed. Phases 0–5 complete; Phase 6 in progress.
 
 | Task | Status | Commit |
 | ---- | ------ | ------ |
@@ -34,8 +34,9 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 | T5.5 `sync` across catalogs | done | `3c6edda` |
 | T6.1 `write_target` + ambiguity contract | done | `5dfab60` |
 | T6.2 `apply_catalog_edit`, three write modes | done | `617ac3f` |
-| T6.3 `add` targets a catalog | done | |
-| T6.4–T6.7 writes target a catalog | todo | |
+| T6.3 `add` targets a catalog | done | `2b62fb3` |
+| T6.4 derived `--allow-local` | done | |
+| T6.5–T6.7 writes target a catalog | todo | |
 | T7.1–T7.3 catalog management commands | todo | |
 | T8.1–T8.2 doctor | todo | |
 | T9.1–T9.6 agent layer + docs | todo | |
@@ -154,6 +155,19 @@ Each is a place the code does something tasks.md or design.md doesn't say, with 
 24. **The duplicate-refusal message names the catalog only when there is more than one**,
     matching the staleness warning's idiom, so R2.3's byte-identical guarantee survives
     while a multi-catalog user learns *which* catalog already holds the name.
+25. **R8.4 and R2.3 collide, and R2.3 wins for a single catalog.** R8.4 wants the
+    local-source refusal to name the destination and mention that a local catalog accepts
+    paths; R2.3 wants every message byte-identical when one catalog is configured. The
+    refusal is therefore gated on `multi_catalog(cfg)` — the same rule the plan applies to
+    every other new output element. Nothing is lost: with one catalog there is no other
+    destination to name and no local catalog to point at. Two tests pin the old wording
+    verbatim for `add` and `update`.
+26. **`cmd_add` reads the request, then targets, then validates entries.** `_prepare_entry`
+    now needs the destination, so entry validation moved after `write_target` and the
+    single-add path builds the same raw dict shape the batch path produces — one code path
+    instead of two. Consequence: with *both* a broken config and a bad `--source`, the
+    config error now surfaces first. Argument-presence checks still run before anything
+    is loaded, so no well-formed invocation changed (confirmed by the baseline probe).
 
 ## Corrections the specs need
 
