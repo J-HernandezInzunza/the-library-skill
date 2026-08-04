@@ -59,6 +59,14 @@ TYPES = ("skills", "agents", "prompts")
 SINGULAR = {"skills": "skill", "agents": "agent", "prompts": "prompt"}
 PLURAL = {v: k for k, v in SINGULAR.items()}
 
+# Where things install, owned by the tool. config.local.yaml may override per
+# section and scope; a catalog's own default_dirs block is ignored (doctor warns).
+BUILTIN_DEFAULT_DIRS = {
+    "skills": {"project": ".claude/skills/", "global": "~/.claude/skills/"},
+    "agents": {"project": ".claude/agents/", "global": "~/.claude/agents/"},
+    "prompts": {"project": ".claude/commands/", "global": "~/.claude/commands/"},
+}
+
 
 # --------------------------------------------------------------------------- #
 # Output helpers
@@ -296,9 +304,7 @@ class Config:
             catalogs=[_catalog_from_raw(item) for item in _normalize_catalogs(data)],
             autopush=bool(data.get("autopush", False)),
             default_add_catalog=str(data.get("default_add_catalog") or ""),
-            # The config's own override for now; becomes the effective mapping once
-            # the tool owns install dirs.
-            dirs=default_dirs(data),
+            dirs=effective_dirs(default_dirs(data)),
             legacy_shape="catalog" in data,
         )
 
@@ -393,13 +399,18 @@ def require_entries(cfg: Config) -> list[Entry]:
     return cfg.entries()
 
 
-def _dirs_catalog(cfg: Config) -> dict[str, Any]:
-    """The catalog dict install-dir resolution still reads `default_dirs` from.
+def effective_dirs(override: dict[str, dict[str, str]] | None) -> dict[str, dict[str, str]]:
+    """The one install-dir mapping in force: built-in defaults under the config override.
 
-    Transitional: install dirs become the tool's own next, at which point
-    `resolve_target_base` and `installed_scopes` stop taking a catalog at all.
+    Merged per section and per scope, so a config that names only
+    `skills: [- global: ...]` keeps the built-in project dir and both agent dirs. No
+    catalog is consulted: a catalog says what exists, not where a machine puts it.
     """
-    return cfg.active[0].data if cfg.active else {}
+    out = {section: dict(scopes) for section, scopes in BUILTIN_DEFAULT_DIRS.items()}
+    for section, scopes in (override or {}).items():
+        if section in out:
+            out[section].update(scopes)
+    return out
 
 
 def staleness_warnings(cfg: Config, pull_errors: dict[str, "str | None"], syncing: bool = False) -> None:
@@ -740,7 +751,7 @@ def resolve_install_dir(raw: str) -> Path:
 
 
 def resolve_target_base(
-    catalog: dict[str, Any],
+    dirs: dict[str, dict[str, str]],
     entry: Entry,
     scope: str,
     custom: str | None,
@@ -749,31 +760,32 @@ def resolve_target_base(
 
     Resolution order:
     1. Explicit --dir / custom path (highest priority).
-    2. Catalog default_dirs[section][scope] ('global' = home ~/.claude/ — the
+    2. The effective install dirs[section][scope] ('global' = home ~/.claude/ — the
        default — 'project' = project-local .claude/ anchored to the invocation
        cwd, selected with --project).
+
+    *dirs* is the one effective mapping owned by the tool and the local config; no
+    catalog gets a say in where a machine puts things.
 
     Relative paths follow the dir contract in :func:`resolve_install_dir`:
     they anchor to the user's working directory, not the CLI's runtime cwd.
     """
     if custom:
         return resolve_install_dir(custom)
-    dirs = default_dirs(catalog)[entry.section]
-    raw = dirs.get(scope)
+    raw = dirs[entry.section].get(scope)
     if not raw:
         raise LibraryError(f"no '{scope}' dir configured for {entry.section}")
     return resolve_install_dir(raw)
 
 
-def installed_scopes(catalog: dict[str, Any], entry: Entry) -> list[str]:
+def installed_scopes(dirs: dict[str, dict[str, str]], entry: Entry) -> list[str]:
     """Return scopes ('project'/'global') where the item appears installed.
 
     'global' is listed first when present — it is the primary scope, and
     `sync` refreshes each item in its first listed scope.
     """
     found: list[str] = []
-    dirs = default_dirs(catalog)[entry.section]
-    for scope, raw in sorted(dirs.items(), key=lambda kv: kv[0] != "global"):
+    for scope, raw in sorted(dirs[entry.section].items(), key=lambda kv: kv[0] != "global"):
         base = resolve_install_dir(raw)
         if not base.exists():
             continue
@@ -1390,12 +1402,12 @@ def _create_pr(
 # --------------------------------------------------------------------------- #
 
 def _install_one(
-    catalog: dict[str, Any],
+    dirs: dict[str, dict[str, str]],
     entry: Entry,
     scope: str,
     custom: str | None,
 ) -> dict[str, Any]:
-    base = resolve_target_base(catalog, entry, scope, custom)
+    base = resolve_target_base(dirs, entry, scope, custom)
     dest, changes = fetch(entry, base)
     main = main_file_for(entry, dest)
     ok = main.exists()
@@ -1408,10 +1420,10 @@ def cmd_list(args: argparse.Namespace) -> int:
     pull_errors = refresh_catalogs(cfg, args.no_pull)
     staleness_warnings(cfg, pull_errors)
     entries = require_entries(cfg)
-    catalog = _dirs_catalog(cfg)
+    dirs = cfg.dirs
     rows = []
     for e in entries:
-        scopes = installed_scopes(catalog, e)
+        scopes = installed_scopes(dirs, e)
         status = f"installed ({', '.join(scopes)})" if scopes else "not installed"
         rows.append((e, status, scopes))
 
@@ -1470,7 +1482,7 @@ def cmd_use(args: argparse.Namespace) -> int:
     cfg = load_config()
     refresh_catalogs(cfg, args.no_pull)
     entries = require_entries(cfg)
-    catalog = _dirs_catalog(cfg)
+    dirs = cfg.dirs
 
     entry = find_exact(entries, args.name)
     if entry is None:
@@ -1496,7 +1508,7 @@ def cmd_use(args: argparse.Namespace) -> int:
     if args.dry_run:
         plan = [
             {"type": e.type, "name": e.name,
-             "dest": str(install_dest(e, resolve_target_base(catalog, e, scope, args.dir)))}
+             "dest": str(install_dest(e, resolve_target_base(dirs, e, scope, args.dir)))}
             for e in order
         ]
         if args.json:
@@ -1509,7 +1521,7 @@ def cmd_use(args: argparse.Namespace) -> int:
         return 0
 
     try:
-        results = [_install_one(catalog, e, scope, args.dir) for e in order]
+        results = [_install_one(dirs, e, scope, args.dir) for e in order]
     except LibraryError as ex:
         if args.json:
             print(json.dumps({"status": "ERROR", "name": entry.name, "reason": str(ex)}, indent=2))
@@ -1540,11 +1552,11 @@ def cmd_sync(args: argparse.Namespace) -> int:
     pull_errors = refresh_catalogs(cfg, args.no_pull)
     staleness_warnings(cfg, pull_errors, syncing=True)
     entries = require_entries(cfg)
-    catalog = _dirs_catalog(cfg)
+    dirs = cfg.dirs
 
     installed: list[tuple[Entry, str]] = []
     for e in entries:
-        scopes = installed_scopes(catalog, e)
+        scopes = installed_scopes(dirs, e)
         if scopes:
             installed.append((e, scopes[0]))
 
@@ -1558,7 +1570,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
     synced, failed = [], []
     for e, scope in installed:
         try:
-            results = [_install_one(catalog, dep, scope, None) for dep in resolve_deps(entries, e)]
+            results = [_install_one(dirs, dep, scope, None) for dep in resolve_deps(entries, e)]
             synced.append({"type": e.type, "name": e.name, "scope": scope,
                            "changes": results[-1]["changes"]})
         except LibraryError as ex:
@@ -1811,7 +1823,7 @@ def cmd_remove(args: argparse.Namespace) -> int:
     cfg = load_config()
     refresh_catalogs(cfg, args.no_pull)
     entries = require_entries(cfg)
-    catalog = _dirs_catalog(cfg)
+    dirs = cfg.dirs
     entry = find_exact(entries, args.name)
     if entry is None:
         die(f"'{args.name}' not found in catalog")
@@ -1884,7 +1896,7 @@ def cmd_remove(args: argparse.Namespace) -> int:
     if args.purge:
         for scope in ("project", "global"):
             try:
-                base = resolve_target_base(catalog, entry, scope, None)
+                base = resolve_target_base(dirs, entry, scope, None)
             except LibraryError:
                 continue
             target = base / entry.name if entry.type == "skill" else base / f"{entry.name}.md"
@@ -2078,7 +2090,7 @@ def cmd_update(args: argparse.Namespace) -> int:
 def cmd_push(args: argparse.Namespace) -> int:
     cfg = load_config()
     refresh_catalogs(cfg, getattr(args, "no_pull", False))
-    catalog = _dirs_catalog(cfg)
+    dirs = cfg.dirs
     entry = find_exact(require_entries(cfg), args.name)
     if entry is None:
         die(f"'{args.name}' not found in catalog")
@@ -2089,12 +2101,12 @@ def cmd_push(args: argparse.Namespace) -> int:
     else:
         # 'default' is the legacy alias for 'project' (see default_dirs).
         frm = "project" if args.frm == "default" else args.frm
-        scopes = [frm] if frm else installed_scopes(catalog, entry)
+        scopes = [frm] if frm else installed_scopes(dirs, entry)
         if not scopes:
             die(f"'{entry.name}' is not installed locally; nothing to push")
         if len(scopes) > 1 and not args.frm:
             die(f"'{entry.name}' installed in multiple places ({', '.join(scopes)}); pass --from project|global")
-        scope_base = resolve_target_base(catalog, entry, scopes[0], None)
+        scope_base = resolve_target_base(dirs, entry, scopes[0], None)
 
     if entry.type == "skill":
         local_path = scope_base / entry.name
@@ -2416,6 +2428,16 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             entries = iter_entries(catalog)
         else:
             errors.append((None, f"catalog file not found at {p}"))
+
+    if catalog and cfg is not None and catalog.get("default_dirs"):
+        # Install dirs belong to the tool and the local config, so a catalog's own
+        # default_dirs block does nothing — say so, and name what is actually in force.
+        in_effect = ", ".join(f"{section}:{scope}={path}"
+                              for section, scopes in cfg.dirs.items()
+                              for scope, path in scopes.items())
+        warns.append((None,
+            "catalog declares default_dirs, which has no effect — install dirs come from "
+            f"the tool, overridable in {LOCAL_CONFIG_PATH}. In effect: {in_effect}"))
 
     if catalog:
         # Legacy scope key: 'default' was renamed to 'project' (still accepted as an alias).

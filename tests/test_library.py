@@ -294,6 +294,10 @@ library:
       source: https://github.com/acme/agentics/blob/main/prompts/grill-me.md
 """
 
+# The same entries with no default_dirs block — what `catalog init` scaffolds, and the
+# shape that produces no ignored-dirs warning.
+GOLDEN_CATALOG_NO_DIRS = "library:" + GOLDEN_CATALOG.split("\nlibrary:", 1)[1]
+
 # Same shape, seeded with the problems doctor is supposed to report: a duplicate
 # name, a dangling dependency, and an out-of-order section.
 BROKEN_CATALOG = """\
@@ -1240,6 +1244,118 @@ class TestDefaultDirs(unittest.TestCase):
         self.assertEqual(dirs["skills"], {"project": "a/", "global": "b/"})
 
 
+class TestEffectiveDirs(unittest.TestCase):
+    """R12 — install dirs belong to the tool and the local config, never to a catalog."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+
+    def load(self, data: dict[str, Any]) -> library.Config:
+        self.tool.write_config(data)
+        with captured_warnings():
+            return library.load_config()
+
+    def test_no_override_gives_the_builtin_mapping(self) -> None:
+        self.assertEqual(library.effective_dirs(None), library.BUILTIN_DEFAULT_DIRS)
+        self.assertEqual(library.effective_dirs({}), library.BUILTIN_DEFAULT_DIRS)
+
+    def test_builtin_covers_every_section_and_scope(self) -> None:
+        dirs = library.effective_dirs(None)
+        self.assertEqual(sorted(dirs), ["agents", "prompts", "skills"])
+        for section in library.TYPES:
+            self.assertEqual(sorted(dirs[section]), ["global", "project"])
+
+    def test_a_partial_override_replaces_only_what_it_names(self) -> None:
+        dirs = library.effective_dirs({"skills": {"global": "~/custom/skills/"}})
+        self.assertEqual(dirs["skills"], {"project": ".claude/skills/",
+                                          "global": "~/custom/skills/"})
+        self.assertEqual(dirs["agents"], library.BUILTIN_DEFAULT_DIRS["agents"])
+
+    def test_the_builtin_mapping_is_not_mutated_by_a_merge(self) -> None:
+        library.effective_dirs({"skills": {"global": "~/elsewhere/"}})
+        self.assertEqual(library.BUILTIN_DEFAULT_DIRS["skills"]["global"], "~/.claude/skills/")
+
+    def test_an_unknown_section_in_an_override_is_ignored(self) -> None:
+        self.assertEqual(library.effective_dirs({"widgets": {"global": "/x"}}),
+                         library.BUILTIN_DEFAULT_DIRS)
+
+    def test_config_override_reaches_config_dirs_with_the_legacy_alias(self) -> None:
+        cfg = self.load({"catalogs": [REMOTE_ITEM],
+                         "default_dirs": {"prompts": [{"default": "cmds/"},
+                                                      {"global": "~/cmds/"}]}})
+        self.assertEqual(cfg.dirs["prompts"], {"project": "cmds/", "global": "~/cmds/"})
+        self.assertEqual(cfg.dirs["skills"], library.BUILTIN_DEFAULT_DIRS["skills"])
+
+    def test_a_catalogs_own_default_dirs_has_no_effect(self) -> None:
+        # D7: the catalog says what exists, not where this machine puts it.
+        path = self.tool.root / "personal.yaml"
+        path.write_text("default_dirs:\n"
+                        "  skills:\n"
+                        "    - project: catalog-says/here/\n"
+                        "    - global: ~/catalog-says/here/\n"
+                        "library:\n"
+                        "  skills:\n"
+                        "    - name: alpha\n"
+                        "      description: A\n"
+                        "      source: /srv/alpha\n")
+        cfg = self.load({"catalogs": [{"id": "personal", "path": str(path)}]})
+        self.assertEqual(cfg.dirs["skills"], library.BUILTIN_DEFAULT_DIRS["skills"])
+        entry = cfg.resolve("alpha")
+        self.assertEqual(library.resolve_target_base(cfg.dirs, entry, "global", None),
+                         self.tool.home / ".claude/skills")
+
+    def test_resolution_uses_the_effective_mapping_for_both_scopes(self) -> None:
+        cfg = self.load({"catalogs": [REMOTE_ITEM]})
+        entry = make_entry("alpha")
+        self.assertEqual(library.resolve_target_base(cfg.dirs, entry, "global", None),
+                         self.tool.home / ".claude/skills")
+        self.assertEqual(library.resolve_target_base(cfg.dirs, entry, "project", None),
+                         self.tool.project / ".claude/skills")
+
+    def test_an_explicit_dir_still_wins(self) -> None:
+        cfg = self.load({"catalogs": [REMOTE_ITEM]})
+        target = self.tool.root / "somewhere"
+        self.assertEqual(
+            library.resolve_target_base(cfg.dirs, make_entry("alpha"), "global", str(target)),
+            target,
+        )
+
+    def test_a_missing_scope_still_raises(self) -> None:
+        dirs = {"skills": {"global": "~/.claude/skills/"}, "agents": {}, "prompts": {}}
+        with self.assertRaises(library.LibraryError) as ctx:
+            library.resolve_target_base(dirs, make_entry("bot", etype="agent"), "global", None)
+        self.assertIn("no 'global' dir configured for agents", str(ctx.exception))
+
+    def test_a_scaffolded_catalog_with_no_dirs_block_installs_to_the_builtin(self) -> None:
+        # R12.9 end to end: local-only registry, catalog with no default_dirs, a
+        # local-path source — `use` still lands in the built-in global dir.
+        upstream = self.tool.root / "upstream" / "alpha"
+        upstream.mkdir(parents=True)
+        (upstream / "SKILL.md").write_text("# alpha\n")
+        catalog = self.tool.root / "personal.yaml"
+        catalog.write_text("library:\n"
+                           "  skills:\n"
+                           "    - name: alpha\n"
+                           "      description: A\n"
+                           f"      source: {upstream / 'SKILL.md'}\n")
+        self.tool.write_config({"catalogs": [{"id": "personal", "path": str(catalog)}]})
+
+        code, out, err = run_cli("use", "alpha", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        installed = json.loads(out)["installed"][0]
+        self.assertEqual(installed["dest"], str(self.tool.home / ".claude/skills/alpha"))
+        self.assertTrue((self.tool.home / ".claude/skills/alpha/SKILL.md").is_file())
+
+    def test_installed_scopes_reads_the_effective_mapping(self) -> None:
+        cfg = self.load({"catalogs": [REMOTE_ITEM]})
+        entry = make_entry("alpha")
+        self.assertEqual(library.installed_scopes(cfg.dirs, entry), [])
+        (self.tool.project / ".claude/skills/alpha").mkdir(parents=True)
+        (self.tool.home / ".claude/skills/alpha").mkdir(parents=True)
+        self.assertEqual(library.installed_scopes(cfg.dirs, entry), ["global", "project"])
+
+
 class TestInstallDirAnchoring(unittest.TestCase):
     def setUp(self) -> None:
         self.tool = TempTool()
@@ -1393,7 +1509,18 @@ Run `library use <name>` to install one.
 
 GOLDEN_SEARCH_MISS = 'No results for "zzz". Try a broader keyword or `library list`.\n'
 
-GOLDEN_DOCTOR_CLEAN = "All checks passed — 4 catalog entries, no problems found.\n"
+GOLDEN_DOCTOR_ALL_CLEAR = "All checks passed — 4 catalog entries, no problems found.\n"
+
+# The fixture catalog declares default_dirs, which the tool now ignores. <CONFIG> is
+# substituted for the sandbox config path, the one machine-specific span in the line.
+GOLDEN_DOCTOR_IGNORED_DIRS = """\
+  WARN   [-] catalog declares default_dirs, which has no effect — install dirs come from the tool, \
+overridable in <CONFIG>. In effect: skills:project=.claude/skills/, skills:global=~/.claude/skills/, \
+agents:project=.claude/agents/, agents:global=~/.claude/agents/, prompts:project=.claude/commands/, \
+prompts:global=~/.claude/commands/
+
+0 errors · 1 warnings
+"""
 
 GOLDEN_DOCTOR_PROBLEMS = """\
   ERROR  [session-retro] duplicate name in skill, skill
@@ -1427,10 +1554,20 @@ class TestSingleCatalogGoldens(unittest.TestCase):
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(out, GOLDEN_SEARCH_MISS)
 
-    def test_doctor_output_when_clean(self) -> None:
+    def test_doctor_reports_the_ignored_catalog_default_dirs(self) -> None:
         with stubbed_gh():
-            code, out, err = run_cli("doctor", "--no-pull")
-        self.assertEqual((code, out), (0, GOLDEN_DOCTOR_CLEAN))
+            code, out, _ = run_cli("doctor", "--no-pull")
+        self.assertEqual(code, 0)  # a warning, not an error
+        self.assertEqual(out.replace(str(self.tool.config_path), "<CONFIG>"),
+                         GOLDEN_DOCTOR_IGNORED_DIRS)
+
+    def test_doctor_is_all_clear_for_a_catalog_without_default_dirs(self) -> None:
+        # The shape `catalog init` will scaffold (R12.9): no default_dirs, nothing to
+        # warn about, install dirs from the built-in defaults.
+        (self.tool.clone_dir / "library.yaml").write_text(GOLDEN_CATALOG_NO_DIRS)
+        with stubbed_gh():
+            code, out, _ = run_cli("doctor", "--no-pull")
+        self.assertEqual((code, out), (0, GOLDEN_DOCTOR_ALL_CLEAR))
 
     def test_list_json_keys(self) -> None:
         code, out, _ = run_cli("list", "--no-pull", "--json")
@@ -1460,7 +1597,9 @@ class TestSingleCatalogGoldens(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(sorted(payload), ["entries", "errors", "status", "warnings"])
         self.assertEqual((payload["status"], payload["entries"]), ("OK", 4))
-        self.assertEqual((payload["errors"], payload["warnings"]), ([], []))
+        self.assertEqual(payload["errors"], [])
+        self.assertEqual([sorted(w) for w in payload["warnings"]], [["entry", "message"]])
+        self.assertIn("default_dirs, which has no effect", payload["warnings"][0]["message"])
 
 
 class TestSingleCatalogDoctorProblems(unittest.TestCase):
@@ -1867,9 +2006,12 @@ class TestConfigNormalization(unittest.TestCase):
         self.assertEqual(cfg.default_add_catalog, "personal")
 
     def test_config_default_dirs_override_is_parsed_with_the_legacy_alias(self) -> None:
+        # The `default` key normalizes to `project`, and merging leaves the built-in
+        # global dir in place.
         cfg = self.load({"catalogs": [REMOTE_ITEM],
-                         "default_dirs": {"skills": [{"default": ".claude/skills/"}]}})
-        self.assertEqual(cfg.dirs["skills"], {"project": ".claude/skills/"})
+                         "default_dirs": {"skills": [{"default": "custom/skills/"}]}})
+        self.assertEqual(cfg.dirs["skills"],
+                         {"project": "custom/skills/", "global": "~/.claude/skills/"})
 
     def test_a_local_only_registry_is_valid(self) -> None:
         # R1.9: a developer with no team catalog runs entirely on a personal one.
