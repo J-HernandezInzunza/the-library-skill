@@ -517,7 +517,8 @@ def staleness_warnings(cfg: Config, pull_errors: dict[str, "str | None"], syncin
                   else "catalog was not refreshed")
         tail = ("syncing against stale catalog metadata" if syncing
                 else "output may be stale")
-        warn(f"catalog is {behind} commit(s) behind origin/{cat.branch} ({reason}); {tail}")
+        label = f"catalog '{cat.id}'" if len(cfg.catalogs) > 1 else "catalog"
+        warn(f"{label} is {behind} commit(s) behind origin/{cat.branch} ({reason}); {tail}")
 
 
 _VAR_RE = re.compile(r"^\s*-\s*\*\*(\w+)\*\*:\s*`([^`]+)`")
@@ -1509,17 +1510,40 @@ def _install_one(
             "verified": ok, "changes": changes}
 
 
+def winning_catalogs(cfg: Config) -> dict[str, str]:
+    """{entry name: catalog id that wins it} across every active catalog.
+
+    Keyed by name, matching how `find_exact` and `resolve` pick a winner — a name is
+    resolved the same way regardless of which section it sits in.
+    """
+    winners: dict[str, str] = {}
+    for e in cfg.entries():
+        winners.setdefault(e.name, e.catalog)
+    return winners
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     cfg = load_config()
     pull_errors = refresh_catalogs(cfg, args.no_pull)
     staleness_warnings(cfg, pull_errors)
     entries = resolved_entries(cfg, args)
-    dirs = cfg.dirs
+    # Registered count, not active: a catalog that got skipped still needs surfacing,
+    # and its skip is exactly what the per-catalog summary exists to report.
+    multi = len(cfg.catalogs) > 1
+    winners = winning_catalogs(cfg)
+
     rows = []
     for e in entries:
-        scopes = installed_scopes(dirs, e)
-        status = f"installed ({', '.join(scopes)})" if scopes else "not installed"
-        rows.append((e, status, scopes))
+        winner = winners.get(e.name)
+        shadowed_by = winner if winner and winner != e.catalog else None
+        # Install status belongs to the resolved winner; a shadowed entry is not the
+        # copy that would be installed, so it never claims to be installed.
+        scopes = [] if shadowed_by else installed_scopes(cfg.dirs, e)
+        if shadowed_by:
+            status = f"shadowed by {shadowed_by}"
+        else:
+            status = f"installed ({', '.join(scopes)})" if scopes else "not installed"
+        rows.append((e, status, scopes, shadowed_by))
 
     if args.json:
         out = [
@@ -1527,24 +1551,41 @@ def cmd_list(args: argparse.Namespace) -> int:
                 "type": e.type, "name": e.name, "description": e.description,
                 "source": e.source, "requires": e.requires,
                 "installed": bool(scopes), "scopes": scopes,
+                "catalog": e.catalog, "shadowed_by": shadowed_by,
             }
-            for e, _, scopes in rows
+            for e, _, scopes, shadowed_by in rows
         ]
         print(json.dumps(out, indent=2))
         return 0
 
     for section in TYPES:
-        group = [(e, s) for e, s, _ in rows if e.section == section]
+        group = [(e, s) for e, s, _, _ in rows if e.section == section]
         title = section.capitalize()
         if not group:
             print(f"\n{title}: (none in catalog)")
             continue
         print(f"\n{title}")
         name_w = max(len(e.name) for e, _ in group)
+        cat_w = max(len(e.catalog) for e, _ in group) if multi else 0
         for e, status in sorted(group, key=lambda x: x[0].name):
-            print(f"  {e.name.ljust(name_w)}  {status.ljust(22)}  {e.description[:70]}")
-    installed = sum(1 for _, _, sc in rows if sc)
-    print(f"\n{len(rows)} entries · {installed} installed · {len(rows) - installed} not installed")
+            catalog_col = f"{e.catalog.ljust(cat_w)}  " if multi else ""
+            print(f"  {e.name.ljust(name_w)}  {catalog_col}{status.ljust(22)}  {e.description[:70]}")
+
+    installed = sum(1 for _, _, sc, _ in rows if sc)
+    shadowed = sum(1 for _, _, _, sb in rows if sb)
+    not_installed = len(rows) - installed - shadowed
+    tail = f" · {shadowed} shadowed" if multi and shadowed else ""
+    print(f"\n{len(rows)} entries · {installed} installed · {not_installed} not installed{tail}")
+
+    if multi:
+        print("\nCatalogs")
+        width = max(len(c.id) for c in cfg.catalogs)
+        for cat in cfg.catalogs:
+            if cat.skipped:
+                print(f"  {cat.id.ljust(width)}  skipped: {cat.skipped}")
+            else:
+                count = len(iter_catalog_entries(cat))
+                print(f"  {cat.id.ljust(width)}  {count} entries")
     return 0
 
 

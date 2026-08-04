@@ -1618,10 +1618,14 @@ class TestSingleCatalogGoldens(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(len(payload), 4)
         for item in payload:
+            # `catalog` and `shadowed_by` are the additive keys R2.4 allows; every
+            # pre-existing key keeps its name, type, and meaning.
             self.assertEqual(
                 sorted(item),
-                ["description", "installed", "name", "requires", "scopes", "source", "type"],
+                ["catalog", "description", "installed", "name", "requires", "scopes",
+                 "shadowed_by", "source", "type"],
             )
+            self.assertEqual((item["catalog"], item["shadowed_by"]), ("shared", None))
         retro = next(i for i in payload if i["name"] == "session-retro")
         self.assertEqual(retro["requires"], ["skill:backend-code-practices"])
         self.assertEqual((retro["installed"], retro["scopes"]), (False, []))
@@ -2746,6 +2750,115 @@ class TestCatalogFlagOnLegacyConfig(unittest.TestCase):
         code, out, _ = run_cli("list", "--catalog", "shared", "--no-pull", "--json")
         self.assertEqual(code, 0)
         self.assertEqual(len(json.loads(out)), 4)
+
+
+# --------------------------------------------------------------------------- #
+# list across catalogs (R9.1–R9.3, R9.5, R9.6, R5.8)
+# --------------------------------------------------------------------------- #
+
+GOLDEN_LIST_TWO_CATALOGS = """
+Skills
+  backend-code-practices  shared    not installed           Backend conventions for Spring Boot services
+  scratch-thing           personal  installed (global)      Personal scratch skill
+  session-retro           personal  installed (global)      My iterated copy of session-retro
+  session-retro           shared    shadowed by personal    Distill a finished session into durable style learnings
+
+Agents
+  sql-review  shared  not installed           Reviews SQL migrations and stored procedures
+
+Prompts
+  grill-me  shared  not installed           Interrogate a plan for its load-bearing decisions
+
+6 entries · 2 installed · 3 not installed · 1 shadowed
+
+Catalogs
+  personal  2 entries
+  shared    4 entries
+"""
+
+
+class TestListAcrossCatalogs(unittest.TestCase):
+    maxDiff = None
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.repo = install_two_catalog_fixture(self.tool)
+
+    def install(self, name: str) -> None:
+        (self.tool.home / ".claude/skills" / name).mkdir(parents=True)
+
+    def rows(self, *extra: str) -> dict[str, dict[str, Any]]:
+        code, out, err = run_cli("list", "--no-pull", "--json", *extra)
+        self.assertEqual(code, 0, err)
+        return {f'{item["catalog"]}/{item["name"]}': item for item in json.loads(out)}
+
+    def test_output_shows_provenance_shadowing_and_a_per_catalog_summary(self) -> None:
+        self.install("scratch-thing")
+        self.install("session-retro")
+        code, out, err = run_cli("list", "--no-pull")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, GOLDEN_LIST_TWO_CATALOGS)
+
+    def test_a_shadowed_entry_is_never_reported_installed(self) -> None:
+        # The directory exists, but the shared copy is not what `use` would install.
+        self.install("session-retro")
+        rows = self.rows()
+        self.assertEqual(rows["personal/session-retro"]["installed"], True)
+        self.assertEqual(rows["personal/session-retro"]["scopes"], ["global"])
+        self.assertEqual(rows["shared/session-retro"]["installed"], False)
+        self.assertEqual(rows["shared/session-retro"]["scopes"], [])
+
+    def test_json_carries_catalog_and_shadowed_by(self) -> None:
+        rows = self.rows()
+        self.assertIsNone(rows["personal/session-retro"]["shadowed_by"])
+        self.assertEqual(rows["shared/session-retro"]["shadowed_by"], "personal")
+        self.assertIsNone(rows["shared/grill-me"]["shadowed_by"])
+        self.assertEqual({r["catalog"] for r in rows.values()}, {"personal", "shared"})
+
+    def test_the_filter_restricts_rows_but_keeps_the_registry_summary(self) -> None:
+        code, out, _ = run_cli("list", "--catalog", "shared", "--no-pull")
+        self.assertEqual(code, 0)
+        self.assertNotIn("scratch-thing", out)
+        self.assertIn("shared", out)
+        # the summary describes the registry, so both catalogs still appear
+        self.assertIn("  personal  2 entries", out)
+        self.assertIn("  shared    4 entries", out)
+
+    def test_a_restricted_entry_is_not_marked_shadowed_by_its_own_catalog(self) -> None:
+        rows = self.rows("--catalog", "personal")
+        self.assertIsNone(rows["personal/session-retro"]["shadowed_by"])
+
+    def test_a_skipped_catalog_is_surfaced_with_its_reason(self) -> None:
+        (self.tool.root / "personal" / "library.yaml").unlink()
+        with captured_warnings():
+            code, out, _ = run_cli("list", "--no-pull")
+        self.assertEqual(code, 0)
+        self.assertIn("catalog file not found", out)
+        self.assertRegex(out, r"personal\s+skipped:")
+        self.assertIn("  shared    4 entries", out)
+        self.assertNotIn("scratch-thing", out)
+
+    def test_staleness_warning_names_the_catalog(self) -> None:
+        self.repo.commit("library.yaml", GOLDEN_CATALOG_NO_DIRS)
+        self.repo.push()
+        self.repo.git("reset", "--hard", "HEAD~1")  # clone now trails its branch by one
+        code, _, err = run_cli("list", "--no-pull")
+        self.assertEqual(code, 0)
+        self.assertIn("catalog 'shared' is 1 commit(s) behind origin/main", err)
+
+    def test_a_single_catalog_staleness_warning_is_unnamed(self) -> None:
+        # R2.3: the one-catalog wording must not gain a catalog id.
+        tool = TempTool()
+        self.addCleanup(tool.stop)
+        repo = install_golden_fixture(tool, GOLDEN_CATALOG)
+        repo.commit("library.yaml", GOLDEN_CATALOG_NO_DIRS)
+        repo.push()
+        repo.git("reset", "--hard", "HEAD~1")
+        code, _, err = run_cli("list", "--no-pull")
+        self.assertEqual(code, 0)
+        self.assertIn("catalog is 1 commit(s) behind origin/main", err)
+        self.assertNotIn("catalog '", err)
 
 
 if __name__ == "__main__":
