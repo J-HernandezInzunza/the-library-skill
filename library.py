@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import difflib
 import filecmp
 import json
 import os
@@ -27,7 +28,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 try:
     import yaml
@@ -1552,6 +1553,244 @@ def _create_pr(
 
 
 # --------------------------------------------------------------------------- #
+# The catalog edit seam (one splice + safety net behind three write modes)
+# --------------------------------------------------------------------------- #
+
+def _is_git_tree(path: Path) -> bool:
+    proc = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True, text=True,
+    )
+    return proc.returncode == 0
+
+
+def _pull_ff_only(work: Path, label: str) -> None:
+    """Best-effort ff-only pull before an in-place write (R6.10).
+
+    A failure is a warning, never fatal: the alternative is refusing to write at
+    all because a laptop is offline. The write then lands on the local copy, which
+    is exactly what happens today for a catalog that was never pulled.
+    """
+    proc = subprocess.run(
+        ["git", "-C", str(work), "pull", "--ff-only"], capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        warn(f"could not pull {label} before writing "
+             f"({_git_error_summary(proc.stderr)}); writing against the local copy")
+
+
+def _commit_catalog_file(
+    work: Path, yaml_rel: str, commit_msg: str, push_branch: "str | None", label: str,
+) -> dict[str, Any]:
+    """Commit the catalog file and push, reporting rather than raising on failure.
+
+    R6.9: the file is already on disk by the time this runs, so a git failure must
+    not be reported as a failed write — that is a lie the user would act on, e.g.
+    by re-running an `add` that already landed. Warn, report, carry on.
+    """
+    out: dict[str, Any] = {"committed": False, "pushed": False}
+    try:
+        _git_in(work, ["add", yaml_rel])
+        _git_in(work, ["commit", "-m", commit_msg])
+        out["committed"] = True
+    except LibraryError as ex:
+        warn(f"{label} written, but the commit failed: {ex}")
+        return out
+
+    push = ["push"] if push_branch is None else ["push", "origin", f"HEAD:{push_branch}"]
+    try:
+        _git_in(work, push)
+        out["pushed"] = True
+    except LibraryError as ex:
+        warn(f"{label} committed, but the push failed: {ex}")
+    return out
+
+
+def _apply_edit_in_place(
+    cat: Catalog,
+    edit: Callable[[str], "str | None"],
+    verify: Callable[[dict[str, Any]], None],
+    *,
+    commit_msg: str,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """`local` and `direct` modes: one read, one write, of the same bytes (R6.12).
+
+    They differ only in where the file lives and whether git is involved
+    unconditionally, so they share this body — which is also what gives them
+    `update`'s determinism guarantee for free: there is no temp-clone that could
+    be newer than the copy the edit was computed from.
+    """
+    if cat.is_remote:                       # direct: the persistent clone
+        pull_catalog(cat)                   # clones on demand, ff-only pull, warns
+        work, use_git, push_branch = cat.clone_dir, True, cat.branch
+        yaml_rel = cat.yaml_path
+    else:                                   # local: the file on disk
+        work, push_branch = cat.root, None
+        yaml_rel = cat.yaml_file.name
+        use_git = cat.git_commit and _is_git_tree(work)
+        if cat.git_commit and not use_git:
+            warn(f"catalog '{cat.id}' sets git_commit but {work} is not a git working "
+                 "tree; the file is written, not committed")
+        elif use_git and not dry_run:
+            _pull_ff_only(work, f"catalog '{cat.id}'")
+
+    path = cat.yaml_file
+    if not path.exists():
+        die(f"catalog not found at {path}")
+
+    text = path.read_text()
+    new_text = edit(text)
+    if new_text is None:
+        return {"changed": False, "path": str(path)}
+    verify(yaml.safe_load(new_text) or {})
+
+    diff = "".join(difflib.unified_diff(
+        text.splitlines(keepends=True), new_text.splitlines(keepends=True),
+        fromfile=f"a/{yaml_rel}", tofile=f"b/{yaml_rel}",
+    ))
+    if dry_run:
+        return {"changed": True, "dry_run": True, "path": str(path), "diff": diff,
+                "branch": push_branch}
+
+    path.write_text(new_text)
+    out: dict[str, Any] = {"changed": True, "path": str(path), "diff": diff,
+                           "committed": False, "pushed": False, "branch": push_branch}
+    if use_git:
+        out.update(_commit_catalog_file(
+            work, yaml_rel, commit_msg, push_branch, f"catalog '{cat.id}'"))
+    return out
+
+
+def _apply_edit_via_pr(
+    cat: Catalog,
+    edit: Callable[[str], "str | None"],
+    verify: Callable[[dict[str, Any]], None],
+    *,
+    commit_msg: str,
+    pr_title: str,
+    pr_body: str,
+    branch: str,
+    cfg: Config,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """`pr` mode: today's temp-clone → branch → commit → PR flow, unchanged."""
+    repo_dir, cleanup = _pr_clone(cat.repo, cat.branch)
+    try:
+        yaml_p = repo_dir / cat.yaml_path
+        text = yaml_p.read_text()
+        new_text = edit(text)
+        if new_text is None:
+            return {"changed": False, "path": str(yaml_p)}
+        verify(yaml.safe_load(new_text) or {})
+        yaml_p.write_text(new_text)
+        _git_in(repo_dir, ["checkout", "-b", branch])
+        _git_in(repo_dir, ["add", cat.yaml_path])
+        _git_in(repo_dir, ["commit", "-m", commit_msg])
+
+        if dry_run:
+            diff = subprocess.run(
+                ["git", "-C", str(repo_dir), "show", "HEAD"],
+                capture_output=True, text=True,
+            ).stdout
+            return {"changed": True, "dry_run": True, "branch": branch, "diff": diff}
+
+        return {"changed": True, **_create_pr(
+            cfg, repo_dir, branch, cat.branch,
+            title=pr_title, body=pr_body, repo_url=cat.repo,
+        )}
+    finally:
+        cleanup()
+
+
+def apply_catalog_edit(
+    cat: Catalog,
+    edit: Callable[[str], "str | None"],
+    verify: Callable[[dict[str, Any]], None],
+    *,
+    commit_msg: str,
+    pr_title: str,
+    pr_body: str,
+    branch_op: str,
+    branch_name_hint: str,
+    cfg: Config,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """Apply one text edit to *cat*'s catalog file, however that catalog is written.
+
+    `edit` receives the file's current text and returns the new text, or None to
+    mean "nothing to change" — the callers compare fields rather than bytes, since
+    a re-rendered entry can differ in whitespace while meaning the same thing.
+    `verify` receives the re-parsed YAML and aborts if the splice went wrong; it
+    always runs before anything is written.
+
+    Every result carries `mode` and `catalog` (R6.5). The rest is mode-specific and
+    the agent is told to branch on `mode` first (R16.2) — only `pr` has a `method`.
+    """
+    if cat.writable is False:
+        raise LibraryError(f"catalog '{cat.id}' is read-only (writable: false)")
+
+    mode = cat.write_mode
+    if mode == "pr":
+        result = _apply_edit_via_pr(
+            cat, edit, verify, commit_msg=commit_msg, pr_title=pr_title,
+            pr_body=pr_body, branch=_pr_branch_name(branch_op, branch_name_hint),
+            cfg=cfg, dry_run=dry_run,
+        )
+    else:
+        result = _apply_edit_in_place(
+            cat, edit, verify, commit_msg=commit_msg, dry_run=dry_run,
+        )
+    return {"mode": mode, "catalog": cat.id, **result}
+
+
+def write_result_keys(result: dict[str, Any]) -> dict[str, Any]:
+    """The write-result keys that belong in a command's JSON payload.
+
+    The diff is dropped (commands place it themselves, and only for a dry run) along
+    with the two control signals the caller has already acted on.
+    """
+    return {k: v for k, v in result.items() if k not in ("diff", "changed", "dry_run")}
+
+
+def print_write_tail(result: dict[str, Any]) -> None:
+    """The mode-appropriate last lines of a human write report."""
+    if result["mode"] == "pr":
+        if result.get("method") == "gh":
+            print(f"  PR opened: {result.get('pr_url')}")
+        else:
+            print(f"  Branch pushed: {result.get('branch')}")
+            if result.get("compare_url"):
+                print(f"  Open PR at:   {result.get('compare_url')}")
+        return
+
+    if result["mode"] == "direct":
+        target = f"{result['catalog']} ({result['branch']})"
+    else:
+        print(f"  Wrote {result['path']}")
+        if not result.get("committed"):
+            return
+        target = result["catalog"]
+    if result.get("pushed"):
+        print(f"  Committed and pushed to {target}.")
+    elif result.get("committed"):
+        print(f"  Committed to {target}; the push failed (see warning above).")
+    else:
+        print(f"  Written to {result['path']}; the commit failed (see warning above).")
+
+
+def print_dry_run_tail(result: dict[str, Any]) -> None:
+    """What a dry run would have done, then the diff."""
+    if result["mode"] == "pr":
+        print(f"[dry-run] would open PR: {result['branch']}\n")
+    elif result["mode"] == "direct":
+        print(f"[dry-run] would commit to {result['catalog']} ({result['branch']})\n")
+    else:
+        print(f"[dry-run] would write {result['path']}\n")
+    print(result["diff"])
+
+
+# --------------------------------------------------------------------------- #
 # Commands — reads (Phase 2: config + catalog clone)
 # --------------------------------------------------------------------------- #
 
@@ -1969,67 +2208,63 @@ def cmd_add(args: argparse.Namespace) -> int:
     # Branch name + commit/PR copy differ for a single entry vs a batch.
     if len(entries) == 1:
         e = entries[0]
-        branch = _pr_branch_name("add", e.name)
+        branch_op, branch_hint = "add", e.name
         commit_msg = f"library: added {e.type} {e.name}"
         pr_title = f"library: add {e.type} {e.name}"
         pr_body = f"Adds `{e.name}` ({e.type}) to the catalog.\n\nSource: {e.source}"
     else:
-        branch = _pr_branch_name("add-batch", f"{len(entries)}-entries")
+        branch_op, branch_hint = "add-batch", f"{len(entries)}-entries"
         names = ", ".join(e.name for e in entries)
         commit_msg = f"library: add {len(entries)} entries ({names})"
         pr_title = f"library: add {len(entries)} entries"
         body_lines = "\n".join(f"- `{e.name}` ({e.type}) — {e.source}" for e in entries)
         pr_body = f"Adds {len(entries)} entries to the catalog:\n\n{body_lines}"
 
-    repo_dir, cleanup = _pr_clone(cfg.catalog_repo, cfg.catalog_branch)
     try:
-        yaml_p = repo_dir / cfg.catalog_yaml_path
-        text = yaml_p.read_text()
+        cat = write_target(cfg, getattr(args, "catalog", None))
+    except AmbiguousCatalog as ex:
+        return report_ambiguous_catalog(ex, args.json)
+    except LibraryError as ex:
+        die(str(ex))
+
+    def edit(text: str) -> str:
         for e in entries:
             text = splice_entry(text, e)
+        return text
+
+    def verify(parsed: dict[str, Any]) -> None:
         # Safety net: result must still parse and contain every new entry.
-        parsed = yaml.safe_load(text) or {}
         for e in entries:
             sec = (parsed.get("library", {}) or {}).get(e.section, []) or []
             if not any((it or {}).get("name") == e.name for it in sec):
                 die(f"internal error: entry {e.name} missing after splice; aborting")
-        yaml_p.write_text(text)
-        _git_in(repo_dir, ["checkout", "-b", branch])
-        _git_in(repo_dir, ["add", cfg.catalog_yaml_path])
-        _git_in(repo_dir, ["commit", "-m", commit_msg])
 
-        added = [{"type": e.type, "name": e.name, "section": e.section} for e in entries]
+    result = apply_catalog_edit(
+        cat, edit, verify, commit_msg=commit_msg, pr_title=pr_title, pr_body=pr_body,
+        branch_op=branch_op, branch_name_hint=branch_hint, cfg=cfg, dry_run=args.dry_run,
+    )
+    added = [{"type": e.type, "name": e.name, "section": e.section} for e in entries]
+    one_or_many = added[0] if len(added) == 1 else added
 
-        if args.dry_run:
-            diff_text = subprocess.run(
-                ["git", "-C", str(repo_dir), "show", "HEAD"],
-                capture_output=True, text=True,
-            ).stdout
-            if args.json:
-                print(json.dumps({
-                    "status": "DRY_RUN",
-                    "would_change": True,
-                    "added": added[0] if len(added) == 1 else added,
-                    "branch": branch,
-                    "diff": diff_text,
-                }, indent=2))
-            else:
-                print(f"[dry-run] would open PR: {branch}\n")
-                print(diff_text)
-            return 0
-
-        pr_info = _create_pr(
-            cfg, repo_dir, branch, cfg.catalog_branch,
-            title=pr_title, body=pr_body, repo_url=cfg.catalog_repo,
-        )
-    finally:
-        cleanup()
+    if args.dry_run:
+        if args.json:
+            print(json.dumps({
+                "status": "DRY_RUN",
+                "would_change": True,
+                "added": one_or_many,
+                "branch": result.get("branch"),
+                "diff": result["diff"],
+                **write_result_keys(result),
+            }, indent=2))
+        else:
+            print_dry_run_tail(result)
+        return 0
 
     if args.json:
         print(json.dumps({
             "status": "OK",
-            "added": added[0] if len(added) == 1 else added,
-            **pr_info,
+            "added": one_or_many,
+            **write_result_keys(result),
         }, indent=2))
         return 0
 
@@ -2039,12 +2274,7 @@ def cmd_add(args: argparse.Namespace) -> int:
         print(f"Added {len(entries)} entries:")
         for e in entries:
             print(f"  [{e.type}] {e.name} -> {e.section}")
-    if pr_info.get("method") == "gh":
-        print(f"  PR opened: {pr_info.get('pr_url')}")
-    else:
-        print(f"  Branch pushed: {pr_info.get('branch')}")
-        if pr_info.get("compare_url"):
-            print(f"  Open PR at:   {pr_info.get('compare_url')}")
+    print_write_tail(result)
     return 0
 
 
@@ -2061,66 +2291,46 @@ def cmd_remove(args: argparse.Namespace) -> int:
     if dependents:
         warn("removing a dependency of: " + ", ".join(f"{d.type}:{d.name}" for d in dependents))
 
-    branch = _pr_branch_name("remove", entry.name)
-
-    if args.dry_run:
-        repo_dir, cleanup = _pr_clone(cfg.catalog_repo, cfg.catalog_branch)
-        try:
-            yaml_p = repo_dir / cfg.catalog_yaml_path
-            new_text = remove_entry(yaml_p.read_text(), entry.type, entry.name)
-            # Safety net: entry must be gone after removal.
-            parsed = yaml.safe_load(new_text) or {}
-            sec = (parsed.get("library", {}) or {}).get(entry.section, []) or []
-            if any((it or {}).get("name") == entry.name for it in sec):
-                die("internal error: entry still present after removal; aborting")
-            yaml_p.write_text(new_text)
-            _git_in(repo_dir, ["checkout", "-b", branch])
-            _git_in(repo_dir, ["add", cfg.catalog_yaml_path])
-            _git_in(repo_dir, ["commit", "-m", f"library: removed {entry.type} {entry.name}"])
-            diff_proc = subprocess.run(
-                ["git", "-C", str(repo_dir), "show", "HEAD"],
-                capture_output=True, text=True,
-            )
-            diff_text = diff_proc.stdout
-            if args.json:
-                print(json.dumps({
-                    "status": "DRY_RUN",
-                    "would_change": True,
-                    "removed": {"type": entry.type, "name": entry.name, "section": entry.section},
-                    "dependents": [f"{d.type}:{d.name}" for d in dependents],
-                    "branch": branch,
-                    "diff": diff_text,
-                }, indent=2))
-            else:
-                print(f"[dry-run] would open PR: {branch}\n")
-                print(diff_text)
-        finally:
-            cleanup()
-        return 0
-
-    repo_dir, cleanup = _pr_clone(cfg.catalog_repo, cfg.catalog_branch)
     try:
-        yaml_p = repo_dir / cfg.catalog_yaml_path
-        new_text = remove_entry(yaml_p.read_text(), entry.type, entry.name)
+        cat = write_target(cfg, getattr(args, "catalog", None))
+    except AmbiguousCatalog as ex:
+        return report_ambiguous_catalog(ex, args.json)
+    except LibraryError as ex:
+        die(str(ex))
+
+    def verify(parsed: dict[str, Any]) -> None:
         # Safety net: entry must be gone after removal.
-        parsed = yaml.safe_load(new_text) or {}
         sec = (parsed.get("library", {}) or {}).get(entry.section, []) or []
         if any((it or {}).get("name") == entry.name for it in sec):
             die("internal error: entry still present after removal; aborting")
-        yaml_p.write_text(new_text)
-        _git_in(repo_dir, ["checkout", "-b", branch])
-        _git_in(repo_dir, ["add", cfg.catalog_yaml_path])
-        _git_in(repo_dir, ["commit", "-m", f"library: removed {entry.type} {entry.name}"])
-        pr_info = _create_pr(
-            cfg, repo_dir, branch, cfg.catalog_branch,
-            title=f"library: remove {entry.type} {entry.name}",
-            body=f"Removes `{entry.name}` ({entry.type}) from the catalog.",
-            repo_url=cfg.catalog_repo,
-        )
-    finally:
-        cleanup()
 
-    # --purge: delete local copies immediately (unrelated to the PR)
+    result = apply_catalog_edit(
+        cat,
+        lambda text: remove_entry(text, entry.type, entry.name),
+        verify,
+        commit_msg=f"library: removed {entry.type} {entry.name}",
+        pr_title=f"library: remove {entry.type} {entry.name}",
+        pr_body=f"Removes `{entry.name}` ({entry.type}) from the catalog.",
+        branch_op="remove", branch_name_hint=entry.name,
+        cfg=cfg, dry_run=args.dry_run,
+    )
+
+    if args.dry_run:
+        if args.json:
+            print(json.dumps({
+                "status": "DRY_RUN",
+                "would_change": True,
+                "removed": {"type": entry.type, "name": entry.name, "section": entry.section},
+                "dependents": [f"{d.type}:{d.name}" for d in dependents],
+                "branch": result.get("branch"),
+                "diff": result["diff"],
+                **write_result_keys(result),
+            }, indent=2))
+        else:
+            print_dry_run_tail(result)
+        return 0
+
+    # --purge: delete local copies immediately (unrelated to the catalog edit)
     deleted: list[str] = []
     if args.purge:
         for scope in ("project", "global"):
@@ -2142,7 +2352,7 @@ def cmd_remove(args: argparse.Namespace) -> int:
             "removed": {"type": entry.type, "name": entry.name, "section": entry.section},
             "deleted": deleted,
             "dependents": [f"{d.type}:{d.name}" for d in dependents],
-            **pr_info,
+            **write_result_keys(result),
         }, indent=2))
         return 0
 
@@ -2151,12 +2361,7 @@ def cmd_remove(args: argparse.Namespace) -> int:
         print(f"  deleted local copy: {d}")
     if dependents:
         print("  WARNING still required by: " + ", ".join(f"{d.type}:{d.name}" for d in dependents))
-    if pr_info.get("method") == "gh":
-        print(f"  PR opened: {pr_info.get('pr_url')}")
-    else:
-        print(f"  Branch pushed: {pr_info.get('branch')}")
-        if pr_info.get("compare_url"):
-            print(f"  Open PR at:   {pr_info.get('compare_url')}")
+    print_write_tail(result)
     return 0
 
 
@@ -2224,24 +2429,26 @@ def cmd_update(args: argparse.Namespace) -> int:
     cfg = load_config()
     refresh_catalogs(cfg, args.no_pull)
     # Friendly early exit on an obvious typo, from the registry. The *authoritative*
-    # read happens against the temp-clone below — see the determinism note there.
-    if find_exact(resolved_entries(cfg, args), args.name) is None:
+    # read happens inside `edit` below — see the determinism note there.
+    base = find_exact(resolved_entries(cfg, args), args.name)
+    if base is None:
         die(f"'{args.name}' not found in catalog")
 
-    branch = _pr_branch_name("update", args.name)
-
-    repo_dir, cleanup = _pr_clone(cfg.catalog_repo, cfg.catalog_branch)
     try:
-        yaml_p = repo_dir / cfg.catalog_yaml_path
-        text = yaml_p.read_text()
+        cat = write_target(cfg, getattr(args, "catalog", None))
+    except AmbiguousCatalog as ex:
+        return report_ambiguous_catalog(ex, args.json)
+    except LibraryError as ex:
+        die(str(ex))
 
+    def edit(text: str) -> "str | None":
         # Determinism: compute the edit against the SAME bytes we're about to
-        # write. Reading the entry's current fields from the persistent clone
-        # (which may be stale) and then overwriting a fresh temp-clone would
-        # silently clobber any change merged upstream since the last pull —
-        # e.g. an `--add-requires` computed from a stale `requires` would drop a
-        # ref another PR just added. So the base entry, the no-op check, and the
-        # requires-known warning all key off the temp-clone.
+        # write. Reading the entry's current fields from one copy of the catalog
+        # and then overwriting another would silently clobber any change merged
+        # upstream since the last pull — e.g. an `--add-requires` computed from a
+        # stale `requires` would drop a ref another PR just added. So the base
+        # entry, the no-op check, and the requires-known warning all key off the
+        # text handed in here, whichever mode produced it.
         fresh_entries = iter_entries(yaml.safe_load(text) or {})
         entry = find_exact(fresh_entries, args.name)
         if entry is None:
@@ -2257,62 +2464,53 @@ def cmd_update(args: argparse.Namespace) -> int:
             if (t, n) not in known:
                 warn(f"required dependency {r} is not in the catalog yet")
 
+        # Fields, not bytes: a re-rendered entry can differ in whitespace while
+        # meaning the same thing, so byte equality would miss a genuine no-op.
         if (new_entry.description == entry.description and new_entry.source == entry.source
                 and new_entry.requires == entry.requires):
-            if args.json:
-                print(json.dumps({"status": "OK", "name": entry.name, "changed": False}, indent=2))
-            else:
-                print(f"No changes — {entry.name} already matches the requested update.")
-            return 0
+            return None
+        return replace_entry(text, entry.type, entry.name, new_entry)
 
-        commit_msg = f"library: updated {entry.type} {entry.name}"
-        new_text = replace_entry(text, entry.type, entry.name, new_entry)
+    def verify(parsed: dict[str, Any]) -> None:
         # Safety net: result must still parse and reflect the change.
-        parsed = yaml.safe_load(new_text) or {}
-        sec = (parsed.get("library", {}) or {}).get(entry.section, []) or []
-        match = next((it for it in sec if (it or {}).get("name") == entry.name), None)
-        if match is None:
-            die(f"internal error: entry {entry.name} missing after update; aborting")
-        yaml_p.write_text(new_text)
-        _git_in(repo_dir, ["checkout", "-b", branch])
-        _git_in(repo_dir, ["add", cfg.catalog_yaml_path])
-        _git_in(repo_dir, ["commit", "-m", commit_msg])
+        sec = (parsed.get("library", {}) or {}).get(base.section, []) or []
+        if not any((it or {}).get("name") == base.name for it in sec):
+            die(f"internal error: entry {base.name} missing after update; aborting")
 
-        if args.dry_run:
-            diff_text = subprocess.run(
-                ["git", "-C", str(repo_dir), "show", "HEAD"],
-                capture_output=True, text=True,
-            ).stdout
-            if args.json:
-                print(json.dumps({
-                    "status": "DRY_RUN", "would_change": True,
-                    "name": entry.name, "branch": branch, "diff": diff_text,
-                }, indent=2))
-            else:
-                print(f"[dry-run] would open PR: {branch}\n")
-                print(diff_text)
-            return 0
+    # The copy/branch text keys off the registry entry rather than the authoritative
+    # read: `update` cannot change a name or type, so these are the same strings.
+    commit_msg = f"library: updated {base.type} {base.name}"
+    result = apply_catalog_edit(
+        cat, edit, verify, commit_msg=commit_msg, pr_title=commit_msg,
+        pr_body=f"Updates `{base.name}` ({base.type}) in the catalog.",
+        branch_op="update", branch_name_hint=args.name, cfg=cfg, dry_run=args.dry_run,
+    )
 
-        pr_info = _create_pr(
-            cfg, repo_dir, branch, cfg.catalog_branch,
-            title=commit_msg,
-            body=f"Updates `{entry.name}` ({entry.type}) in the catalog.",
-            repo_url=cfg.catalog_repo,
-        )
-    finally:
-        cleanup()
-
-    if args.json:
-        print(json.dumps({"status": "OK", "name": entry.name, "changed": True, **pr_info}, indent=2))
+    if not result["changed"]:
+        if args.json:
+            print(json.dumps({"status": "OK", "name": base.name, "changed": False}, indent=2))
+        else:
+            print(f"No changes — {base.name} already matches the requested update.")
         return 0
 
-    print(f"Updated [{entry.type}] {entry.name}.")
-    if pr_info.get("method") == "gh":
-        print(f"  PR opened: {pr_info.get('pr_url')}")
-    else:
-        print(f"  Branch pushed: {pr_info.get('branch')}")
-        if pr_info.get("compare_url"):
-            print(f"  Open PR at:   {pr_info.get('compare_url')}")
+    if args.dry_run:
+        if args.json:
+            print(json.dumps({
+                "status": "DRY_RUN", "would_change": True,
+                "name": base.name, "branch": result.get("branch"), "diff": result["diff"],
+                **write_result_keys(result),
+            }, indent=2))
+        else:
+            print_dry_run_tail(result)
+        return 0
+
+    if args.json:
+        print(json.dumps({"status": "OK", "name": base.name, "changed": True,
+                          **write_result_keys(result)}, indent=2))
+        return 0
+
+    print(f"Updated [{base.type}] {base.name}.")
+    print_write_tail(result)
     return 0
 
 

@@ -3349,5 +3349,284 @@ class TestWriteTarget(unittest.TestCase):
         self.assertIn("default_add_catalog", out)
 
 
+NEW_ENTRY = library.Entry(type="skill", name="fresh-skill", description="Brand new",
+                          source="https://github.com/acme/agentics/blob/main/skills/fresh/SKILL.md")
+
+
+class TestApplyCatalogEdit(unittest.TestCase):
+    """R6.1–R6.13 — one splice and one safety net behind three write modes."""
+
+    maxDiff = None
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.cfg = library.Config(catalogs=[], autopush=False)
+
+    # ── the edit and its safety net, shared by every mode ───────────────
+    def splice(self) -> Any:
+        return lambda text: library.splice_entry(text, NEW_ENTRY)
+
+    def verify_present(self, parsed: dict[str, Any]) -> None:
+        sec = (parsed.get("library", {}) or {}).get("skills", []) or []
+        if not any((it or {}).get("name") == NEW_ENTRY.name for it in sec):
+            library.die("internal error: entry fresh-skill missing after splice; aborting")
+
+    def apply(self, cat: library.Catalog, edit: Any = None, verify: Any = None,
+              dry_run: bool = False) -> dict[str, Any]:
+        return library.apply_catalog_edit(
+            cat, edit or self.splice(), verify or self.verify_present,
+            commit_msg="library: added skill fresh-skill",
+            pr_title="library: add skill fresh-skill",
+            pr_body="Adds `fresh-skill`.",
+            branch_op="add", branch_name_hint="fresh-skill",
+            cfg=self.cfg, dry_run=dry_run,
+        )
+
+    # ── fixtures per mode ───────────────────────────────────────────────
+    def local_cat(self, **kw: Any) -> library.Catalog:
+        path = self.tool.root / "personal" / "library.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(GOLDEN_CATALOG)
+        return library.Catalog(id="personal", kind="local", path_raw=str(path), **kw)
+
+    def git_local_cat(self, **kw: Any) -> tuple[library.Catalog, TempGitRepo]:
+        repo = TempGitRepo(self.tool.root, name="personal-git")
+        repo.commit("library.yaml", GOLDEN_CATALOG)
+        repo.push()
+        cat = library.Catalog(id="personal", kind="local",
+                              path_raw=str(repo.work / "library.yaml"), git_commit=True, **kw)
+        return cat, repo
+
+    def remote_cat(self, protected: bool,
+                   cid: str = library.SHARED_ID) -> tuple[library.Catalog, TempGitRepo]:
+        # A distinct id per call keeps two remotes in one test from contending for one
+        # clone dir — the same reason validation rejects that config (§2).
+        repo = TempGitRepo(self.tool.root, name=f"remote-{cid}")
+        repo.commit("library.yaml", GOLDEN_CATALOG)
+        repo.push()
+        cat = library.Catalog(id=cid, kind="remote", repo=str(repo.remote),
+                              yaml_path="library.yaml", branch="main", protected=protected)
+        return cat, repo
+
+    # ── local mode ──────────────────────────────────────────────────────
+    def test_local_writes_the_file_and_creates_no_branch(self) -> None:
+        cat = self.local_cat()
+        result = self.apply(cat)
+        self.assertEqual((result["mode"], result["catalog"]), ("local", "personal"))
+        self.assertEqual((result["committed"], result["pushed"]), (False, False))
+        self.assertIn("fresh-skill", cat.yaml_file.read_text())
+        self.assertFalse(library._is_git_tree(cat.root))
+
+    def test_local_uses_the_same_style_preserving_splice(self) -> None:
+        # R6.2: the seam must apply exactly the splice `splice_entry` applies — same
+        # bytes, comments and all — not a YAML round-trip that reformats the file.
+        cat = self.local_cat()
+        self.apply(cat)
+        self.assertEqual(cat.yaml_file.read_text(),
+                         library.splice_entry(GOLDEN_CATALOG, NEW_ENTRY))
+        self.assertIn("# Fixture catalog for the single-catalog golden tests.",
+                      cat.yaml_file.read_text())
+
+    def test_local_with_git_commit_commits_and_pushes(self) -> None:
+        cat, repo = self.git_local_cat()
+        result = self.apply(cat)
+        self.assertEqual((result["committed"], result["pushed"]), (True, True))
+        self.assertIn("fresh-skill", repo.remote_text("library.yaml"))
+
+    def test_git_commit_on_a_plain_directory_warns_and_still_writes(self) -> None:
+        # R6.8 — a misconfigured git_commit must not cost the user their edit.
+        cat = self.local_cat(git_commit=True)
+        with captured_warnings() as msgs:
+            result = self.apply(cat)
+        self.assertTrue(any("not a git working tree" in m for m in msgs), msgs)
+        self.assertEqual((result["committed"], result["pushed"]), (False, False))
+        self.assertIn("fresh-skill", cat.yaml_file.read_text())
+
+    def test_a_push_failure_warns_but_the_write_still_succeeded(self) -> None:
+        # R6.9 — reporting a failed write here would send the user to re-run an edit
+        # that is already on disk.
+        cat, repo = self.git_local_cat()
+        shutil.rmtree(repo.remote)
+        with captured_warnings() as msgs:
+            result = self.apply(cat)
+        self.assertTrue(any("push failed" in m for m in msgs), msgs)
+        self.assertEqual((result["changed"], result["committed"], result["pushed"]),
+                         (True, True, False))
+        self.assertIn("fresh-skill", cat.yaml_file.read_text())
+
+    def test_local_pulls_before_writing_when_git_backed(self) -> None:
+        # R6.10 — a second device's commit must not be clobbered by this write.
+        cat, repo = self.git_local_cat()
+        other = self.tool.root / "other-clone"
+        subprocess.run(["git", "clone", "--quiet", str(repo.remote), str(other)], check=True)
+        for cmd in (["config", "user.name", "Other"], ["config", "user.email", "o@example.invalid"]):
+            subprocess.run(["git", "-C", str(other), *cmd], check=True)
+        (other / "NOTES.md").write_text("from the other device\n")
+        subprocess.run(["git", "-C", str(other), "add", "NOTES.md"], check=True)
+        subprocess.run(["git", "-C", str(other), "commit", "--quiet", "-m", "other"], check=True)
+        subprocess.run(["git", "-C", str(other), "push", "--quiet"], check=True)
+
+        result = self.apply(cat)
+        self.assertTrue(result["pushed"])
+        self.assertTrue((repo.work / "NOTES.md").is_file())  # the pull happened
+        self.assertIn("fresh-skill", repo.remote_text("library.yaml"))
+
+    # ── direct mode ─────────────────────────────────────────────────────
+    def test_direct_commits_and_pushes_the_configured_branch_with_no_pr(self) -> None:
+        cat, repo = self.remote_cat(protected=False)
+        result = self.apply(cat)
+        self.assertEqual((result["mode"], result["branch"]), ("direct", "main"))
+        self.assertEqual((result["committed"], result["pushed"]), (True, True))
+        self.assertNotIn("method", result)  # no PR was opened
+        self.assertIn("fresh-skill", repo.remote_text("library.yaml"))
+
+    def test_direct_clones_on_demand(self) -> None:
+        # R5.3 — a first write on a new machine has no clone to edit yet.
+        cat, repo = self.remote_cat(protected=False)
+        self.assertFalse(cat.clone_dir.exists())
+        self.assertTrue(self.apply(cat)["pushed"])
+        self.assertIn("fresh-skill", repo.remote_text("library.yaml"))
+
+    # ── pr mode ─────────────────────────────────────────────────────────
+    def test_pr_keeps_every_key_the_existing_flow_returns(self) -> None:
+        cat, repo = self.remote_cat(protected=True)
+        result = self.apply(cat)
+        self.assertEqual((result["mode"], result["catalog"]), ("pr", library.SHARED_ID))
+        self.assertEqual(result["method"], "manual")
+        self.assertIn("compare_url", result)
+        self.assertTrue(result["branch"].startswith("library/add-fresh-skill-"))
+        # The branch is pushed; the protected branch itself is untouched (R6.6).
+        self.assertNotIn("fresh-skill", repo.remote_text("library.yaml"))
+        pushed = subprocess.run(["git", "-C", str(repo.remote), "show",
+                                 f"{result['branch']}:library.yaml"],
+                                capture_output=True, text=True)
+        self.assertIn("fresh-skill", pushed.stdout)
+
+    def test_pr_leaves_the_persistent_clone_alone(self) -> None:
+        # The edit happens in a temp clone, so the read cache never drifts.
+        cat, _ = self.remote_cat(protected=True)
+        library.pull_catalog(cat)
+        self.apply(cat)
+        self.assertNotIn("fresh-skill", cat.yaml_file.read_text())
+
+    # ── the safety net ──────────────────────────────────────────────────
+    def branches(self, repo: TempGitRepo) -> list[str]:
+        return sorted(subprocess.run(
+            ["git", "-C", str(repo.remote), "branch", "--format=%(refname:short)"],
+            capture_output=True, text=True).stdout.split())
+
+    def test_a_failed_verify_publishes_nothing_in_any_mode(self) -> None:
+        # In local and direct mode "nothing published" means the file is untouched; in
+        # pr mode the write lands in a temp clone that gets discarded, so what has to
+        # hold there is that no branch reached the remote.
+        def bad_verify(parsed: dict[str, Any]) -> None:
+            library.die("internal error: entry fresh-skill missing after splice; aborting")
+
+        for label, cat, repo in (("local",) + self.git_local_cat(),
+                                 ("direct",) + self.remote_cat(False, "unprotected"),
+                                 ("pr",) + self.remote_cat(True)):
+            with self.subTest(mode=label):
+                on_disk = repo.work / "library.yaml"
+                before = on_disk.read_text()
+                head, branches = repo.remote_head(), self.branches(repo)
+                with self.assertRaises(SystemExit) as ctx, \
+                        contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.apply(cat, verify=bad_verify)
+                self.assertEqual(ctx.exception.code, 1)
+                self.assertIn("missing after splice", err.getvalue())
+                self.assertEqual(on_disk.read_text(), before)
+                self.assertEqual(repo.remote_head(), head)
+                self.assertEqual(self.branches(repo), branches)
+
+    def test_a_read_only_catalog_is_refused_before_anything_is_touched(self) -> None:
+        cat = self.local_cat(writable=False)
+        before = cat.yaml_file.read_text()
+        with self.assertRaises(library.LibraryError):
+            self.apply(cat)
+        self.assertEqual(cat.yaml_file.read_text(), before)
+
+    def test_an_edit_that_changes_nothing_is_reported_not_written(self) -> None:
+        cat, repo = self.git_local_cat()
+        head = repo.head()
+        result = self.apply(cat, edit=lambda text: None)
+        self.assertFalse(result["changed"])
+        self.assertEqual(repo.head(), head)
+        self.assertEqual(cat.yaml_file.read_text(), GOLDEN_CATALOG)
+
+    # ── dry run ─────────────────────────────────────────────────────────
+    def test_dry_run_writes_nothing_in_every_mode(self) -> None:
+        for label, cat, repo in (("local",) + self.git_local_cat(),
+                                 ("direct",) + self.remote_cat(False, "unprotected"),
+                                 ("pr",) + self.remote_cat(True)):
+            with self.subTest(mode=label):
+                # The work tree is the catalog file itself in local mode and the source
+                # of truth behind the clone in the other two; neither may move.
+                on_disk = repo.work / "library.yaml"
+                before, head = on_disk.read_text(), repo.remote_head()
+                result = self.apply(cat, dry_run=True)
+                self.assertTrue(result["dry_run"])
+                self.assertIn("fresh-skill", result["diff"])
+                self.assertEqual(on_disk.read_text(), before)
+                self.assertEqual(repo.remote_head(), head)
+                self.assertNotIn("fresh-skill", repo.remote_text("library.yaml"))
+
+    def test_the_dry_run_diff_is_a_diff_in_every_mode(self) -> None:
+        for label, cat in (("local", self.local_cat()),
+                           ("direct", self.remote_cat(False, "unprotected")[0]),
+                           ("pr", self.remote_cat(True)[0])):
+            with self.subTest(mode=label):
+                diff = self.apply(cat, dry_run=True)["diff"]
+                self.assertIn("+    - name: fresh-skill", diff)
+                self.assertIn("library.yaml", diff)
+
+
+class TestWriteReportShape(unittest.TestCase):
+    """R6.5, R16.2 — the agent branches on `mode`, so each mode reports its own way."""
+
+    def tail(self, result: dict[str, Any]) -> str:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            library.print_write_tail(result)
+        return buf.getvalue()
+
+    def test_pr_output_is_unchanged_for_both_gh_and_manual(self) -> None:
+        gh = self.tail({"mode": "pr", "method": "gh", "pr_url": "https://pr/1"})
+        self.assertEqual(gh, "  PR opened: https://pr/1\n")
+        manual = self.tail({"mode": "pr", "method": "manual", "branch": "library/add-x",
+                            "compare_url": "https://compare"})
+        self.assertEqual(manual, "  Branch pushed: library/add-x\n"
+                                 "  Open PR at:   https://compare\n")
+
+    def test_manual_output_omits_a_missing_compare_url(self) -> None:
+        self.assertEqual(self.tail({"mode": "pr", "method": "manual", "branch": "b",
+                                    "compare_url": None}),
+                         "  Branch pushed: b\n")
+
+    def test_direct_names_the_catalog_and_branch_rather_than_a_pr(self) -> None:
+        out = self.tail({"mode": "direct", "catalog": "personal", "branch": "main",
+                         "committed": True, "pushed": True, "path": "/x/library.yaml"})
+        self.assertEqual(out, "  Committed and pushed to personal (main).\n")
+
+    def test_local_reports_the_path_and_says_nothing_about_git_when_unused(self) -> None:
+        out = self.tail({"mode": "local", "catalog": "personal", "path": "/x/library.yaml",
+                         "committed": False, "pushed": False})
+        self.assertEqual(out, "  Wrote /x/library.yaml\n")
+
+    def test_a_failed_push_is_visible_in_the_report(self) -> None:
+        out = self.tail({"mode": "local", "catalog": "personal", "path": "/x/library.yaml",
+                         "committed": True, "pushed": False})
+        self.assertEqual(out, "  Wrote /x/library.yaml\n"
+                              "  Committed to personal; the push failed (see warning above).\n")
+
+    def test_write_result_keys_drops_the_diff_and_the_control_signals(self) -> None:
+        keys = library.write_result_keys({
+            "mode": "local", "catalog": "personal", "path": "/x", "diff": "...",
+            "changed": True, "dry_run": True, "committed": True, "pushed": False,
+        })
+        self.assertEqual(keys, {"mode": "local", "catalog": "personal", "path": "/x",
+                                "committed": True, "pushed": False})
+
+
 if __name__ == "__main__":
     unittest.main()

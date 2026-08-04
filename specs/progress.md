@@ -9,7 +9,7 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 
 ## Status
 
-19 of 37 tasks landed. Phases 0–5 complete; Phase 6 in progress.
+20 of 37 tasks landed. Phases 0–5 complete; Phase 6 in progress.
 
 | Task | Status | Commit |
 | ---- | ------ | ------ |
@@ -32,8 +32,9 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 | T5.3 `search` across catalogs | done | `11f236a` |
 | T5.4 `use` across catalogs, deps within one | done | `cb58541` |
 | T5.5 `sync` across catalogs | done | `3c6edda` |
-| T6.1 `write_target` + ambiguity contract | done | |
-| T6.2–T6.7 writes target a catalog | todo | |
+| T6.1 `write_target` + ambiguity contract | done | `5dfab60` |
+| T6.2 `apply_catalog_edit`, three write modes | done | |
+| T6.3–T6.7 writes target a catalog | todo | |
 | T7.1–T7.3 catalog management commands | todo | |
 | T8.1–T8.2 doctor | todo | |
 | T9.1–T9.6 agent layer + docs | todo | |
@@ -121,6 +122,25 @@ Each is a place the code does something tasks.md or design.md doesn't say, with 
 17. **No writable catalog at all is a `LibraryError`, not an `AmbiguousCatalog`.** R7.3
     only covers "more than one", and handing the agent an empty list of choices would
     leave it nothing to pick. Reachable only by marking every catalog `writable: false`.
+18. **T6.2 routes `add` / `remove` / `update` through `write_target` as well**, not just
+    through `apply_catalog_edit`. Passing `args.catalog` here rather than in T6.3/T6.5/T6.6
+    costs one line per command and closes deviation 12's hazard — a hand-written
+    multi-catalog config no longer resolves against one catalog and writes to another.
+    Those tasks keep their real content: duplicate checks against the destination, the
+    shadow warnings, the cross-catalog `--catalog` requirement, and the batch rules.
+19. **`edit` returns `None` to mean "nothing to change"** rather than returning the text
+    unchanged. `update` compares fields, not bytes: `replace_entry` re-renders the entry,
+    so a genuine no-op can still differ in whitespace (the roadmap's text-splice
+    asymmetries), and byte equality would report a change that isn't one.
+20. **`update`'s commit message and PR copy key off the registry entry**, not the
+    authoritative read inside `edit`, because `apply_catalog_edit` needs them before the
+    file is read. `update` cannot change a name or type, so the strings are identical;
+    a mismatch would mean the two copies disagree about an entry's type, which `doctor`
+    reports.
+21. **Two output helpers came along with the seam** (`print_write_tail`,
+    `print_dry_run_tail`, plus `write_result_keys`). All three commands printed the same
+    four PR-tail lines; leaving that inline would have meant triplicating the new
+    mode-aware branches instead. The `pr` branch reproduces today's lines exactly.
 
 ## Corrections the specs need
 
@@ -152,6 +172,11 @@ Established while working the plan; worth reusing.
   A mutation that applies and the suite still passes is worth more than the ones that
   fail: it means the test doesn't pin what its name claims. In T6.1 it exposed a comment
   asserting an ordering guarantee the code didn't actually depend on (deviation 16).
+- **Compare whole command surfaces, not one invocation.** T6.2's baseline probe ran 19
+  write-command cases (dry-run and real `add`/`remove`/`update`, batch add, every error
+  path) against the pre-change commit, diffing stdout, stderr, exit code, the resulting
+  catalog on the bare remote, and its branch list. Scrub the git author date *inside* the
+  JSON `diff` string too — `^Date:` anchored at line start misses it.
 - **Revert mutations from a scratchpad copy, never `git checkout`.** A
   `trap 'git checkout -- library.py' EXIT` harness silently discarded the uncommitted
   implementation along with the mutation, and the next "clean" run failed for a reason
