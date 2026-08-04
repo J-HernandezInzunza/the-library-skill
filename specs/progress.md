@@ -9,7 +9,7 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 
 ## Status
 
-23 of 37 tasks landed. Phases 0–5 complete; Phase 6 in progress.
+24 of 37 tasks landed. Phases 0–5 complete; Phase 6 in progress.
 
 | Task | Status | Commit |
 | ---- | ------ | ------ |
@@ -36,8 +36,9 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 | T6.2 `apply_catalog_edit`, three write modes | done | `617ac3f` |
 | T6.3 `add` targets a catalog | done | `2b62fb3` |
 | T6.4 derived `--allow-local` | done | `bf529a4` |
-| T6.5 `update` targets a catalog | done | |
-| T6.6–T6.7 writes target a catalog | todo | |
+| T6.5 `update` targets a catalog | done | `93a99dc` |
+| T6.6 `remove` targets a catalog | done | |
+| T6.7 `push` under shadowing | todo | |
 | T7.1–T7.3 catalog management commands | todo | |
 | T8.1–T8.2 doctor | todo | |
 | T9.1–T9.6 agent layer + docs | todo | |
@@ -181,6 +182,10 @@ Each is a place the code does something tasks.md or design.md doesn't say, with 
     with `--catalog` — so the agent has one shape to handle. Only the human wording differs
     (`report_ambiguous_catalog(..., lead=...)`), since `default_add_catalog` is no remedy
     here.
+29. **`remove` follows T6.5's targeting exactly** — same cross-catalog guard, same
+    entry-owns-the-destination rule, same `write_target` call for the writability refusal
+    only. Deviations 27 and 28 therefore cover it too. `--purge` needed no change:
+    effective dirs arrived with T4.1 and the scope names with T2.1, so T6.6 only pins them.
 
 ## Corrections the specs need
 

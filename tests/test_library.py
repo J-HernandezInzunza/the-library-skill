@@ -3918,6 +3918,139 @@ class TestUpdateTargetsACatalog(unittest.TestCase):
         self.assertEqual(entry.requires, ["skill:scratch-thing"])
 
 
+class TestRemoveTargetsACatalog(unittest.TestCase):
+    """R7.1, R7.8, R7.9 — `remove` deletes from one catalog and warns about its dependents."""
+
+    maxDiff = None
+
+    # personal depends on its own scratch-thing; shared depends on its own session-retro.
+    PERSONAL = """\
+library:
+  skills:
+    - name: scratch-thing
+      description: Personal scratch skill
+      source: /srv/personal/scratch/SKILL.md
+    - name: needs-scratch
+      description: Depends on scratch-thing, in this same catalog
+      source: /srv/personal/needs/SKILL.md
+      requires: ["skill:scratch-thing"]
+    - name: session-retro
+      description: My iterated copy of session-retro
+      source: /srv/personal/session-retro/SKILL.md
+      requires: ["skill:backend-code-practices"]
+  agents: []
+  prompts: []
+"""
+
+    # The shared catalog's agent depends on an entry that lives in *personal*, so an
+    # unscoped dependents scan would drag it into a personal removal.
+    SHARED = GOLDEN_CATALOG.replace(
+        "      source: https://github.com/acme/agentics/blob/main/agents/sql-review.md",
+        "      source: https://github.com/acme/agentics/blob/main/agents/sql-review.md\n"
+        '      requires: ["skill:scratch-thing"]')
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.repo = install_two_catalog_fixture(self.tool, self.PERSONAL, self.SHARED)
+        self.personal = self.tool.root / "personal" / "library.yaml"
+        self.clone = library.CATALOG_CLONE_DIR / "library.yaml"
+
+    def remove(self, name: str, *extra: str, expect: int = 0) -> dict[str, Any]:
+        code, out, err = run_cli("remove", name, *extra, "--no-pull", "--json")
+        self.assertEqual(code, expect, err or out)
+        self.stderr = err
+        return json.loads(out) if out else {}
+
+    def personal_names(self) -> list[str]:
+        """Entry names still in the personal catalog — a mention in someone else's
+        `requires` is not the entry."""
+        parsed = yaml.safe_load(self.personal.read_text())
+        return [e.name for e in library.iter_entries(parsed)]
+
+    # ── targeting ───────────────────────────────────────────────────────
+    def test_removing_from_the_personal_catalog_leaves_the_shared_one_untouched(self) -> None:
+        before_clone = self.clone.read_text()
+        before_remote = self.repo.remote_text("library.yaml")
+        payload = self.remove("scratch-thing")
+        self.assertEqual((payload["catalog"], payload["mode"]), ("personal", "local"))
+        self.assertNotIn("scratch-thing", self.personal_names())
+        self.assertEqual(self.clone.read_text(), before_clone)
+        self.assertEqual(self.repo.remote_text("library.yaml"), before_remote)
+
+    def test_a_cross_catalog_name_refuses_without_the_flag(self) -> None:
+        payload = self.remove("session-retro", expect=2)
+        self.assertEqual(payload, {"status": "AMBIGUOUS_CATALOG",
+                                   "catalogs": ["personal", "shared"]})
+        self.assertIn("session-retro", self.personal.read_text())
+
+    def test_the_human_refusal_says_which_copy_to_remove(self) -> None:
+        code, out, _ = run_cli("remove", "session-retro", "--no-pull")
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "'session-retro' exists in personal, shared; pass "
+                              "--catalog <id> to say which copy to remove.\n")
+
+    def test_the_flag_settles_a_cross_catalog_name(self) -> None:
+        payload = self.remove("session-retro", "--catalog", "personal")
+        self.assertEqual(payload["catalog"], "personal")
+        self.assertNotIn("session-retro", self.personal_names())
+        self.assertIn("session-retro", self.repo.remote_text("library.yaml"))
+
+    def test_a_read_only_destination_is_refused(self) -> None:
+        cfg = yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())
+        cfg["catalogs"][0]["writable"] = False
+        self.tool.write_config(cfg)
+        code, _, err = run_cli("remove", "scratch-thing", "--no-pull", "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("read-only", err)
+
+    # ── dependents (D9) ─────────────────────────────────────────────────
+    def test_only_the_destination_catalogs_dependents_are_reported(self) -> None:
+        # `scratch-thing` lives in personal, and two entries name it: personal's
+        # needs-scratch and *shared's* sql-review. Only the first is this removal's
+        # business — shared's ref was already dangling under D9, and no `--catalog` is
+        # passed here, so nothing else narrows the scan.
+        payload = self.remove("scratch-thing")
+        self.assertEqual(payload["dependents"], ["skill:needs-scratch"])
+        self.assertIn("removing a dependency of: skill:needs-scratch", self.stderr)
+        self.assertNotIn("sql-review", self.stderr)
+
+    def test_the_scan_follows_the_flag_to_another_catalog(self) -> None:
+        # Both catalogs hold a session-retro requiring backend-code-practices; scoped to
+        # shared, only shared's copy is reported.
+        payload = self.remove("backend-code-practices", "--catalog", "shared")
+        self.assertEqual(payload["dependents"], ["skill:session-retro"])
+        self.assertEqual(self.stderr.count("skill:session-retro"), 1)
+
+    def test_no_dependents_is_a_silent_removal(self) -> None:
+        payload = self.remove("needs-scratch")
+        self.assertEqual(payload["dependents"], [])
+        self.assertNotIn("removing a dependency", self.stderr)
+
+    # ── the file after the edit ─────────────────────────────────────────
+    def test_an_emptied_section_collapses_to_an_empty_list(self) -> None:
+        # `session-retro` is personal's last skill once the other two go. The section has
+        # to survive as an empty list rather than vanishing or leaving a dangling key.
+        for name in ("needs-scratch", "scratch-thing"):
+            self.remove(name)
+        self.remove("session-retro", "--catalog", "personal")
+        parsed = yaml.safe_load(self.personal.read_text())
+        self.assertEqual(parsed["library"]["skills"], [])
+        self.assertEqual(library.iter_entries(parsed), [])
+
+    # ── --purge ─────────────────────────────────────────────────────────
+    def test_purge_deletes_both_scopes_using_the_effective_dirs(self) -> None:
+        project = self.tool.project / ".claude" / "skills" / "scratch-thing"
+        globl = self.tool.home / ".claude" / "skills" / "scratch-thing"
+        for d in (project, globl):
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text("# scratch\n")
+        payload = self.remove("scratch-thing", "--purge")
+        self.assertEqual(sorted(payload["deleted"]), sorted([str(project), str(globl)]))
+        self.assertFalse(project.exists())
+        self.assertFalse(globl.exists())
+
+
 class TestDerivedAllowLocal(unittest.TestCase):
     """R8.1–R8.5 — a local path is fine for a local catalog, broken for any remote one."""
 

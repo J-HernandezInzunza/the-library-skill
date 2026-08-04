@@ -2375,16 +2375,27 @@ def cmd_remove(args: argparse.Namespace) -> int:
     if entry is None:
         die(f"'{args.name}' not found in catalog")
 
-    dependents = [e for e in entries if f"{entry.type}:{entry.name}" in e.requires]
-    if dependents:
-        warn("removing a dependency of: " + ", ".join(f"{d.type}:{d.name}" for d in dependents))
+    if not getattr(args, "catalog", None):
+        clash = cross_catalog_conflict(cfg, args.name)
+        if clash:
+            return report_ambiguous_catalog(
+                clash, args.json,
+                lead=f"'{args.name}' exists in {', '.join(clash.catalogs)}; pass "
+                     "--catalog <id> to say which copy to remove.")
 
+    # As in `update`: the destination is the catalog the entry resolved from, and
+    # `write_target` is here for its writability refusal (R6.11).
     try:
-        cat = write_target(cfg, getattr(args, "catalog", None))
-    except AmbiguousCatalog as ex:
-        return report_ambiguous_catalog(ex, args.json)
+        cat = write_target(cfg, entry.catalog)
     except LibraryError as ex:
         die(str(ex))
+
+    # D9: only the destination catalog's entries can depend on this one, so a `requires`
+    # ref from another catalog is already dangling and not this removal's business.
+    dependents = [e for e in cfg.entries_of(cat.id)
+                  if f"{entry.type}:{entry.name}" in e.requires]
+    if dependents:
+        warn("removing a dependency of: " + ", ".join(f"{d.type}:{d.name}" for d in dependents))
 
     def verify(parsed: dict[str, Any]) -> None:
         # Safety net: entry must be gone after removal.
