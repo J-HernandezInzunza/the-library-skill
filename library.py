@@ -309,6 +309,16 @@ class Config:
         )
 
 
+def multi_catalog(cfg: Config) -> bool:
+    """True when the registry holds more than one catalog — the gate for per-catalog output.
+
+    Keyed on registered rather than active count, so a catalog that got skipped still
+    appears in per-catalog output instead of the display silently reverting to the
+    single-catalog shape and hiding it.
+    """
+    return len(cfg.catalogs) > 1
+
+
 def _hydrate_one(cat: Catalog) -> None:
     """Load *cat*'s catalog data, or record why it can't be used.
 
@@ -426,7 +436,7 @@ def hydrate_all(cfg: Config, quiet: bool = False) -> None:
     """
     for cat in cfg.catalogs:
         _hydrate_one(cat)
-        if cat.skipped and not quiet and len(cfg.catalogs) > 1:
+        if cat.skipped and not quiet and multi_catalog(cfg):
             warn(f"catalog '{cat.id}' skipped: {cat.skipped}")
 
 
@@ -517,7 +527,7 @@ def staleness_warnings(cfg: Config, pull_errors: dict[str, "str | None"], syncin
                   else "catalog was not refreshed")
         tail = ("syncing against stale catalog metadata" if syncing
                 else "output may be stale")
-        label = f"catalog '{cat.id}'" if len(cfg.catalogs) > 1 else "catalog"
+        label = f"catalog '{cat.id}'" if multi_catalog(cfg) else "catalog"
         warn(f"{label} is {behind} commit(s) behind origin/{cat.branch} ({reason}); {tail}")
 
 
@@ -1527,9 +1537,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     pull_errors = refresh_catalogs(cfg, args.no_pull)
     staleness_warnings(cfg, pull_errors)
     entries = resolved_entries(cfg, args)
-    # Registered count, not active: a catalog that got skipped still needs surfacing,
-    # and its skip is exactly what the per-catalog summary exists to report.
-    multi = len(cfg.catalogs) > 1
+    multi = multi_catalog(cfg)
     winners = winning_catalogs(cfg)
 
     rows = []
@@ -1593,10 +1601,17 @@ def cmd_search(args: argparse.Namespace) -> int:
     cfg = load_config()
     refresh_catalogs(cfg, args.no_pull)
     matches = fuzzy_candidates(resolved_entries(cfg, args), args.keyword)
+    multi = multi_catalog(cfg)
+    winners = winning_catalogs(cfg)
+
+    def shadowed_by(entry: Entry) -> "str | None":
+        winner = winners.get(entry.name)
+        return winner if winner and winner != entry.catalog else None
 
     if args.json:
         print(json.dumps(
-            [{"type": e.type, "name": e.name, "description": e.description, "source": e.source}
+            [{"type": e.type, "name": e.name, "description": e.description, "source": e.source,
+              "catalog": e.catalog, "shadowed_by": shadowed_by(e)}
              for e in matches],
             indent=2,
         ))
@@ -1607,8 +1622,10 @@ def cmd_search(args: argparse.Namespace) -> int:
         return 0
     print(f'Results for "{args.keyword}":\n')
     name_w = max(len(e.name) for e in matches)
+    cat_w = max(len(e.catalog) for e in matches) if multi else 0
     for e in sorted(matches, key=lambda x: x.name):
-        print(f"  [{e.type}] {e.name.ljust(name_w)}  {e.description[:70]}")
+        catalog_col = f"{e.catalog.ljust(cat_w)}  " if multi else ""
+        print(f"  [{e.type}] {e.name.ljust(name_w)}  {catalog_col}{e.description[:70]}")
     print(f"\nRun `library use <name>` to install one.")
     return 0
 

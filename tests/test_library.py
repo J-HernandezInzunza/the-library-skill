@@ -1635,7 +1635,8 @@ class TestSingleCatalogGoldens(unittest.TestCase):
         payload = json.loads(out)
         self.assertEqual(code, 0)
         self.assertEqual([sorted(i) for i in payload],
-                         [["description", "name", "source", "type"]])
+                         [["catalog", "description", "name", "shadowed_by", "source", "type"]])
+        self.assertEqual((payload[0]["catalog"], payload[0]["shadowed_by"]), ("shared", None))
 
     def test_doctor_json_keys(self) -> None:
         with stubbed_gh():
@@ -2859,6 +2860,63 @@ class TestListAcrossCatalogs(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("catalog is 1 commit(s) behind origin/main", err)
         self.assertNotIn("catalog '", err)
+
+
+# --------------------------------------------------------------------------- #
+# search across catalogs (R9.4–R9.6)
+# --------------------------------------------------------------------------- #
+
+class TestSearchAcrossCatalogs(unittest.TestCase):
+    maxDiff = None
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        install_two_catalog_fixture(self.tool)
+
+    def payload(self, keyword: str, *extra: str) -> list[dict[str, Any]]:
+        code, out, err = run_cli("search", keyword, "--no-pull", "--json", *extra)
+        self.assertEqual(code, 0, err)
+        return json.loads(out)
+
+    def test_matches_span_every_active_catalog(self) -> None:
+        found = {(i["catalog"], i["name"]) for i in self.payload("retro")}
+        self.assertEqual(found, {("personal", "session-retro"), ("shared", "session-retro")})
+
+    def test_a_personal_only_match_is_found(self) -> None:
+        self.assertEqual([i["catalog"] for i in self.payload("scratch")], ["personal"])
+
+    def test_json_carries_catalog_and_shadowed_by(self) -> None:
+        by_catalog = {i["catalog"]: i for i in self.payload("retro")}
+        self.assertIsNone(by_catalog["personal"]["shadowed_by"])
+        self.assertEqual(by_catalog["shared"]["shadowed_by"], "personal")
+
+    def test_results_are_labelled_with_their_catalog(self) -> None:
+        code, out, err = run_cli("search", "retro", "--no-pull")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, """\
+Results for "retro":
+
+  [skill] session-retro  personal  My iterated copy of session-retro
+  [skill] session-retro  shared    Distill a finished session into durable style learnings
+
+Run `library use <name>` to install one.
+""")
+
+    def test_the_winning_copy_is_listed_first(self) -> None:
+        # Same name from two catalogs: precedence order survives the sort, so the copy
+        # `use` would install is the one the user reads first.
+        code, out, _ = run_cli("search", "retro", "--no-pull")
+        self.assertLess(out.index("personal"), out.index("shared"))
+
+    def test_the_restriction_narrows_the_search(self) -> None:
+        self.assertEqual([i["catalog"] for i in self.payload("retro", "--catalog", "shared")],
+                         ["shared"])
+        self.assertEqual(self.payload("scratch", "--catalog", "shared"), [])
+
+    def test_a_miss_reads_the_same_as_it_always_did(self) -> None:
+        code, out, _ = run_cli("search", "zzz", "--no-pull")
+        self.assertEqual((code, out), (0, GOLDEN_SEARCH_MISS))
 
 
 if __name__ == "__main__":
