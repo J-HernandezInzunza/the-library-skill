@@ -1720,9 +1720,17 @@ def cmd_sync(args: argparse.Namespace) -> int:
     staleness_warnings(cfg, pull_errors, syncing=True)
     entries = resolved_entries(cfg, args)
     dirs = cfg.dirs
+    multi = multi_catalog(cfg)
 
+    # Each name is scanned once, against the copy resolution would pick. A shadowed
+    # entry is not what `use` installs, so refreshing it too would quietly replace the
+    # winner's files with the loser's.
     installed: list[tuple[Entry, str]] = []
+    seen: set[str] = set()
     for e in entries:
+        if e.name in seen:
+            continue
+        seen.add(e.name)
         scopes = installed_scopes(dirs, e)
         if scopes:
             installed.append((e, scopes[0]))
@@ -1736,12 +1744,15 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
     synced, failed = [], []
     for e, scope in installed:
+        # Dependencies come from the item's own catalog, as in `use` (D9).
         try:
-            results = [_install_one(dirs, dep, scope, None) for dep in resolve_deps(entries, e)]
-            synced.append({"type": e.type, "name": e.name, "scope": scope,
-                           "changes": results[-1]["changes"]})
+            results = [_install_one(dirs, dep, scope, None)
+                       for dep in resolve_deps(cfg.entries_of(e.catalog), e)]
+            synced.append({"type": e.type, "name": e.name, "catalog": e.catalog,
+                           "scope": scope, "changes": results[-1]["changes"]})
         except LibraryError as ex:
-            failed.append({"type": e.type, "name": e.name, "reason": str(ex)})
+            failed.append({"type": e.type, "name": e.name, "catalog": e.catalog,
+                           "reason": str(ex)})
 
     if args.json:
         status = "PARTIAL" if failed else "OK"
@@ -1754,11 +1765,13 @@ def cmd_sync(args: argparse.Namespace) -> int:
         summary = _summarize_changes(ch)
         if summary != "no changes":
             changed_count += 1
-        print(f"  refreshed [{r['type']}] {r['name']} ({r['scope']}) · {summary}")
+        origin = f" (from {r['catalog']})" if multi else ""
+        print(f"  refreshed [{r['type']}] {r['name']} ({r['scope']}) · {summary}{origin}")
         for line in _change_detail_lines(ch):
             print(line)
     for r in failed:
-        print(f"  FAILED    [{r['type']}] {r['name']}: {r['reason']}")
+        origin = f" (from {r['catalog']})" if multi else ""
+        print(f"  FAILED    [{r['type']}] {r['name']}{origin}: {r['reason']}")
     print(f"\nSynced {len(synced)} · {changed_count} changed · failed {len(failed)}")
     return 0 if not failed else 1
 

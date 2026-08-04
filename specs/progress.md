@@ -9,7 +9,7 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 
 ## Status
 
-14 of 37 tasks landed. Phases 0–4 complete; Phase 5 in progress.
+18 of 37 tasks landed. Phases 0–5 complete; Phase 6 is next.
 
 | Task | Status | Commit |
 | ---- | ------ | ------ |
@@ -28,13 +28,20 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 | T4.1 install dirs move to the tool | done | `10d297d` |
 | T4.2 `catalog migrate` | done | `ca900e0` |
 | T5.1 `--catalog` + shadow helper | done | `41e40c0` |
-| T5.2–T5.5 reads go multi-catalog | todo | |
+| T5.2 `list` provenance + shadowing | done | `f084b2c` |
+| T5.3 `search` across catalogs | done | `11f236a` |
+| T5.4 `use` across catalogs, deps within one | done | `cb58541` |
+| T5.5 `sync` across catalogs | done | |
 | T6.1–T6.7 writes target a catalog | todo | |
 | T7.1–T7.3 catalog management commands | todo | |
 | T8.1–T8.2 doctor | todo | |
 | T9.1–T9.6 agent layer + docs | todo | |
 
-Off-plan commits: `c42cf29` (roadmap entry for the text-splice asymmetries found in T1.2).
+A task's own hash lands with the *next* commit — a commit cannot contain its own id.
+
+Off-plan commits: `c42cf29` (roadmap entry for the text-splice asymmetries found in T1.2),
+`9ba420d` (this ledger), `688643f` (the R2.4 / golden-baseline spec amendments behind
+deviation 10a), `b2e8746` (made `kickoff.md` resume from this ledger).
 
 **Open item resolved.** D8 confirmed as planned: `catalog add` writes `protected: false`
 explicitly for a new remote catalog, `--protected` opts into the PR gate. Decided in T7.2.
@@ -90,6 +97,19 @@ Each is a place the code does something tasks.md or design.md doesn't say, with 
     A hand-written multi-catalog config would resolve against the named catalog and still
     write to the single remote. Not reachable via any command (`catalog add` lands in
     T7.2, after T6.3).
+13. **Per-catalog output is gated on registered count, not active count.** `multi_catalog`
+    is `len(cfg.catalogs) > 1`, so it stays true when the second catalog was skipped.
+    Gating on `len(cfg.active) > 1` would hide exactly what R9.3 requires reporting: a
+    two-catalog machine whose personal catalog failed to load would print single-catalog
+    output and never mention the skip.
+14. **`sync` deduplicates by name before scanning.** T5.5's "scan installed items once"
+    is load-bearing beyond efficiency: the merged list carries both a winner and its
+    shadowed twin, and refreshing both would leave whichever ran last on disk — silently
+    replacing the winner's files with the loser's. Precedence decides, as in `use`.
+15. **`sync` resolves dependencies within each item's own catalog.** T5.5's Do list
+    doesn't mention dependencies, but it refreshes them alongside each item, so D9 and
+    R10.4 apply here for the same reason they do in `use`. A `requires` ref naming
+    another catalog's entry warns as dangling rather than installing across catalogs.
 
 ## Corrections the specs need
 

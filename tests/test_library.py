@@ -3067,5 +3067,178 @@ library:
         self.assertEqual((payload["status"], payload["candidates"]), ("NOT_FOUND", []))
 
 
+class TestSyncAcrossCatalogs(unittest.TestCase):
+    """R10.7–R10.9, R5.4–R5.6 — sync spans catalogs and reports where each item came from."""
+
+    maxDiff = None
+
+    SOURCES = ("own-dep", "needs-own", "needs-shared", "session-retro-personal",
+               "session-retro-shared", "shared-item", "shared-only")
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in self.SOURCES:
+            d = self.src / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"# {name}\n")
+
+        self.personal = f"""\
+library:
+  skills:
+    - name: needs-own
+      description: Needs a dep from its own catalog
+      source: {self.src}/needs-own/SKILL.md
+      requires: ["skill:own-dep"]
+    - name: needs-shared
+      description: Needs a dep that lives only in the shared catalog
+      source: {self.src}/needs-shared/SKILL.md
+      requires: ["skill:shared-only"]
+    - name: own-dep
+      description: Dependency living in the personal catalog
+      source: {self.src}/own-dep/SKILL.md
+    - name: session-retro
+      description: My iterated copy of session-retro
+      source: {self.src}/session-retro-personal/SKILL.md
+  agents: []
+  prompts: []
+"""
+        shared = f"""\
+library:
+  skills:
+    - name: session-retro
+      description: The team copy of session-retro
+      source: {self.src}/session-retro-shared/SKILL.md
+    - name: shared-item
+      description: Only in the shared catalog
+      source: {self.src}/shared-item/SKILL.md
+    - name: shared-only
+      description: A dependency only the shared catalog has
+      source: {self.src}/shared-only/SKILL.md
+  agents: []
+  prompts: []
+"""
+        install_two_catalog_fixture(self.tool, self.personal, shared)
+
+    # ── helpers ─────────────────────────────────────────────────────────
+    def use(self, *argv: str) -> None:
+        code, _, err = run_cli("use", *argv, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+    def sync(self, *argv: str, expect: int = 0) -> dict[str, Any]:
+        code, out, err = run_cli("sync", *argv, "--no-pull", "--json")
+        self.assertEqual(code, expect, err)
+        self.stderr = err
+        return json.loads(out)
+
+    def owners(self, payload: dict[str, Any], key: str = "synced") -> list[tuple[str, str]]:
+        return sorted((r["name"], r["catalog"]) for r in payload[key])
+
+    def installed_dir(self, name: str) -> Path:
+        return self.tool.home / ".claude/skills" / name
+
+    # ── tests ───────────────────────────────────────────────────────────
+    def test_each_item_is_refreshed_from_its_own_catalog(self) -> None:
+        self.use("own-dep")
+        self.use("shared-item")
+        self.assertEqual(self.owners(self.sync()),
+                         [("own-dep", "personal"), ("shared-item", "shared")])
+
+    def test_a_shadowed_name_is_refreshed_once_from_the_winner(self) -> None:
+        # Both catalogs carry session-retro. Scanning both would refresh the name twice
+        # and leave whichever ran last on disk — precedence has to decide, as in `use`.
+        self.use("session-retro")
+        payload = self.sync()
+        self.assertEqual(self.owners(payload), [("session-retro", "personal")])
+        self.assertEqual((self.installed_dir("session-retro") / "SKILL.md").read_text(),
+                         "# session-retro-personal\n")
+
+    def test_the_restriction_scopes_the_run(self) -> None:
+        self.use("own-dep")
+        self.use("shared-item")
+        self.assertEqual(self.owners(self.sync("--catalog", "shared")),
+                         [("shared-item", "shared")])
+        self.assertEqual(self.owners(self.sync("--catalog", "personal")),
+                         [("own-dep", "personal")])
+
+    def test_the_restriction_refreshes_the_shadowed_copy_instead(self) -> None:
+        # Restricting narrows the resolution universe, so within `shared` its own
+        # session-retro wins and that is the copy that lands on disk.
+        self.use("session-retro")
+        self.assertEqual(self.owners(self.sync("--catalog", "shared")),
+                         [("session-retro", "shared")])
+        self.assertEqual((self.installed_dir("session-retro") / "SKILL.md").read_text(),
+                         "# session-retro-shared\n")
+
+    def test_a_per_item_failure_is_partial_at_exit_1(self) -> None:
+        self.use("own-dep")
+        self.use("shared-item")
+        shutil.rmtree(self.src / "shared-item")
+        payload = self.sync(expect=1)
+        self.assertEqual(payload["status"], "PARTIAL")
+        self.assertEqual(self.owners(payload), [("own-dep", "personal")])
+        self.assertEqual(self.owners(payload, "failed"), [("shared-item", "shared")])
+        self.assertIn("local source not found", payload["failed"][0]["reason"])
+
+    def test_dependencies_are_refreshed_from_the_items_own_catalog(self) -> None:
+        # D9 again: needs-shared requires an entry only the shared catalog has, so the
+        # ref is dangling at sync time exactly as it is at install time.
+        self.use("needs-shared")
+        payload = self.sync()
+        self.assertEqual(self.owners(payload), [("needs-shared", "personal")])
+        self.assertIn("dependency skill:shared-only not found in catalog", self.stderr)
+        self.assertFalse(self.installed_dir("shared-only").exists())
+
+    def test_a_dependency_in_the_same_catalog_is_refreshed_with_it(self) -> None:
+        self.use("needs-own")
+        self.sync()
+        self.assertTrue((self.installed_dir("own-dep") / "SKILL.md").is_file())
+
+    def test_the_human_report_names_the_catalog(self) -> None:
+        self.use("own-dep")
+        code, out, _ = run_cli("sync", "--no-pull")
+        self.assertEqual(code, 0)
+        self.assertIn("refreshed [skill] own-dep (global)", out)
+        self.assertIn("(from personal)", out)
+
+    def test_the_human_report_names_the_catalog_of_a_failure_too(self) -> None:
+        self.use("shared-item")
+        shutil.rmtree(self.src / "shared-item")
+        code, out, _ = run_cli("sync", "--no-pull")
+        self.assertEqual(code, 1)
+        self.assertIn("FAILED    [skill] shared-item (from shared):", out)
+
+    def test_one_catalog_keeps_the_provenance_out_of_human_output(self) -> None:
+        # R2.3: the catalog is only worth naming once there is more than one.
+        self.use("own-dep")
+        self.tool.write_config({"catalogs": [{"id": "personal",
+                                              "path": str(self.tool.root / "personal/library.yaml")}],
+                                "autopush": False})
+        code, out, _ = run_cli("sync", "--no-pull")
+        self.assertEqual(code, 0)
+        self.assertIn("refreshed [skill] own-dep (global)", out)
+        self.assertNotIn("(from ", out)
+
+    def test_a_local_only_config_attempts_no_pull(self) -> None:
+        # R5.7 — and note this runs without --no-pull, so a pull would be attempted
+        # if anything about the config looked remote.
+        self.use("own-dep")
+        self.tool.write_config({"catalogs": [{"id": "personal",
+                                              "path": str(self.tool.root / "personal/library.yaml")}],
+                                "autopush": False})
+        pulled: list[str] = []
+        with patch.object(library, "pull_catalog", lambda cat, quiet=True: pulled.append(cat.id)):
+            code, out, err = run_cli("sync", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(pulled, [])
+        self.assertEqual([r["name"] for r in json.loads(out)["synced"]], ["own-dep"])
+
+    def test_nothing_installed_is_still_a_clean_exit(self) -> None:
+        payload = self.sync()
+        self.assertEqual((payload["status"], payload["synced"], payload["failed"]),
+                         ("OK", [], []))
+
+
 if __name__ == "__main__":
     unittest.main()
