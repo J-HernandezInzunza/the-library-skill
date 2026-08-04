@@ -336,6 +336,67 @@ def _hydrate_one(cat: Catalog) -> None:
     cat.data = data
 
 
+_CONFIG_HEADER = """\
+# The Library — per-device config (gitignored; never commit this).
+#
+# Machine-owned: `library catalog …` rewrites this file, so hand-added comments are
+# not preserved. See cookbook/catalog.md.
+#
+# catalogs: precedence order, highest first — the first catalog defining a name wins.
+#   local  = id + path (a library.yaml file, or a directory containing one)
+#   remote = id + repo + yaml_path + branch (protected: true -> writes open a PR)
+"""
+
+
+def write_config(data: dict[str, Any]) -> Config:
+    """Write config.local.yaml from *data*, then re-read and re-validate it.
+
+    Dumped rather than text-spliced because this file is machine-owned — unlike a
+    catalog, which is hand-authored and PR-reviewed and so keeps its style-preserving
+    splice. Validating before the write means a rejected config leaves the existing
+    file untouched.
+    """
+    problems = Config.problems(data)
+    if problems:
+        die(f"refusing to write an invalid config: {problems[0]}")
+    LOCAL_CONFIG_PATH.write_text(_CONFIG_HEADER + "\n" + yaml.safe_dump(data, sort_keys=False))
+    return load_config()  # re-read: success is only reported for a config that loads
+
+
+def migrated_config(data: dict[str, Any], catalog_data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Legacy `catalog:` config -> canonical `catalogs:` config, plus what changed.
+
+    Lifts the shared catalog's `default_dirs` into the config override, so install
+    locations do not move now that a catalog's own block is ignored. Unrecognized
+    top-level keys are carried over rather than dropped.
+    """
+    legacy = data.get("catalog") or {}
+    notes = [f"catalog: -> catalogs: with one entry (id '{SHARED_ID}', protected: true)"]
+    entry = {
+        "id": SHARED_ID,
+        "repo": str(legacy.get("repo", "")),
+        "yaml_path": str(legacy.get("yaml_path", "")),
+        "branch": str(legacy.get("branch", "")),
+        "protected": True,
+    }
+    new: dict[str, Any] = {"catalogs": [entry], "autopush": bool(data.get("autopush", False))}
+    for key, value in data.items():
+        if key not in ("catalog", "catalogs", "autopush", "default_dirs"):
+            new[key] = value
+
+    override = data.get("default_dirs")
+    lifted = {section: [{scope: path} for scope, path in scopes.items()]
+              for section, scopes in default_dirs(catalog_data).items() if scopes}
+    if override:
+        new["default_dirs"] = override
+        notes.append("kept the existing default_dirs override in config.local.yaml")
+    elif lifted:
+        new["default_dirs"] = lifted
+        notes.append("lifted the catalog's default_dirs into config.local.yaml, so install "
+                     "locations do not change")
+    return new, notes
+
+
 def load_config() -> Config:
     """Load, validate, and hydrate the per-device config, or die with a setup hint.
 
@@ -2331,6 +2392,64 @@ def cmd_link(args: argparse.Namespace) -> int:
     return report(action)
 
 
+def cmd_catalog_migrate(args: argparse.Namespace) -> int:
+    """Rewrite a legacy `catalog:` config into the canonical `catalogs:` list.
+
+    A convenience, never a prerequisite: read-time normalization keeps the legacy
+    shape working forever.
+    """
+    if not LOCAL_CONFIG_PATH.exists():
+        die(f"no local config at {LOCAL_CONFIG_PATH}\n"
+            "  run `library init --repo <catalog-repo-url>` first")
+    with LOCAL_CONFIG_PATH.open() as fh:
+        raw = yaml.safe_load(fh) or {}
+    if not isinstance(raw, dict):
+        die(f"{LOCAL_CONFIG_PATH} is malformed (expected a YAML mapping)")
+
+    problems = Config.problems(raw)
+    if problems:
+        die(f"cannot migrate {LOCAL_CONFIG_PATH}: {problems[0]}\n"
+            "  fix the config by hand; nothing was written")
+
+    if "catalog" not in raw:
+        if args.json:
+            print(json.dumps({"status": "OK", "changed": False,
+                              "reason": "config is already in the catalogs form",
+                              "changes": []}, indent=2))
+        else:
+            print("Already canonical — nothing to migrate.")
+        return 0
+
+    cfg = load_config()
+    shared = cfg.catalogs[0]
+    if shared.skipped and not args.json:
+        warn(f"catalog '{shared.id}' could not be read ({shared.skipped}); "
+             "any default_dirs block in it cannot be lifted")
+    new, notes = migrated_config(raw, shared.data)
+
+    if args.dry_run:
+        rendered = _CONFIG_HEADER + "\n" + yaml.safe_dump(new, sort_keys=False)
+        if args.json:
+            print(json.dumps({"status": "DRY_RUN", "changed": True,
+                              "changes": notes, "config": rendered}, indent=2))
+        else:
+            print("[dry-run] would write:\n")
+            print(rendered, end="")
+            for note in notes:
+                print(f"  - {note}")
+        return 0
+
+    write_config(new)
+    if args.json:
+        print(json.dumps({"status": "OK", "changed": True, "changes": notes,
+                          "path": str(LOCAL_CONFIG_PATH)}, indent=2))
+        return 0
+    print(f"Migrated {LOCAL_CONFIG_PATH}:")
+    for note in notes:
+        print(f"  - {note}")
+    return 0
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     errors: list[tuple[str | None, str]] = []
     warns: list[tuple[str | None, str]] = []
@@ -2522,16 +2641,21 @@ _LOCAL_CONFIG_TEMPLATE = """\
 # The Library — per-device config (gitignored; never commit this).
 # Points this machine's tool at the shared catalog repo. See cookbook/init.md.
 
-catalog:
-  repo: {repo}            # clone URL of the catalog repo (e.g. agent-library)
-  yaml_path: {yaml_path}  # path to the catalog file within that repo
-  branch: {branch}        # protected branch that add/remove/push open PRs against
+# catalogs: precedence order, highest first. Register a personal catalog ahead of the
+# shared one to shadow it locally — see cookbook/catalog.md.
+catalogs:
+  - id: shared              # the team catalog
+    repo: {repo}            # clone URL of the catalog repo (e.g. agent-library)
+    yaml_path: {yaml_path}  # path to the catalog file within that repo
+    branch: {branch}        # protected branch that add/remove/push open PRs against
+    protected: true         # writes go through a PR, never a direct push
 
 # If true, add/remove/push also run `gh pr create` after pushing the PR branch.
 # The protected branch is never pushed to directly regardless of this setting.
 autopush: {autopush}
 
-# Install locations come from the catalog's default_dirs:
+# Install locations are owned by the tool (a default_dirs block inside a catalog is
+# ignored). Override them for this machine with a default_dirs block here:
 #   `use <name>`           -> home ~/.claude/ (global scope — the default)
 #   `use <name> --project` -> project-local .claude/ anchored to your CWD
 #   `use <name> --dir X`   -> custom path
@@ -2737,6 +2861,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="show what the PR diff would be without pushing (GitHub sources only)")
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=cmd_push)
+
+    sp = sub.add_parser("catalog", help="manage the catalog registry in config.local.yaml")
+    cat_actions = sp.add_subparsers(dest="action", required=True, metavar="<action>")
+    mig = cat_actions.add_parser("migrate",
+                                 help="rewrite a legacy catalog: config into the catalogs: list")
+    mig.add_argument("--dry-run", action="store_true", help="print the result without writing")
+    mig.add_argument("--json", action="store_true", help="machine-readable output")
+    mig.set_defaults(func=cmd_catalog_migrate)
 
     sp = sub.add_parser("doctor", help="validate config + catalog integrity (--deep checks source liveness)")
     sp.add_argument("--deep", action="store_true", help="also verify each source repo/branch is reachable")

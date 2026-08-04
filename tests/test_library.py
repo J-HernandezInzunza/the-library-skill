@@ -2365,5 +2365,204 @@ class TestConfigLoadFailures(unittest.TestCase):
         self.assertTrue(all(str(self.tool.config_path) in m for m in messages), messages)
 
 
+# --------------------------------------------------------------------------- #
+# catalog migrate (R3, R15.1, R15.10)
+# --------------------------------------------------------------------------- #
+
+class TestCatalogMigrate(unittest.TestCase):
+    maxDiff = None
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+
+    def legacy_setup(self, catalog_text: str = GOLDEN_CATALOG, **extra: Any) -> None:
+        """A legacy-shape config plus a populated clone, as an existing install has."""
+        install_golden_fixture(self.tool, catalog_text)
+        if extra:
+            data = yaml.safe_load(self.tool.config_path.read_text())
+            data.update(extra)
+            self.tool.write_config(data)
+
+    def migrate(self, *extra: str) -> dict[str, Any]:
+        code, out, err = run_cli("catalog", "migrate", "--json", *extra)
+        self.assertEqual(code, 0, err)
+        return json.loads(out)
+
+    def written(self) -> dict[str, Any]:
+        return yaml.safe_load(self.tool.config_path.read_text())
+
+    def test_legacy_becomes_canonical_preserving_every_field(self) -> None:
+        self.legacy_setup()
+        before = yaml.safe_load(self.tool.config_path.read_text())["catalog"]
+        payload = self.migrate()
+        self.assertTrue(payload["changed"])
+        data = self.written()
+        self.assertNotIn("catalog", data)
+        self.assertEqual(data["catalogs"], [{
+            "id": "shared",
+            "repo": before["repo"],
+            "yaml_path": before["yaml_path"],
+            "branch": before["branch"],
+            "protected": True,
+        }])
+
+    def test_autopush_is_preserved(self) -> None:
+        self.legacy_setup(autopush=True)
+        self.migrate()
+        self.assertIs(self.written()["autopush"], True)
+
+    def test_unrecognized_top_level_keys_are_carried_over(self) -> None:
+        self.legacy_setup(default_add_catalog="shared")
+        self.migrate()
+        self.assertEqual(self.written()["default_add_catalog"], "shared")
+
+    def test_the_catalogs_default_dirs_is_lifted_and_reported(self) -> None:
+        # R3.4: the block stops being honored, so migration copies it into the config
+        # to keep install locations exactly where they are.
+        self.legacy_setup()
+        payload = self.migrate()
+        self.assertEqual(self.written()["default_dirs"], {
+            "skills": [{"project": ".claude/skills/"}, {"global": "~/.claude/skills/"}],
+            "agents": [{"project": ".claude/agents/"}, {"global": "~/.claude/agents/"}],
+            "prompts": [{"project": ".claude/commands/"}, {"global": "~/.claude/commands/"}],
+        })
+        self.assertTrue(any("lifted the catalog's default_dirs" in c for c in payload["changes"]))
+
+    def test_a_lifted_legacy_scope_key_is_normalized_to_project(self) -> None:
+        self.legacy_setup(GOLDEN_CATALOG.replace("- project:", "- default:"))
+        self.migrate()
+        self.assertEqual(self.written()["default_dirs"]["skills"][0], {"project": ".claude/skills/"})
+
+    def test_migration_restores_a_catalogs_custom_install_locations(self) -> None:
+        # A team whose catalog set non-standard paths: ignoring the block moved their
+        # installs to the built-in defaults, and lifting it puts them back (R2.9).
+        self.legacy_setup(GOLDEN_CATALOG.replace(".claude/skills/", "custom/skills/"))
+        unmigrated = library.load_config().dirs["skills"]["project"]
+        self.assertEqual(unmigrated, ".claude/skills/")  # the catalog's block ignored
+        self.migrate()
+        self.assertEqual(library.load_config().dirs["skills"]["project"], "custom/skills/")
+
+    def test_a_catalog_without_default_dirs_lifts_nothing(self) -> None:
+        self.legacy_setup(GOLDEN_CATALOG_NO_DIRS)
+        payload = self.migrate()
+        self.assertNotIn("default_dirs", self.written())
+        self.assertFalse(any("lifted" in c for c in payload["changes"]))
+
+    def test_an_existing_config_override_is_kept_over_the_catalogs_block(self) -> None:
+        self.legacy_setup(default_dirs={"skills": [{"global": "~/mine/skills/"}]})
+        payload = self.migrate()
+        self.assertEqual(self.written()["default_dirs"],
+                         {"skills": [{"global": "~/mine/skills/"}]})
+        self.assertTrue(any("kept the existing" in c for c in payload["changes"]))
+
+    def test_the_result_loads_and_behaves_identically(self) -> None:
+        self.legacy_setup()
+        before = library.load_config()
+        self.migrate()
+        after = library.load_config()
+        self.assertFalse(after.legacy_shape)
+        self.assertEqual([c.id for c in after.catalogs], [c.id for c in before.catalogs])
+        self.assertEqual(after.catalogs[0].write_mode, "pr")
+        self.assertEqual(after.catalogs[0].clone_dir, before.catalogs[0].clone_dir)
+        self.assertEqual([e.name for e in after.entries()], [e.name for e in before.entries()])
+
+    def test_a_second_run_is_a_no_op(self) -> None:
+        self.legacy_setup()
+        self.migrate()
+        after_first = self.tool.config_path.read_text()
+        payload = self.migrate()
+        self.assertFalse(payload["changed"])
+        self.assertEqual(self.tool.config_path.read_text(), after_first)
+
+    def test_dry_run_writes_nothing(self) -> None:
+        self.legacy_setup()
+        before = self.tool.config_path.read_text()
+        payload = self.migrate("--dry-run")
+        self.assertEqual(payload["status"], "DRY_RUN")
+        self.assertIn("catalogs:", payload["config"])
+        self.assertEqual(self.tool.config_path.read_text(), before)
+
+    def test_both_forms_refuses_and_leaves_the_file_untouched(self) -> None:
+        install_golden_fixture(self.tool, GOLDEN_CATALOG)
+        data = yaml.safe_load(self.tool.config_path.read_text())
+        data["catalogs"] = [{"id": "extra", "path": "/srv/x.yaml"}]
+        self.tool.write_config(data)
+        before = self.tool.config_path.read_text()
+        code, _, err = run_cli("catalog", "migrate", "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("cannot migrate", err)
+        self.assertEqual(self.tool.config_path.read_text(), before)
+
+    def test_a_missing_config_is_a_clean_error(self) -> None:
+        code, _, err = run_cli("catalog", "migrate")
+        self.assertEqual(code, 1)
+        self.assertIn("no local config", err)
+
+    def test_the_regenerated_header_is_present(self) -> None:
+        self.legacy_setup()
+        self.migrate()
+        self.assertTrue(self.tool.config_path.read_text().startswith("# The Library"))
+
+    def test_migrate_clears_doctors_legacy_shape_state(self) -> None:
+        self.legacy_setup()
+        self.assertTrue(library.load_config().legacy_shape)
+        self.migrate()
+        self.assertFalse(library.load_config().legacy_shape)
+
+
+class TestWriteConfig(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+
+    def test_writes_validates_and_returns_the_reloaded_config(self) -> None:
+        path = self.tool.root / "personal.yaml"
+        path.write_text("library:\n  skills: []\n")
+        cfg = library.write_config({"catalogs": [{"id": "personal", "path": str(path)}]})
+        self.assertEqual([c.id for c in cfg.catalogs], ["personal"])
+        self.assertTrue(self.tool.config_path.read_text().startswith("# The Library"))
+
+    def test_refuses_an_invalid_config_without_touching_the_file(self) -> None:
+        self.tool.write_config(LEGACY_CONFIG)
+        before = self.tool.config_path.read_text()
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit):
+                library.write_config({"catalogs": [{"id": "p", "path": "relative.yaml"}]})
+        self.assertIn("refusing to write an invalid config", err.getvalue())
+        self.assertEqual(self.tool.config_path.read_text(), before)
+
+
+class TestInitEmitsCanonicalConfig(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+
+    def test_init_writes_the_catalogs_form(self) -> None:
+        repo = TempGitRepo(self.tool.root, name="upstream")
+        repo.commit("library.yaml", GOLDEN_CATALOG_NO_DIRS)
+        repo.push()
+        code, _, err = run_cli("init", "--repo", str(repo.remote), "--branch", "main")
+        self.assertEqual(code, 0, err)
+        data = yaml.safe_load(self.tool.config_path.read_text())
+        self.assertNotIn("catalog", data)
+        self.assertEqual(data["catalogs"], [{
+            "id": "shared", "repo": str(repo.remote),
+            "yaml_path": "library.yaml", "branch": "main", "protected": True,
+        }])
+        cfg = library.load_config()
+        self.assertFalse(cfg.legacy_shape)
+        self.assertEqual(cfg.catalogs[0].write_mode, "pr")
+
+    def test_a_fresh_init_needs_no_migration(self) -> None:
+        repo = TempGitRepo(self.tool.root, name="upstream")
+        repo.commit("library.yaml", GOLDEN_CATALOG_NO_DIRS)
+        repo.push()
+        run_cli("init", "--repo", str(repo.remote), "--branch", "main")
+        code, out, _ = run_cli("catalog", "migrate", "--json")
+        self.assertEqual(code, 0)
+        self.assertFalse(json.loads(out)["changed"])
+
+
 if __name__ == "__main__":
     unittest.main()

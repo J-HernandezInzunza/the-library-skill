@@ -237,6 +237,7 @@ Two ways to drive it, same result:
 | Remove an entry | "remove deploy from the library" | `./library remove deploy` |
 | Sync everything | "sync all my installed library skills" | `./library sync` |
 | Health check | "check the library catalog for problems" | `./library doctor` |
+| Manage catalogs | "migrate my library config to the new format" | `./library catalog migrate` |
 | Update the tool | "update the library tool" | `./library self-update` |
 
 **CLI flags:** `--json` (machine-readable) · `--no-pull` (skip catalog refresh) ·

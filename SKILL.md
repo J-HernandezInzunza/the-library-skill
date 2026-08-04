@@ -70,7 +70,8 @@ system `python3` — so if system `python3` already has PyYAML, this step can be
 | `/library list`             | Show full catalog with install status                                                 |
 | `/library sync`             | Re-pull all installed items from source                                               |
 | `/library search <keyword>` | Find entries by keyword                                                               |
-| `/library doctor`           | Validate config + catalog integrity (`--deep` checks sources)                         |
+| `/library catalog <action>` | Manage the catalog registry (`migrate` rewrites a legacy config)                      |
+| `/library doctor`           | Validate config + catalog integrity (`--deep` checks sources)                          |
 
 ## Cookbook
 
