@@ -613,6 +613,26 @@ def new_entry_shadow_warnings(cfg: Config, cat: Catalog, name: str) -> list[str]
     return out
 
 
+def push_source_warning(cfg: Config, entry: Entry) -> str:
+    """'' unless the installed copy could have come from more than one catalog (R11.2).
+
+    Nothing on disk records which catalog an installed item came from, so for a shadowed
+    name the source being pushed to is an inference from precedence. Both candidates are
+    named, because the cost of guessing wrong is an edit landing in someone else's repo.
+    """
+    # Every *other* catalog holding the name, not `cfg.shadows()`: that slices by
+    # precedence, so under `--catalog` it would report the resolved entry as its own
+    # alternative. What matters here is simply "who else defines this name".
+    others = [e for e in cfg.entries()
+              if e.name == entry.name and e.catalog != entry.catalog]
+    if not others:
+        return ""
+    alternatives = "; ".join(f"'{e.catalog}' → {e.source}" for e in others)
+    return (f"'{entry.name}' is defined in more than one catalog and nothing on disk "
+            f"records which copy was installed. Pushing to '{entry.catalog}' → "
+            f"{entry.source} (also defined by {alternatives})")
+
+
 def staleness_warnings(cfg: Config, pull_errors: dict[str, "str | None"], syncing: bool = False) -> None:
     """Warn per remote catalog whose clone is behind its branch."""
     for cat in cfg.remotes:
@@ -2651,6 +2671,12 @@ def cmd_push(args: argparse.Namespace) -> int:
         if not local_path.is_file():
             die(f"local copy not found: {local_path}")
 
+    # The local copy exists and is about to be pushed somewhere — say where, and say so
+    # now if that destination was inferred rather than known.
+    note = push_source_warning(cfg, entry)
+    if note:
+        warn(note)
+
     src = parse_source(entry.source)
     message = args.message or f"library: updated {entry.name}"
 
@@ -2658,7 +2684,8 @@ def cmd_push(args: argparse.Namespace) -> int:
     if src.kind == "local":
         res = _push_local(src, entry, local_path)
         if args.json:
-            print(json.dumps({"status": "OK", "name": entry.name, **res}, indent=2))
+            print(json.dumps({"status": "OK", "name": entry.name,
+                              "catalog": entry.catalog, **res}, indent=2))
             return 0
         if not res.get("changed"):
             print(f"No changes — local copy of {entry.name} matches source.")
@@ -2706,7 +2733,8 @@ def cmd_push(args: argparse.Namespace) -> int:
         )
         if diff_check.returncode == 0:
             if args.json:
-                print(json.dumps({"status": "OK", "name": entry.name, "changed": False}, indent=2))
+                print(json.dumps({"status": "OK", "name": entry.name,
+                                  "catalog": entry.catalog, "changed": False}, indent=2))
             else:
                 print(f"No changes — local copy of {entry.name} matches source.")
             return 0
@@ -2721,7 +2749,7 @@ def cmd_push(args: argparse.Namespace) -> int:
             if args.json:
                 print(json.dumps({
                     "status": "DRY_RUN", "would_change": True, "name": entry.name,
-                    "branch": branch, "diff": diff_proc.stdout,
+                    "catalog": entry.catalog, "branch": branch, "diff": diff_proc.stdout,
                 }, indent=2))
             else:
                 print(f"[dry-run] would open PR: {branch}\n")
@@ -2737,7 +2765,8 @@ def cmd_push(args: argparse.Namespace) -> int:
         )
 
         if args.json:
-            print(json.dumps({"status": "OK", "name": entry.name, "changed": True, **pr_info}, indent=2))
+            print(json.dumps({"status": "OK", "name": entry.name, "catalog": entry.catalog,
+                              "changed": True, **pr_info}, indent=2))
             return 0
 
         if pr_info.get("method") == "gh":
@@ -2750,7 +2779,8 @@ def cmd_push(args: argparse.Namespace) -> int:
 
     except LibraryError as ex:
         if args.json:
-            print(json.dumps({"status": "ERROR", "name": entry.name, "reason": str(ex)}, indent=2))
+            print(json.dumps({"status": "ERROR", "name": entry.name,
+                              "catalog": entry.catalog, "reason": str(ex)}, indent=2))
         else:
             print(f"Failed to push {entry.name}: {ex}")
         return 1

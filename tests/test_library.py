@@ -4051,6 +4051,148 @@ library:
         self.assertFalse(globl.exists())
 
 
+class TestPushUnderShadowing(unittest.TestCase):
+    """R11.1–R11.4 — pushing a shadowed name is a guess, and says so."""
+
+    maxDiff = None
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        # Both catalogs define session-retro, each pointing at its own local source dir,
+        # so a push is observable as "which source file got overwritten" — no clone.
+        self.mine = self.tool.root / "sources" / "mine"
+        self.theirs = self.tool.root / "sources" / "theirs"
+        for d in (self.mine, self.theirs):
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text("# upstream\n")
+        personal = f"""\
+library:
+  skills:
+    - name: session-retro
+      description: My iterated copy
+      source: {self.mine / "SKILL.md"}
+    - name: only-mine
+      description: Not shadowed at all
+      source: {self.mine / "SKILL.md"}
+  agents: []
+  prompts: []
+"""
+        shared = f"""\
+default_dirs:
+  skills:
+    - project: .claude/skills/
+    - global: ~/.claude/skills/
+
+library:
+  skills:
+    - name: session-retro
+      description: The team copy
+      source: {self.theirs / "SKILL.md"}
+  agents: []
+  prompts: []
+"""
+        install_two_catalog_fixture(self.tool, personal, shared)
+
+    def install(self, name: str, scope: str, marker: str) -> Path:
+        root = self.tool.project if scope == "project" else self.tool.home
+        target = root / ".claude" / "skills" / name
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "SKILL.md").write_text(marker)
+        return target
+
+    def push(self, name: str, *extra: str, expect: int = 0) -> tuple[dict[str, Any], str]:
+        code, out, err = run_cli("push", name, *extra, "--no-pull", "--json")
+        self.assertEqual(code, expect, err or out)
+        return (json.loads(out) if out else {}), err
+
+    # ── the ambiguity warning ───────────────────────────────────────────
+    def test_a_shadowed_name_warns_naming_both_candidate_sources(self) -> None:
+        self.install("session-retro", "global", "# my edits\n")
+        payload, err = self.push("session-retro")
+        self.assertEqual(payload["catalog"], "personal")
+        self.assertIn("nothing on disk records which copy was installed", err)
+        self.assertIn(str(self.mine / "SKILL.md"), err)   # where it is going
+        self.assertIn(str(self.theirs / "SKILL.md"), err)  # the other candidate
+        self.assertIn("'shared' →", err)
+
+    def test_it_pushes_the_precedence_winner_despite_the_ambiguity(self) -> None:
+        self.install("session-retro", "global", "# my edits\n")
+        self.push("session-retro")
+        self.assertEqual((self.mine / "SKILL.md").read_text(), "# my edits\n")
+        self.assertEqual((self.theirs / "SKILL.md").read_text(), "# upstream\n")
+
+    def test_the_flag_redirects_the_push_to_the_other_catalogs_source(self) -> None:
+        self.install("session-retro", "global", "# my edits\n")
+        payload, err = self.push("session-retro", "--catalog", "shared")
+        self.assertEqual(payload["catalog"], "shared")
+        self.assertEqual((self.theirs / "SKILL.md").read_text(), "# my edits\n")
+        self.assertEqual((self.mine / "SKILL.md").read_text(), "# upstream\n")
+        # The flag settles the destination but not the provenance of the installed copy,
+        # which is the risky half — so the warning still fires, naming personal.
+        self.assertIn("Pushing to 'shared'", err)
+        self.assertIn(f"also defined by 'personal' → {self.mine / 'SKILL.md'}", err)
+
+    def test_an_unshadowed_name_pushes_quietly(self) -> None:
+        self.install("only-mine", "global", "# my edits\n")
+        payload, err = self.push("only-mine")
+        self.assertEqual(payload["catalog"], "personal")
+        self.assertNotIn("nothing on disk records", err)
+
+    def test_the_warning_lists_every_other_catalog_holding_the_name(self) -> None:
+        cfg = library.Config(catalogs=[
+            local_catalog("personal"), local_catalog("work"), local_catalog("archive")])
+        for cat, src in ((cfg.catalogs[0], "/a"), (cfg.catalogs[1], "/b"),
+                         (cfg.catalogs[2], "/c")):
+            cat.data = {"library": {"skills": [
+                {"name": "shared-name", "description": "d", "source": src}]}}
+        entry = cfg.resolve("shared-name")
+        note = library.push_source_warning(cfg, entry)
+        self.assertIn("Pushing to 'personal' → /a", note)
+        self.assertIn("also defined by 'work' → /b; 'archive' → /c", note)
+
+    # ── preserved behaviour ─────────────────────────────────────────────
+    def test_from_still_disambiguates_project_and_global(self) -> None:
+        self.install("session-retro", "project", "# project copy\n")
+        self.install("session-retro", "global", "# global copy\n")
+        payload, _ = self.push("session-retro", "--from", "project")
+        self.assertTrue(payload["changed"])
+        self.assertEqual((self.mine / "SKILL.md").read_text(), "# project copy\n")
+        payload, _ = self.push("session-retro", "--from", "global")
+        self.assertEqual((self.mine / "SKILL.md").read_text(), "# global copy\n")
+
+    def test_two_installs_without_from_still_refuse(self) -> None:
+        self.install("session-retro", "project", "# project copy\n")
+        self.install("session-retro", "global", "# global copy\n")
+        code, _, err = run_cli("push", "session-retro", "--no-pull", "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("pass --from project|global", err)
+
+    def test_an_unchanged_copy_still_short_circuits(self) -> None:
+        self.install("session-retro", "global", "# upstream\n")
+        payload, _ = self.push("session-retro")
+        self.assertFalse(payload["changed"])
+
+    def test_a_local_source_still_overwrites_in_place_with_no_pr(self) -> None:
+        self.install("session-retro", "global", "# my edits\n")
+        payload, _ = self.push("session-retro")
+        self.assertEqual(payload["dest"], str(self.mine))
+        self.assertFalse(payload["pushed"])
+        self.assertNotIn("branch", payload)
+
+    def test_a_missing_local_copy_still_refuses(self) -> None:
+        code, _, err = run_cli("push", "session-retro", "--no-pull", "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("is not installed locally", err)
+
+    def test_nothing_to_push_means_nothing_to_warn_about(self) -> None:
+        # The warning describes a push that is about to happen. Emitting it alongside
+        # "not installed locally" would just be noise on a failed command.
+        code, _, err = run_cli("push", "session-retro", "--no-pull", "--json")
+        self.assertEqual(code, 1)
+        self.assertNotIn("nothing on disk records", err)
+
+
 class TestDerivedAllowLocal(unittest.TestCase):
     """R8.1–R8.5 — a local path is fine for a local catalog, broken for any remote one."""
 

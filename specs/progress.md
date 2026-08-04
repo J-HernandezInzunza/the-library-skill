@@ -9,7 +9,7 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 
 ## Status
 
-24 of 37 tasks landed. Phases 0–5 complete; Phase 6 in progress.
+25 of 37 tasks landed. Phases 0–6 complete; Phase 7 is next.
 
 | Task | Status | Commit |
 | ---- | ------ | ------ |
@@ -37,8 +37,8 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 | T6.3 `add` targets a catalog | done | `2b62fb3` |
 | T6.4 derived `--allow-local` | done | `bf529a4` |
 | T6.5 `update` targets a catalog | done | `93a99dc` |
-| T6.6 `remove` targets a catalog | done | |
-| T6.7 `push` under shadowing | todo | |
+| T6.6 `remove` targets a catalog | done | `6f1b668` |
+| T6.7 `push` under shadowing | done | |
 | T7.1–T7.3 catalog management commands | todo | |
 | T8.1–T8.2 doctor | todo | |
 | T9.1–T9.6 agent layer + docs | todo | |
@@ -186,6 +186,15 @@ Each is a place the code does something tasks.md or design.md doesn't say, with 
     entry-owns-the-destination rule, same `write_target` call for the writability refusal
     only. Deviations 27 and 28 therefore cover it too. `--purge` needed no change:
     effective dirs arrived with T4.1 and the scope names with T2.1, so T6.6 only pins them.
+30. **`push`'s ambiguity warning fires even under `--catalog`, and lists every other
+    catalog holding the name.** `cfg.shadows()` is wrong here: it slices by precedence, so
+    under `--catalog shared` it named shared's own source as shared's alternative. The flag
+    settles the *destination*, not the provenance of the installed copy — which is the
+    risky half, since nothing on disk records where an installed item came from. The
+    warning is emitted after the local copy is located, so a failed `push` doesn't carry it.
+31. **`push` payloads gained `catalog`**, matching every other command's provenance key
+    (R2.4). An agent narrating "pushed your copy back to the team's source" needs to know
+    which catalog's source that was; the human output is unchanged.
 
 ## Corrections the specs need
 
