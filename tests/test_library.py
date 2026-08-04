@@ -2919,5 +2919,153 @@ Run `library use <name>` to install one.
         self.assertEqual((code, out), (0, GOLDEN_SEARCH_MISS))
 
 
+# --------------------------------------------------------------------------- #
+# use across catalogs, dependencies within one (R10.1–R10.6, D9)
+# --------------------------------------------------------------------------- #
+
+class TestUseAcrossCatalogs(unittest.TestCase):
+    maxDiff = None
+
+    SOURCES = ("own-dep", "needs-own", "needs-shared", "session-retro-personal",
+               "loop-a", "loop-b", "session-retro-shared", "shared-only")
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in self.SOURCES:
+            d = self.src / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"# {name}\n")
+
+        personal = f"""\
+library:
+  skills:
+    - name: needs-own
+      description: Needs a dep from its own catalog
+      source: {self.src}/needs-own/SKILL.md
+      requires: ["skill:own-dep"]
+    - name: needs-shared
+      description: Needs a dep that lives only in the shared catalog
+      source: {self.src}/needs-shared/SKILL.md
+      requires: ["skill:shared-only"]
+    - name: own-dep
+      description: Dependency living in the personal catalog
+      source: {self.src}/own-dep/SKILL.md
+    - name: session-retro
+      description: My iterated copy of session-retro
+      source: {self.src}/session-retro-personal/SKILL.md
+  agents: []
+  prompts: []
+"""
+        shared = f"""\
+library:
+  skills:
+    - name: loop-a
+      description: Half of a dependency cycle
+      source: {self.src}/loop-a/SKILL.md
+      requires: ["skill:loop-b"]
+    - name: loop-b
+      description: The other half of the cycle
+      source: {self.src}/loop-b/SKILL.md
+      requires: ["skill:loop-a"]
+    - name: session-retro
+      description: The team copy of session-retro
+      source: {self.src}/session-retro-shared/SKILL.md
+    - name: shared-only
+      description: Only in the shared catalog
+      source: {self.src}/shared-only/SKILL.md
+  agents: []
+  prompts: []
+"""
+        install_two_catalog_fixture(self.tool, personal, shared)
+
+    def use(self, *argv: str) -> dict[str, Any]:
+        code, out, err = run_cli("use", *argv, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        self.stderr = err
+        return json.loads(out)
+
+    def installed_dir(self, name: str) -> Path:
+        return self.tool.home / ".claude/skills" / name
+
+    def test_a_dependency_in_the_same_catalog_installs_first(self) -> None:
+        payload = self.use("needs-own")
+        self.assertEqual([(i["name"], i["catalog"]) for i in payload["installed"]],
+                         [("own-dep", "personal"), ("needs-own", "personal")])
+        self.assertTrue((self.installed_dir("own-dep") / "SKILL.md").is_file())
+
+    def test_a_dependency_only_in_another_catalog_is_dangling(self) -> None:
+        # D9: deps resolve within the entry's own catalog, so this warns exactly as a
+        # typo'd ref would — and nothing is installed from the shared catalog.
+        payload = self.use("needs-shared")
+        self.assertEqual([i["name"] for i in payload["installed"]], ["needs-shared"])
+        self.assertIn("dependency skill:shared-only not found in catalog", self.stderr)
+        self.assertFalse(self.installed_dir("shared-only").exists())
+
+    def test_a_shadowed_target_installs_the_winning_copy(self) -> None:
+        payload = self.use("session-retro")
+        self.assertEqual(payload["installed"][0]["catalog"], "personal")
+        self.assertEqual(payload["shadows"], ["shared"])
+        self.assertEqual((self.installed_dir("session-retro") / "SKILL.md").read_text(),
+                         "# session-retro-personal\n")
+
+    def test_the_restriction_installs_the_shared_copy_instead(self) -> None:
+        payload = self.use("session-retro", "--catalog", "shared")
+        self.assertEqual(payload["installed"][0]["catalog"], "shared")
+        self.assertEqual((self.installed_dir("session-retro") / "SKILL.md").read_text(),
+                         "# session-retro-shared\n")
+
+    def test_the_human_report_names_the_catalog_and_the_shadowing(self) -> None:
+        code, out, _ = run_cli("use", "session-retro", "--no-pull")
+        self.assertEqual(code, 0)
+        self.assertIn("(from personal, shadows shared)", out)
+
+    def test_an_unshadowed_install_names_only_its_catalog(self) -> None:
+        code, out, _ = run_cli("use", "own-dep", "--no-pull")
+        self.assertEqual(code, 0)
+        self.assertIn("(from personal)", out)
+        self.assertNotIn("shadows", out)
+
+    def test_dry_run_names_catalogs_and_the_shadow_note(self) -> None:
+        code, out, _ = run_cli("use", "session-retro", "--no-pull", "--dry-run")
+        self.assertEqual(code, 0)
+        self.assertIn("(personal)", out)
+        self.assertIn("session-retro shadows shared", out)
+        self.assertFalse(self.installed_dir("session-retro").exists())
+
+    def test_dry_run_json_carries_catalogs_and_shadows(self) -> None:
+        code, out, _ = run_cli("use", "session-retro", "--no-pull", "--dry-run", "--json")
+        payload = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["shadows"], ["shared"])
+        self.assertEqual([i["catalog"] for i in payload["would_install"]], ["personal"])
+
+    def test_fuzzy_candidates_are_labelled_with_their_catalog(self) -> None:
+        code, out, _ = run_cli("use", "sessio", "--no-pull", "--json")
+        payload = json.loads(out)
+        self.assertEqual(code, 2)
+        self.assertEqual(payload["status"], "AMBIGUOUS")
+        self.assertEqual([(c["name"], c["catalog"]) for c in payload["candidates"]],
+                         [("session-retro", "personal"), ("session-retro", "shared")])
+
+    def test_candidates_are_labelled_in_human_output_too(self) -> None:
+        code, out, _ = run_cli("use", "sessio", "--no-pull")
+        self.assertEqual(code, 2)
+        self.assertIn("(personal)", out)
+        self.assertIn("(shared)", out)
+
+    def test_a_cycle_inside_one_catalog_still_terminates(self) -> None:
+        payload = self.use("loop-a")
+        self.assertIn("cycle detected", self.stderr)
+        self.assertEqual([i["name"] for i in payload["installed"]], ["loop-b", "loop-a"])
+
+    def test_a_missing_name_is_still_not_found_at_exit_2(self) -> None:
+        code, out, _ = run_cli("use", "zzz-nothing", "--no-pull", "--json")
+        payload = json.loads(out)
+        self.assertEqual(code, 2)
+        self.assertEqual((payload["status"], payload["candidates"]), ("NOT_FOUND", []))
+
+
 if __name__ == "__main__":
     unittest.main()

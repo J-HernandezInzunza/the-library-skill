@@ -1516,8 +1516,8 @@ def _install_one(
     dest, changes = fetch(entry, base)
     main = main_file_for(entry, dest)
     ok = main.exists()
-    return {"type": entry.type, "name": entry.name, "dest": str(dest),
-            "verified": ok, "changes": changes}
+    return {"type": entry.type, "name": entry.name, "catalog": entry.catalog,
+            "dest": str(dest), "verified": ok, "changes": changes}
 
 
 def winning_catalogs(cfg: Config) -> dict[str, str]:
@@ -1636,40 +1636,50 @@ def cmd_use(args: argparse.Namespace) -> int:
     entries = resolved_entries(cfg, args)
     dirs = cfg.dirs
 
+    multi = multi_catalog(cfg)
     entry = find_exact(entries, args.name)
     if entry is None:
         cands = fuzzy_candidates(entries, args.name)
         payload = {
             "status": "AMBIGUOUS" if cands else "NOT_FOUND",
             "query": args.name,
-            "candidates": [{"type": c.type, "name": c.name, "description": c.description} for c in cands],
+            "candidates": [{"type": c.type, "name": c.name, "description": c.description,
+                            "catalog": c.catalog} for c in cands],
         }
         if args.json:
             print(json.dumps(payload, indent=2))
         elif cands:
             print(f'No exact match for "{args.name}". Did you mean:')
             for c in cands:
-                print(f"  [{c.type}] {c.name}")
+                print(f"  [{c.type}] {c.name}" + (f"  ({c.catalog})" if multi else ""))
         else:
             print(f'No match for "{args.name}". Try `library search`.')
         return 2
 
     scope = "project" if args.project else "global"
-    order = resolve_deps(entries, entry)
+    # Dependencies resolve within the resolved entry's OWN catalog, never the merged
+    # list: a `requires` ref that names an entry in another catalog is simply dangling,
+    # which is the error users already understand.
+    order = resolve_deps(cfg.entries_of(entry.catalog), entry)
+    note = shadow_note(cfg, entry)
 
     if args.dry_run:
         plan = [
-            {"type": e.type, "name": e.name,
+            {"type": e.type, "name": e.name, "catalog": e.catalog,
              "dest": str(install_dest(e, resolve_target_base(dirs, e, scope, args.dir)))}
             for e in order
         ]
         if args.json:
             print(json.dumps({"status": "OK", "dry_run": True, "scope": scope,
+                              "shadows": [s.catalog for s in cfg.shadows(entry.name)],
                               "would_install": plan}, indent=2))
         else:
             print("Dry run — nothing installed. Would install:")
             for p in plan:
-                print(f"  [{p['type']}] {p['name']} → {p['dest']}")
+                catalog_col = f"  ({p['catalog']})" if multi else ""
+                print(f"  [{p['type']}] {p['name']}{catalog_col} → {p['dest']}")
+            if note:
+                print(f"  {entry.name} {note}")
         return 0
 
     try:
@@ -1682,7 +1692,8 @@ def cmd_use(args: argparse.Namespace) -> int:
         return 1
 
     if args.json:
-        print(json.dumps({"status": "OK", "installed": results}, indent=2))
+        print(json.dumps({"status": "OK", "installed": results,
+                          "shadows": [s.catalog for s in cfg.shadows(entry.name)]}, indent=2))
         return 0
 
     deps = results[:-1]
@@ -1693,7 +1704,11 @@ def cmd_use(args: argparse.Namespace) -> int:
             print(f"  [{r['type']}] {r['name']} → {r['dest']}")
     flag = "" if target["verified"] else "  (warning: main file not found)"
     summary = _summarize_changes(target["changes"])
-    print(f"Installed [{target['type']}] {target['name']} → {target['dest']} · {summary}{flag}")
+    provenance = ""
+    if multi:
+        provenance = f" (from {entry.catalog}{', ' + note if note else ''})"
+    print(f"Installed [{target['type']}] {target['name']} → {target['dest']} · "
+          f"{summary}{provenance}{flag}")
     for line in _change_detail_lines(target["changes"]):
         print(line)
     return 0 if all(r["verified"] for r in results) else 1
