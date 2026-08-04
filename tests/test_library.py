@@ -3619,6 +3619,12 @@ class TestWriteReportShape(unittest.TestCase):
         self.assertEqual(out, "  Wrote /x/library.yaml\n"
                               "  Committed to personal; the push failed (see warning above).\n")
 
+    def test_direct_reports_a_committed_but_unpushed_edit(self) -> None:
+        out = self.tail({"mode": "direct", "catalog": "team", "branch": "main",
+                         "committed": True, "pushed": False, "path": "/x/library.yaml"})
+        self.assertEqual(out, "  Committed to team (main); the push failed "
+                              "(see warning above).\n")
+
     def test_write_result_keys_drops_the_diff_and_the_control_signals(self) -> None:
         keys = library.write_result_keys({
             "mode": "local", "catalog": "personal", "path": "/x", "diff": "...",
@@ -3626,6 +3632,212 @@ class TestWriteReportShape(unittest.TestCase):
         })
         self.assertEqual(keys, {"mode": "local", "catalog": "personal", "path": "/x",
                                 "committed": True, "pushed": False})
+
+
+class TestAddTargetsACatalog(unittest.TestCase):
+    """R7.1–R7.3, R7.6, R7.7, R7.10 — `add` writes to one chosen catalog."""
+
+    maxDiff = None
+
+    ARGS = ("--description", "Added by a test")
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.repo = install_two_catalog_fixture(self.tool)
+        self.personal = self.tool.root / "personal" / "library.yaml"
+
+    def add(self, name: str, *extra: str, expect: int = 0) -> dict[str, Any]:
+        code, out, err = run_cli(
+            "add", "--name", name, *self.ARGS,
+            "--source", f"https://github.com/acme/agentics/blob/main/skills/{name}/SKILL.md",
+            *extra, "--no-pull", "--json",
+        )
+        self.assertEqual(code, expect, err or out)
+        self.stderr = err
+        return json.loads(out) if out else {}
+
+    def shared_branches(self) -> list[str]:
+        return sorted(subprocess.run(
+            ["git", "-C", str(self.repo.remote), "branch", "--format=%(refname:short)"],
+            capture_output=True, text=True).stdout.split())
+
+    # ── destination ─────────────────────────────────────────────────────
+    def test_adding_to_the_personal_catalog_leaves_the_shared_one_untouched(self) -> None:
+        clone_file = library.CATALOG_CLONE_DIR / "library.yaml"
+        before, clone_before = self.repo.remote_text("library.yaml"), clone_file.read_text()
+        payload = self.add("brand-new", "--catalog", "personal")
+        self.assertEqual((payload["mode"], payload["catalog"]), ("local", "personal"))
+        self.assertIn("brand-new", self.personal.read_text())
+        self.assertEqual(self.repo.remote_text("library.yaml"), before)
+        self.assertEqual(clone_file.read_text(), clone_before)
+        self.assertEqual(self.shared_branches(), ["main"])
+
+    def test_adding_to_the_shared_catalog_still_opens_a_pr(self) -> None:
+        payload = self.add("brand-new", "--catalog", "shared")
+        self.assertEqual((payload["mode"], payload["catalog"]), ("pr", "shared"))
+        self.assertEqual(payload["method"], "manual")
+        self.assertNotIn("brand-new", self.personal.read_text())
+        self.assertIn("main", self.shared_branches())
+        self.assertEqual(len(self.shared_branches()), 2)  # main + the PR branch
+
+    def test_omitting_the_catalog_is_ambiguous_at_exit_2(self) -> None:
+        # R7.3 — two writable catalogs and no default_add_catalog: the agent must ask.
+        payload = self.add("brand-new", expect=2)
+        self.assertEqual(payload,
+                         {"status": "AMBIGUOUS_CATALOG", "catalogs": ["personal", "shared"]})
+        self.assertNotIn("brand-new", self.personal.read_text())
+
+    def test_a_default_add_catalog_settles_it(self) -> None:
+        cfg = yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())
+        cfg["default_add_catalog"] = "personal"
+        self.tool.write_config(cfg)
+        self.assertEqual(self.add("brand-new")["catalog"], "personal")
+
+    # ── duplicates vs shadowing ─────────────────────────────────────────
+    def test_a_duplicate_in_the_destination_is_refused(self) -> None:
+        code, _, err = run_cli(
+            "add", "--name", "scratch-thing", *self.ARGS, "--source",
+            "https://github.com/acme/agentics/blob/main/skills/scratch-thing/SKILL.md",
+            "--catalog", "personal", "--no-pull", "--json",
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("already in catalog 'personal'", err)
+
+    def test_a_name_held_only_by_another_catalog_is_not_a_duplicate(self) -> None:
+        # R7.6/R7.7 — `grill-me` is in shared; adding it to personal is deliberate
+        # shadowing, so it proceeds with a warning rather than being refused.
+        payload = self.add("grill-me", "--catalog", "personal")
+        self.assertEqual(payload["catalog"], "personal")
+        self.assertIn("also exists in shared", self.stderr)
+        self.assertIn("'personal' takes precedence and will shadow it", self.stderr)
+
+    def test_the_warning_names_the_other_direction_too(self) -> None:
+        # Adding into the lower-precedence catalog: the new copy is the one that loses.
+        payload = self.add("scratch-thing", "--catalog", "shared")
+        self.assertEqual(payload["catalog"], "shared")
+        self.assertIn("also exists in personal, which takes precedence", self.stderr)
+        self.assertIn("'shared' will be shadowed", self.stderr)
+
+    def test_no_shadow_warning_when_the_name_is_new_everywhere(self) -> None:
+        self.add("brand-new", "--catalog", "personal")
+        self.assertNotIn("also exists", self.stderr)
+
+    # ── dependencies (D9) ───────────────────────────────────────────────
+    def test_a_requires_ref_satisfied_only_elsewhere_still_warns(self) -> None:
+        self.add("needs-shared", "--catalog", "personal",
+                 "--requires", "skill:backend-code-practices")
+        self.assertIn("required dependency skill:backend-code-practices", self.stderr)
+
+    def test_a_requires_ref_in_the_destination_is_quiet(self) -> None:
+        self.add("needs-own", "--catalog", "personal", "--requires", "skill:scratch-thing")
+        self.assertNotIn("required dependency", self.stderr)
+
+    # ── batch ───────────────────────────────────────────────────────────
+    BATCH = """\
+- name: batch-one
+  description: First batch entry
+  source: https://github.com/acme/agentics/blob/main/skills/batch-one/SKILL.md
+- name: batch-two
+  description: Second batch entry
+  source: https://github.com/acme/agentics/blob/main/skills/batch-two/SKILL.md
+  requires: ["skill:batch-one"]
+"""
+
+    def batch_file(self, text: str) -> str:
+        p = self.tool.root / "batch.yaml"
+        p.write_text(text)
+        return str(p)
+
+    def run_batch(self, text: str, *extra: str, expect: int = 0) -> dict[str, Any]:
+        code, out, err = run_cli("add", "--batch", self.batch_file(text), *extra,
+                                 "--no-pull", "--json")
+        self.assertEqual(code, expect, err or out)
+        self.stderr = err
+        return json.loads(out) if out else {}
+
+    def test_a_batch_into_a_local_catalog_lands_in_one_file_write(self) -> None:
+        real = Path.write_text
+        writes: list[str] = []
+
+        def counting(self_: Path, *a: Any, **kw: Any) -> int:
+            writes.append(str(self_))
+            return real(self_, *a, **kw)
+
+        with patch.object(Path, "write_text", counting):
+            payload = self.run_batch(self.BATCH, "--catalog", "personal")
+        self.assertEqual(payload["catalog"], "personal")
+        self.assertEqual([e["name"] for e in payload["added"]], ["batch-one", "batch-two"])
+        self.assertEqual([w for w in writes if w == str(self.personal)], [str(self.personal)])
+        text = self.personal.read_text()
+        self.assertIn("batch-one", text)
+        self.assertIn("batch-two", text)
+        self.assertNotIn("required dependency", self.stderr)  # satisfied within the batch
+
+    def test_a_batch_item_may_name_its_own_catalog(self) -> None:
+        text = self.BATCH.replace("  description: First batch entry",
+                                  "  description: First batch entry\n  catalog: personal")
+        self.assertEqual(self.run_batch(text)["catalog"], "personal")
+
+    def test_a_batch_that_mixes_catalogs_is_refused(self) -> None:
+        text = (self.BATCH.replace("  description: First batch entry",
+                                   "  description: First batch entry\n  catalog: personal")
+                .replace("  description: Second batch entry",
+                         "  description: Second batch entry\n  catalog: shared"))
+        code, _, err = run_cli("add", "--batch", self.batch_file(text), "--no-pull", "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("mixes catalogs (personal, shared)", err)
+        self.assertNotIn("batch-one", self.personal.read_text())
+
+    def test_a_batch_contradicting_the_catalog_flag_is_refused(self) -> None:
+        text = self.BATCH.replace("  description: First batch entry",
+                                  "  description: First batch entry\n  catalog: personal")
+        code, _, err = run_cli("add", "--batch", self.batch_file(text),
+                               "--catalog", "shared", "--no-pull", "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("batch file targets catalog 'personal' but --catalog says 'shared'", err)
+
+    def test_a_batch_with_no_catalog_anywhere_is_ambiguous(self) -> None:
+        payload = self.run_batch(self.BATCH, expect=2)
+        self.assertEqual(payload["status"], "AMBIGUOUS_CATALOG")
+
+
+class TestAddOnASingleCatalog(unittest.TestCase):
+    """R2.3 — with one catalog nothing about `add` changes, including its messages."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        install_golden_fixture(self.tool, GOLDEN_CATALOG)
+
+    def test_a_duplicate_message_does_not_name_the_catalog(self) -> None:
+        code, _, err = run_cli(
+            "add", "--name", "session-retro", "--description", "d",
+            "--source", "https://github.com/acme/agentics/blob/main/skills/x/SKILL.md",
+            "--no-pull", "--json",
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("'session-retro' already in catalog (type skill)", err)
+
+    def test_the_destination_needs_no_flag(self) -> None:
+        code, out, err = run_cli(
+            "add", "--name", "brand-new", "--description", "d",
+            "--source", "https://github.com/acme/agentics/blob/main/skills/bn/SKILL.md",
+            "--dry-run", "--no-pull", "--json",
+        )
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertEqual((payload["mode"], payload["catalog"]), ("pr", "shared"))
+
+    def test_a_missing_catalog_file_still_dies_with_its_path(self) -> None:
+        (library.CATALOG_CLONE_DIR / "library.yaml").unlink()
+        code, _, err = run_cli(
+            "add", "--name", "brand-new", "--description", "d",
+            "--source", "https://github.com/acme/agentics/blob/main/skills/bn/SKILL.md",
+            "--no-pull", "--json",
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("catalog not found at", err)
 
 
 if __name__ == "__main__":

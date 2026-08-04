@@ -9,7 +9,7 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 
 ## Status
 
-20 of 37 tasks landed. Phases 0–5 complete; Phase 6 in progress.
+21 of 37 tasks landed. Phases 0–5 complete; Phase 6 in progress.
 
 | Task | Status | Commit |
 | ---- | ------ | ------ |
@@ -33,8 +33,9 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 | T5.4 `use` across catalogs, deps within one | done | `cb58541` |
 | T5.5 `sync` across catalogs | done | `3c6edda` |
 | T6.1 `write_target` + ambiguity contract | done | `5dfab60` |
-| T6.2 `apply_catalog_edit`, three write modes | done | |
-| T6.3–T6.7 writes target a catalog | todo | |
+| T6.2 `apply_catalog_edit`, three write modes | done | `617ac3f` |
+| T6.3 `add` targets a catalog | done | |
+| T6.4–T6.7 writes target a catalog | todo | |
 | T7.1–T7.3 catalog management commands | todo | |
 | T8.1–T8.2 doctor | todo | |
 | T9.1–T9.6 agent layer + docs | todo | |
@@ -141,6 +142,18 @@ Each is a place the code does something tasks.md or design.md doesn't say, with 
     `print_dry_run_tail`, plus `write_result_keys`). All three commands printed the same
     four PR-tail lines; leaving that inline would have meant triplicating the new
     mode-aware branches instead. The `pr` branch reproduces today's lines exactly.
+22. **A batch item may carry a `catalog:` key.** R7.10 says a batch must not "mix
+    catalogs" without saying how a batch names one, so an item-level `catalog:` is the
+    mechanism: all items must agree, it must not contradict `--catalog`, and when
+    `--catalog` is absent it selects the destination. A self-describing batch file that
+    silently wrote somewhere else would be the worse reading.
+23. **`add` calls `require_entries(cfg)` purely as a precondition.** It no longer needs
+    the merged entry list — duplicates and dependencies are checked against the
+    destination — but dropping the call would turn a missing catalog file into
+    "no writable catalog is configured" instead of `catalog not found at <path>`.
+24. **The duplicate-refusal message names the catalog only when there is more than one**,
+    matching the staleness warning's idiom, so R2.3's byte-identical guarantee survives
+    while a multi-catalog user learns *which* catalog already holds the name.
 
 ## Corrections the specs need
 

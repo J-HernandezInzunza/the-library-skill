@@ -567,6 +567,33 @@ def shadow_note(cfg: Config, entry: Entry) -> str:
     return "shadows " + ", ".join(dict.fromkeys(e.catalog for e in losers))
 
 
+def new_entry_shadow_warnings(cfg: Config, cat: Catalog, name: str) -> list[str]:
+    """Warnings for adding *name* to *cat* when another catalog already has it (R7.7).
+
+    The add is allowed — shadowing is the point of a personal catalog — but which copy
+    wins is invisible in the command the user typed, so the direction is always named.
+    """
+    order = [c.id for c in cfg.active]
+    if cat.id not in order:
+        return []
+    rank = order.index(cat.id)
+    shadows: list[str] = []
+    shadowed_by: list[str] = []
+    for other in cfg.active:
+        if other.id == cat.id or find_exact(iter_catalog_entries(other), name) is None:
+            continue
+        (shadows if order.index(other.id) > rank else shadowed_by).append(other.id)
+
+    out: list[str] = []
+    if shadows:
+        out.append(f"'{name}' also exists in {', '.join(shadows)}; the copy in "
+                   f"'{cat.id}' takes precedence and will shadow it")
+    if shadowed_by:
+        out.append(f"'{name}' also exists in {', '.join(shadowed_by)}, which takes "
+                   f"precedence; the copy in '{cat.id}' will be shadowed")
+    return out
+
+
 def staleness_warnings(cfg: Config, pull_errors: dict[str, "str | None"], syncing: bool = False) -> None:
     """Warn per remote catalog whose clone is behind its branch."""
     for cat in cfg.remotes:
@@ -2161,10 +2188,21 @@ def _load_batch_file(path_str: str) -> list[dict[str, Any]]:
 def cmd_add(args: argparse.Namespace) -> int:
     # Build the list of entries to add. Single-add is a batch of one, so both
     # paths share the same clone -> splice* -> one commit -> one PR flow below.
+    batch_catalog = ""
     if getattr(args, "batch", None):
         if args.name or args.source:
             die("--batch can't be combined with --name/--source; put every entry in the batch file")
         raw = _load_batch_file(args.batch)
+        # One batch is one write, so it targets one catalog (R7.10). An item may name
+        # it, which makes the file self-describing, but they all have to agree.
+        named = {str(it["catalog"]) for it in raw if it.get("catalog")}
+        if len(named) > 1:
+            die("batch file mixes catalogs (" + ", ".join(sorted(named))
+                + "); one batch targets one catalog")
+        batch_catalog = next(iter(named), "")
+        if batch_catalog and args.catalog and batch_catalog != args.catalog:
+            die(f"batch file targets catalog '{batch_catalog}' but --catalog says "
+                f"'{args.catalog}'; one batch targets one catalog")
         entries = [
             _prepare_entry(
                 it.get("name"), it.get("description"), it.get("source"),
@@ -2189,16 +2227,30 @@ def cmd_add(args: argparse.Namespace) -> int:
 
     cfg = load_config()
     refresh_catalogs(cfg, args.no_pull)
+    require_entries(cfg)  # keeps today's hard failure when no catalog can be read
 
-    # Validate against the registry's current contents.
-    catalog_entries = resolved_entries(cfg, args)
+    try:
+        cat = write_target(cfg, args.catalog or batch_catalog or None)
+    except AmbiguousCatalog as ex:
+        return report_ambiguous_catalog(ex, args.json)
+    except LibraryError as ex:
+        die(str(ex))
+
+    # Validate against the destination catalog's current contents — not the merged
+    # list. A name held by a *different* catalog is a shadowing decision (warned about
+    # below), not a duplicate; only the destination can actually collide.
+    dest_entries = cfg.entries_of(cat.id)
+    label = f"catalog '{cat.id}'" if multi_catalog(cfg) else "catalog"
     for e in entries:
-        existing = find_exact(catalog_entries, e.name)
+        existing = find_exact(dest_entries, e.name)
         if existing:
-            die(f"'{e.name}' already in catalog (type {existing.type}); use `library use` to refresh or `push` to update")
+            die(f"'{e.name}' already in {label} (type {existing.type}); use `library use` to refresh or `push` to update")
+        for note in new_entry_shadow_warnings(cfg, cat, e.name):
+            warn(note)
 
-    # A dependency satisfied by another entry in the same batch counts as known.
-    known = {(ce.type, ce.name) for ce in catalog_entries} | {(e.type, e.name) for e in entries}
+    # A dependency counts as known if the destination catalog has it (D9) or another
+    # entry in this batch provides it.
+    known = {(ce.type, ce.name) for ce in dest_entries} | {(e.type, e.name) for e in entries}
     for e in entries:
         for r in e.requires:
             t, n = r.split(":", 1)
@@ -2219,13 +2271,6 @@ def cmd_add(args: argparse.Namespace) -> int:
         pr_title = f"library: add {len(entries)} entries"
         body_lines = "\n".join(f"- `{e.name}` ({e.type}) — {e.source}" for e in entries)
         pr_body = f"Adds {len(entries)} entries to the catalog:\n\n{body_lines}"
-
-    try:
-        cat = write_target(cfg, getattr(args, "catalog", None))
-    except AmbiguousCatalog as ex:
-        return report_ambiguous_catalog(ex, args.json)
-    except LibraryError as ex:
-        die(str(ex))
 
     def edit(text: str) -> str:
         for e in entries:
