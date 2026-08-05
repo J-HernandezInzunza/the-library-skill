@@ -4155,6 +4155,272 @@ class TestCatalogList(unittest.TestCase):
         self.assertNotIn("catalog migrate", out)
 
 
+EMPTY_CATALOG = "library:\n  skills: []\n  agents: []\n  prompts: []\n"
+
+
+class TestCatalogAdd(unittest.TestCase):
+    """R15.3–R15.5, R15.9, R15.10 — register a catalog, verifying it first."""
+
+    maxDiff = None
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.shared = install_golden_fixture(self.tool, GOLDEN_CATALOG)  # legacy shape
+        self.mine = self.tool.root / "mine" / "library.yaml"
+        self.mine.parent.mkdir(parents=True)
+        self.mine.write_text(PERSONAL_CATALOG)
+
+    def add(self, *argv: str, expect: int = 0) -> dict[str, Any]:
+        code, out, err = run_cli("catalog", "add", *argv, "--json")
+        self.assertEqual(code, expect, err or out)
+        self.stderr = err
+        return json.loads(out) if out else {}
+
+    def registered(self) -> list[dict[str, Any]]:
+        return yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())["catalogs"]
+
+    def remote_repo(self, name: str = "personal-remote") -> TempGitRepo:
+        repo = TempGitRepo(self.tool.root, name=name)
+        repo.commit("library.yaml", PERSONAL_CATALOG)
+        repo.push()
+        return repo
+
+    # ── local catalogs ──────────────────────────────────────────────────
+    def test_a_local_catalog_is_registered_and_load_config_sees_it(self) -> None:
+        payload = self.add("--id", "personal", "--path", str(self.mine))
+        self.assertEqual((payload["kind"], payload["precedence"]), ("local", 1))
+        self.assertEqual((payload["write_mode"], payload["entries"]), ("local", 2))
+        cfg = library.load_config()
+        self.assertEqual([c.id for c in cfg.catalogs], ["personal", library.SHARED_ID])
+        self.assertEqual(cfg.resolve("scratch-thing").catalog, "personal")
+
+    def test_a_directory_path_is_accepted(self) -> None:
+        payload = self.add("--id", "personal", "--path", str(self.mine.parent))
+        self.assertEqual(payload["entries"], 2)
+
+    def test_git_commit_is_recorded_for_a_local_catalog(self) -> None:
+        self.add("--id", "personal", "--path", str(self.mine), "--git-commit")
+        self.assertTrue(self.registered()[0]["git_commit"])
+        self.assertTrue(library.load_config().by_id("personal").git_commit)
+
+    def test_read_only_is_recorded_and_blocks_writes(self) -> None:
+        self.add("--id", "personal", "--path", str(self.mine), "--read-only")
+        self.assertFalse(self.registered()[0]["writable"])
+        code, _, err = run_cli("update", "scratch-thing", "--set-description", "x",
+                               "--no-pull", "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("read-only", err)
+
+    # ── remote catalogs ─────────────────────────────────────────────────
+    def test_a_remote_catalog_is_cloned_and_validated(self) -> None:
+        repo = self.remote_repo()
+        payload = self.add("--id", "mine", "--repo", str(repo.remote))
+        self.assertEqual((payload["kind"], payload["entries"]), ("remote", 2))
+        clone = library.CATALOGS_DIR / "mine"
+        self.assertTrue((clone / "library.yaml").is_file())
+
+    def test_a_new_remote_is_unprotected_and_writes_directly(self) -> None:
+        # D8/R15.5 — `protected: false` is written explicitly, not left to the default.
+        repo = self.remote_repo()
+        payload = self.add("--id", "mine", "--repo", str(repo.remote))
+        self.assertIs(self.registered()[0]["protected"], False)
+        self.assertEqual(payload["write_mode"], "direct")
+
+    def test_protected_flips_it_back_to_the_pr_gate(self) -> None:
+        repo = self.remote_repo()
+        payload = self.add("--id", "mine", "--repo", str(repo.remote), "--protected")
+        self.assertIs(self.registered()[0]["protected"], True)
+        self.assertEqual(payload["write_mode"], "pr")
+
+    def test_branch_and_yaml_path_default_but_are_recorded(self) -> None:
+        repo = self.remote_repo()
+        self.add("--id", "mine", "--repo", str(repo.remote))
+        item = self.registered()[0]
+        self.assertEqual((item["branch"], item["yaml_path"]), ("main", "library.yaml"))
+
+    def test_a_custom_yaml_path_is_honoured(self) -> None:
+        repo = TempGitRepo(self.tool.root, name="nested")
+        repo.commit("catalogs/mine.yaml", PERSONAL_CATALOG)
+        repo.push()
+        payload = self.add("--id", "mine", "--repo", str(repo.remote),
+                           "--yaml-path", "catalogs/mine.yaml")
+        self.assertEqual(payload["entries"], 2)
+
+    # ── verification happens before the config changes (R15.4) ──────────
+    def test_a_missing_local_target_is_refused_before_the_config_changes(self) -> None:
+        before = library.LOCAL_CONFIG_PATH.read_text()
+        code, _, err = run_cli("catalog", "add", "--id", "nope", "--path",
+                               str(self.tool.root / "missing.yaml"), "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("is not a usable catalog", err)
+        self.assertIn("was not modified", err)
+        self.assertEqual(library.LOCAL_CONFIG_PATH.read_text(), before)
+
+    def test_a_file_that_is_not_a_catalog_is_refused(self) -> None:
+        stray = self.tool.root / "notes.yaml"
+        stray.write_text("title: just some yaml\n")
+        before = library.LOCAL_CONFIG_PATH.read_text()
+        code, _, err = run_cli("catalog", "add", "--id", "nope", "--path", str(stray), "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("has no 'library:' block", err)
+        self.assertEqual(library.LOCAL_CONFIG_PATH.read_text(), before)
+
+    def test_a_failed_remote_probe_leaves_no_orphan_clone(self) -> None:
+        repo = TempGitRepo(self.tool.root, name="empty-repo")
+        repo.commit("README.md", "no catalog here\n")
+        repo.push()
+        code, _, err = run_cli("catalog", "add", "--id", "mine", "--repo",
+                               str(repo.remote), "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("catalog file not found", err)
+        self.assertFalse((library.CATALOGS_DIR / "mine").exists())
+
+    def test_a_relative_path_is_refused_before_anything_is_read(self) -> None:
+        code, _, err = run_cli("catalog", "add", "--id", "bad", "--path",
+                               "relative/library.yaml", "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("must be absolute or start with '~'", err)
+
+    def test_a_duplicate_id_is_refused(self) -> None:
+        self.add("--id", "personal", "--path", str(self.mine))
+        code, _, err = run_cli("catalog", "add", "--id", "personal", "--path",
+                               str(self.mine), "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("already registered", err)
+
+    def test_path_and_repo_together_are_refused(self) -> None:
+        code, _, err = run_cli("catalog", "add", "--id", "x", "--path", str(self.mine),
+                               "--repo", "git@github.com:acme/x.git", "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("exactly one of --path", err)
+
+    def test_neither_path_nor_repo_is_refused(self) -> None:
+        code, _, err = run_cli("catalog", "add", "--id", "x", "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("exactly one of --path", err)
+
+    # ── precedence ──────────────────────────────────────────────────────
+    def test_first_is_the_default_position(self) -> None:
+        self.add("--id", "personal", "--path", str(self.mine))
+        self.assertEqual([c["id"] for c in self.registered()],
+                         ["personal", library.SHARED_ID])
+
+    def test_last_appends_instead(self) -> None:
+        payload = self.add("--id", "personal", "--path", str(self.mine),
+                           "--position", "last")
+        self.assertEqual([c["id"] for c in self.registered()],
+                         [library.SHARED_ID, "personal"])
+        self.assertEqual(payload["precedence"], 2)
+        # Lower precedence means the shared copy still wins the shared name.
+        self.assertEqual(library.load_config().resolve("session-retro").catalog,
+                         library.SHARED_ID)
+
+    # ── legacy migration (R15.9) ────────────────────────────────────────
+    def test_a_legacy_config_is_migrated_with_the_shared_settings_intact(self) -> None:
+        payload = self.add("--id", "personal", "--path", str(self.mine))
+        raw = yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())
+        self.assertNotIn("catalog", raw)
+        shared = next(c for c in raw["catalogs"] if c["id"] == library.SHARED_ID)
+        self.assertEqual((shared["repo"], shared["branch"], shared["yaml_path"]),
+                         (str(self.shared.remote), "main", "library.yaml"))
+        self.assertIs(shared["protected"], True)
+        self.assertTrue(any("catalogs:" in n for n in payload["migrated"]))
+
+    def test_the_migration_lifts_the_catalogs_install_dirs(self) -> None:
+        self.add("--id", "personal", "--path", str(self.mine))
+        raw = yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())
+        self.assertIn("default_dirs", raw)
+        self.assertEqual(library.load_config().dirs, library.effective_dirs(None))
+
+    def test_an_already_canonical_config_reports_no_migration(self) -> None:
+        self.add("--id", "personal", "--path", str(self.mine))
+        second = self.tool.root / "second.yaml"
+        second.write_text(EMPTY_CATALOG)
+        self.assertEqual(self.add("--id", "second", "--path", str(second))["migrated"], [])
+
+    # ── the write itself (R15.10) ───────────────────────────────────────
+    def test_the_written_config_keeps_its_header_and_re_reads_clean(self) -> None:
+        self.add("--id", "personal", "--path", str(self.mine))
+        text = library.LOCAL_CONFIG_PATH.read_text()
+        self.assertTrue(text.startswith("# The Library"))
+        self.assertEqual(library.Config.problems(yaml.safe_load(text)), [])
+
+    def test_unknown_top_level_keys_survive_the_rewrite(self) -> None:
+        raw = yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())
+        raw["some_future_setting"] = {"keep": "me"}
+        self.tool.write_config(raw)
+        self.add("--id", "personal", "--path", str(self.mine))
+        after = yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())
+        self.assertEqual(after["some_future_setting"], {"keep": "me"})
+
+
+class TestCatalogRemove(unittest.TestCase):
+    """R15.6 — unregister a catalog without throwing away its clone by surprise."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.repo = install_two_catalog_fixture(self.tool)
+
+    def remove(self, *argv: str, expect: int = 0) -> dict[str, Any]:
+        code, out, err = run_cli("catalog", "remove", *argv, "--json")
+        self.assertEqual(code, expect, err or out)
+        self.stderr = err
+        return json.loads(out) if out else {}
+
+    def ids(self) -> list[str]:
+        return [c["id"] for c in
+                yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())["catalogs"]]
+
+    def test_removing_a_catalog_leaves_the_others(self) -> None:
+        self.remove("personal")
+        self.assertEqual(self.ids(), [library.SHARED_ID])
+        self.assertEqual([c.id for c in library.load_config().catalogs], [library.SHARED_ID])
+
+    def test_an_unknown_id_errors_listing_what_is_registered(self) -> None:
+        code, _, err = run_cli("catalog", "remove", "ghost", "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("unknown catalog 'ghost'", err)
+        self.assertIn("registered: personal, shared", err)
+
+    def test_the_last_catalog_cannot_be_removed(self) -> None:
+        self.remove("personal")
+        code, _, err = run_cli("catalog", "remove", library.SHARED_ID, "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("is the only registered catalog", err)
+        self.assertEqual(self.ids(), [library.SHARED_ID])
+
+    def test_the_clone_is_left_in_place_by_default(self) -> None:
+        payload = self.remove(library.SHARED_ID)
+        self.assertIsNone(payload["purged_clone"])
+        self.assertEqual(payload["clone_kept_at"], str(library.CATALOG_CLONE_DIR))
+        self.assertTrue(library.CATALOG_CLONE_DIR.is_dir())
+
+    def test_purge_clone_deletes_it(self) -> None:
+        payload = self.remove(library.SHARED_ID, "--purge-clone")
+        self.assertEqual(payload["purged_clone"], str(library.CATALOG_CLONE_DIR))
+        self.assertFalse(library.CATALOG_CLONE_DIR.exists())
+
+    def test_a_local_catalog_has_no_clone_to_purge_and_its_file_survives(self) -> None:
+        personal = self.tool.root / "personal" / "library.yaml"
+        payload = self.remove("personal", "--purge-clone")
+        self.assertIsNone(payload["purged_clone"])
+        self.assertTrue(personal.is_file())  # unregistering is not deleting
+
+    def test_removing_from_a_legacy_config_migrates_first(self) -> None:
+        self.tool.stop()
+        legacy = TempTool()
+        self.addCleanup(legacy.stop)
+        install_golden_fixture(legacy, GOLDEN_CATALOG)
+        mine = legacy.root / "mine.yaml"
+        mine.write_text(EMPTY_CATALOG)
+        run_cli("catalog", "add", "--id", "personal", "--path", str(mine), "--json")
+        payload = self.remove("personal")
+        self.assertEqual(payload["migrated"], [])  # add already canonicalized it
+        self.assertEqual(self.ids(), [library.SHARED_ID])
+
+
 class TestPushUnderShadowing(unittest.TestCase):
     """R11.1–R11.4 — pushing a shadowed name is a guess, and says so."""
 

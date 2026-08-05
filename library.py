@@ -2895,6 +2895,57 @@ def cmd_link(args: argparse.Namespace) -> int:
     return report(action)
 
 
+def raw_config() -> dict[str, Any]:
+    """The config file as a validated raw mapping — what the `catalog` writers edit.
+
+    They rewrite the whole file, so they work on the raw dict rather than a `Config`:
+    the dataclass models only the keys it needs, and a rewrite must not drop the rest.
+    """
+    if not LOCAL_CONFIG_PATH.exists():
+        die(f"no local config at {LOCAL_CONFIG_PATH}\n"
+            "  run `library init --repo <catalog-repo-url>` first")
+    with LOCAL_CONFIG_PATH.open() as fh:
+        raw = yaml.safe_load(fh) or {}
+    if not isinstance(raw, dict):
+        die(f"{LOCAL_CONFIG_PATH} is malformed (expected a YAML mapping)")
+    problems = Config.problems(raw)
+    if problems:
+        die(f"cannot edit {LOCAL_CONFIG_PATH}: {problems[0]}\n"
+            "  fix the config by hand; nothing was written")
+    return raw
+
+
+def canonical_raw_config() -> tuple[dict[str, Any], list[str]]:
+    """The raw config in `catalogs:` form, migrating a legacy one on the way (R15.9).
+
+    Registering a catalog in a legacy config would otherwise be impossible: the
+    singular `catalog:` mapping has nowhere to put a second one.
+    """
+    raw = raw_config()
+    if "catalog" not in raw:
+        return raw, []
+    cfg = load_config()
+    return migrated_config(raw, cfg.catalogs[0].data)
+
+
+def probe_catalog(cat: Catalog) -> "str | None":
+    """None when *cat* is a readable, parseable catalog, else why it isn't (R15.4).
+
+    Cloning a remote to check is the point: the config is only edited once the target
+    has been shown to work, so a typo'd URL never lands in it.
+    """
+    if cat.is_remote:
+        pull_catalog(cat)  # clones on demand, dying with the existing auth hint
+    _hydrate_one(cat)
+    if cat.skipped:
+        return cat.skipped
+    if "library" not in cat.data:
+        return f"{cat.yaml_file} has no 'library:' block"
+    if cat.data["library"] is not None and not isinstance(cat.data["library"], dict):
+        return f"{cat.yaml_file} has a malformed 'library:' block"
+    return None
+
+
 def catalog_location(cat: Catalog) -> str:
     """Where *cat* lives, in one line — the path for a local one, repo+branch+file else."""
     if cat.is_remote:
@@ -2942,6 +2993,109 @@ def cmd_catalog_list(args: argparse.Namespace) -> int:
     if cfg.legacy_shape:
         print("\nThis config still uses the singular `catalog:` form. "
               "`library catalog migrate` rewrites it.")
+    return 0
+
+
+def cmd_catalog_add(args: argparse.Namespace) -> int:
+    """Register an existing catalog (R15.3–R15.5, R15.9, R15.10)."""
+    cid = (args.id or "").strip()
+    if not cid:
+        die("catalog add needs a non-empty --id")
+    if bool(args.path) == bool(args.repo):
+        die("catalog add needs exactly one of --path (local) or --repo (remote)")
+
+    if args.path:
+        item: dict[str, Any] = {"id": cid, "path": args.path}
+        if args.git_commit:
+            item["git_commit"] = True
+    else:
+        # D8: a new remote catalog is unprotected unless asked otherwise, so writing to
+        # your own catalog is a commit rather than a PR to review with yourself.
+        item = {"id": cid, "repo": args.repo, "yaml_path": args.yaml_path,
+                "branch": args.branch, "protected": bool(args.protected)}
+    if args.read_only:
+        item["writable"] = False
+
+    # Validate the item on its own first, so a malformed one is rejected with a precise
+    # message before anything is cloned.
+    problems = Config.problems({"catalogs": [item]})
+    if problems:
+        die(f"cannot register catalog '{cid}': {problems[0]}")
+
+    raw, notes = canonical_raw_config()
+    registered = [str(c.get("id")) for c in raw["catalogs"]]
+    if cid in registered:
+        die(f"catalog '{cid}' is already registered (ids: {', '.join(registered)})")
+
+    cat = _catalog_from_raw(item)
+    fresh_clone = bool(cat.is_remote and cat.clone_dir and not cat.clone_dir.exists())
+    problem = probe_catalog(cat)
+    if problem:
+        if fresh_clone and cat.clone_dir and cat.clone_dir.exists():
+            shutil.rmtree(cat.clone_dir, ignore_errors=True)  # leave no orphan clone
+        die(f"'{cid}' is not a usable catalog: {problem}\n"
+            f"  {LOCAL_CONFIG_PATH} was not modified")
+
+    # `first` by default: a personal catalog is registered in order to win (design §9).
+    if args.position == "last":
+        raw["catalogs"].append(item)
+    else:
+        raw["catalogs"].insert(0, item)
+    cfg = write_config(raw)
+    count = len(iter_catalog_entries(cat))
+    position = next(i for i, c in enumerate(cfg.catalogs, 1) if c.id == cid)
+
+    if args.json:
+        print(json.dumps({"status": "OK", "id": cid, "kind": cat.kind,
+                          "precedence": position, "write_mode": cat.write_mode,
+                          "writable": cat.writable, "entries": count,
+                          "location": catalog_location(cat), "migrated": notes},
+                         indent=2))
+        return 0
+
+    for note in notes:
+        print(f"  migrated config: {note}")
+    print(f"Registered [{cat.kind}] {cid} at precedence {position} of {len(cfg.catalogs)} "
+          f"· {count} entries · writes go through: {cat.write_mode}")
+    print(f"  {catalog_location(cat)}")
+    return 0
+
+
+def cmd_catalog_remove(args: argparse.Namespace) -> int:
+    """Unregister a catalog, leaving its clone unless asked (R15.6)."""
+    raw, notes = canonical_raw_config()
+    catalogs = raw["catalogs"]
+    idx = next((i for i, c in enumerate(catalogs) if str(c.get("id")) == args.id), None)
+    if idx is None:
+        ids = ", ".join(str(c.get("id")) for c in catalogs)
+        die(f"unknown catalog '{args.id}' (registered: {ids})")
+    if len(catalogs) == 1:
+        die(f"'{args.id}' is the only registered catalog; the tool needs one to read "
+            "from.\n  register another first, or run `library init` to start over")
+
+    removed = catalogs.pop(idx)
+    cat = _catalog_from_raw(removed)
+    write_config(raw)  # config first: a failed purge must not leave a stale registration
+
+    purged = None
+    if getattr(args, "purge_clone", False) and cat.clone_dir and cat.clone_dir.exists():
+        shutil.rmtree(cat.clone_dir, ignore_errors=True)
+        purged = str(cat.clone_dir)
+
+    kept = cat.clone_dir if cat.clone_dir and cat.clone_dir.exists() else None
+    if args.json:
+        print(json.dumps({"status": "OK", "id": args.id, "purged_clone": purged,
+                          "clone_kept_at": str(kept) if kept else None,
+                          "migrated": notes}, indent=2))
+        return 0
+
+    for note in notes:
+        print(f"  migrated config: {note}")
+    print(f"Unregistered {args.id}.")
+    if purged:
+        print(f"  removed clone: {purged}")
+    elif kept:
+        print(f"  clone left in place: {kept} (pass --purge-clone to delete it)")
     return 0
 
 
@@ -3432,6 +3586,32 @@ def build_parser() -> argparse.ArgumentParser:
     cat_list = cat_actions.add_parser("list", help="show every registered catalog")
     cat_list.add_argument("--json", action="store_true", help="machine-readable output")
     cat_list.set_defaults(func=cmd_catalog_list)
+
+    cat_add = cat_actions.add_parser("add", help="register an existing catalog")
+    cat_add.add_argument("--id", required=True, help="short id, used by --catalog")
+    cat_add.add_argument("--path", help="local catalog: a library.yaml, or a dir holding one")
+    cat_add.add_argument("--repo", help="remote catalog: clone URL")
+    cat_add.add_argument("--branch", default="main", help="remote branch (default: main)")
+    cat_add.add_argument("--yaml-path", dest="yaml_path", default="library.yaml",
+                         help="path to the catalog within the repo (default: library.yaml)")
+    cat_add.add_argument("--read-only", dest="read_only", action="store_true",
+                         help="register for reading only; refuse every write to it")
+    cat_add.add_argument("--git-commit", dest="git_commit", action="store_true",
+                         help="local catalog: commit and push the file after each write")
+    cat_add.add_argument("--protected", action="store_true",
+                         help="remote catalog: send writes through a PR instead of a push")
+    cat_add.add_argument("--position", choices=("first", "last"), default="first",
+                         help="precedence slot (default: first, so it shadows the rest)")
+    cat_add.add_argument("--json", action="store_true", help="machine-readable output")
+    cat_add.set_defaults(func=cmd_catalog_add)
+
+    cat_rm = cat_actions.add_parser("remove", help="unregister a catalog")
+    cat_rm.add_argument("id", help="id of the catalog to unregister")
+    cat_rm.add_argument("--purge-clone", dest="purge_clone", action="store_true",
+                        help="also delete its clone directory")
+    cat_rm.add_argument("--json", action="store_true", help="machine-readable output")
+    cat_rm.set_defaults(func=cmd_catalog_remove)
+
     mig = cat_actions.add_parser("migrate",
                                  help="rewrite a legacy catalog: config into the catalogs: list")
     mig.add_argument("--dry-run", action="store_true", help="print the result without writing")
