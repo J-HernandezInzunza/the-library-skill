@@ -9,7 +9,7 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 
 ## Status
 
-28 of 37 tasks landed. Phases 0–7 complete; Phase 8 is next.
+29 of 37 tasks landed. Phases 0–7 complete; Phase 8 is in progress.
 
 | Task | Status | Commit |
 | ---- | ------ | ------ |
@@ -41,15 +41,17 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 | T6.7 `push` under shadowing | done | `1576f2b` |
 | T7.1 `catalog list` | done | `7fc8238` |
 | T7.2 `catalog add` + `catalog remove` | done | `c7112fb` |
-| T7.3 `catalog init` | done | |
-| T8.1–T8.2 doctor | todo | |
+| T7.3 `catalog init` | done | `02f650b` |
+| T8.1 per-catalog doctor + registry | done | |
+| T8.2 catalog-scoped deps + shadowing | todo | |
 | T9.1–T9.6 agent layer + docs | todo | |
 
 A task's own hash lands with the *next* commit — a commit cannot contain its own id.
 
 Off-plan commits: `c42cf29` (roadmap entry for the text-splice asymmetries found in T1.2),
 `9ba420d` (this ledger), `688643f` (the R2.4 / golden-baseline spec amendments behind
-deviation 10a), `b2e8746` (made `kickoff.md` resume from this ledger).
+deviation 10a), `b2e8746` (made `kickoff.md` resume from this ledger), `6a0d90c` (the R2.3
+amendment behind deviation 40).
 
 **Open item resolved.** D8 confirmed as planned: `catalog add` writes `protected: false`
 explicitly for a new remote catalog, `--protected` opts into the PR gate. Decided in T7.2.
@@ -231,6 +233,43 @@ Each is a place the code does something tasks.md or design.md doesn't say, with 
 39. **`register_catalog` / `print_registration` are shared by `add` and `init`.** Both must
     apply the same order — validate, migrate, reject duplicates, prove the target works,
     then write — and two copies of that sequence would be two chances to get R15.4 wrong.
+
+40. **R14.9 collides with R2.3, and R2.3 was amended** (off-plan commit `6a0d90c`). The
+    legacy-shape hint fires *only* for the singular `catalog:` config, which is exactly the
+    config R2.3 pins byte-for-byte — as written the two cannot both hold. Resolved the way
+    T4.1's carve-out already implied: `doctor` is the command whose job is to report
+    configuration problems, so it may add a finding when it has a genuinely new problem.
+    Three `doctor` goldens changed (`ALL_CLEAR` → `LEGACY_HINT_ONLY`, plus a line and a
+    count on the other two). `list` and `search` remain absolute — a diff there is a bug.
+41. **The duplicate-name check is scoped per catalog in T8.1, not T8.2.** tasks.md assigns
+    the split to T8.2, but the moment doctor reads every catalog, a *global* duplicate check
+    makes every intentional shadow an error and exits 1. Leaving that in for one commit
+    would ship the exact inversion design.md §risks warns about. The cross-catalog half —
+    the warning naming winner and losers — is still T8.2's.
+42. **`known` (dangling deps) and `_find_cycles` stay global in T8.1.** The opposite
+    direction from 41: global is *too permissive*, so a cross-catalog `requires` reads as
+    clean rather than as a false error. T8.2 tightens it to D9 by passing each catalog's own
+    entries — `_catalog_findings` takes `known` as a parameter precisely so that is a
+    one-line change.
+43. **The `gh` check is gated on a pr-mode catalog existing.** T8.1 says "keep the `gh`
+    check", but R14.8 says a config with no remotes hears nothing about remotes, and
+    `gh pr create` only ever runs for a protected remote. On a local-only setup the warning
+    is pure noise about a code path that cannot execute.
+44. **`default_add_catalog` pointing at nothing writable is a warning, not an error.** R7.5
+    deliberately tolerates a stale default while exactly one writable catalog exists, so
+    failing the run would contradict it. It is also *not* added to `Config.problems`:
+    `load_config` dies on the first problem there, and a stale default must never make the
+    whole tool unusable.
+45. **Clone staleness reuses `catalog_behind`** for R14.8's per-remote staleness check —
+    the tool-staleness check T8.1 tells us to keep is about `SKILL_DIR`, a different thing.
+    It only fires under `--no-pull` or after a fetch that could not fast-forward, which is
+    exactly what that helper was written to catch.
+46. **A malformed catalog file no longer crashes `doctor`** (unplanned fix). The old code
+    called `load_catalog` then `iter_entries` directly, so a catalog file holding a YAML
+    *list* raised `AttributeError: 'list' object has no attribute 'get'` out of the command.
+    Routing content checks through hydration classifies it as an error instead. Not
+    avoidable without adding code to preserve a crash, and R14.3 asks for the report
+    anyway; pinned by `test_a_malformed_catalog_file_no_longer_crashes_doctor`.
 ## Corrections the specs need
 
 - ~~tasks.md's per-commit invariant cites `main`~~ — **fixed.** It now says to compare

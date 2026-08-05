@@ -337,6 +337,24 @@ def install_two_catalog_fixture(tool: TempTool, personal_text: str = PERSONAL_CA
     return repo
 
 
+def install_local_only_fixture(tool: TempTool, catalog_text: str = "") -> Path:
+    """One local catalog and nothing else — what `catalog init` leaves on a fresh machine.
+
+    No remote anywhere, so every clone, reachability, `gh`, and staleness check has
+    nothing to run against (R14.8).
+    """
+    path = tool.root / "personal" / "library.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(catalog_text or GOLDEN_CATALOG_NO_DIRS)
+    tool.write_config({"catalogs": [{"id": "personal", "path": str(path)}]})
+    skills = tool.home / ".claude" / "skills"
+    skills.mkdir(parents=True, exist_ok=True)
+    link = skills / library.LINK_NAME
+    if not link.exists():
+        link.symlink_to(tool.tool_dir)
+    return path
+
+
 # The same entries with no default_dirs block — what `catalog init` scaffolds, and the
 # shape that produces no ignored-dirs warning.
 GOLDEN_CATALOG_NO_DIRS = "library:" + GOLDEN_CATALOG.split("\nlibrary:", 1)[1]
@@ -1523,7 +1541,10 @@ class TestComputeUpdatedEntry(unittest.TestCase):
 # human output stays byte-identical and every --json key keeps its name and meaning.
 # Later phases gate each new output element on len(cfg.active) > 1 precisely so these
 # keep passing untouched: if one of them fails, the change is wrong, not the golden.
-# The single sanctioned edit is T4.1 adding doctor's ignored-`default_dirs` warning.
+#
+# `list` and `search` are absolute: a diff there is a bug. `doctor` has R2.3's one
+# allowance — it may add a finding when it has a new problem to report — spent twice,
+# on T4.1's ignored-`default_dirs` warning and T8.1's legacy-shape hint. Nothing else.
 #
 # Every golden below was captured from actual CLI output, not written by hand.
 # --------------------------------------------------------------------------- #
@@ -1554,23 +1575,31 @@ GOLDEN_SEARCH_MISS = 'No results for "zzz". Try a broader keyword or `library li
 
 GOLDEN_DOCTOR_ALL_CLEAR = "All checks passed — 4 catalog entries, no problems found.\n"
 
+# R14.9's migration hint. Only a legacy config sees it, so it is on every golden in
+# this section and on none of the canonical-config ones.
+GOLDEN_DOCTOR_LEGACY_HINT = ("  WARN   [-] config still uses the singular 'catalog:' shape — run "
+                             "`library catalog migrate` to adopt the catalog registry\n")
+
+GOLDEN_DOCTOR_LEGACY_HINT_ONLY = GOLDEN_DOCTOR_LEGACY_HINT + "\n0 errors · 1 warnings\n"
+
 # The fixture catalog declares default_dirs, which the tool now ignores. <CONFIG> is
 # substituted for the sandbox config path, the one machine-specific span in the line.
-GOLDEN_DOCTOR_IGNORED_DIRS = """\
+GOLDEN_DOCTOR_IGNORED_DIRS = GOLDEN_DOCTOR_LEGACY_HINT + """\
   WARN   [-] catalog declares default_dirs, which has no effect — install dirs come from the tool, \
 overridable in <CONFIG>. In effect: skills:project=.claude/skills/, skills:global=~/.claude/skills/, \
 agents:project=.claude/agents/, agents:global=~/.claude/agents/, prompts:project=.claude/commands/, \
 prompts:global=~/.claude/commands/
 
-0 errors · 1 warnings
+0 errors · 2 warnings
 """
 
 GOLDEN_DOCTOR_PROBLEMS = """\
   ERROR  [session-retro] duplicate name in skill, skill
   ERROR  [session-retro] dangling dependency 'skill:missing-dep'
+""" + GOLDEN_DOCTOR_LEGACY_HINT + """\
   WARN   [-] skills not alphabetically sorted
 
-2 errors · 1 warnings
+2 errors · 2 warnings
 """
 
 
@@ -1604,13 +1633,15 @@ class TestSingleCatalogGoldens(unittest.TestCase):
         self.assertEqual(out.replace(str(self.tool.config_path), "<CONFIG>"),
                          GOLDEN_DOCTOR_IGNORED_DIRS)
 
-    def test_doctor_is_all_clear_for_a_catalog_without_default_dirs(self) -> None:
+    def test_doctor_has_nothing_but_the_legacy_hint_without_default_dirs(self) -> None:
         # The shape `catalog init` will scaffold (R12.9): no default_dirs, nothing to
-        # warn about, install dirs from the built-in defaults.
+        # warn about, install dirs from the built-in defaults. All that is left is the
+        # migration hint, which this config earns; TestDoctorRegistry pins the all-clear
+        # output for the same catalog under a canonical config.
         (self.tool.clone_dir / "library.yaml").write_text(GOLDEN_CATALOG_NO_DIRS)
         with stubbed_gh():
             code, out, _ = run_cli("doctor", "--no-pull")
-        self.assertEqual((code, out), (0, GOLDEN_DOCTOR_ALL_CLEAR))
+        self.assertEqual((code, out), (0, GOLDEN_DOCTOR_LEGACY_HINT_ONLY))
 
     def test_list_json_keys(self) -> None:
         code, out, _ = run_cli("list", "--no-pull", "--json")
@@ -1646,8 +1677,13 @@ class TestSingleCatalogGoldens(unittest.TestCase):
         self.assertEqual(sorted(payload), ["entries", "errors", "status", "warnings"])
         self.assertEqual((payload["status"], payload["entries"]), ("OK", 4))
         self.assertEqual(payload["errors"], [])
-        self.assertEqual([sorted(w) for w in payload["warnings"]], [["entry", "message"]])
-        self.assertIn("default_dirs, which has no effect", payload["warnings"][0]["message"])
+        # `catalog` is the additive key R2.4 allows: present unconditionally, None for a
+        # finding that belongs to the machine or the config rather than to one catalog.
+        self.assertEqual([sorted(w) for w in payload["warnings"]],
+                         [["catalog", "entry", "message"]] * 2)
+        self.assertEqual([w["catalog"] for w in payload["warnings"]], [None, "shared"])
+        self.assertIn("singular 'catalog:' shape", payload["warnings"][0]["message"])
+        self.assertIn("default_dirs, which has no effect", payload["warnings"][1]["message"])
 
 
 class TestSingleCatalogDoctorProblems(unittest.TestCase):
@@ -1672,7 +1708,8 @@ class TestSingleCatalogDoctorProblems(unittest.TestCase):
         self.assertEqual(payload["status"], "PROBLEMS")
         self.assertEqual(payload["entries"], 3)
         for item in payload["errors"] + payload["warnings"]:
-            self.assertEqual(sorted(item), ["entry", "message"])
+            self.assertEqual(sorted(item), ["catalog", "entry", "message"])
+        self.assertEqual([e["catalog"] for e in payload["errors"]], ["shared", "shared"])
         self.assertEqual([e["message"] for e in payload["errors"]], [
             "duplicate name in skill, skill",
             "dangling dependency 'skill:missing-dep'",
@@ -4890,6 +4927,245 @@ class TestAddOnASingleCatalog(unittest.TestCase):
         )
         self.assertEqual(code, 1)
         self.assertIn("catalog not found at", err)
+
+
+# --------------------------------------------------------------------------- #
+# doctor across catalogs (T8.1 — R14.1, R14.2, R14.3, R14.8, R14.9, R14.10)
+# --------------------------------------------------------------------------- #
+
+class DoctorCase(unittest.TestCase):
+    """Shared plumbing: `doctor` findings as data, so tests assert on attribution."""
+
+    maxDiff = None
+
+    def findings(self, *extra: str, gh: int = 0) -> tuple[int, dict[str, Any]]:
+        with stubbed_gh(gh):
+            code, out, err = run_cli("doctor", "--no-pull", "--json", *extra)
+        self.assertEqual(err, "", err)
+        return code, json.loads(out)
+
+    def report(self, *extra: str, gh: int = 0) -> tuple[int, str]:
+        with stubbed_gh(gh):
+            code, out, _ = run_cli("doctor", "--no-pull", *extra)
+        return code, out
+
+    def messages(self, payload: dict[str, Any]) -> list[str]:
+        return [f["message"] for f in payload["errors"] + payload["warnings"]]
+
+
+class TestDoctorAcrossCatalogs(DoctorCase):
+    """R14.1, R14.2 — every catalog is checked, and each finding says which one."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.repo = install_two_catalog_fixture(self.tool)
+
+    def add_catalog(self, item: dict[str, Any]) -> None:
+        cfg = yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())
+        cfg["catalogs"].append(item)
+        self.tool.write_config(cfg)
+
+    def test_findings_carry_the_catalog_that_produced_them(self) -> None:
+        # personal's sources are /srv paths that do not exist; shared declares the
+        # default_dirs block the tool ignores. One run, both catalogs checked.
+        code, payload = self.findings()
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            [(e["catalog"], e["entry"]) for e in payload["errors"]],
+            [("personal", "scratch-thing"), ("personal", "session-retro")],
+        )
+        self.assertEqual([(w["catalog"], w["entry"]) for w in payload["warnings"]],
+                         [("shared", None)])
+        self.assertIn("default_dirs, which has no effect", payload["warnings"][0]["message"])
+
+    def test_the_human_label_names_the_catalog(self) -> None:
+        code, out = self.report()
+        self.assertEqual(code, 1)
+        self.assertIn("  ERROR  [personal/scratch-thing] local source not found:", out)
+        self.assertIn("  WARN   [shared] catalog declares default_dirs", out)
+
+    def test_the_entry_count_covers_every_active_catalog(self) -> None:
+        _, payload = self.findings()
+        self.assertEqual(payload["entries"], 6)  # 4 shared + 2 personal
+
+    def test_the_same_name_in_two_catalogs_is_not_a_duplicate(self) -> None:
+        # The whole point of a personal catalog is shadowing a shared entry, so the
+        # duplicate-name check is scoped to one catalog's own entries. T8.2 adds the
+        # cross-catalog case back as a *warning*.
+        _, payload = self.findings()
+        self.assertEqual([m for m in self.messages(payload) if "duplicate name" in m], [])
+
+    def test_a_duplicate_within_one_catalog_is_still_an_error(self) -> None:
+        (self.tool.root / "personal" / "library.yaml").write_text(
+            "library:\n"
+            "  skills:\n"
+            "    - name: twice\n"
+            "      description: A\n"
+            "      source: https://github.com/acme/agentics/blob/main/skills/a/SKILL.md\n"
+            "    - name: twice\n"
+            "      description: B\n"
+            "      source: https://github.com/acme/agentics/blob/main/skills/b/SKILL.md\n"
+        )
+        code, payload = self.findings()
+        self.assertEqual(code, 1)
+        self.assertEqual([(e["catalog"], e["message"]) for e in payload["errors"]],
+                         [("personal", "duplicate name in skill, skill")])
+
+    def test_clone_and_reachability_run_for_every_remote(self) -> None:
+        # Registered last, so the pre-T8.1 code — which only ever looked at the first
+        # remote — would have reported nothing about it.
+        self.add_catalog({"id": "broken", "repo": str(self.tool.root / "no-such-repo.git"),
+                          "yaml_path": "library.yaml", "branch": "main"})
+        code, payload = self.findings()
+        self.assertEqual(code, 1)
+        unreachable = [e for e in payload["errors"] if "unreachable" in e["message"]]
+        self.assertEqual([e["catalog"] for e in unreachable], ["broken"])
+        not_cloned = [w for w in payload["warnings"] if "not yet cloned" in w["message"]]
+        self.assertEqual([w["catalog"] for w in not_cloned], ["broken"])
+        # …and the reachable remote is still reported as fine.
+        self.assertEqual([f for f in self.messages(payload) if "shared" in f], [])
+
+    def test_staleness_is_reported_per_remote_catalog(self) -> None:
+        self.repo.commit("library.yaml", GOLDEN_CATALOG_NO_DIRS)
+        self.repo.push()
+        self.repo.git("reset", "--hard", "HEAD~1")  # clone now trails its branch by one
+        _, payload = self.findings()
+        self.assertEqual(
+            [(w["catalog"], w["message"]) for w in payload["warnings"] if "behind" in w["message"]],
+            [("shared", "clone is 1 commit(s) behind origin/main (catalog was not refreshed)")],
+        )
+
+    def test_an_absent_clone_is_reported_once_as_a_warning(self) -> None:
+        # It resolves itself on the next read, so it must not also surface as the
+        # unreadable-source error that a genuinely broken catalog gets.
+        shutil.rmtree(library.CATALOG_CLONE_DIR)
+        _, payload = self.findings()
+        self.assertEqual(
+            [w["message"] for w in payload["warnings"] if w["catalog"] == "shared"],
+            [f"catalog not yet cloned at {library.CATALOG_CLONE_DIR}; "
+             "it will clone on first read (`library list`)"],
+        )
+        self.assertEqual([e for e in payload["errors"] if e["catalog"] == "shared"], [])
+
+    def test_a_catalog_whose_file_cannot_be_read_is_an_error(self) -> None:
+        (self.tool.root / "personal" / "library.yaml").unlink()
+        code, payload = self.findings()
+        self.assertEqual(code, 1)
+        unreadable = [e for e in payload["errors"] if "not found at" in e["message"]]
+        self.assertEqual([e["catalog"] for e in unreadable], ["personal"])
+        # The other catalog is still checked rather than the run being abandoned.
+        self.assertEqual([w["catalog"] for w in payload["warnings"]], ["shared"])
+
+    def test_a_malformed_catalog_file_is_an_error(self) -> None:
+        (self.tool.root / "personal" / "library.yaml").write_text("- not a mapping\n")
+        code, payload = self.findings()
+        self.assertEqual(code, 1)
+        malformed = [e for e in payload["errors"] if "malformed" in e["message"]]
+        self.assertEqual([e["catalog"] for e in malformed], ["personal"])
+
+
+class TestDoctorRegistry(DoctorCase):
+    """R14.3, R14.8, R14.9, R14.10 — the registry itself, and what a local-only
+    config must *not* be told about."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+
+    def test_every_registry_shape_problem_is_reported_at_once(self) -> None:
+        self.tool.write_config({"catalogs": [
+            {"id": "p", "path": "relative.yaml"},
+            {"id": "p", "repo": "git@github.com:a/b.git", "yaml_path": "library.yaml"},
+        ]})
+        code, payload = self.findings()
+        self.assertEqual(code, 1)
+        messages = [e["message"] for e in payload["errors"]]
+        for expected in ("must be absolute", "duplicate catalog id 'p'", "has no 'branch'"):
+            self.assertTrue(any(expected in m for m in messages), messages)
+        # Config-level, so no catalog owns them.
+        self.assertEqual({e["catalog"] for e in payload["errors"]}, {None})
+
+    def test_a_stale_default_add_catalog_is_a_warning_not_an_error(self) -> None:
+        # R7.5 tolerates it while exactly one writable catalog exists, so doctor says
+        # so without failing the run.
+        install_local_only_fixture(self.tool)
+        cfg = yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())
+        cfg["default_add_catalog"] = "gone"
+        self.tool.write_config(cfg)
+        code, payload = self.findings()
+        self.assertEqual((code, payload["errors"]), (0, []))
+        self.assertEqual([(w["catalog"], w["message"]) for w in payload["warnings"]],
+                         [(None, "default_add_catalog names 'gone', which is not a "
+                                 "writable catalog (writable: personal)")])
+
+    def test_a_read_only_default_add_catalog_is_reported(self) -> None:
+        install_local_only_fixture(self.tool)
+        cfg = yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())
+        cfg["catalogs"][0]["writable"] = False
+        cfg["default_add_catalog"] = "personal"
+        self.tool.write_config(cfg)
+        code, payload = self.findings()
+        self.assertEqual(code, 0)
+        self.assertEqual([w["message"] for w in payload["warnings"]],
+                         ["default_add_catalog names 'personal', which is not a "
+                          "writable catalog (writable: none)"])
+
+    def test_a_usable_default_add_catalog_is_silent(self) -> None:
+        install_local_only_fixture(self.tool)
+        cfg = yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())
+        cfg["default_add_catalog"] = "personal"
+        self.tool.write_config(cfg)
+        self.assertEqual(self.report(), (0, GOLDEN_DOCTOR_ALL_CLEAR))
+
+    # ── a local-only config hears nothing about remotes (R14.8) ─────────
+    def test_a_local_only_config_produces_no_remote_findings(self) -> None:
+        install_local_only_fixture(self.tool)
+        # gh deliberately unauthenticated: nothing here can ever open a PR, so the
+        # warning would be noise. Same for clone, reachability, and staleness.
+        self.assertEqual(self.report(gh=1), (0, GOLDEN_DOCTOR_ALL_CLEAR))
+
+    def test_a_remote_catalog_brings_the_gh_check_back(self) -> None:
+        install_golden_fixture(self.tool, GOLDEN_CATALOG_NO_DIRS)
+        _, payload = self.findings(gh=1)
+        self.assertTrue(any("gh CLI not authenticated" in m for m in self.messages(payload)),
+                        self.messages(payload))
+
+    def test_one_canonical_catalog_keeps_the_catalog_out_of_the_label(self) -> None:
+        # R2.3 keyed on catalog count, not on config shape: a migrated config with one
+        # catalog reads exactly like the legacy one it replaced.
+        install_local_only_fixture(self.tool, catalog_text=PERSONAL_CATALOG)
+        code, out = self.report()
+        self.assertEqual(code, 1)
+        self.assertIn("  ERROR  [scratch-thing] local source not found:", out)
+        # Not `assertNotIn("personal")`: the entry sources are /srv/personal paths. The
+        # label is what must stay clean.
+        self.assertNotIn("[personal", out)
+
+    # ── the legacy-shape hint (R14.9) ───────────────────────────────────
+    def test_the_legacy_hint_appears_and_migrate_clears_it(self) -> None:
+        install_golden_fixture(self.tool, GOLDEN_CATALOG_NO_DIRS)
+        self.assertEqual(self.report(), (0, GOLDEN_DOCTOR_LEGACY_HINT_ONLY))
+        code, _, err = run_cli("catalog", "migrate", "--json")
+        self.assertEqual(code, 0, err)
+        # Byte-identical to the legacy report minus the hint: migrating is the whole fix.
+        self.assertEqual(self.report(), (0, GOLDEN_DOCTOR_ALL_CLEAR))
+
+    def test_a_malformed_catalog_file_no_longer_crashes_doctor(self) -> None:
+        # Pre-T8.1 this raised AttributeError out of iter_entries, because doctor loaded
+        # the catalog itself instead of going through the hydration that classifies it.
+        install_golden_fixture(self.tool, GOLDEN_CATALOG_NO_DIRS)
+        (library.CATALOG_CLONE_DIR / "library.yaml").write_text("- not a mapping\n")
+        code, payload = self.findings()
+        self.assertEqual(code, 1)
+        self.assertEqual([e["message"] for e in payload["errors"]],
+                         [f"{library.CATALOG_CLONE_DIR / 'library.yaml'} is malformed "
+                          "(expected a YAML mapping)"])
+
+    def test_the_legacy_hint_does_not_fail_the_run(self) -> None:
+        install_golden_fixture(self.tool, GOLDEN_CATALOG_NO_DIRS)
+        code, payload = self.findings()
+        self.assertEqual((code, payload["status"]), (0, "OK"))
 
 
 if __name__ == "__main__":

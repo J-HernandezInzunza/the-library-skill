@@ -3231,105 +3231,30 @@ def cmd_catalog_migrate(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_doctor(args: argparse.Namespace) -> int:
-    errors: list[tuple[str | None, str]] = []
-    warns: list[tuple[str | None, str]] = []
+def _doctor_label(catalog: "str | None", entry: "str | None", multi: bool) -> str:
+    """`doctor`'s one-column finding label: `catalog/entry`, either alone, or `-`.
 
-    # ── Link health: is the tool discoverable as a skill? ───────────────
-    link = GLOBAL_SKILLS_DIR / LINK_NAME
-    lstate, ltarget = _link_state(link)
-    if lstate == "dangling":
-        errors.append((None, f"skill link {link} is dangling (→ {ltarget}) — run `library link` to repair"))
-    elif lstate == "wrong-target":
-        warns.append((None, f"skill link {link} points at a different copy ({ltarget}); "
-                            f"this clone is {SKILL_DIR} — `library link --force` to repoint"))
-    elif lstate == "occupied":
-        warns.append((None, f"a different copy of the tool lives at {link} (this clone is {SKILL_DIR})"))
-    elif lstate == "missing":
-        warns.append((None, f"tool not linked at {link} — the /library skill won't load globally; run `library link`"))
+    The catalog id appears only when more than one is registered (R14.2) — naming it
+    for a single catalog would change output R2.3 pins byte-for-byte.
+    """
+    return "/".join(p for p in ((catalog if multi else None), entry) if p) or "-"
 
-    # ── Phase 5.1: config validation ────────────────────────────────────
-    cfg: Config | None = None
-    if not LOCAL_CONFIG_PATH.exists():
-        errors.append((None, f"no local config at {LOCAL_CONFIG_PATH} — run `library init --repo <url>` first"))
-    else:
-        try:
-            with LOCAL_CONFIG_PATH.open() as fh:
-                raw_cfg = yaml.safe_load(fh) or {}
-            if not isinstance(raw_cfg, dict):
-                raise ValueError("expected a YAML mapping")
-            problems = Config.problems(raw_cfg)
-            if problems:
-                for problem in problems:
-                    errors.append((None, f"config at {LOCAL_CONFIG_PATH}: {problem}"))
-            else:
-                cfg = Config.from_dict(raw_cfg)
-        except Exception as ex:
-            errors.append((None, f"config parse error: {ex}"))
 
-    # ── Phase 5.1: catalog clone check ──────────────────────────────────
-    if cfg is not None:
-        if not CATALOG_CLONE_DIR.exists():
-            warns.append((None, f"catalog not yet cloned at {CATALOG_CLONE_DIR}; it will clone on first read (`library list`)"))
-        else:
-            r = subprocess.run(
-                ["git", "-C", str(CATALOG_CLONE_DIR), "remote", "get-url", "origin"],
-                capture_output=True, text=True,
-            )
-            if r.returncode != 0:
-                errors.append((None, "catalog clone is missing 'origin' remote — re-run `library init --force`"))
-            elif r.stdout.strip() != cfg.catalog_repo:
-                warns.append((None,
-                    f"catalog clone remote ({r.stdout.strip()!r}) differs from "
-                    f"config catalog.repo ({cfg.catalog_repo!r})"))
+def _catalog_findings(
+    cfg: Config, cat: Catalog, known: set[tuple[str, str]], deep: bool,
+) -> tuple[list[tuple["str | None", str]], list[tuple["str | None", str]]]:
+    """Content checks for one catalog: (errors, warnings) as (entry name, message).
 
-        # ── Phase 5.2: auth check (catalog repo read access) ────────────
-        try:
-            ls = subprocess.run(
-                ["git", "ls-remote", "--heads", cfg.catalog_repo],
-                capture_output=True, text=True, timeout=15,
-            )
-            if ls.returncode != 0:
-                errors.append((None,
-                    f"catalog repo unreachable ({cfg.catalog_repo}): "
-                    f"{_git_error_summary(ls.stderr)}"))
-        except subprocess.TimeoutExpired:
-            errors.append((None, f"catalog repo timed out — is {cfg.catalog_repo} reachable?"))
+    Every check here is about a single catalog file — its own sort order, its own
+    default_dirs block, the sources and duplicate names it declares — so running them
+    per catalog is what makes the findings attributable (R14.2). *known* is the set
+    `requires` refs resolve against; its scope belongs to the caller.
+    """
+    errors: list[tuple["str | None", str]] = []
+    warns: list[tuple["str | None", str]] = []
+    catalog, entries = cat.data, iter_catalog_entries(cat)
 
-        # ── Phase 5.2: gh CLI check ──────────────────────────────────────
-        try:
-            gh_status = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True)
-            if gh_status.returncode != 0:
-                warns.append((None, "gh CLI not authenticated — `autopush: true` will fall back to compare URL"))
-        except FileNotFoundError:
-            warns.append((None, "gh CLI not installed — `autopush: true` will fall back to compare URL"))
-
-        # ── Phase 5.3: tool staleness check ─────────────────────────────
-        try:
-            fetch_dry = subprocess.run(
-                ["git", "-C", str(SKILL_DIR), "fetch", "--dry-run"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if fetch_dry.returncode == 0 and any("->" in ln for ln in fetch_dry.stderr.splitlines()):
-                warns.append((None, "tool has upstream changes available; run `library self-update`"))
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass  # offline or no git — not worth warning about
-
-    # ── Catalog content checks ───────────────────────────────────────────
-    entries: list[Entry] = []
-    catalog: dict[str, Any] = {}
-
-    if cfg is not None and CATALOG_CLONE_DIR.exists():
-        if not args.no_pull:
-            pull_catalog(cfg._first_remote)  # safe: clone exists, worst case is a warn
-        p = catalog_yaml(cfg._first_remote)
-        if p.exists():
-            catalog = load_catalog(p)
-            entries = iter_entries(catalog)
-        else:
-            errors.append((None, f"catalog file not found at {p}"))
-
-    if catalog and cfg is not None and catalog.get("default_dirs"):
+    if catalog.get("default_dirs"):
         # Install dirs belong to the tool and the local config, so a catalog's own
         # default_dirs block does nothing — say so, and name what is actually in force.
         in_effect = ", ".join(f"{section}:{scope}={path}"
@@ -3339,66 +3264,200 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             "catalog declares default_dirs, which has no effect — install dirs come from "
             f"the tool, overridable in {LOCAL_CONFIG_PATH}. In effect: {in_effect}"))
 
-    if catalog:
-        # Legacy scope key: 'default' was renamed to 'project' (still accepted as an alias).
-        legacy = [
-            section for section in TYPES
-            if any(isinstance(item, dict) and "default" in item
-                   for item in (catalog.get("default_dirs", {}).get(section) or []))
-        ]
-        if legacy:
-            warns.append((None,
-                f"default_dirs uses the legacy 'default' scope key ({', '.join(legacy)}) — "
-                f"rename it to 'project' in the catalog"))
+    # Legacy scope key: 'default' was renamed to 'project' (still accepted as an alias).
+    legacy = [
+        section for section in TYPES
+        if any(isinstance(item, dict) and "default" in item
+               for item in (catalog.get("default_dirs", {}).get(section) or []))
+    ]
+    if legacy:
+        warns.append((None,
+            f"default_dirs uses the legacy 'default' scope key ({', '.join(legacy)}) — "
+            f"rename it to 'project' in the catalog"))
 
-    if entries:
-        # Duplicate names (use/find_exact matches globally, so a dup silently shadows).
-        by_name: dict[str, list[Entry]] = {}
-        for e in entries:
-            by_name.setdefault(e.name, []).append(e)
-        for name, group in by_name.items():
-            if len(group) > 1:
-                errors.append((name, f"duplicate name in {', '.join(g.type for g in group)}"))
+    # Duplicate names *within* one catalog: find_exact takes the first, so the rest are
+    # unreachable. Scoped per catalog because the same name in two catalogs is
+    # deliberate shadowing, not a mistake — T8.2 adds that as a warning.
+    by_name: dict[str, list[Entry]] = {}
+    for e in entries:
+        by_name.setdefault(e.name, []).append(e)
+    for name, group in by_name.items():
+        if len(group) > 1:
+            errors.append((name, f"duplicate name in {', '.join(g.type for g in group)}"))
 
-        known = {(e.type, e.name) for e in entries}
+    for e in entries:
+        try:
+            src = parse_source(e.source)
+            if src.kind == "local" and (src.path is None or not src.path.exists()):
+                errors.append((e.name, f"local source not found: {e.source}"))
+        except LibraryError as ex:
+            errors.append((e.name, str(ex)))
+        for r in e.requires:
+            if ":" not in r or r.split(":", 1)[0] not in ("skill", "agent", "prompt"):
+                errors.append((e.name, f"malformed requires ref '{r}'"))
+                continue
+            t, n = r.split(":", 1)
+            if (t.strip(), n.strip()) not in known:
+                errors.append((e.name, f"dangling dependency '{r}'"))
+
+    for section in TYPES:
+        names = [e.name for e in entries if e.section == section]
+        if names != sorted(names, key=str.lower):
+            warns.append((None, f"{section} not alphabetically sorted"))
+
+    if deep:
         for e in entries:
             try:
                 src = parse_source(e.source)
-                if src.kind == "local" and (src.path is None or not src.path.exists()):
-                    errors.append((e.name, f"local source not found: {e.source}"))
-            except LibraryError as ex:
-                errors.append((e.name, str(ex)))
-            for r in e.requires:
-                if ":" not in r or r.split(":", 1)[0] not in ("skill", "agent", "prompt"):
-                    errors.append((e.name, f"malformed requires ref '{r}'"))
-                    continue
-                t, n = r.split(":", 1)
-                if (t.strip(), n.strip()) not in known:
-                    errors.append((e.name, f"dangling dependency '{r}'"))
+            except LibraryError:
+                continue  # already reported as malformed
+            if src.kind != "local" and not _source_alive(src):
+                errors.append((e.name, f"repo or branch unreachable: {src.org}/{src.repo}@{src.branch}"))
+
+    return errors, warns
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    # (catalog id, entry name, message) — either id may be None for a finding that
+    # belongs to the machine or the config rather than to one catalog or entry.
+    errors: list[tuple["str | None", "str | None", str]] = []
+    warns: list[tuple["str | None", "str | None", str]] = []
+
+    # ── Link health: is the tool discoverable as a skill? ───────────────
+    link = GLOBAL_SKILLS_DIR / LINK_NAME
+    lstate, ltarget = _link_state(link)
+    if lstate == "dangling":
+        errors.append((None, None, f"skill link {link} is dangling (→ {ltarget}) — run `library link` to repair"))
+    elif lstate == "wrong-target":
+        warns.append((None, None, f"skill link {link} points at a different copy ({ltarget}); "
+                                  f"this clone is {SKILL_DIR} — `library link --force` to repoint"))
+    elif lstate == "occupied":
+        warns.append((None, None, f"a different copy of the tool lives at {link} (this clone is {SKILL_DIR})"))
+    elif lstate == "missing":
+        warns.append((None, None, f"tool not linked at {link} — the /library skill won't load globally; run `library link`"))
+
+    # ── Config validation ───────────────────────────────────────────────
+    cfg: Config | None = None
+    if not LOCAL_CONFIG_PATH.exists():
+        errors.append((None, None, f"no local config at {LOCAL_CONFIG_PATH} — run `library init --repo <url>` first"))
+    else:
+        try:
+            with LOCAL_CONFIG_PATH.open() as fh:
+                raw_cfg = yaml.safe_load(fh) or {}
+            if not isinstance(raw_cfg, dict):
+                raise ValueError("expected a YAML mapping")
+            problems = Config.problems(raw_cfg)
+            if problems:
+                for problem in problems:
+                    errors.append((None, None, f"config at {LOCAL_CONFIG_PATH}: {problem}"))
+            else:
+                cfg = Config.from_dict(raw_cfg)
+        except Exception as ex:
+            errors.append((None, None, f"config parse error: {ex}"))
+
+    entries: list[Entry] = []
+
+    if cfg is not None:
+        # ── Registry validation (R14.3, R14.9) ──────────────────────────
+        if cfg.legacy_shape:
+            warns.append((None, None,
+                "config still uses the singular 'catalog:' shape — run "
+                "`library catalog migrate` to adopt the catalog registry"))
+        writable = [c.id for c in cfg.writable]
+        if cfg.default_add_catalog and cfg.default_add_catalog not in writable:
+            # A warning, not an error: with exactly one writable catalog the write still
+            # lands there (R7.5). A stale default only bites once several are writable.
+            warns.append((None, None,
+                f"default_add_catalog names '{cfg.default_add_catalog}', which is not a "
+                f"writable catalog (writable: {', '.join(writable) or 'none'})"))
+
+        # ── Per remote catalog: clone presence, origin match, read access ─
+        for cat in cfg.remotes:
+            if not cat.clone_dir.exists():
+                warns.append((cat.id, None,
+                    f"catalog not yet cloned at {cat.clone_dir}; it will clone on first read (`library list`)"))
+            else:
+                r = subprocess.run(
+                    ["git", "-C", str(cat.clone_dir), "remote", "get-url", "origin"],
+                    capture_output=True, text=True,
+                )
+                if r.returncode != 0:
+                    errors.append((cat.id, None, "catalog clone is missing 'origin' remote — re-run `library init --force`"))
+                elif r.stdout.strip() != cat.repo:
+                    warns.append((cat.id, None,
+                        f"catalog clone remote ({r.stdout.strip()!r}) differs from "
+                        f"config catalog.repo ({cat.repo!r})"))
+            try:
+                ls = subprocess.run(
+                    ["git", "ls-remote", "--heads", cat.repo],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if ls.returncode != 0:
+                    errors.append((cat.id, None,
+                        f"catalog repo unreachable ({cat.repo}): "
+                        f"{_git_error_summary(ls.stderr)}"))
+            except subprocess.TimeoutExpired:
+                errors.append((cat.id, None, f"catalog repo timed out — is {cat.repo} reachable?"))
+
+        # ── gh CLI check — only matters where a write opens a PR ─────────
+        if any(c.write_mode == "pr" for c in cfg.catalogs):
+            try:
+                gh_status = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True)
+                if gh_status.returncode != 0:
+                    warns.append((None, None, "gh CLI not authenticated — `autopush: true` will fall back to compare URL"))
+            except FileNotFoundError:
+                warns.append((None, None, "gh CLI not installed — `autopush: true` will fall back to compare URL"))
+
+        # ── Tool staleness check ────────────────────────────────────────
+        try:
+            fetch_dry = subprocess.run(
+                ["git", "-C", str(SKILL_DIR), "fetch", "--dry-run"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if fetch_dry.returncode == 0 and any("->" in ln for ln in fetch_dry.stderr.splitlines()):
+                warns.append((None, None, "tool has upstream changes available; run `library self-update`"))
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass  # offline or no git — not worth warning about
+
+        # ── Refresh, then re-read: from_dict does not hydrate ───────────
+        pull_errors = pull_all(cfg) if not args.no_pull else {}
+        hydrate_all(cfg, quiet=True)  # doctor reports skips itself, below
+
+        # ── Clone staleness per remote catalog ──────────────────────────
+        for cat in cfg.remotes:
+            behind = catalog_behind(cat)
+            if behind:
+                reason = (f"pull failed: {pull_errors[cat.id]}" if pull_errors.get(cat.id)
+                          else "catalog was not refreshed")
+                warns.append((cat.id, None,
+                    f"clone is {behind} commit(s) behind origin/{cat.branch} ({reason})"))
+
+        # ── A catalog whose source could not be read (R14.3) ────────────
+        for cat in cfg.catalogs:
+            if not cat.skipped or (cat.is_remote and not cat.clone_dir.exists()):
+                continue  # an absent clone is already reported, as a warning
+            errors.append((cat.id, None, cat.skipped))
+
+        # ── Per-catalog content checks (R14.1, R14.2) ───────────────────
+        entries = cfg.entries()
+        # Global for now: T8.2 scopes `known` to each catalog's own entries (D9).
+        known = {(e.type, e.name) for e in entries}
+        for cat in cfg.active:
+            cat_errors, cat_warns = _catalog_findings(cfg, cat, known, args.deep)
+            errors.extend((cat.id, n, m) for n, m in cat_errors)
+            warns.extend((cat.id, n, m) for n, m in cat_warns)
 
         for cyc in _find_cycles(entries):
-            errors.append((None, "dependency cycle: " + " -> ".join(cyc)))
+            errors.append((None, None, "dependency cycle: " + " -> ".join(cyc)))
 
-        for section in TYPES:
-            names = [e.name for e in entries if e.section == section]
-            if names != sorted(names, key=str.lower):
-                warns.append((None, f"{section} not alphabetically sorted"))
-
-        if args.deep:
-            for e in entries:
-                try:
-                    src = parse_source(e.source)
-                except LibraryError:
-                    continue  # already reported as malformed
-                if src.kind != "local" and not _source_alive(src):
-                    errors.append((e.name, f"repo or branch unreachable: {src.org}/{src.repo}@{src.branch}"))
+    multi = cfg is not None and multi_catalog(cfg)
 
     if args.json:
         print(json.dumps({
             "status": "PROBLEMS" if errors else "OK",
             "entries": len(entries),
-            "errors": [{"entry": n, "message": m} for n, m in errors],
-            "warnings": [{"entry": n, "message": m} for n, m in warns],
+            "errors": [{"catalog": c, "entry": n, "message": m} for c, n, m in errors],
+            "warnings": [{"catalog": c, "entry": n, "message": m} for c, n, m in warns],
         }, indent=2))
         return 1 if errors else 0
 
@@ -3406,10 +3465,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         count_str = f"{len(entries)} catalog entries" if entries else "no catalog loaded"
         print(f"All checks passed — {count_str}, no problems found.")
         return 0
-    for n, m in errors:
-        print(f"  ERROR  [{n or '-'}] {m}")
-    for n, m in warns:
-        print(f"  WARN   [{n or '-'}] {m}")
+    for c, n, m in errors:
+        print(f"  ERROR  [{_doctor_label(c, n, multi)}] {m}")
+    for c, n, m in warns:
+        print(f"  WARN   [{_doctor_label(c, n, multi)}] {m}")
     print(f"\n{len(errors)} errors · {len(warns)} warnings")
     return 1 if errors else 0
 
