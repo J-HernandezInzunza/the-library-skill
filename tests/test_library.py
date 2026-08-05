@@ -4976,8 +4976,10 @@ class TestDoctorAcrossCatalogs(DoctorCase):
             [("personal", "scratch-thing"), ("personal", "session-retro")],
         )
         self.assertEqual([(w["catalog"], w["entry"]) for w in payload["warnings"]],
-                         [("shared", None)])
+                         [("shared", None), (None, "session-retro")])
         self.assertIn("default_dirs, which has no effect", payload["warnings"][0]["message"])
+        # The shadow warning belongs to no single catalog; TestDoctorCatalogScope pins it.
+        self.assertIn("takes precedence", payload["warnings"][1]["message"])
 
     def test_the_human_label_names_the_catalog(self) -> None:
         code, out = self.report()
@@ -5023,8 +5025,11 @@ class TestDoctorAcrossCatalogs(DoctorCase):
         self.assertEqual([e["catalog"] for e in unreachable], ["broken"])
         not_cloned = [w for w in payload["warnings"] if "not yet cloned" in w["message"]]
         self.assertEqual([w["catalog"] for w in not_cloned], ["broken"])
-        # …and the reachable remote is still reported as fine.
-        self.assertEqual([f for f in self.messages(payload) if "shared" in f], [])
+        # …and the reachable remote produced no clone or reachability finding of its own.
+        self.assertEqual([e for e in payload["errors"] if e["catalog"] == "shared"], [])
+        self.assertEqual([w["message"] for w in payload["warnings"]
+                          if w["catalog"] == "shared"
+                          and ("cloned" in w["message"] or "unreachable" in w["message"])], [])
 
     def test_staleness_is_reported_per_remote_catalog(self) -> None:
         self.repo.commit("library.yaml", GOLDEN_CATALOG_NO_DIRS)
@@ -5166,6 +5171,188 @@ class TestDoctorRegistry(DoctorCase):
         install_golden_fixture(self.tool, GOLDEN_CATALOG_NO_DIRS)
         code, payload = self.findings()
         self.assertEqual((code, payload["status"]), (0, "OK"))
+
+
+# --------------------------------------------------------------------------- #
+# doctor's catalog-scoped checks (T8.2 — R4.5, R14.4, R14.5, R14.6, R14.7)
+# --------------------------------------------------------------------------- #
+
+# A personal catalog with nothing wrong with it, shadowing one shared entry. Its source
+# is a URL, so the only finding a run can produce is the shadow itself.
+PERSONAL_CLEAN = """\
+library:
+  skills:
+    - name: session-retro
+      description: My iterated copy of session-retro
+      source: https://github.com/me/mine/blob/main/skills/session-retro/SKILL.md
+  agents: []
+  prompts: []
+"""
+
+
+def personal_text(*skills: str) -> str:
+    """A personal catalog holding *skills*, each an already-indented YAML block."""
+    return "library:\n  skills:\n" + "".join(skills) + "  agents: []\n  prompts: []\n"
+
+
+def skill_block(name: str, requires: str = "") -> str:
+    return (f"    - name: {name}\n"
+            f"      description: {name}\n"
+            f"      source: https://github.com/me/mine/blob/main/skills/{name}/SKILL.md\n"
+            + (f"      requires: [{requires}]\n" if requires else ""))
+
+
+class TestDoctorCatalogScope(DoctorCase):
+    """D9 — dependencies and cycles are catalog-internal; shadowing is deliberate."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+
+    def fixture(self, personal: str, shared: str = "") -> None:
+        self.repo = install_two_catalog_fixture(
+            self.tool, personal_text=personal, shared_text=shared or GOLDEN_CATALOG_NO_DIRS)
+
+    # ── shadowing (R14.5, R4.5) ─────────────────────────────────────────
+    def test_an_intentional_shadow_is_a_warning_and_the_run_still_passes(self) -> None:
+        # The condition this task is most likely to invert: shadowing is the reason a
+        # personal catalog exists, so it must never fail `doctor`.
+        self.fixture(PERSONAL_CLEAN)
+        code, payload = self.findings()
+        self.assertEqual((code, payload["errors"]), (0, []))
+        self.assertEqual(
+            [(w["catalog"], w["entry"], w["message"]) for w in payload["warnings"]],
+            [(None, "session-retro", "'session-retro' is defined in 2 catalogs — 'personal' "
+                                     "takes precedence, shadowing shared")],
+        )
+
+    def test_the_warning_names_the_winner_first_then_every_loser(self) -> None:
+        self.fixture(PERSONAL_CLEAN)
+        third = self.tool.root / "third" / "library.yaml"
+        third.parent.mkdir(parents=True, exist_ok=True)
+        third.write_text(PERSONAL_CLEAN)
+        cfg = yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())
+        cfg["catalogs"].insert(1, {"id": "third", "path": str(third)})
+        self.tool.write_config(cfg)
+        _, payload = self.findings()
+        self.assertEqual([w["message"] for w in payload["warnings"]],
+                         ["'session-retro' is defined in 3 catalogs — 'personal' takes "
+                          "precedence, shadowing third, shared"])
+
+    def test_a_name_in_one_catalog_only_is_not_shadowing(self) -> None:
+        self.fixture(personal_text(skill_block("mine-alone")))
+        code, payload = self.findings()
+        self.assertEqual((code, payload["warnings"]), (0, []))
+
+    def test_a_within_catalog_duplicate_stays_an_error_not_a_shadow(self) -> None:
+        # R4.5 — the two findings are distinct, and only this one fails the run.
+        self.fixture(personal_text(skill_block("twice"), skill_block("twice")))
+        code, payload = self.findings()
+        self.assertEqual(code, 1)
+        self.assertEqual([(e["catalog"], e["message"]) for e in payload["errors"]],
+                         [("personal", "duplicate name in skill, skill")])
+        self.assertEqual(payload["warnings"], [])
+
+    # ── dependencies (R14.4) ────────────────────────────────────────────
+    def test_a_dependency_inside_the_same_catalog_is_clean(self) -> None:
+        self.fixture(personal_text(skill_block("dep"), skill_block("needs-dep", '"skill:dep"')))
+        code, payload = self.findings()
+        self.assertEqual((code, payload["errors"]), (0, []))
+
+    def test_a_dependency_satisfied_only_in_another_catalog_is_an_error(self) -> None:
+        # shared has backend-code-practices; personal does not. D9 says that is dangling.
+        self.fixture(personal_text(skill_block("needs-shared", '"skill:backend-code-practices"')))
+        code, payload = self.findings()
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            [(e["catalog"], e["entry"], e["message"]) for e in payload["errors"]],
+            [("personal", "needs-shared",
+              "dangling dependency 'skill:backend-code-practices'; it exists in shared, but "
+              "dependencies resolve within one catalog — add a copy to 'personal'")],
+        )
+
+    def test_a_ref_that_exists_nowhere_keeps_the_original_message(self) -> None:
+        self.fixture(personal_text(skill_block("needs-ghost", '"skill:ghost"')))
+        _, payload = self.findings()
+        self.assertEqual([e["message"] for e in payload["errors"]],
+                         ["dangling dependency 'skill:ghost'"])
+
+    def test_the_shared_catalogs_own_dependency_is_not_flagged(self) -> None:
+        # GOLDEN_CATALOG_NO_DIRS: session-retro requires backend-code-practices, both in
+        # shared. Scoping deps must not turn today's clean catalog into a broken one.
+        self.fixture(PERSONAL_CLEAN)
+        _, payload = self.findings()
+        self.assertEqual([m for m in self.messages(payload) if "dangling" in m], [])
+
+    # ── cycles (R14.4) ──────────────────────────────────────────────────
+    def test_a_cycle_inside_one_catalog_is_still_detected(self) -> None:
+        self.fixture(personal_text(skill_block("a", '"skill:b"'), skill_block("b", '"skill:a"')))
+        code, payload = self.findings()
+        self.assertEqual(code, 1)
+        cycles = [(e["catalog"], e["message"]) for e in payload["errors"]
+                  if "cycle" in e["message"]]
+        self.assertEqual([c[0] for c in cycles], ["personal"])
+        self.assertIn("dependency cycle: skill:a -> skill:b -> skill:a", cycles[0][1])
+
+    def test_a_cycle_cannot_span_two_catalogs(self) -> None:
+        # personal:a -> shared:sql-review -> personal:a is not a cycle once deps are
+        # catalog-scoped; it is two dangling refs, which is what D9 makes of it.
+        shared = GOLDEN_CATALOG_NO_DIRS.replace(
+            "      source: https://github.com/acme/agentics/blob/main/agents/sql-review.md",
+            "      source: https://github.com/acme/agentics/blob/main/agents/sql-review.md\n"
+            '      requires: ["skill:a"]')
+        self.fixture(personal_text(skill_block("a", '"agent:sql-review"')), shared=shared)
+        _, payload = self.findings()
+        self.assertEqual([m for m in self.messages(payload) if "cycle" in m], [])
+        self.assertEqual([(e["catalog"], e["entry"]) for e in payload["errors"]],
+                         [("personal", "a"), ("shared", "sql-review")])
+
+    # ── ineffective default_dirs (R14.6) ────────────────────────────────
+    def test_each_catalog_declaring_default_dirs_is_warned_about_separately(self) -> None:
+        self.fixture(GOLDEN_CATALOG, shared=GOLDEN_CATALOG)  # both declare the block
+        _, payload = self.findings()
+        self.assertEqual([w["catalog"] for w in payload["warnings"]
+                          if "default_dirs, which has no effect" in w["message"]],
+                         ["personal", "shared"])
+
+    def test_the_warning_names_the_paths_actually_in_use(self) -> None:
+        self.fixture(PERSONAL_CLEAN, shared=GOLDEN_CATALOG)
+        cfg = yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())
+        cfg["default_dirs"] = {"skills": [{"global": "~/elsewhere/skills/"}]}
+        self.tool.write_config(cfg)
+        _, payload = self.findings()
+        ignored = next(w["message"] for w in payload["warnings"] if "has no effect" in w["message"])
+        # The override, not the catalog's own paths, is what the user is told is in force.
+        self.assertIn("skills:global=~/elsewhere/skills/", ignored)
+        self.assertNotIn("skills:global=~/.claude/skills/", ignored)
+
+    # ── local sources in a remote catalog (R14.7) ───────────────────────
+    def test_a_local_source_in_a_remote_catalog_is_a_warning(self) -> None:
+        local = self.tool.root / "on-my-disk" / "SKILL.md"
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_text("# mine\n")
+        shared = personal_text(skill_block("shared-thing")).replace(
+            "source: https://github.com/me/mine/blob/main/skills/shared-thing/SKILL.md",
+            f"source: {local}")
+        self.fixture(PERSONAL_CLEAN, shared=shared)
+        code, payload = self.findings()
+        # The file is right here, so nothing is broken *on this machine* — hence a warning.
+        self.assertEqual((code, payload["errors"]), (0, []))
+        self.assertEqual([(w["catalog"], w["entry"], w["message"]) for w in payload["warnings"]],
+                         [("shared", "shared-thing",
+                           f"local source {local} won't resolve for teammates pulling this "
+                           "catalog — a remote catalog's sources should be URLs")])
+
+    def test_a_local_source_in_a_local_catalog_is_fine(self) -> None:
+        local = self.tool.root / "on-my-disk" / "SKILL.md"
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_text("# mine\n")
+        personal = personal_text(skill_block("mine")).replace(
+            "source: https://github.com/me/mine/blob/main/skills/mine/SKILL.md",
+            f"source: {local}")
+        self.fixture(personal)
+        code, payload = self.findings()
+        self.assertEqual((code, payload["warnings"]), (0, []))
 
 
 if __name__ == "__main__":

@@ -3240,15 +3240,34 @@ def _doctor_label(catalog: "str | None", entry: "str | None", multi: bool) -> st
     return "/".join(p for p in ((catalog if multi else None), entry) if p) or "-"
 
 
+def _shadow_findings(cfg: Config) -> list[tuple[str, str]]:
+    """One warning per name held by more than one catalog: (entry name, message).
+
+    Shadowing is deliberate — it is the whole reason to register a personal catalog —
+    so this is a warning naming winner and losers (R14.5, R4.5), never an error.
+    `cfg.entries()` is in precedence order, so the first holder is the winner.
+    """
+    holders: dict[str, list[str]] = {}
+    for e in cfg.entries():
+        ids = holders.setdefault(e.name, [])
+        if e.catalog not in ids:  # a within-catalog duplicate is a different finding
+            ids.append(e.catalog)
+    return [
+        (name, f"'{name}' is defined in {len(ids)} catalogs — '{ids[0]}' takes precedence, "
+               f"shadowing {', '.join(ids[1:])}")
+        for name, ids in holders.items() if len(ids) > 1
+    ]
+
+
 def _catalog_findings(
-    cfg: Config, cat: Catalog, known: set[tuple[str, str]], deep: bool,
+    cfg: Config, cat: Catalog, deep: bool,
 ) -> tuple[list[tuple["str | None", str]], list[tuple["str | None", str]]]:
     """Content checks for one catalog: (errors, warnings) as (entry name, message).
 
     Every check here is about a single catalog file — its own sort order, its own
-    default_dirs block, the sources and duplicate names it declares — so running them
-    per catalog is what makes the findings attributable (R14.2). *known* is the set
-    `requires` refs resolve against; its scope belongs to the caller.
+    default_dirs block, the sources, duplicate names, and dependencies it declares — so
+    running them per catalog is both what makes the findings attributable (R14.2) and
+    what scopes dependency resolution to one catalog (D9, R14.4).
     """
     errors: list[tuple["str | None", str]] = []
     warns: list[tuple["str | None", str]] = []
@@ -3277,7 +3296,7 @@ def _catalog_findings(
 
     # Duplicate names *within* one catalog: find_exact takes the first, so the rest are
     # unreachable. Scoped per catalog because the same name in two catalogs is
-    # deliberate shadowing, not a mistake — T8.2 adds that as a warning.
+    # deliberate shadowing, not a mistake — `_shadow_findings` reports that instead.
     by_name: dict[str, list[Entry]] = {}
     for e in entries:
         by_name.setdefault(e.name, []).append(e)
@@ -3285,11 +3304,20 @@ def _catalog_findings(
         if len(group) > 1:
             errors.append((name, f"duplicate name in {', '.join(g.type for g in group)}"))
 
+    # Dependencies resolve within this catalog and nowhere else (D9), so `known` holds
+    # only its own entries. Other catalogs are named in the message but never consulted
+    # to decide (R14.4) — a ref that resolves only elsewhere is still an error.
+    known = {(e.type, e.name) for e in entries}
     for e in entries:
         try:
             src = parse_source(e.source)
-            if src.kind == "local" and (src.path is None or not src.path.exists()):
-                errors.append((e.name, f"local source not found: {e.source}"))
+            if src.kind == "local":
+                if src.path is None or not src.path.exists():
+                    errors.append((e.name, f"local source not found: {e.source}"))
+                if cat.is_remote:
+                    warns.append((e.name,
+                        f"local source {e.source} won't resolve for teammates pulling "
+                        "this catalog — a remote catalog's sources should be URLs"))
         except LibraryError as ex:
             errors.append((e.name, str(ex)))
         for r in e.requires:
@@ -3297,8 +3325,21 @@ def _catalog_findings(
                 errors.append((e.name, f"malformed requires ref '{r}'"))
                 continue
             t, n = r.split(":", 1)
-            if (t.strip(), n.strip()) not in known:
+            if (t.strip(), n.strip()) in known:
+                continue
+            elsewhere = [c.id for c in cfg.active if c.id != cat.id
+                         and (t.strip(), n.strip()) in {(x.type, x.name)
+                                                        for x in iter_catalog_entries(c)}]
+            if elsewhere:
+                errors.append((e.name,
+                    f"dangling dependency '{r}'; it exists in {', '.join(elsewhere)}, but "
+                    f"dependencies resolve within one catalog — add a copy to '{cat.id}'"))
+            else:
                 errors.append((e.name, f"dangling dependency '{r}'"))
+
+    # Per catalog for the same reason: with deps scoped, a cycle can no longer span two.
+    for cyc in _find_cycles(entries):
+        errors.append((None, "dependency cycle: " + " -> ".join(cyc)))
 
     for section in TYPES:
         names = [e.name for e in entries if e.section == section]
@@ -3440,15 +3481,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
         # ── Per-catalog content checks (R14.1, R14.2) ───────────────────
         entries = cfg.entries()
-        # Global for now: T8.2 scopes `known` to each catalog's own entries (D9).
-        known = {(e.type, e.name) for e in entries}
         for cat in cfg.active:
-            cat_errors, cat_warns = _catalog_findings(cfg, cat, known, args.deep)
+            cat_errors, cat_warns = _catalog_findings(cfg, cat, args.deep)
             errors.extend((cat.id, n, m) for n, m in cat_errors)
             warns.extend((cat.id, n, m) for n, m in cat_warns)
 
-        for cyc in _find_cycles(entries):
-            errors.append((None, None, "dependency cycle: " + " -> ".join(cyc)))
+        # ── Cross-catalog shadowing (R14.5) — the one check no single ────
+        #    catalog owns, so it carries an entry but no catalog id.
+        warns.extend((None, n, m) for n, m in _shadow_findings(cfg))
 
     multi = cfg is not None and multi_catalog(cfg)
 

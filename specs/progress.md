@@ -9,7 +9,7 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 
 ## Status
 
-29 of 37 tasks landed. Phases 0–7 complete; Phase 8 is in progress.
+30 of 37 tasks landed. Phases 0–8 complete; Phase 9 is next.
 
 | Task | Status | Commit |
 | ---- | ------ | ------ |
@@ -42,8 +42,8 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 | T7.1 `catalog list` | done | `7fc8238` |
 | T7.2 `catalog add` + `catalog remove` | done | `c7112fb` |
 | T7.3 `catalog init` | done | `02f650b` |
-| T8.1 per-catalog doctor + registry | done | |
-| T8.2 catalog-scoped deps + shadowing | todo | |
+| T8.1 per-catalog doctor + registry | done | `8a46478` |
+| T8.2 catalog-scoped deps + shadowing | done | |
 | T9.1–T9.6 agent layer + docs | todo | |
 
 A task's own hash lands with the *next* commit — a commit cannot contain its own id.
@@ -270,6 +270,29 @@ Each is a place the code does something tasks.md or design.md doesn't say, with 
     Routing content checks through hydration classifies it as an error instead. Not
     avoidable without adding code to preserve a crash, and R14.3 asks for the report
     anyway; pinned by `test_a_malformed_catalog_file_no_longer_crashes_doctor`.
+
+47. **A cross-catalog dangling ref names where it *does* resolve.** R14.4 says other
+    catalogs must not be consulted to *decide* — they aren't; the decision is made against
+    the catalog's own entries alone. But "dangling dependency 'skill:x'" is baffling when
+    the user can see `x` in `library list`, so when the ref resolves elsewhere the message
+    says so and names the remedy. A ref that exists nowhere keeps today's wording verbatim,
+    so single-catalog output cannot move.
+48. **The cross-catalog shadow warning carries an entry but no catalog id** — `[session-retro]`
+    rather than `[personal/session-retro]`. It is the one finding no single catalog owns, and
+    the message already names winner and losers in precedence order.
+49. **`_shadow_findings` dedupes catalog ids per name.** A name duplicated *within* one
+    catalog would otherwise appear as a catalog shadowing itself — two findings for one
+    problem, one of them nonsense. R4.5 wants them distinct.
+50. **R14.6 needed no work in T8.2.** It landed in T8.1: the per-catalog loop already warns
+    once per catalog declaring `default_dirs` and names the effective paths. T8.2 only adds
+    the tests — including one proving the paths named come from the config override rather
+    than from the catalog being complained about.
+51. **Deviation 9's consolidation is deferred, not done.** `doctor` still emits both the
+    ignored-`default_dirs` warning and the legacy-`default`-scope-key one. The second is now
+    worse than redundant: its remedy ("rename it to 'project' in the catalog") is a no-op
+    under D7, since the block is ignored either way. Fixing it means changing a message on
+    output the developer's real config produces, which is not on T8.2's list. Left for a
+    decision — the honest options are to drop it or to repoint it at `catalog migrate`.
 ## Corrections the specs need
 
 - ~~tasks.md's per-commit invariant cites `main`~~ — **fixed.** It now says to compare
