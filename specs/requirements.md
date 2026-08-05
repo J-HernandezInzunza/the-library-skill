@@ -119,7 +119,12 @@ Acceptance criteria:
 2. WHEN both `catalog:` and `catalogs:` are present THEN the system SHALL reject the config as
    ambiguous rather than silently preferring one.
 3. WHEN exactly one catalog is configured THEN the human-readable output of every command SHALL be
-   unchanged.
+   unchanged. **`doctor` is the one exception**, and only for findings it must newly report: it is
+   the command whose entire job is to surface configuration problems, and R14.9's legacy-shape hint
+   fires *only* for the legacy config this clause protects, so the two are otherwise contradictory.
+   `doctor` MAY add a finding when there is a genuinely new problem to report (the ignored
+   `default_dirs` warning of R12.5, the legacy-shape hint of R14.9); its existing findings keep their
+   wording. No other command has this allowance.
 4. WHEN exactly one catalog is configured THEN each command's `--json` payload SHALL remain
    backwards compatible: existing keys keep their names, types, and meanings. New keys MAY be added.
    A new key MAY be present unconditionally rather than gated on catalog count, so a payload has one

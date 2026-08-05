@@ -11,13 +11,17 @@ from T1.1 — the test suite), and with a legacy singular `catalog:` config the 
 output of `list`, `search`, and `doctor` is unchanged. Any commit that changes single-catalog human
 output before Phase 6 is a bug, not a feature.
 
-Two carve-outs, both narrow:
+Three carve-outs, all narrow:
 
 - **`--json` key sets may grow.** A new payload key may be added unconditionally (R2.4), so the
   key-set assertions in T1.5 are expected to change when one lands. Say so in the commit message.
   Existing keys never change name, type, or meaning.
-- **T4.1's `doctor` golden** gains the ignored-`default_dirs` warning. That is the only
-  human-output golden change in the plan.
+- **T4.1's `doctor` golden** gains the ignored-`default_dirs` warning.
+- **T8.1's `doctor` goldens** gain R14.9's legacy-shape hint. Both `doctor` carve-outs are the same
+  case, now written into R2.3: `doctor` is the command whose job is to report configuration
+  problems, and a hint that only fires for the legacy config makes R2.3 and R14.9 otherwise
+  contradictory. These are the only human-output golden changes in the plan; a change to `list` or
+  `search` output is always a bug.
 
 Compare against the last commit that predates the change under test, not against `main` — on a
 long-lived branch `main` can be many tool commits behind and produces spurious diffs.
