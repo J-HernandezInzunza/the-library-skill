@@ -2895,6 +2895,56 @@ def cmd_link(args: argparse.Namespace) -> int:
     return report(action)
 
 
+def catalog_location(cat: Catalog) -> str:
+    """Where *cat* lives, in one line — the path for a local one, repo+branch+file else."""
+    if cat.is_remote:
+        return f"{cat.repo} ({cat.branch}, {cat.yaml_path})"
+    return str(cat.yaml_file)
+
+
+def cmd_catalog_list(args: argparse.Namespace) -> int:
+    """Show the registry as configured (R15.2).
+
+    Deliberately offline: this reports what the config says and what is readable right
+    now, so a catalog whose clone is missing shows its skip reason rather than being
+    silently cloned by a command that reads like an inspection.
+    """
+    cfg = load_config()
+    rows = [
+        {
+            "precedence": i,
+            "id": cat.id,
+            "kind": cat.kind,
+            "location": catalog_location(cat),
+            "write_mode": cat.write_mode,
+            "writable": cat.writable,
+            "entries": None if cat.skipped else len(iter_catalog_entries(cat)),
+            "skipped": cat.skipped or None,
+        }
+        for i, cat in enumerate(cfg.catalogs, 1)
+    ]
+
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return 0
+
+    print("\nCatalogs (highest precedence first)\n")
+    id_w = max(len(r["id"]) for r in rows)
+    kind_w = max(len(r["kind"]) for r in rows)
+    for r in rows:
+        write = f"write: {r['write_mode']}" if r["writable"] else "read-only"
+        count = "—" if r["skipped"] else f"{r['entries']} entries"
+        print(f"  {r['precedence']}. {r['id'].ljust(id_w)}  {r['kind'].ljust(kind_w)}  "
+              f"{write.ljust(12)}  {count.rjust(10)}  {r['location']}")
+        if r["skipped"]:
+            print(f"       skipped: {r['skipped']}")
+
+    if cfg.legacy_shape:
+        print("\nThis config still uses the singular `catalog:` form. "
+              "`library catalog migrate` rewrites it.")
+    return 0
+
+
 def cmd_catalog_migrate(args: argparse.Namespace) -> int:
     """Rewrite a legacy `catalog:` config into the canonical `catalogs:` list.
 
@@ -3379,6 +3429,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("catalog", help="manage the catalog registry in config.local.yaml")
     cat_actions = sp.add_subparsers(dest="action", required=True, metavar="<action>")
+    cat_list = cat_actions.add_parser("list", help="show every registered catalog")
+    cat_list.add_argument("--json", action="store_true", help="machine-readable output")
+    cat_list.set_defaults(func=cmd_catalog_list)
     mig = cat_actions.add_parser("migrate",
                                  help="rewrite a legacy catalog: config into the catalogs: list")
     mig.add_argument("--dry-run", action="store_true", help="print the result without writing")

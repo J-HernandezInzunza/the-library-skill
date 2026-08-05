@@ -4051,6 +4051,110 @@ library:
         self.assertFalse(globl.exists())
 
 
+class TestCatalogList(unittest.TestCase):
+    """R15.1, R15.2 — `catalog list` reports the registry as configured."""
+
+    maxDiff = None
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.repo = install_two_catalog_fixture(self.tool)
+
+    def rows(self, *extra: str) -> list[dict[str, Any]]:
+        code, out, err = run_cli("catalog", "list", "--json", *extra)
+        self.assertEqual(code, 0, err)
+        self.stderr = err
+        return json.loads(out)
+
+    def append_catalog(self, item: dict[str, Any]) -> None:
+        cfg = yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())
+        cfg["catalogs"].append(item)
+        self.tool.write_config(cfg)
+
+    def test_every_field_r15_2_asks_for_is_present(self) -> None:
+        rows = self.rows()
+        self.assertEqual(
+            sorted(rows[0]),
+            ["entries", "id", "kind", "location", "precedence", "skipped",
+             "writable", "write_mode"],
+        )
+
+    def test_rows_are_in_precedence_order(self) -> None:
+        rows = self.rows()
+        self.assertEqual([(r["precedence"], r["id"]) for r in rows],
+                         [(1, "personal"), (2, "shared")])
+
+    def test_kind_write_mode_and_writability_come_from_the_catalog(self) -> None:
+        personal, shared = self.rows()
+        self.assertEqual((personal["kind"], personal["write_mode"]), ("local", "local"))
+        self.assertEqual((shared["kind"], shared["write_mode"]), ("remote", "pr"))
+        self.assertTrue(personal["writable"] and shared["writable"])
+
+    def test_an_unprotected_remote_reports_direct(self) -> None:
+        self.append_catalog({"id": "mirror", "repo": "git@github.com:acme/mirror.git",
+                             "yaml_path": "library.yaml", "branch": "main",
+                             "protected": False})
+        self.assertEqual(self.rows()[2]["write_mode"], "direct")
+
+    def test_a_read_only_catalog_is_marked_as_such(self) -> None:
+        self.append_catalog({"id": "archive", "path": str(self.tool.root / "arch.yaml"),
+                             "writable": False})
+        (self.tool.root / "arch.yaml").write_text("library:\n  skills: []\n")
+        row = self.rows()[2]
+        self.assertFalse(row["writable"])
+        code, out, _ = run_cli("catalog", "list")
+        self.assertEqual(code, 0)
+        self.assertIn("read-only", out)
+
+    def test_location_is_the_path_for_a_local_catalog(self) -> None:
+        self.assertEqual(self.rows()[0]["location"],
+                         str(self.tool.root / "personal" / "library.yaml"))
+
+    def test_location_names_the_repo_branch_and_file_for_a_remote(self) -> None:
+        self.assertEqual(self.rows()[1]["location"],
+                         f"{self.repo.remote} (main, library.yaml)")
+
+    def test_entry_counts_are_per_catalog(self) -> None:
+        personal, shared = self.rows()
+        self.assertEqual((personal["entries"], shared["entries"]), (2, 4))
+        self.assertIsNone(personal["skipped"])
+
+    def test_an_unreadable_catalog_reports_its_reason_and_no_count(self) -> None:
+        self.append_catalog({"id": "gone", "path": str(self.tool.root / "missing.yaml")})
+        row = self.rows()[2]
+        self.assertIsNone(row["entries"])
+        self.assertIn("not found", row["skipped"])
+        code, out, _ = run_cli("catalog", "list")
+        self.assertIn("skipped: catalog file not found", out)
+
+    def test_it_does_not_clone_a_missing_remote(self) -> None:
+        # An inspection command must not go to the network. The uncloned catalog shows
+        # its skip reason instead.
+        shutil.rmtree(library.CATALOG_CLONE_DIR)
+        pulled: list[str] = []
+        with patch.object(library, "pull_catalog", lambda cat, quiet=True: pulled.append(cat.id)):
+            row = self.rows()[1]
+        self.assertEqual(pulled, [])
+        self.assertIn("not cloned yet", row["skipped"])
+
+    def test_a_legacy_config_lists_one_catalog_and_points_at_migrate(self) -> None:
+        self.tool.stop()
+        legacy = TempTool()
+        self.addCleanup(legacy.stop)
+        install_golden_fixture(legacy, GOLDEN_CATALOG)
+        rows = self.rows()
+        self.assertEqual([r["id"] for r in rows], [library.SHARED_ID])
+        code, out, _ = run_cli("catalog", "list")
+        self.assertEqual(code, 0)
+        self.assertIn("library catalog migrate", out)
+
+    def test_the_canonical_shape_gets_no_migrate_hint(self) -> None:
+        code, out, _ = run_cli("catalog", "list")
+        self.assertEqual(code, 0)
+        self.assertNotIn("catalog migrate", out)
+
+
 class TestPushUnderShadowing(unittest.TestCase):
     """R11.1–R11.4 — pushing a shadowed name is a guess, and says so."""
 

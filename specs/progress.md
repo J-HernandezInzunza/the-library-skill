@@ -9,7 +9,7 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 
 ## Status
 
-25 of 37 tasks landed. Phases 0–6 complete; Phase 7 is next.
+26 of 37 tasks landed. Phases 0–6 complete; Phase 7 in progress.
 
 | Task | Status | Commit |
 | ---- | ------ | ------ |
@@ -38,8 +38,9 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 | T6.4 derived `--allow-local` | done | `bf529a4` |
 | T6.5 `update` targets a catalog | done | `93a99dc` |
 | T6.6 `remove` targets a catalog | done | `6f1b668` |
-| T6.7 `push` under shadowing | done | |
-| T7.1–T7.3 catalog management commands | todo | |
+| T6.7 `push` under shadowing | done | `1576f2b` |
+| T7.1 `catalog list` | done | |
+| T7.2–T7.3 catalog add / remove / init | todo | |
 | T8.1–T8.2 doctor | todo | |
 | T9.1–T9.6 agent layer + docs | todo | |
 
@@ -192,6 +193,11 @@ Each is a place the code does something tasks.md or design.md doesn't say, with 
     settles the *destination*, not the provenance of the installed copy — which is the
     risky half, since nothing on disk records where an installed item came from. The
     warning is emitted after the local copy is located, so a failed `push` doesn't carry it.
+32. **`catalog list` is deliberately offline.** Design §9 gives it only `--json`, and an
+    inspection command that silently cloned a remote would be a surprise, so an uncloned
+    catalog shows its skip reason rather than being fetched. That is also what makes
+    R15.2's "any skip reason" field meaningful. It lists `cfg.catalogs`, not `cfg.active`,
+    so a skipped catalog is visible rather than absent — the same reasoning as deviation 13.
 31. **`push` payloads gained `catalog`**, matching every other command's provenance key
     (R2.4). An agent narrating "pushed your copy back to the team's source" needs to know
     which catalog's source that was; the human output is unchanged.
