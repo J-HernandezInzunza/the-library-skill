@@ -9,7 +9,7 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 
 ## Status
 
-27 of 37 tasks landed. Phases 0–6 complete; Phase 7 in progress.
+28 of 37 tasks landed. Phases 0–7 complete; Phase 8 is next.
 
 | Task | Status | Commit |
 | ---- | ------ | ------ |
@@ -40,8 +40,8 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 | T6.6 `remove` targets a catalog | done | `6f1b668` |
 | T6.7 `push` under shadowing | done | `1576f2b` |
 | T7.1 `catalog list` | done | `7fc8238` |
-| T7.2 `catalog add` + `catalog remove` | done | |
-| T7.3 `catalog init` | todo | |
+| T7.2 `catalog add` + `catalog remove` | done | `c7112fb` |
+| T7.3 `catalog init` | done | |
 | T8.1–T8.2 doctor | todo | |
 | T9.1–T9.6 agent layer + docs | todo | |
 
@@ -219,6 +219,18 @@ Each is a place the code does something tasks.md or design.md doesn't say, with 
     catalog whose clone was deleted. Unregistering never touches a *local* catalog's file —
     `--purge-clone` is about clones the tool created, not about the user's own data.
 
+37. **`catalog init`'s `--id` defaults to `personal`.** Design §9 shows `[--id <id>]`
+    without saying what happens when it is omitted. Deriving an id from the path would be
+    surprising (`~/dev/mine/library.yaml` → "library"), and `personal` is the case R15.7
+    is written for; a second one just needs `--id`.
+38. **A failed registration deletes the scaffold it just wrote.** R15.7 says "scaffold
+    then register" and R15.4 says the config is only touched once the target works — but
+    the file is written *before* registration can fail on a duplicate id, so `init` has to
+    undo its own half-done work. Registering nothing and leaving a file behind would make
+    a retry hit R15.8's refuse-to-overwrite for no reason.
+39. **`register_catalog` / `print_registration` are shared by `add` and `init`.** Both must
+    apply the same order — validate, migrate, reject duplicates, prove the target works,
+    then write — and two copies of that sequence would be two chances to get R15.4 wrong.
 ## Corrections the specs need
 
 - ~~tasks.md's per-commit invariant cites `main`~~ — **fixed.** It now says to compare

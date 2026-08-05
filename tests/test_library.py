@@ -4421,6 +4421,147 @@ class TestCatalogRemove(unittest.TestCase):
         self.assertEqual(self.ids(), [library.SHARED_ID])
 
 
+class TestCatalogInit(unittest.TestCase):
+    """R15.7, R15.8, R15.9 — one command from "I want a personal catalog" to a working one."""
+
+    maxDiff = None
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        install_golden_fixture(self.tool, GOLDEN_CATALOG)  # legacy shape
+        self.target = self.tool.home / "dev" / "agentics" / "library.yaml"
+
+    def init(self, *argv: str, expect: int = 0) -> dict[str, Any]:
+        code, out, err = run_cli("catalog", "init", *argv, "--json")
+        self.assertEqual(code, expect, err or out)
+        self.stderr = err
+        return json.loads(out) if out else {}
+
+    # ── the scaffold ────────────────────────────────────────────────────
+    def test_the_scaffold_is_a_valid_empty_catalog(self) -> None:
+        payload = self.init(str(self.target))
+        self.assertEqual(payload["created"], str(self.target))
+        parsed = yaml.safe_load(self.target.read_text())
+        self.assertEqual(parsed["library"], {"skills": [], "agents": [], "prompts": []})
+        self.assertEqual(library.iter_entries(parsed), [])
+
+    def test_the_scaffold_carries_no_default_dirs(self) -> None:
+        # D7/R12.5 — a catalog's own block is ignored, so including one would trip
+        # doctor's ineffective-default_dirs warning the moment the catalog was created.
+        # The comment mentions the key by name, so the assertion is on the parsed data.
+        self.init(str(self.target))
+        parsed = yaml.safe_load(self.target.read_text())
+        self.assertEqual(list(parsed), ["library"])
+        self.assertEqual(library.default_dirs(parsed),
+                         {"skills": {}, "agents": {}, "prompts": {}})
+
+    def test_parent_directories_are_created(self) -> None:
+        deep = self.tool.home / "a" / "b" / "c" / "library.yaml"
+        self.init(str(deep))
+        self.assertTrue(deep.is_file())
+
+    def test_a_directory_argument_scaffolds_library_yaml_inside_it(self) -> None:
+        d = self.tool.home / "dev" / "mine"
+        d.mkdir(parents=True)
+        payload = self.init(str(d))
+        self.assertEqual(payload["created"], str(d / "library.yaml"))
+
+    def test_the_scaffold_names_the_id_in_its_own_instructions(self) -> None:
+        self.init(str(self.target), "--id", "scratch")
+        self.assertIn("--catalog scratch", self.target.read_text())
+
+    # ── registration ────────────────────────────────────────────────────
+    def test_it_registers_the_catalog_at_first_precedence(self) -> None:
+        payload = self.init(str(self.target))
+        self.assertEqual((payload["id"], payload["precedence"]), ("personal", 1))
+        self.assertEqual([c.id for c in library.load_config().catalogs],
+                         ["personal", library.SHARED_ID])
+
+    def test_list_reports_the_new_catalog_with_zero_entries(self) -> None:
+        self.init(str(self.target))
+        rows = json.loads(run_cli("catalog", "list", "--json")[1])
+        self.assertEqual((rows[0]["id"], rows[0]["entries"]), ("personal", 0))
+        self.assertEqual(rows[0]["write_mode"], "local")
+
+    def test_the_id_defaults_to_personal_and_can_be_overridden(self) -> None:
+        self.assertEqual(self.init(str(self.target))["id"], "personal")
+        other = self.tool.home / "other.yaml"
+        self.assertEqual(self.init(str(other), "--id", "work")["id"], "work")
+
+    def test_position_last_is_honoured(self) -> None:
+        payload = self.init(str(self.target), "--position", "last")
+        self.assertEqual(payload["precedence"], 2)
+
+    def test_git_commit_is_recorded(self) -> None:
+        self.init(str(self.target), "--git-commit")
+        self.assertTrue(library.load_config().by_id("personal").git_commit)
+
+    def test_a_legacy_config_is_migrated_as_part_of_the_operation(self) -> None:
+        payload = self.init(str(self.target))
+        raw = yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())
+        self.assertNotIn("catalog", raw)
+        self.assertTrue(payload["migrated"])
+
+    # ── refusals ────────────────────────────────────────────────────────
+    def test_it_refuses_to_overwrite_an_existing_file(self) -> None:
+        self.target.parent.mkdir(parents=True)
+        self.target.write_text(PERSONAL_CATALOG)
+        code, _, err = run_cli("catalog", "init", str(self.target), "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("refusing to overwrite", err)
+        self.assertEqual(self.target.read_text(), PERSONAL_CATALOG)
+        self.assertIn("catalog", yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text()))
+
+    def test_a_relative_path_is_refused(self) -> None:
+        code, _, err = run_cli("catalog", "init", "relative/library.yaml", "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("must be absolute or start with '~'", err)
+
+    def test_a_duplicate_id_leaves_no_stray_scaffold(self) -> None:
+        # The file is written before registration can fail on the id, so a failed init
+        # has to clean up after itself.
+        self.init(str(self.target))
+        second = self.tool.home / "second" / "library.yaml"
+        code, _, err = run_cli("catalog", "init", str(second), "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("already registered", err)
+        self.assertFalse(second.exists())
+
+    # ── end to end ──────────────────────────────────────────────────────
+    def test_init_then_add_then_use_works_against_a_fresh_catalog(self) -> None:
+        self.init(str(self.target))
+        src = self.tool.root / "sources" / "handmade"
+        src.mkdir(parents=True)
+        (src / "SKILL.md").write_text("# handmade\n")
+        code, out, err = run_cli("add", "--name", "handmade", "--description", "Made here",
+                                 "--source", str(src / "SKILL.md"), "--catalog", "personal",
+                                 "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["mode"], "local")  # no PR for a local catalog
+
+        code, out, err = run_cli("use", "handmade", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        installed = json.loads(out)["installed"][0]
+        self.assertEqual(installed["catalog"], "personal")
+        self.assertTrue(Path(installed["dest"], "SKILL.md").is_file())
+
+    def test_a_local_only_config_resolves_install_dirs_from_the_builtin(self) -> None:
+        # After removing the shared catalog there is no catalog default_dirs anywhere,
+        # so installs must still land in the tool's own defaults (D7).
+        self.init(str(self.target))
+        run_cli("catalog", "remove", library.SHARED_ID, "--purge-clone", "--json")
+        src = self.tool.root / "sources" / "handmade"
+        src.mkdir(parents=True)
+        (src / "SKILL.md").write_text("# handmade\n")
+        run_cli("add", "--name", "handmade", "--description", "d",
+                "--source", str(src / "SKILL.md"), "--no-pull", "--json")
+        code, out, err = run_cli("use", "handmade", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["installed"][0]["dest"],
+                         str(self.tool.home / ".claude" / "skills" / "handmade"))
+
+
 class TestPushUnderShadowing(unittest.TestCase):
     """R11.1–R11.4 — pushing a shadowed name is a guess, and says so."""
 

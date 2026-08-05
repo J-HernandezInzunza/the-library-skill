@@ -2996,26 +2996,14 @@ def cmd_catalog_list(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_catalog_add(args: argparse.Namespace) -> int:
-    """Register an existing catalog (R15.3–R15.5, R15.9, R15.10)."""
-    cid = (args.id or "").strip()
-    if not cid:
-        die("catalog add needs a non-empty --id")
-    if bool(args.path) == bool(args.repo):
-        die("catalog add needs exactly one of --path (local) or --repo (remote)")
+def register_catalog(item: dict[str, Any], position: str) -> dict[str, Any]:
+    """Verify *item* is a usable catalog, then add it to the registry (R15.3–R15.5, R15.9).
 
-    if args.path:
-        item: dict[str, Any] = {"id": cid, "path": args.path}
-        if args.git_commit:
-            item["git_commit"] = True
-    else:
-        # D8: a new remote catalog is unprotected unless asked otherwise, so writing to
-        # your own catalog is a commit rather than a PR to review with yourself.
-        item = {"id": cid, "repo": args.repo, "yaml_path": args.yaml_path,
-                "branch": args.branch, "protected": bool(args.protected)}
-    if args.read_only:
-        item["writable"] = False
-
+    Shared by `catalog add` and `catalog init` so both apply the same order: validate the
+    item, migrate a legacy config, reject a duplicate id, prove the target works, and only
+    then rewrite the config (R15.4, R15.10).
+    """
+    cid = str(item["id"])
     # Validate the item on its own first, so a malformed one is rejected with a precise
     # message before anything is cloned.
     problems = Config.problems({"catalogs": [item]})
@@ -3037,27 +3025,113 @@ def cmd_catalog_add(args: argparse.Namespace) -> int:
             f"  {LOCAL_CONFIG_PATH} was not modified")
 
     # `first` by default: a personal catalog is registered in order to win (design §9).
-    if args.position == "last":
+    if position == "last":
         raw["catalogs"].append(item)
     else:
         raw["catalogs"].insert(0, item)
     cfg = write_config(raw)
-    count = len(iter_catalog_entries(cat))
-    position = next(i for i, c in enumerate(cfg.catalogs, 1) if c.id == cid)
+
+    return {
+        "status": "OK", "id": cid, "kind": cat.kind,
+        "precedence": next(i for i, c in enumerate(cfg.catalogs, 1) if c.id == cid),
+        "registered": len(cfg.catalogs),
+        "write_mode": cat.write_mode, "writable": cat.writable,
+        "entries": len(iter_catalog_entries(cat)),
+        "location": catalog_location(cat), "migrated": notes,
+    }
+
+
+def print_registration(result: dict[str, Any]) -> None:
+    for note in result["migrated"]:
+        print(f"  migrated config: {note}")
+    print(f"Registered [{result['kind']}] {result['id']} at precedence "
+          f"{result['precedence']} of {result['registered']} · {result['entries']} entries "
+          f"· writes go through: {result['write_mode']}")
+    print(f"  {result['location']}")
+
+
+def cmd_catalog_add(args: argparse.Namespace) -> int:
+    """Register an existing catalog (R15.3–R15.5, R15.9, R15.10)."""
+    cid = (args.id or "").strip()
+    if not cid:
+        die("catalog add needs a non-empty --id")
+    if bool(args.path) == bool(args.repo):
+        die("catalog add needs exactly one of --path (local) or --repo (remote)")
+
+    if args.path:
+        item: dict[str, Any] = {"id": cid, "path": args.path}
+        if args.git_commit:
+            item["git_commit"] = True
+    else:
+        # D8: a new remote catalog is unprotected unless asked otherwise, so writing to
+        # your own catalog is a commit rather than a PR to review with yourself.
+        item = {"id": cid, "repo": args.repo, "yaml_path": args.yaml_path,
+                "branch": args.branch, "protected": bool(args.protected)}
+    if args.read_only:
+        item["writable"] = False
+
+    result = register_catalog(item, args.position)
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print_registration(result)
+    return 0
+
+
+_SCAFFOLD = """\
+# Personal library catalog. Registered in the tool's config.local.yaml.
+# Add entries with: library add --catalog {cid} --name … --description … --source …
+#
+# No default_dirs here: install locations belong to the tool, not the catalog.
+library:
+  skills: []
+  agents: []
+  prompts: []
+"""
+
+
+def cmd_catalog_init(args: argparse.Namespace) -> int:
+    """Scaffold an empty catalog and register it (R15.7, R15.8, R15.9).
+
+    One command from "I want a personal catalog" to a working one, which is why it
+    refuses to overwrite: the failure mode worth preventing is scaffolding over a
+    catalog someone already has entries in.
+    """
+    raw_path = str(args.path)
+    if not (raw_path.startswith("/") or raw_path.startswith("~")):
+        die(f"catalog path {raw_path!r} must be absolute or start with '~'\n"
+            "  a catalog location is machine-global, so it can't depend on the cwd")
+
+    path = Path(raw_path).expanduser()
+    if path.is_dir():
+        path = path / "library.yaml"
+    if path.exists():
+        die(f"{path} already exists; refusing to overwrite it\n"
+            "  register it as-is with `library catalog add --id <id> --path <path>`")
+
+    cid = (args.id or "personal").strip()
+    if not cid:
+        die("catalog init needs a non-empty --id")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_SCAFFOLD.format(cid=cid))
+
+    item: dict[str, Any] = {"id": cid, "path": str(path)}
+    if args.git_commit:
+        item["git_commit"] = True
+    try:
+        result = register_catalog(item, args.position)
+    except SystemExit:
+        path.unlink(missing_ok=True)  # nothing was registered, so leave no stray file
+        raise
+    result["created"] = str(path)
 
     if args.json:
-        print(json.dumps({"status": "OK", "id": cid, "kind": cat.kind,
-                          "precedence": position, "write_mode": cat.write_mode,
-                          "writable": cat.writable, "entries": count,
-                          "location": catalog_location(cat), "migrated": notes},
-                         indent=2))
+        print(json.dumps(result, indent=2))
         return 0
-
-    for note in notes:
-        print(f"  migrated config: {note}")
-    print(f"Registered [{cat.kind}] {cid} at precedence {position} of {len(cfg.catalogs)} "
-          f"· {count} entries · writes go through: {cat.write_mode}")
-    print(f"  {catalog_location(cat)}")
+    print(f"Created {path}")
+    print_registration(result)
+    print(f"  add to it with: library add --catalog {cid} --name … --description … --source …")
     return 0
 
 
@@ -3604,6 +3678,16 @@ def build_parser() -> argparse.ArgumentParser:
                          help="precedence slot (default: first, so it shadows the rest)")
     cat_add.add_argument("--json", action="store_true", help="machine-readable output")
     cat_add.set_defaults(func=cmd_catalog_add)
+
+    cat_init = cat_actions.add_parser("init", help="scaffold an empty catalog and register it")
+    cat_init.add_argument("path", help="where to create it (a library.yaml, or a directory)")
+    cat_init.add_argument("--id", help="short id, used by --catalog (default: personal)")
+    cat_init.add_argument("--git-commit", dest="git_commit", action="store_true",
+                          help="commit and push the file after each write")
+    cat_init.add_argument("--position", choices=("first", "last"), default="first",
+                          help="precedence slot (default: first, so it shadows the rest)")
+    cat_init.add_argument("--json", action="store_true", help="machine-readable output")
+    cat_init.set_defaults(func=cmd_catalog_init)
 
     cat_rm = cat_actions.add_parser("remove", help="unregister a catalog")
     cat_rm.add_argument("id", help="id of the catalog to unregister")
