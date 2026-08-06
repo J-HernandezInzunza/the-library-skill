@@ -20,13 +20,55 @@ The Library is driven by a per-device config (`config.local.yaml`, gitignored) t
 | **Catalog + sources** | a separate repo the config points to | PR-gated writes; read via persistent clone        |
 | **Local config**      | `config.local.yaml` (gitignored)     | per-device; created by `library init`             |
 
-**The catalog is read from a persistent clone** (`<tool-dir>/.catalog-repo/`) that is refreshed automatically on most commands. Writes (`add`, `update`, `remove`, `push` for remote sources) commit on a branch in an ephemeral temp-clone and open a PR — they never push directly to the protected branch. GitHub and Bitbucket are both supported; for Bitbucket the CLI prints the PR-create URL (there's no `gh`-style auto-open).
+**A remote catalog is read from a persistent clone** (the shared one stays at `<tool-dir>/.catalog-repo/`) that is refreshed automatically on most commands. A write to a **protected** remote commits on a branch in an ephemeral temp-clone and opens a PR — it never pushes directly to the protected branch. GitHub and Bitbucket are both supported; for Bitbucket the CLI prints the PR-create URL (there's no `gh`-style auto-open). Writes to an unprotected remote or to a local catalog take other paths — see [Catalogs](#catalogs) below, and read `mode` before reporting one.
+
+## Catalogs
+
+`config.local.yaml` holds a **registry** of catalogs in precedence order, highest first:
+
+```yaml
+catalogs:
+  - id: personal # local: a library.yaml on this machine
+    path: ~/dev/my-library/library.yaml
+  - id: shared # remote: a repo, plus the catalog file inside it
+    repo: git@github.com:acme/agent-library.git
+    yaml_path: library.yaml
+    branch: main
+    protected: true # writes open a PR, never a direct push
+default_add_catalog: personal # optional: write destination when --catalog is omitted
+```
+
+A legacy singular `catalog:` mapping still works and is read as one protected remote catalog with id `shared`; `library catalog migrate` rewrites it into the shape above.
+
+**Kinds.** A **local** catalog is a `library.yaml` on this machine (`path`), edited in place. A **remote** catalog is a repo (`repo` + `yaml_path` + `branch`), read through a persistent clone. "Shared" and "personal" are conventions rather than settings: the team catalog is a protected remote, a personal one is usually local.
+
+**Precedence and shadowing.** Registry order is precedence, and the first catalog defining a name wins — the losers are **shadowed**. That is the point of a personal catalog: iterate on your own copy of a team skill without touching the team's. Shadowing is never silent — `list`, `search`, `use`, `push`, and `doctor` all report which catalog won and which lost. Pass that on to the user; it is not noise.
+
+**`--catalog <id>`** restricts any name-taking command to one catalog, bypassing precedence. Use it to reach a shadowed copy, or to name a write's destination.
+
+**Writes need to know where they're going.** With more than one writable catalog and no `--catalog`, a write exits `2` with `status: "AMBIGUOUS_CATALOG"` and the candidate ids rather than guessing — ask the user which, then re-run with `--catalog`. Guessing is expensive here: one destination is a local file, another is a public PR on the team's repo.
+
+**Dependencies resolve within one catalog.** A `requires` ref is looked up only in the entry's own catalog. A ref that resolves only in a *different* catalog warns at install time and is an error in `doctor` — so copying an entry into a personal catalog means copying what it requires too.
+
+**Install locations belong to the tool, not the catalog.** A `default_dirs` block inside any catalog is ignored, whichever catalog an entry came from; `doctor` warns when it finds one. See [Target Directories](#target-directories).
+
+### Write modes
+
+How a write reaches a catalog is derived from the catalog itself, never configured:
+
+| `mode`     | Catalog                     | What happens                                                                                |
+| ---------- | --------------------------- | ------------------------------------------------------------------------------------------- |
+| `local`    | local (`path`)              | The file is edited in place. With `git_commit: true` on the catalog, also committed + pushed |
+| `pr`       | remote, `protected: true`   | Branch + commit in a temp-clone, pushed, PR opened (or a compare URL printed)                |
+| `direct`   | remote, `protected: false`  | Committed and pushed straight to the catalog's branch                                        |
+
+Every write returns `mode` and `catalog` in its `--json` payload. Read them before reporting anything.
 
 ## Deterministic CLI vs. Agent
 
 The mechanical parts of the workflow — reading the catalog, parsing sources, resolving dependencies, cloning/copying — are handled by a small deterministic CLI (`library.py`, invoked via the `library` wrapper). The agent is only needed for judgment: fuzzy name matching, dependency detection from prose, and conflict narration.
 
-- **CLI-backed (no LLM needed):** `init`, `self-update`, `link`, `list`, `search`, `use`, `sync`, `doctor`. Invoke them by the wrapper's absolute path (e.g. `<tool-dir>/library use <name>`) **from the user's current working directory — do not `cd` into the tool directory first.** They support `--json` (machine-readable) and `--no-pull` (skip the catalog git pull).
+- **CLI-backed (no LLM needed):** `init`, `self-update`, `link`, `list`, `search`, `use`, `sync`, `doctor`, `catalog`. Invoke them by the wrapper's absolute path (e.g. `<tool-dir>/library use <name>`) **from the user's current working directory — do not `cd` into the tool directory first.** They support `--json` (machine-readable) and `--no-pull` (skip the catalog git pull).
   - **Install-location contract:** bare `use <name>` installs **globally** (`~/.claude/...`, absolute, CWD-independent) — that is the default. `use <name> --project` uses the catalog's `project` scope, a _relative_ path (`.claude/skills/`) that anchors to the directory you invoke from (the user's CWD project); `use <name> --dir <path>` installs into a custom location (relative custom paths also anchor to the CWD). The wrapper captures `$PWD` into `LIBRARY_CWD` so this holds even if the CLI itself runs from elsewhere; pass `--cwd <dir>` to override the anchor explicitly. **Never `cd` into the tool dir to run these — that would anchor `--project` installs to the tool dir instead of the user's project.**
   - **Project-local installs are confirmed first:** before running `use <name> --project` (or a relative `--dir`), run it with `--dry-run --json`, tell the user the absolute destination path(s), and get a yes — the anchor CWD is easy to get wrong. Global installs need no confirmation. See [cookbook/use.md](cookbook/use.md).
 - **Agent-mediated (fallback):** `add`, `update`, `push`, `remove`, and any _fuzzy_ request (vague name, natural-language intent). The CLI signals when it needs the agent by exiting non-zero with `status: "AMBIGUOUS"` or `status: "NOT_FOUND"`.
@@ -37,7 +79,13 @@ The mechanical parts of the workflow — reading the catalog, parsing sources, r
 
 **Catalog writes go through the CLI only — never hand-roll `git`/`gh`.** Every catalog change (`add`, `update`, `remove`) must be made by running `library add|update|remove`, which owns the branch, commit, PR, and the `autopush` policy. Do **not** clone the catalog, edit `library.yaml`, or call `gh pr create` yourself — that bypasses the config and produces the inconsistency this tool exists to prevent. If the CLI can't express the change, that's a gap to fix in `library.py`, not to work around by hand. (Editing an existing entry is `update`; there is no longer any catalog edit that requires manual git.)
 
-**Report PR outcomes strictly from the CLI's `method` field — never editorialize.** Each write op returns `method: "gh"` (a PR was opened → report "PR opened: <pr_url>") or `method: "manual"` (only a branch was pushed → report "branch pushed; open the PR at <compare_url>"). Never say "PR opened" unless `method == "gh"`. With `autopush: true` a GitHub write op either returns `method: "gh"` or exits non-zero — it never silently degrades to a pushed branch, so "PR opened" is always literally true.
+**Report a write's outcome from the CLI's payload — never editorialize.** Read `mode` **first**: only one of the three modes involves a PR at all, so a habit of saying "PR opened" is a habit of lying two-thirds of the time.
+
+- `mode: "local"` → the file was written; report `path` and `catalog`. Mention committing **only** when `committed` is `true` (add "and pushed" when `pushed` is too). `committed: false` is ambiguous here — it means either that the catalog doesn't set `git_commit`, or that a commit was attempted and failed with a warning — so claim neither; the file is written either way. Never call this a PR.
+- `mode: "direct"` → check `committed` / `pushed`, then "committed and pushed to `<branch>` in the `<catalog>` catalog". Also not a PR — nobody reviews this one.
+- `mode: "pr"` → now read `method`: `"gh"` means a PR was opened → report "PR opened: `<pr_url>`". `"manual"` means only a branch was pushed → report "branch pushed; open the PR at `<compare_url>`".
+
+Never say "PR opened" unless `mode == "pr"` **and** `method == "gh"`. Claiming a review gate that was never used is the most damaging thing this tool can say — it tells the user a teammate will see a change that in fact already landed. With `autopush: true` a GitHub `pr`-mode write either returns `method: "gh"` or exits non-zero; it never silently degrades to a pushed branch, so there "PR opened" is always literally true.
 
 **When a CLI-backed command is invoked, run the `library` CLI — do not re-implement the mechanics by hand.** The CLI is the source of truth; if something is wrong, fix `library.py`.
 
@@ -62,15 +110,15 @@ system `python3` — so if system `python3` already has PyYAML, this step can be
 | `/library init`             | Create/repoint the per-device config + clone the catalog (re-runnable)                |
 | `/library self-update`      | Pull the latest tool code (`git pull` in the tool dir)                                |
 | `/library link`             | Symlink the clone into a skills dir so the skill loads (default: `~/.claude/skills/`) |
-| `/library add <details>`    | Register a new entry (proposes a PR on the catalog repo)                              |
-| `/library update <name>`    | Edit an existing entry's description/source/requires (proposes a PR)                  |
+| `/library add <details>`    | Register a new entry in a catalog (PR, direct push, or local edit — see `mode`)        |
+| `/library update <name>`    | Edit an existing entry's description/source/requires (same three modes)               |
 | `/library use <name>`       | Pull from source (install or refresh)                                                 |
 | `/library push <name>`      | Push local changes back to source (PR for GitHub/Bitbucket sources)                   |
-| `/library remove <name>`    | Remove from catalog (proposes a PR); optionally purge local                           |
+| `/library remove <name>`    | Remove from a catalog (same three modes); optionally purge local                       |
 | `/library list`             | Show full catalog with install status                                                 |
 | `/library sync`             | Re-pull all installed items from source                                               |
 | `/library search <keyword>` | Find entries by keyword                                                               |
-| `/library catalog <action>` | Manage the catalog registry (`migrate` rewrites a legacy config)                      |
+| `/library catalog <action>` | Manage the catalog registry: `list`, `add`, `init`, `remove`, `migrate`                |
 | `/library doctor`           | Validate config + catalog integrity (`--deep` checks sources)                          |
 
 ## Cookbook
@@ -104,21 +152,25 @@ formats (auto-detected):
 - `https://raw.githubusercontent.com/org/repo/main/path/to/SKILL.md` — GitHub raw URL
 - `https://bitbucket.org/workspace/repo/src/main/path/to/SKILL.md` — Bitbucket browser URL
 - `https://bitbucket.org/workspace/repo/raw/main/path/to/SKILL.md` — Bitbucket raw URL
-- `/absolute/path/to/SKILL.md` — local filesystem **(personal catalogs only — see below)**
+- `/absolute/path/to/SKILL.md` — local filesystem **(local catalogs only — see below)**
 
 All four remote URL formats are supported. Parse org/workspace, repo, branch, and file path from the URL structure. For private repos, auth is via SSH or HTTPS token (`GITHUB_TOKEN` for GitHub, an app password for Bitbucket) — whatever your `git` is already configured with.
 
 **Local-path sources don't resolve for anyone else** — they exist only on the machine that
-added them. So `add` **refuses a local source by default** (and suggests the remote URL when
-the file lives in a git repo); `--allow-local` is the escape hatch for a personal,
-single-machine catalog. When a user says "add this file," convert the path to its repo URL
-rather than recording a local path — see [cookbook/add.md](cookbook/add.md).
+added them. **Whether that matters is derived from the destination catalog, not from a flag:**
+adding a local source to a **remote** catalog is refused by default (and the remote URL is
+suggested when the file lives in a git repo), with `--allow-local` as the escape hatch; adding
+one to a **local** catalog needs no flag, because nobody else pulls that catalog. Don't offer
+`--allow-local` when the destination is local — there is nothing to override. When a user says
+"add this file" and the destination is the shared catalog, convert the path to its repo URL
+rather than recording a local path — see [cookbook/add.md](cookbook/add.md). `doctor` warns
+about local sources it finds in a remote catalog.
 
 **Important:** The source points to a specific file (SKILL.md, AGENT.md, or prompt file). We always pull the entire parent directory, not just the file.
 
 ## Source Parsing Rules
 
-**Local paths** start with `/` or `~` — _personal catalogs only; `add` refuses these for a shared catalog unless `--allow-local` is passed_:
+**Local paths** start with `/` or `~` — _fine in a local catalog; `add` refuses them for a remote catalog unless `--allow-local` is passed_:
 
 - Use the path directly. Copy the parent directory of the referenced file.
 
@@ -167,11 +219,11 @@ The `requires` field uses typed references to avoid ambiguity:
 - `agent:name` — references an agent in the library catalog
 - `prompt:name` — references a prompt in the library catalog
 
-When resolving dependencies: look up each reference in the catalog YAML, fetch all dependencies first (recursively), then fetch the requested item.
+When resolving dependencies: look up each reference **in the resolved entry's own catalog**, fetch all dependencies first (recursively), then fetch the requested item. A ref is never satisfied by an entry in a different catalog, even one higher in precedence: `use` warns and installs what it can, and `doctor` reports it as an error naming the catalog the ref would have resolved in. So when a user copies an entry into their personal catalog, copy its dependencies too — or leave the entry in the shared catalog and let precedence do the work.
 
 ## Target Directories
 
-By default, items are installed **globally** — the `global` directory from the catalog's `default_dirs`:
+By default, items are installed **globally** — the `global` directory from the tool's built-in defaults, which an entry's catalog cannot change:
 
 ```yaml
 default_dirs:
@@ -190,17 +242,19 @@ default_dirs:
 - If the user specifies a custom path, use that path.
 - Otherwise (including "global"/"globally" or no scope mentioned), use the `global` directory (`~/.claude/…`).
 
+**One mapping for every catalog.** These paths come from the tool, optionally overridden per section and scope by a `default_dirs:` block in `config.local.yaml`. A `default_dirs:` block inside a *catalog* is ignored — otherwise registering a second catalog could silently move where things install. `doctor` warns when a catalog declares one and names the paths actually in force.
+
 ## Catalog Repo Sync
 
-The catalog lives in a separate repo, pointed to by `config.local.yaml` (`catalog.repo`). When running `add` or `remove` (which modify the catalog), the CLI:
+A remote catalog lives in a separate repo, pointed to by an entry in `config.local.yaml`'s `catalogs:` list. When a write targets a **protected** remote catalog (`mode: "pr"`), the CLI:
 
-1. Refreshes the persistent catalog clone (`git pull --ff-only` in `.catalog-repo/`)
+1. Refreshes the persistent catalog clone (`git pull --ff-only`)
 2. Validates the change against the current catalog
 3. Creates an ephemeral temp-clone of the catalog repo
 4. Commits the change on a new branch
 5. Pushes the branch and opens a PR (or prints the compare URL)
 
-The protected branch is never pushed to directly. Changes land only after a PR is merged.
+The protected branch is never pushed to directly; changes land only after a PR is merged. An **unprotected** remote (`mode: "direct"`) skips steps 3–5 and commits straight to its branch, and a **local** catalog (`mode: "local"`) is edited in place with no git at all unless it sets `git_commit: true`. Same command, three outcomes — which is why the reporting rule above reads `mode` before `method`.
 
 ## Example Catalog File
 

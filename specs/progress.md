@@ -9,7 +9,7 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 
 ## Status
 
-30 of 37 tasks landed. Phases 0–8 complete; Phase 9 is next.
+31 of 37 tasks landed. Phases 0–8 complete; Phase 9 is in progress.
 
 | Task | Status | Commit |
 | ---- | ------ | ------ |
@@ -43,8 +43,9 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 | T7.2 `catalog add` + `catalog remove` | done | `c7112fb` |
 | T7.3 `catalog init` | done | `02f650b` |
 | T8.1 per-catalog doctor + registry | done | `8a46478` |
-| T8.2 catalog-scoped deps + shadowing | done | |
-| T9.1–T9.6 agent layer + docs | todo | |
+| T8.2 catalog-scoped deps + shadowing | done | `1338305` |
+| T9.1 SKILL.md catalog model + mode rule | done | |
+| T9.2–T9.6 cookbooks, justfile, README | todo | |
 
 A task's own hash lands with the *next* commit — a commit cannot contain its own id.
 
@@ -287,7 +288,21 @@ Each is a place the code does something tasks.md or design.md doesn't say, with 
     once per catalog declaring `default_dirs` and names the effective paths. T8.2 only adds
     the tests — including one proving the paths named come from the config override rather
     than from the catalog being complained about.
-51. **Deviation 9's consolidation is deferred, not done.** `doctor` still emits both the
+51. **T9.1 corrected three stale claims in `SKILL.md` beyond its Do list.** All three
+    contradicted the section it asks for, and the agent acts on this file: "Target
+    Directories" said install dirs come from the catalog's `default_dirs` (wrong since
+    T4.1/D7), "Catalog Repo Sync" said every catalog write opens a PR (true only for
+    `mode: "pr"`), and the commands table advertised `add`/`update`/`remove` as
+    "proposes a PR". Leaving them would have documented the exact false claim R16.2 exists
+    to prevent.
+52. **`mode: "local"` cannot distinguish "no `git_commit`" from "the commit failed".** Both
+    render as `committed: false, pushed: false, branch: null`, and `print_write_tail`
+    prints only "Wrote <path>" for either. Found while verifying T9.1's reporting rule
+    against a live run rather than from memory. R16.2 is still satisfiable — the rule tells
+    the agent to claim a commit only when `committed` is true and to claim nothing
+    otherwise — but a `git_commit` boolean in the payload would let it report the failure
+    honestly. Roadmap candidate, not a T9.1 change (`library.py` is not in its file list).
+53. **Deviation 9's consolidation is deferred, not done.** `doctor` still emits both the
     ignored-`default_dirs` warning and the legacy-`default`-scope-key one. The second is now
     worse than redundant: its remedy ("rename it to 'project' in the catalog") is a no-op
     under D7, since the block is ignored either way. Fixing it means changing a message on
