@@ -128,6 +128,7 @@ Each command has a detailed step-by-step guide. **Read the relevant cookbook fil
 | Command | Cookbook                                   | Use When                                                                                                 |
 | ------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
 | init    | [cookbook/init.md](cookbook/init.md)       | Create or repoint the per-device config + clone the catalog (re-runnable; `--force` to switch catalogs)  |
+| catalog | [cookbook/catalog.md](cookbook/catalog.md) | User wants their own catalog, or asks what catalogs exist / which one wins (list, add, init, remove, migrate) |
 | link    | [cookbook/link.md](cookbook/link.md)       | Make the clone discoverable as a skill (create/repair/repoint the symlink)                               |
 | add     | [cookbook/add.md](cookbook/add.md)         | User wants to register a new skill/agent/prompt in catalog                                               |
 | update  | [cookbook/update.md](cookbook/update.md)   | User wants to edit an existing entry's description/source/requires (e.g. add a dependency)               |

@@ -9,7 +9,7 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 
 ## Status
 
-31 of 37 tasks landed. Phases 0–8 complete; Phase 9 is in progress.
+32 of 37 tasks landed. Phases 0–8 complete; Phase 9 is in progress.
 
 | Task | Status | Commit |
 | ---- | ------ | ------ |
@@ -44,8 +44,9 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 | T7.3 `catalog init` | done | `02f650b` |
 | T8.1 per-catalog doctor + registry | done | `8a46478` |
 | T8.2 catalog-scoped deps + shadowing | done | `1338305` |
-| T9.1 SKILL.md catalog model + mode rule | done | |
-| T9.2–T9.6 cookbooks, justfile, README | todo | |
+| T9.1 SKILL.md catalog model + mode rule | done | `5551b6a` |
+| T9.2 cookbook/catalog.md | done | |
+| T9.3–T9.6 cookbooks, justfile, README | todo | |
 
 A task's own hash lands with the *next* commit — a commit cannot contain its own id.
 
@@ -302,7 +303,13 @@ Each is a place the code does something tasks.md or design.md doesn't say, with 
     the agent to claim a commit only when `committed` is true and to claim nothing
     otherwise — but a `git_commit` boolean in the payload would let it report the failure
     honestly. Roadmap candidate, not a T9.1 change (`library.py` is not in its file list).
-53. **Deviation 9's consolidation is deferred, not done.** `doctor` still emits both the
+53. **`cookbook/catalog.md` recommends a *local* catalog by default** for "I want my own
+    catalog", and says to reach for a remote personal catalog only when the user wants it on
+    more than one machine. Nothing in the specs ranks them; the ranking follows from what
+    already landed — a local catalog needs no repo, writes instantly (`mode: "local"`), and
+    accepts local-path sources with no `--allow-local`, which is the case R7.6's derived rule
+    exists for. Recorded because it is guidance the agent will act on, not just prose.
+54. **Deviation 9's consolidation is deferred, not done.** `doctor` still emits both the
     ignored-`default_dirs` warning and the legacy-`default`-scope-key one. The second is now
     worse than redundant: its remedy ("rename it to 'project' in the catalog") is a no-op
     under D7, since the block is ignored either way. Fixing it means changing a message on
