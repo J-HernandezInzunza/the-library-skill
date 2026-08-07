@@ -3780,7 +3780,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("remove", help="remove an entry from the catalog (opens a PR)")
     sp.add_argument("name")
-    sp.add_argument("--purge", action="store_true", help="also delete the local copy (default + global)")
+    sp.add_argument("--purge", action="store_true", help="also delete the local copy (project + global)")
     sp.add_argument("--dry-run", action="store_true",
                     help="show what the PR diff would be without pushing")
     sp.add_argument("--json", action="store_true")

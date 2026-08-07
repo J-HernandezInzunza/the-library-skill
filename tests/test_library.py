@@ -2897,8 +2897,14 @@ class TestCatalogFlag(unittest.TestCase):
         self.assertEqual(json.loads(out)["status"], "NOT_FOUND")
 
     def test_an_unknown_catalog_dies_listing_the_available_ids(self) -> None:
+        # `add` and `update` reach `by_id` through `write_target`, not through
+        # `catalog_restriction` like the read commands — a separate branch, so both are
+        # in the loop rather than assumed to behave like their neighbours.
         for argv in (["list"], ["search", "retro"], ["use", "session-retro"], ["sync"],
-                     ["remove", "session-retro"], ["push", "session-retro"]):
+                     ["remove", "session-retro"], ["push", "session-retro"],
+                     ["update", "session-retro", "--set-description", "x"],
+                     ["add", "--name", "fresh", "--description", "d",
+                      "--source", "https://github.com/a/b/blob/main/skills/x/SKILL.md"]):
             with self.subTest(command=argv[0]):
                 code, _, err = run_cli(*argv, "--catalog", "bogus", "--no-pull", "--json")
                 self.assertEqual(code, 1)
@@ -2980,6 +2986,24 @@ class TestListAcrossCatalogs(unittest.TestCase):
         code, out, err = run_cli("list", "--no-pull", "--json", *extra)
         self.assertEqual(code, 0, err)
         return {f'{item["catalog"]}/{item["name"]}': item for item in json.loads(out)}
+
+    def test_same_name_rows_are_ordered_by_precedence_not_catalog_id(self) -> None:
+        # `personal` < `shared` alphabetically *and* by precedence, so the two-catalog
+        # golden can't tell the orderings apart. `aaa-last` sorts first and ranks last,
+        # which separates them: only a precedence-stable sort puts it at the bottom.
+        third = self.tool.root / "aaa" / "library.yaml"
+        third.parent.mkdir(parents=True, exist_ok=True)
+        third.write_text(PERSONAL_CLEAN)
+        cfg = yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())
+        cfg["catalogs"].append({"id": "aaa-last", "path": str(third)})
+        self.tool.write_config(cfg)
+
+        code, out, err = run_cli("list", "--no-pull")
+        self.assertEqual(code, 0, err)
+        order = [ln.split()[1] for ln in out.splitlines() if "session-retro" in ln]
+        self.assertEqual(order, ["personal", "shared", "aaa-last"])
+        # …and precedence, not the id, is what decides the winner.
+        self.assertEqual(self.rows()["aaa-last/session-retro"]["shadowed_by"], "personal")
 
     def test_output_shows_provenance_shadowing_and_a_per_catalog_summary(self) -> None:
         self.install("scratch-thing")
@@ -3093,8 +3117,22 @@ Run `library use <name>` to install one.
     def test_the_winning_copy_is_listed_first(self) -> None:
         # Same name from two catalogs: precedence order survives the sort, so the copy
         # `use` would install is the one the user reads first.
+        #
+        # The third catalog is what makes this test mean anything. With only `personal`
+        # and `shared`, precedence order and alphabetical order agree, so the assertion
+        # held even if the sort keyed on the catalog id. `aaa-last` sorts first and ranks
+        # last, so the two orderings now disagree and only precedence passes.
+        third = self.tool.root / "aaa" / "library.yaml"
+        third.parent.mkdir(parents=True, exist_ok=True)
+        third.write_text(PERSONAL_CLEAN)
+        cfg = yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())
+        cfg["catalogs"].append({"id": "aaa-last", "path": str(third)})
+        self.tool.write_config(cfg)
+
         code, out, _ = run_cli("search", "retro", "--no-pull")
-        self.assertLess(out.index("personal"), out.index("shared"))
+        self.assertEqual(code, 0)
+        order = [ln.split()[2] for ln in out.splitlines() if "session-retro" in ln]
+        self.assertEqual(order, ["personal", "shared", "aaa-last"])
 
     def test_the_restriction_narrows_the_search(self) -> None:
         self.assertEqual([i["catalog"] for i in self.payload("retro", "--catalog", "shared")],
@@ -5285,6 +5323,19 @@ class TestDoctorRegistry(DoctorCase):
         _, payload = self.findings(gh=1)
         self.assertTrue(any("gh CLI not authenticated" in m for m in self.messages(payload)),
                         self.messages(payload))
+
+    def test_an_unprotected_remote_does_not_bring_it_back(self) -> None:
+        # The gate is "some catalog opens PRs", not "some catalog is remote" — a direct
+        # -push remote never invokes `gh`, so warning about it would be noise. Remote-only
+        # and local-only are both covered so the gate can't quietly widen to `is_remote`.
+        repo = install_golden_fixture(self.tool, GOLDEN_CATALOG_NO_DIRS)
+        self.tool.write_config({"catalogs": [
+            {"id": "mine", "repo": str(repo.remote), "yaml_path": "library.yaml",
+             "branch": "main", "protected": False},
+        ]})
+        code, payload = self.findings(gh=1)
+        self.assertEqual(code, 0)
+        self.assertEqual([m for m in self.messages(payload) if "gh CLI" in m], [])
 
     def test_one_canonical_catalog_keeps_the_catalog_out_of_the_label(self) -> None:
         # R2.3 keyed on catalog count, not on config shape: a migrated config with one
