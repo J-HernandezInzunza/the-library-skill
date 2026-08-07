@@ -10,6 +10,32 @@ End users who just consume skills don't need any of this.
 - **Catalog repo** (e.g. `agent-library` — the `library.yaml` + the agentics): never edited
   by hand. Changes go through the CLI's `add` / `update` / `remove` / `push`, which open PRs
   against the catalog's protected branch.
+- **Any other registered catalog** — same rule, different mechanics. See the write modes
+  below; the CLI still owns every edit.
+
+## The three write modes
+
+A write's mechanics are **derived from the destination catalog**, never configured
+separately, and every write command reports which one it took in `mode`:
+
+| `mode` | Destination | Mechanics | Reversible before it lands? |
+|---|---|---|---|
+| `local` | local catalog (`path`) | Read the file, splice, write it back. With `git_commit: true`, also commit + push | No — it's already written |
+| `pr` | remote, `protected: true` | Temp-clone, branch, commit, push, open a PR (or print a compare URL) | Yes — the PR is the gate |
+| `direct` | remote, `protected: false` | Pull the persistent clone, splice, commit, push to the branch | No |
+
+Consequences worth knowing when working on `library.py`:
+
+- **`local` and `direct` share one code path** (`_apply_edit_in_place`); only `pr` uses a
+  temp-clone (`_apply_edit_via_pr`). Both sit behind `apply_catalog_edit`, which is the
+  single seam every write command goes through — add a write command by calling it, not by
+  writing git plumbing.
+- **A commit or push failure in `local`/`direct` warns rather than raising.** The catalog
+  file is already correct on disk; failing the command would imply the edit didn't happen.
+  The payload carries `committed` / `pushed` so the caller can report honestly.
+- **Never claim a PR from `mode` alone.** Only `pr` + `method: "gh"` means one was opened.
+  This is the rule `SKILL.md` puts on the agent, and the reason `mode` exists in the
+  payload at all.
 
 ## Local checks (tool repo)
 
@@ -60,13 +86,25 @@ nothing else. They're plain `unittest.TestCase` classes, so `pytest tests/` coll
 if you have pytest; the `.venv` deliberately doesn't ship it.
 
 ```bash
-just test
-# or, without just:
-.venv/bin/python -m unittest discover -s tests -t . -v
+just test                                             # the whole suite, verbose
+.venv/bin/python -m unittest discover -s tests -t .   # ...without just
+.venv/bin/python -m unittest tests.test_library.TestDoctorCatalogScope -v   # one class
 ```
 
 `just check` and the pre-push hook both run it, so tests are covered by the same gate as
-compile and doc drift.
+compile and doc drift. (Both inline the `unittest` command rather than calling `just test`
+— the hook is deliberately `just`-free, so the duplication is the price of that.)
+
+**Two conventions the suite leans on**, worth following when you add to it:
+
+- **Golden output for a single catalog is a contract, not a snapshot.**
+  `TestSingleCatalogGoldens` pins `list`, `search`, and `doctor` byte-for-byte against a
+  legacy `catalog:` config. A diff there means a change leaked into single-catalog output
+  and is a bug — except in `doctor`, which may add a finding when it genuinely has a new
+  problem to report. `--json` key sets are expected to grow: new keys are additive.
+- **New output gets gated on `multi_catalog(cfg)`.** Provenance columns, catalog ids in
+  labels, shadow notes — all of it appears only once a second catalog is registered, which
+  is what keeps the goldens above passing.
 
 **Tests never touch your real environment.** `TempTool` builds a throwaway tool directory and
 redirects `library.py`'s path globals — the config file, the catalog clone, the global skills

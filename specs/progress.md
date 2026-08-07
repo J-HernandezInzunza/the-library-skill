@@ -9,7 +9,7 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 
 ## Status
 
-35 of 37 tasks landed. Phases 0–8 complete; Phase 9 is in progress.
+**All 37 tasks landed.** Phases 0–9 complete.
 
 | Task | Status | Commit |
 | ---- | ------ | ------ |
@@ -48,8 +48,8 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 | T9.2 cookbook/catalog.md | done | `7a9d795` |
 | T9.3 write cookbooks | done | `0ebf9c8` |
 | T9.4 read cookbooks | done | `8f3e477` |
-| T9.5 justfile recipes | done | |
-| T9.6 README, contributing, example catalog | todo | |
+| T9.5 justfile recipes | done | `0e7b8d1` |
+| T9.6 README, contributing, example | done | |
 
 A task's own hash lands with the *next* commit — a commit cannot contain its own id.
 
@@ -343,7 +343,16 @@ Each is a place the code does something tasks.md or design.md doesn't say, with 
     file named `mine`. Found while writing the justfile example, which said exactly that.
     Not a bug — `yaml_file` keys on `is_dir()` — but a sharp edge, so both the recipe
     comment and `catalog.md` now say to pass the full `…/library.yaml`.
-60. **Deviation 9's consolidation is deferred, not done.** `doctor` still emits both the
+60. **T9.6 corrected the README's PR-always claims in four more places**, same class as
+    T9.1's: Quick Start's `add` and `update` narration, the `PR-gated writes` design
+    principle, and the per-device config schema (which still showed the legacy `catalog:`
+    mapping and credited install dirs to the catalog). The design principle became two —
+    PR-gating "where it matters", plus shadowing — rather than being softened into nothing.
+61. **The README's `default_dirs` block was removed from its catalog example.** It modelled
+    the exact thing D7 now ignores, so it taught the wrong shape to anyone copying it. The
+    same block is gone from `library.example.yaml`, replaced with a comment explaining why
+    it isn't there (R16.13).
+62. **Deviation 9's consolidation is deferred, not done.** `doctor` still emits both the
     ignored-`default_dirs` warning and the legacy-`default`-scope-key one. The second is now
     worse than redundant: its remedy ("rename it to 'project' in the catalog") is a no-op
     under D7, since the block is ignored either way. Fixing it means changing a message on

@@ -165,9 +165,11 @@ You built a deploy skill in one of your repos. Register it:
   --source https://github.com/yourorg/infra-tools/blob/main/skills/deploy/SKILL.md
 ```
 
-Either way, the CLI creates a branch (`library/add-deploy-<ts>`), pushes it, and prints a
-PR URL (or auto-opens the PR if `autopush: true` on a GitHub catalog). Once the PR is
-merged, the entry is in the shared catalog for everyone.
+Adding to the **shared** catalog goes through review: the CLI creates a branch
+(`library/add-deploy-<ts>`), pushes it, and prints a PR URL (or auto-opens the PR if
+`autopush: true` on a GitHub catalog). Once the PR is merged, the entry is in the shared
+catalog for everyone. Adding to a **personal** catalog instead is an immediate local file
+edit — see [Personal Catalogs](#personal-catalogs).
 
 ### Update an existing entry
 
@@ -181,9 +183,9 @@ the catalog:
 ./library update session-retro --add-requires skill:backend-code-practices
 ```
 
-Like `add`/`remove`, this opens a PR against the catalog repo rather than editing
-`library.yaml` directly — `add` only creates new entries, so editing an existing one
-(most commonly appending to `requires`) goes through `update` instead.
+Like `add`/`remove`, this goes through the CLI rather than editing `library.yaml` by hand —
+a PR on the shared catalog, an immediate edit on a personal one. `add` only creates new
+entries, so changing an existing one (most commonly appending to `requires`) is `update`.
 
 ### Push changes back
 
@@ -237,13 +239,16 @@ Two ways to drive it, same result:
 | Remove an entry | "remove deploy from the library" | `./library remove deploy` |
 | Sync everything | "sync all my installed library skills" | `./library sync` |
 | Health check | "check the library catalog for problems" | `./library doctor` |
-| Manage catalogs | "migrate my library config to the new format" | `./library catalog migrate` |
+| See your catalogs | "what catalogs am I using?" | `./library catalog list` |
+| Start a personal catalog | "give me my own catalog" | `./library catalog init <path>` |
+| Register / drop a catalog | "register this catalog as read-only" | `./library catalog add\|remove …` |
 | Update the tool | "update the library tool" | `./library self-update` |
 
 **CLI flags:** `--json` (machine-readable) · `--no-pull` (skip catalog refresh) ·
 `--dry-run` (preview `add`/`update`/`remove`/`push`, or resolve a `use` destination
 without installing) · `--project`/`--dir` (`use` target; default is global) ·
-`--deep` (`doctor` source-liveness).
+`--deep` (`doctor` source-liveness) · `--catalog <id>` (restrict any name-taking command
+to one catalog, bypassing precedence — see [Personal Catalogs](#personal-catalogs)).
 
 > **`use --project` and your working directory:** bare `use` installs globally
 > (`~/.claude/…`) and doesn't care where you run it. `--project` installs are
@@ -268,15 +273,23 @@ just bootstrap             # One-time: create .venv + install PyYAML for the CLI
 just init <catalog-url> <branch>   # Create per-device config + clone catalog repo
 
 # Deterministic — run the CLI directly (no LLM, no tokens):
-just list                  # List catalog
+just list                  # List every catalog's entries
+just list --catalog mine   # ...or just one catalog's (flags pass straight through)
 just search "keyword"      # Search by keyword
 just use my-skill          # Pull a skill (exact name) → ~/.claude/... (global)
 just use-project my-skill  # Pull into the .claude/ of the dir you run from
 just sync                  # Re-pull all installed items
-just doctor                # Validate catalog integrity
+just doctor                # Validate config, registry, and every catalog
 just doctor --deep         # ...and check every source is reachable
 just self-update           # Update the tool itself (git pull)
 just link                  # Symlink this clone into ~/.claude/skills
+
+# Catalog registry (rewrites config.local.yaml — don't hand-edit it):
+just catalogs                                    # Show the registry, in precedence order
+just catalog-init ~/dev/mine/library.yaml        # Scaffold a personal catalog + register it
+just catalog-add --id notes --path <file>        # Register one that already exists
+just catalog-remove notes                        # Unregister (the file itself is kept)
+just catalog-migrate --dry-run                   # Preview the legacy-config rewrite
 
 # Fuzzy / write ops — route through the agent:
 just add "name: foo, description: bar, source: /path/to/SKILL.md"
@@ -289,6 +302,142 @@ just ask "use that PR review thing"   # natural-language / fuzzy intent
 > **Note:** The agent-backed recipes use `--dangerously-skip-permissions` because the agent
 > needs filesystem and git access. The CLI-backed recipes (`list`/`search`/`use`/`sync`/`doctor`)
 > run locally with no agent at all. Review the `justfile` to change this behavior.
+
+## Personal Catalogs
+
+The shared catalog is your team's. A **personal catalog** is yours: a second catalog,
+registered ahead of the shared one, holding entries only you see. It exists for the case
+the shared catalog handles badly — you want to iterate on your own copy of a team skill,
+or register something that only makes sense on your machine, without a PR and without
+anyone else inheriting it.
+
+`config.local.yaml` holds a **registry** of catalogs in precedence order, highest first:
+
+```yaml
+catalogs:
+  - id: personal # local: a library.yaml on this machine
+    path: ~/dev/my-library/library.yaml
+  - id: shared # remote: a repo, plus the catalog file inside it
+    repo: git@github.com:yourorg/agent-library.git
+    yaml_path: library.yaml
+    branch: develop
+    protected: true # writes open a PR, never a direct push
+default_add_catalog: personal # optional: where a write goes with no --catalog
+```
+
+Existing configs keep working untouched — the old singular `catalog:` mapping is read as
+one protected remote catalog named `shared`. `./library catalog migrate` rewrites it into
+the shape above when you want it, and registering your first personal catalog does the
+same migration for you along the way (it has to: you can't append to a mapping).
+
+### Create one
+
+```bash
+./library catalog init ~/dev/my-library/library.yaml
+```
+
+That scaffolds an empty catalog, registers it at precedence 1, and that's the whole setup —
+no repo, no PR. Already have a catalog file, or want to register a second remote one?
+`./library catalog add --id <id> --path <file>` (or `--repo <url>`). See
+[cookbook/catalog.md](cookbook/catalog.md).
+
+```bash
+./library catalog list    # or `just catalogs`
+```
+
+```
+Catalogs (highest precedence first)
+
+  1. personal  local   write: local   2 entries  /Users/you/dev/my-library/library.yaml
+  2. shared    remote  write: pr      4 entries  git@github.com:yourorg/agent-library.git (develop, library.yaml)
+```
+
+### Shadowing, worked through
+
+Say the team catalog has `session-retro`, and you want your own version. Add it to your
+personal catalog under **the same name**:
+
+```bash
+./library add --catalog personal --name session-retro \
+  --description "My iterated copy" --source ~/dev/skills/session-retro/SKILL.md
+```
+
+```
+Added [skill] session-retro to skills.
+  Wrote /Users/you/dev/my-library/library.yaml
+warning: 'session-retro' also exists in shared; the copy in 'personal' takes precedence and will shadow it
+```
+
+Two things just happened that wouldn't have on the shared catalog: the write landed
+**instantly in a local file** (no branch, no PR), and the **local path was accepted** —
+nobody else pulls this catalog, so a path that only resolves here is fine. On the shared
+catalog the first would be a PR and the second would be refused. Nothing is silent: the
+CLI says up front which copy will now win.
+
+Now `list` shows both copies and says which one wins:
+
+```
+Skills
+  session-retro  personal  not installed         My iterated copy
+  session-retro  shared    shadowed by personal  Distill a finished session into durable style learnings
+
+5 entries · 0 installed · 4 not installed · 1 shadowed
+```
+
+```bash
+./library use session-retro
+# Installed [skill] session-retro → ~/.claude/skills/session-retro · new install (from personal, shadows shared)
+
+./library use session-retro --catalog shared   # …when you want the team's copy anyway
+```
+
+The shared entry is **not** overridden or edited — it is intact, and everyone else still
+gets it. You just resolve to yours first. Delete your copy and the name falls straight
+back through to the team's. `doctor` reports shadowing as a warning, not an error: it is
+the feature working.
+
+Two rules worth knowing up front:
+
+- **Dependencies resolve within one catalog.** A `requires` ref is looked up only in its
+  own catalog, never across. Copy an entry into your personal catalog and you copy what it
+  requires too, or `doctor` flags the ref as dangling and tells you where it does resolve.
+- **A write needs to know its destination.** With two writable catalogs and no
+  `--catalog`, write commands stop with `AMBIGUOUS_CATALOG` and list the candidates
+  instead of guessing. Set `default_add_catalog` to settle it permanently.
+
+### Where writes go
+
+How a write reaches a catalog is derived from the catalog, never configured separately:
+
+| `mode` | Catalog | What happens |
+|---|---|---|
+| `local` | local (`path`) | The file is edited in place. With `git_commit: true`, also committed and pushed |
+| `pr` | remote, `protected: true` | Branch + commit in a temp-clone, pushed, PR opened (or a compare URL printed) |
+| `direct` | remote, `protected: false` | Committed and pushed straight to the catalog's branch |
+
+`catalog add` registers a new remote as unprotected by default — a PR gate on your own
+catalog is friction with no reviewer — while the shared catalog set up by `init` is
+`protected: true`. Pass `--protected` to opt in, or `--read-only` to register a catalog
+you can read but never write.
+
+### Where install locations come from
+
+**The tool, not the catalog.** `use` installs to `~/.claude/skills|agents|commands/` by
+default and to the project-local `.claude/` under `--project`, regardless of which catalog
+an entry came from. Override them per machine with a `default_dirs:` block in
+`config.local.yaml`:
+
+```yaml
+default_dirs:
+  skills:
+    - global: ~/my-agents/skills/
+```
+
+A `default_dirs:` block inside a **catalog** is ignored, and `doctor` warns when it finds
+one, naming the paths actually in force. This is deliberate: if catalogs could set install
+locations, registering a second one could silently relocate everything you already had
+installed. Migrating a legacy config lifts the shared catalog's block into
+`config.local.yaml` for you, so nothing moves.
 
 ## What It Is
 
@@ -347,24 +496,16 @@ The Library separates concerns across three independent pieces so each can evolv
 |---|---|---|
 | **Tool** | This repo (`the-library-skill`) | Clone read-only; update via `./library self-update` or `git pull` |
 | **Catalog + sources** | A separate shared repo (e.g., `agent-library`) holding `library.yaml` plus the actual agentics | PR-gated writes; read via a persistent clone at `.catalog-repo/` |
-| **Per-device config** | `config.local.yaml` (gitignored) created once by `library init` | Points the tool at the catalog repo; never committed to either repo |
+| **Per-device config** | `config.local.yaml` (gitignored) created once by `library init` | Holds the catalog registry and this machine's settings; never committed to either repo |
 
 Each teammate clones the tool read-only and runs `./library init --repo <catalog-url> --branch <branch>` once (or just asks the agent: "set up/initialize the library from `<url>` on `<branch>`"). After that, everyone reads from the same shared catalog. Curation (`add`ing, `update`ing, `remove`ing entries) goes through PRs on the catalog repo — the protected branch is never pushed to directly.
+
+The registry is where the third piece stops being singular: you can register more than one
+catalog, and a personal one takes precedence over the team's. That's the next section.
 
 ### The Catalog (`library.yaml`, lives in the catalog repo)
 
 ```yaml
-default_dirs:
-  skills:
-    - project: .claude/skills/
-    - global: ~/.claude/skills/
-  agents:
-    - project: .claude/agents/
-    - global: ~/.claude/agents/
-  prompts:
-    - project: .claude/commands/
-    - global: ~/.claude/commands/
-
 library:
   skills:
     - name: my-helper-skill
@@ -380,24 +521,53 @@ library:
 
 The catalog stores pointers, not copies. Skills live in their source repos. You pull on demand. See `library.example.yaml` in this repo for a fully annotated worked example.
 
+A catalog file holds entries and nothing else that matters: a `default_dirs:` block here is
+**ignored** (install locations belong to the tool and `config.local.yaml`), and `doctor`
+warns when it finds one. Older catalogs still carry that block harmlessly — `catalog
+migrate` lifts it into your local config so nothing moves.
+
 ### Per-Device Config (`config.local.yaml`, gitignored)
 
-Created once by `library init`. Points the tool at your team's catalog repo and controls the PR workflow:
+Created once by `library init`. Holds the catalog registry — a `catalogs:` list in
+precedence order, highest first — plus this machine's settings:
 
 ```yaml
-catalog:
-  repo: git@github.com:yourorg/agent-library.git
-  yaml_path: library.yaml
-  branch: develop
+catalogs:
+  - id: shared
+    repo: git@github.com:yourorg/agent-library.git
+    yaml_path: library.yaml
+    branch: develop
+    protected: true
 autopush: false
 ```
 
-- **`catalog.repo`** — clone URL of the shared catalog repo.
-- **`catalog.yaml_path`** — path to `library.yaml` within the catalog repo (default: `library.yaml`).
-- **`catalog.branch`** — the protected branch that `add`/`update`/`remove`/`push` open PRs against.
-- **`autopush`** — when `true`, write ops also run `gh pr create` to open the PR automatically. On a GitHub catalog this is all-or-nothing: the op either opens the PR or **exits non-zero** (it never silently falls back to just a pushed branch), so "PR opened" is always literally true. Default `false` pushes the branch and prints a compare URL for you to open manually. (Bitbucket has no `gh` equivalent, so it always uses the compare-URL path.)
+Per catalog:
 
-Install locations are not configured here — they come from `default_dirs` in the catalog's `library.yaml`.
+- **`id`** — short name, used by `--catalog <id>` on every command. Must be unique.
+- **`path`** — *local catalog:* a `library.yaml` on this machine (or a directory holding
+  one). Must be absolute or start with `~`. Mutually exclusive with `repo`.
+- **`repo`** / **`yaml_path`** / **`branch`** — *remote catalog:* the clone URL, the catalog
+  file's path within that repo (default `library.yaml`), and the branch to read and write.
+- **`protected`** — remote only, default `true`. Writes open a PR instead of pushing.
+- **`git_commit`** — local only, default `false`. Commit and push the file after each write.
+- **`writable`** — default `true`. Set `false` to read a catalog but refuse every write.
+
+Top level:
+
+- **`default_add_catalog`** — which catalog a write targets when `--catalog` is omitted and
+  more than one is writable. Without it, such a write stops and asks.
+- **`default_dirs`** — optional per-machine override of where items install (see
+  [Personal Catalogs](#where-install-locations-come-from)).
+- **`autopush`** — when `true`, PR-mode writes also run `gh pr create` to open the PR
+  automatically. On a GitHub catalog this is all-or-nothing: the op either opens the PR or
+  **exits non-zero** (it never silently falls back to just a pushed branch), so "PR opened"
+  is always literally true. Default `false` pushes the branch and prints a compare URL for
+  you to open manually. (Bitbucket has no `gh` equivalent, so it always uses the
+  compare-URL path.)
+
+This file is machine-owned: `library catalog add|init|remove|migrate` rewrite it, so
+hand-added comments don't survive. Install locations are **not** taken from any catalog —
+they come from the tool, overridable by `default_dirs` here.
 
 ### Source Formats
 
@@ -433,12 +603,14 @@ auth/setup gotchas, lives in **[docs/troubleshooting.md](docs/troubleshooting.md
 ```
 ~/.claude/skills/library/     # Symlink → your clone of the tool (created by `library link`)
     SKILL.md                  # Agent instructions — the brain
-    config.local.yaml        # Per-device config (gitignored; created by `library init`)
+    config.local.yaml         # Per-device config + catalog registry (gitignored; `library init`)
     library.example.yaml      # Annotated catalog template (reference only — not read by CLI)
-    .catalog-repo/            # Persistent clone of the shared catalog repo (gitignored)
+    .catalog-repo/            # Persistent clone of the 'shared' catalog repo (gitignored)
+    .catalogs/<id>/           # Clone of every other remote catalog, one dir per id (gitignored)
     cookbook/                 # Step-by-step guides for each command
         init.md
         install.md
+        catalog.md
         add.md
         update.md
         use.md
@@ -452,13 +624,18 @@ auth/setup gotchas, lives in **[docs/troubleshooting.md](docs/troubleshooting.md
     library.py                # Deterministic CLI — the mechanics for every catalog op
     library                   # Wrapper that selects .venv python, then runs library.py
     check_docs.py             # Doc/CLI drift guard (run by `just check` + the pre-push hook)
+    tests/test_library.py     # stdlib unittest suite (`just test`; also run by `just check`)
     justfile                  # Terminal shortcuts (CLI direct + agent fallback)
     .githooks/pre-push        # Local checks before push (enable: `just install-hooks`)
     ci-examples/              # CI templates for the catalog repo (doctor on PRs)
     docs/                     # Human docs: troubleshooting, contributing, roadmap
+    specs/                    # Requirements, design, and task plan for in-flight work
     .venv/                    # PyYAML for the CLI (gitignored)
     README.md                 # This file
 ```
+
+A **local** catalog has no entry here at all — it is wherever you put its `library.yaml`,
+and the tool only stores its path.
 
 ## Contributing
 
@@ -478,7 +655,8 @@ being done now, and what it would unlock.
 - **Hybrid**: Deterministic mechanics live in a small CLI; the agent handles only fuzzy/interactive parts. SKILL.md still defines the workflow.
 - **Agent-agnostic**: Default target is `.claude/skills/` but supports any directory for any agent harness.
 - **Catalog, not manifest**: Entries define what's available, not what's installed. Pull on demand.
-- **PR-gated writes**: The catalog's protected branch is never pushed to directly — all catalog changes land via reviewed PRs.
+- **PR-gated writes where it matters**: a protected catalog's branch is never pushed to directly — shared changes land via reviewed PRs. Your own catalog is yours: a local catalog is edited in place, with no gate and no reviewer to wait for.
+- **Yours wins locally**: a personal catalog registered ahead of the shared one shadows it by name, without editing, forking, or overriding what your team sees.
 
 ## The Agentic Stack
 
