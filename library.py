@@ -3542,6 +3542,56 @@ autopush: {autopush}
 """
 
 
+def _reinit_preserving(
+    shared: dict[str, Any], autopush: bool,
+) -> tuple["dict[str, Any] | None", list[str]]:
+    """(config to write, catalog ids being dropped) for a re-`init`.
+
+    `init --force` writes its whole file from `_LOCAL_CONFIG_TEMPLATE`, which knows about
+    exactly one catalog — so it used to unregister every other one silently. Repointing
+    the team catalog is no reason to lose a personal one, so anything else already in the
+    config (other catalogs, `default_add_catalog`, a `default_dirs` override, unrecognized
+    keys) is carried across and the file is written in the machine-owned form instead.
+
+    Returns (None, …) when there is nothing worth preserving, so an ordinary first run
+    still gets the commented template verbatim, and a config too broken to parse can still
+    be repaired by overwriting it. The second element is non-empty only in that repair
+    case, and names what the overwrite costs.
+    """
+    if not LOCAL_CONFIG_PATH.exists():
+        return None, []
+    try:
+        with LOCAL_CONFIG_PATH.open() as fh:
+            raw = yaml.safe_load(fh) or {}
+        existing = _normalize_catalogs(raw) if isinstance(raw, dict) else []
+    except (OSError, yaml.YAMLError):
+        return None, []
+    if not isinstance(raw, dict):
+        return None, []
+
+    others = [c for c in existing if c.get("id") != SHARED_ID]
+    extras = {k: v for k, v in raw.items() if k not in ("catalog", "catalogs", "autopush")}
+    if not others and not extras:
+        return None, []  # only the shared catalog was there; the template says the same
+
+    catalogs, replaced = [], False
+    for item in existing:
+        if not replaced and item.get("id") == SHARED_ID:
+            catalogs.append(shared)
+            replaced = True
+        else:
+            catalogs.append(item)
+    if not replaced:
+        catalogs.append(shared)  # nothing was called 'shared'; the team catalog goes last
+
+    merged: dict[str, Any] = {"catalogs": catalogs, "autopush": autopush, **extras}
+    if Config.problems(merged):
+        # Something already on disk is invalid. --force is the documented repair path, so
+        # let the overwrite happen — but never quietly.
+        return None, [str(c.get("id") or "?") for c in others]
+    return merged, []
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     if LOCAL_CONFIG_PATH.exists() and not args.force:
         die(f"{LOCAL_CONFIG_PATH} already exists; pass --force to overwrite")
@@ -3552,12 +3602,24 @@ def cmd_init(args: argparse.Namespace) -> int:
         default_yaml = Path(old["LIBRARY_YAML_PATH"]).name or "library.yaml"
     yaml_path = args.yaml_path or default_yaml
 
-    LOCAL_CONFIG_PATH.write_text(_LOCAL_CONFIG_TEMPLATE.format(
-        repo=args.repo,
-        yaml_path=yaml_path,
-        branch=args.branch,
-        autopush="true" if args.autopush else "false",
-    ))
+    merged, dropped = _reinit_preserving(
+        {"id": SHARED_ID, "repo": args.repo, "yaml_path": yaml_path,
+         "branch": args.branch, "protected": True},
+        bool(args.autopush),
+    )
+    if merged is None:
+        LOCAL_CONFIG_PATH.write_text(_LOCAL_CONFIG_TEMPLATE.format(
+            repo=args.repo,
+            yaml_path=yaml_path,
+            branch=args.branch,
+            autopush="true" if args.autopush else "false",
+        ))
+    else:
+        write_config(merged)
+    for cid in dropped:
+        warn(f"catalog '{cid}' could not be carried over and is no longer registered; "
+             f"re-add it with `library catalog add --id {cid} …`")
+    kept = [c["id"] for c in (merged or {}).get("catalogs", []) if c["id"] != SHARED_ID]
 
     cfg = load_config()  # validate what we just wrote
 
@@ -3592,6 +3654,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             "autopush": cfg.autopush,
             "catalog_clone": str(CATALOG_CLONE_DIR),
             "catalog_entries": len(iter_entries(load_catalog(cp))),
+            "kept_catalogs": kept,
         }, indent=2))
         return 0
 
@@ -3602,6 +3665,8 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(f"  catalog clone: {CATALOG_CLONE_DIR}")
     n_entries = len(iter_entries(load_catalog(cp)))
     print(f"  catalog ready: {n_entries} entries")
+    if kept:
+        print(f"  kept         : {', '.join(kept)} (still registered)")
     if "LIBRARY_REPO_URL" in old:
         print(
             "\nnote: the legacy LIBRARY_REPO_URL pointed at the tool repo, not the catalog —\n"

@@ -2649,6 +2649,106 @@ class TestInitEmitsCanonicalConfig(unittest.TestCase):
         self.assertFalse(json.loads(out)["changed"])
 
 
+class TestReinitPreservesTheRegistry(unittest.TestCase):
+    """`init --force` repoints the team catalog; it must not unregister the others.
+
+    It writes the whole file from a one-catalog template, so before this it silently
+    dropped every other catalog, `default_add_catalog`, and any `default_dirs` override —
+    reachable by following the docs, since `init` is advertised as re-runnable.
+    """
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.repo = install_two_catalog_fixture(self.tool)
+
+    def amend(self, **keys: Any) -> None:
+        cfg = yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())
+        cfg.update(keys)
+        self.tool.write_config(cfg)
+
+    def reinit(self, *extra: str) -> tuple[int, str, str]:
+        return run_cli("init", "--repo", str(self.repo.remote), "--branch", "main",
+                       "--force", *extra)
+
+    def config(self) -> dict[str, Any]:
+        return yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())
+
+    def test_other_catalogs_survive_and_keep_their_precedence(self) -> None:
+        code, out, err = self.reinit()
+        self.assertEqual(code, 0, err)
+        self.assertEqual([c["id"] for c in self.config()["catalogs"]], ["personal", "shared"])
+        self.assertIn("kept         : personal", out)
+
+    def test_the_shared_entry_is_the_one_that_gets_repointed(self) -> None:
+        other = TempGitRepo(self.tool.root, name="new-upstream")
+        other.commit("library.yaml", GOLDEN_CATALOG_NO_DIRS)
+        other.push()
+        code, _, err = run_cli("init", "--repo", str(other.remote), "--branch", "main",
+                               "--yaml-path", "library.yaml", "--force")
+        self.assertEqual(code, 0, err)
+        shared = next(c for c in self.config()["catalogs"] if c["id"] == "shared")
+        self.assertEqual(shared["repo"], str(other.remote))
+        # …and the personal catalog is untouched, path and all.
+        personal = next(c for c in self.config()["catalogs"] if c["id"] == "personal")
+        self.assertEqual(personal["path"], str(self.tool.root / "personal" / "library.yaml"))
+
+    def test_default_add_catalog_and_dirs_overrides_survive(self) -> None:
+        self.amend(default_add_catalog="personal",
+                   default_dirs={"skills": [{"global": "~/elsewhere/skills/"}]})
+        self.reinit()
+        data = self.config()
+        self.assertEqual(data["default_add_catalog"], "personal")
+        self.assertEqual(data["default_dirs"], {"skills": [{"global": "~/elsewhere/skills/"}]})
+        # The override is what actually decides where installs land, so prove it survived
+        # as behavior and not just as text.
+        self.assertEqual(library.load_config().dirs["skills"]["global"], "~/elsewhere/skills/")
+
+    def test_an_unrecognized_key_survives(self) -> None:
+        self.amend(some_future_setting={"a": 1})
+        self.reinit()
+        self.assertEqual(self.config()["some_future_setting"], {"a": 1})
+
+    def test_a_single_shared_catalog_still_gets_the_commented_template(self) -> None:
+        # Nothing to preserve, so the ordinary first-run path is untouched.
+        tool = TempTool()
+        self.addCleanup(tool.stop)
+        repo = install_golden_fixture(tool, GOLDEN_CATALOG_NO_DIRS)
+        code, out, err = run_cli("init", "--repo", str(repo.remote), "--branch", "main", "--force")
+        self.assertEqual(code, 0, err)
+        text = library.LOCAL_CONFIG_PATH.read_text()
+        self.assertIn("# The Library — per-device config", text)
+        self.assertIn("# the team catalog", text)  # a template-only comment
+        self.assertNotIn("kept", out)
+
+    def test_a_config_too_broken_to_merge_is_still_repairable_but_says_what_it_cost(self) -> None:
+        # --force is the documented repair path. It must not become unusable just because
+        # the file it is repairing is invalid — but it may not go quiet either.
+        self.tool.write_config({"catalogs": [
+            {"id": "personal", "path": "relative-and-invalid.yaml"},
+            {"id": "shared", "repo": str(self.repo.remote),
+             "yaml_path": "library.yaml", "branch": "main"},
+        ]})
+        code, out, err = self.reinit()
+        self.assertEqual(code, 0, err)
+        self.assertEqual([c["id"] for c in self.config()["catalogs"]], ["shared"])
+        self.assertIn("catalog 'personal' could not be carried over", err)
+        self.assertIn("library catalog add --id personal", err)
+
+    def test_json_reports_what_was_kept(self) -> None:
+        code, out, _ = self.reinit("--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["kept_catalogs"], ["personal"])
+
+    def test_the_registry_still_resolves_after_a_reinit(self) -> None:
+        # The end-to-end point: the personal catalog still wins for the name it shadows.
+        self.reinit()
+        code, out, err = run_cli("list", "--no-pull")
+        self.assertEqual(code, 0, err)
+        self.assertIn("session-retro           personal", out)
+        self.assertIn("shadowed by personal", out)
+
+
 # --------------------------------------------------------------------------- #
 # --catalog restriction and shadow reporting (R4.1–R4.4)
 # --------------------------------------------------------------------------- #
