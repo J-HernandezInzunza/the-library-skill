@@ -2855,6 +2855,19 @@ class TestPrecedenceAndShadowing(unittest.TestCase):
         ])
         self.assertEqual(library.shadow_note(cfg, cfg.resolve("dup")), "shadows b, c")
 
+    def test_shadow_note_is_written_from_the_entrys_point_of_view(self) -> None:
+        # Found on a real two-catalog setup: `use grill-me --catalog shared` reported
+        # "grill-me shadows shared" — the shared copy shadowing itself. `cfg.shadows()`
+        # slices the merged list positionally, so under --catalog it described the
+        # winner's relationship rather than the resolved entry's.
+        loser = self.cfg.resolve("session-retro", catalog="shared")
+        self.assertEqual(loser.catalog, "shared")
+        self.assertEqual(library.shadow_note(self.cfg, loser), "is shadowed by personal")
+        self.assertEqual(library.shadow_split(self.cfg, loser), ([], ["personal"]))
+        # …and the winner's own note is unchanged.
+        winner = self.cfg.resolve("session-retro")
+        self.assertEqual(library.shadow_split(self.cfg, winner), (["shared"], []))
+
     def test_by_id_error_lists_the_available_ids(self) -> None:
         with self.assertRaises(library.LibraryError) as ctx:
             self.cfg.by_id("nope")
@@ -3240,6 +3253,16 @@ library:
         self.assertEqual(payload["installed"][0]["catalog"], "shared")
         self.assertEqual((self.installed_dir("session-retro") / "SKILL.md").read_text(),
                          "# session-retro-shared\n")
+
+    def test_installing_the_shadowed_copy_says_so_rather_than_claiming_it_won(self) -> None:
+        # The report has to be about the copy actually installed. This said
+        # "session-retro shadows shared" while installing shared's copy.
+        payload = self.use("session-retro", "--catalog", "shared")
+        self.assertEqual((payload["shadows"], payload["shadowed_by"]), ([], "personal"))
+        code, out, _ = run_cli("use", "session-retro", "--catalog", "shared", "--no-pull")
+        self.assertEqual(code, 0)
+        self.assertIn("(from shared, is shadowed by personal)", out)
+        self.assertNotIn("shadows shared", out)
 
     def test_the_human_report_names_the_catalog_and_the_shadowing(self) -> None:
         code, out, _ = run_cli("use", "session-retro", "--no-pull")

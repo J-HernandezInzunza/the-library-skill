@@ -574,16 +574,34 @@ def cross_catalog_conflict(cfg: Config, name: str) -> "AmbiguousCatalog | None":
     return AmbiguousCatalog(holders) if len(holders) > 1 else None
 
 
+def shadow_split(cfg: Config, entry: Entry) -> tuple[list[str], list[str]]:
+    """(catalogs *entry* shadows, catalogs that shadow *entry*), in precedence order.
+
+    Relative to *entry*, not to precedence alone: under `--catalog` the resolved entry
+    can be the shadowed one. `cfg.shadows()` slices the merged list positionally, so
+    reading it here reported that a `--catalog shared` install shadowed shared itself.
+    """
+    order = [c.id for c in cfg.active]
+    rank = order.index(entry.catalog) if entry.catalog in order else len(order)
+    below: list[str] = []
+    above: list[str] = []
+    for e in cfg.entries():
+        if e.name != entry.name or e.catalog == entry.catalog:
+            continue
+        (above if order.index(e.catalog) < rank else below).append(e.catalog)
+    return list(dict.fromkeys(below)), list(dict.fromkeys(above))
+
+
 def shadow_note(cfg: Config, entry: Entry) -> str:
-    """'' when nothing is shadowed, else 'shadows <id>[, <id>]'.
+    """'' when no other catalog holds the name, else how *entry* relates to the rest.
 
     Shadowing is the point of a personal catalog, so it is always reported rather
     than being silent — the user should know which copy they just got.
     """
-    losers = cfg.shadows(entry.name)
-    if not losers:
-        return ""
-    return "shadows " + ", ".join(dict.fromkeys(e.catalog for e in losers))
+    below, above = shadow_split(cfg, entry)
+    if above:  # the surprising direction: what you asked for is not what resolves
+        return "is shadowed by " + ", ".join(above)
+    return "shadows " + ", ".join(below) if below else ""
 
 
 def new_entry_shadow_warnings(cfg: Config, cat: Catalog, name: str) -> list[str]:
@@ -2024,8 +2042,10 @@ def cmd_use(args: argparse.Namespace) -> int:
             for e in order
         ]
         if args.json:
+            shadows, shadowed_by = shadow_split(cfg, entry)
             print(json.dumps({"status": "OK", "dry_run": True, "scope": scope,
-                              "shadows": [s.catalog for s in cfg.shadows(entry.name)],
+                              "shadows": shadows,
+                              "shadowed_by": shadowed_by[0] if shadowed_by else None,
                               "would_install": plan}, indent=2))
         else:
             print("Dry run — nothing installed. Would install:")
@@ -2046,8 +2066,9 @@ def cmd_use(args: argparse.Namespace) -> int:
         return 1
 
     if args.json:
-        print(json.dumps({"status": "OK", "installed": results,
-                          "shadows": [s.catalog for s in cfg.shadows(entry.name)]}, indent=2))
+        shadows, shadowed_by = shadow_split(cfg, entry)
+        print(json.dumps({"status": "OK", "installed": results, "shadows": shadows,
+                          "shadowed_by": shadowed_by[0] if shadowed_by else None}, indent=2))
         return 0
 
     deps = results[:-1]
