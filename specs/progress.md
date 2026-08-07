@@ -9,7 +9,7 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 
 ## Status
 
-34 of 37 tasks landed. Phases 0–8 complete; Phase 9 is in progress.
+35 of 37 tasks landed. Phases 0–8 complete; Phase 9 is in progress.
 
 | Task | Status | Commit |
 | ---- | ------ | ------ |
@@ -47,8 +47,9 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 | T9.1 SKILL.md catalog model + mode rule | done | `5551b6a` |
 | T9.2 cookbook/catalog.md | done | `7a9d795` |
 | T9.3 write cookbooks | done | `0ebf9c8` |
-| T9.4 read cookbooks | done | |
-| T9.5–T9.6 justfile, README, contributing | todo | |
+| T9.4 read cookbooks | done | `8f3e477` |
+| T9.5 justfile recipes | done | |
+| T9.6 README, contributing, example catalog | todo | |
 
 A task's own hash lands with the *next* commit — a commit cannot contain its own id.
 
@@ -330,7 +331,19 @@ Each is a place the code does something tasks.md or design.md doesn't say, with 
     `init.md`; the real fix (preserve non-shared entries, or refuse and list what would be
     lost) is a `library.py` change outside T9.4's file list. **The most damaging thing found
     in Phase 9** — worth a roadmap entry or a small off-plan fix.
-57. **Deviation 9's consolidation is deferred, not done.** `doctor` still emits both the
+57. **`check` inlines the test command rather than calling `just test`** — confirmed, not
+    changed. T9.5 asks to confirm the suite runs in `check`; it does, via its own
+    `unittest discover` line. The duplication is deliberate and matches `.githooks/pre-push`,
+    which is `just`-free by design (deviation 2). The two differ only in `-v`.
+58. **T9.5 corrected the write recipes' `just --list` descriptions.** `add`/`update`/`remove`
+    still said "(proposes a PR)", the same false claim T9.1 removed from SKILL.md's command
+    table. Four comment lines, in the file the task owns.
+59. **`catalog init <path>` treats a non-existent path as a *file*.** Only an *existing*
+    directory gets `library.yaml` created inside it, so `catalog init ~/dev/mine` yields a
+    file named `mine`. Found while writing the justfile example, which said exactly that.
+    Not a bug — `yaml_file` keys on `is_dir()` — but a sharp edge, so both the recipe
+    comment and `catalog.md` now say to pass the full `…/library.yaml`.
+60. **Deviation 9's consolidation is deferred, not done.** `doctor` still emits both the
     ignored-`default_dirs` warning and the legacy-`default`-scope-key one. The second is now
     worse than redundant: its remedy ("rename it to 'project' in the catalog") is a no-op
     under D7, since the block is ignored either way. Fixing it means changing a message on

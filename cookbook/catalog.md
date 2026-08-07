@@ -75,8 +75,12 @@ The common case, and the one to reach for when the user says "I want my own cata
   [--position first|last]    # default: first
 ```
 
-- `<path>` may be a file or a directory; a directory gets `library.yaml` created inside it.
-  It must be absolute or start with `~`, and parent directories are created as needed.
+- `<path>` must be absolute or start with `~`; a catalog location is machine-global, so it
+  cannot depend on the directory the command ran from. Missing parents are created.
+- **An *existing* directory gets `library.yaml` created inside it.** Any other path is
+  taken as the file to create — so `~/dev/mine` yields a file named `mine` unless
+  `~/dev/mine/` already exists. Pass the full `…/library.yaml` when you mean a new
+  directory; it is unambiguous and creates the parent for you.
 - It refuses to overwrite an existing file. If the user already has a catalog file, that's
   `catalog add`, not `init`.
 - The scaffold has three empty sections and **no `default_dirs`** — a catalog's own block

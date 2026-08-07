@@ -29,29 +29,53 @@ link *args:
 
 # --- Deterministic ops: run the CLI directly (no LLM, no tokens) --------
 
-# List all entries in the catalog with install status
-list:
-    @{{lib}} list
+# Every catalog's entries with install status (--catalog <id>, --json, --no-pull)
+list *args:
+    @{{lib}} list {{args}}
 
-# Search the catalog by keyword
-search keyword:
-    @{{lib}} search "{{keyword}}"
+# Search every catalog by keyword (--catalog <id>, --json)
+search keyword *args:
+    @{{lib}} search "{{keyword}}" {{args}}
 
-# Pull a skill from the catalog by exact name → ~/.claude/... (global, the default)
-use name:
-    @{{lib}} use "{{name}}"
+# Pull a skill by exact name → ~/.claude/... (global, the default; --catalog <id>)
+use name *args:
+    @{{lib}} use "{{name}}" {{args}}
 
 # Pull a skill into the .claude/ of the directory you run from
-use-project name:
-    @{{lib}} use "{{name}}" --project
+use-project name *args:
+    @{{lib}} use "{{name}}" --project {{args}}
 
-# Sync all installed items (re-pull from source)
-sync:
-    @{{lib}} sync
+# Sync all installed items (re-pull from source; --catalog <id> to scope it)
+sync *args:
+    @{{lib}} sync {{args}}
 
-# Validate config + catalog integrity (add --deep to check source liveness)
+# Validate config, the catalog registry, and every catalog (--deep checks source liveness)
 doctor *args:
     @{{lib}} doctor {{args}}
+
+# --- Catalog registry ----------------------------------------------------
+# The registry lives in config.local.yaml, in precedence order (highest first).
+# These rewrite that file — don't hand-edit it.
+
+# Show every registered catalog: precedence, kind, write mode, entry count
+catalogs *args:
+    @{{lib}} catalog list {{args}}
+
+# Scaffold an empty personal catalog and register it (`just catalog-init ~/dev/mine/library.yaml`)
+catalog-init path *args:
+    @{{lib}} catalog init "{{path}}" {{args}}
+
+# Register a catalog that exists (`--id mine --path <file>` or `--id x --repo <url>`)
+catalog-add *args:
+    @{{lib}} catalog add {{args}}
+
+# Unregister a catalog (--purge-clone also deletes a remote's clone; files are kept)
+catalog-remove id *args:
+    @{{lib}} catalog remove "{{id}}" {{args}}
+
+# Rewrite a legacy `catalog:` config into the `catalogs:` list (--dry-run to preview)
+catalog-migrate *args:
+    @{{lib}} catalog migrate {{args}}
 
 # Check SKILL.md + README.md document exactly the CLI's command set (no drift)
 check-docs:
@@ -76,11 +100,11 @@ install-hooks:
 # These need judgment (vague names, dependency detection from prose, YAML
 # edits + PR creation, conflict narration), so they route through Claude.
 
-# Add a new skill, agent, or prompt to the catalog (proposes a PR)
+# Add a new skill, agent, or prompt to a catalog (PR, direct push, or local edit)
 add prompt:
     claude --dangerously-skip-permissions --model opus "/library add {{prompt}}"
 
-# Edit an existing entry's description/source/requires (proposes a PR)
+# Edit an existing entry's description/source/requires (same three write modes)
 update prompt:
     claude --dangerously-skip-permissions --model opus "/library update {{prompt}}"
 
@@ -88,7 +112,7 @@ update prompt:
 push name:
     claude --dangerously-skip-permissions --model opus "/library push {{name}}"
 
-# Remove an entry from the catalog (proposes a PR)
+# Remove an entry from a catalog (same three write modes)
 remove name:
     claude --dangerously-skip-permissions --model opus "/library remove {{name}}"
 
