@@ -1,15 +1,16 @@
 # Add a New Entry to the Library
 
 ## Context
-Register a new skill, agent, or prompt in the catalog. The `library` CLI handles the
+Register a new skill, agent, or prompt in a catalog. The `library` CLI handles the
 deterministic work — alphabetical insertion into the right section (preserving the
-file's exact style), the YAML re-parse safety check, a branch + commit in a temp-clone
-of the catalog repo, and opening a PR.
+file's exact style), the YAML re-parse safety check, and then whichever write the
+destination catalog implies: an in-place edit, a direct push, or a branch + PR.
 
 Your job is the **judgment** the CLI can't do:
 1. Resolve *which* item the user means and confirm its source/type (ask if ambiguous — see Step 0).
-2. Resolve the source to a **remote URL** (the catalog is shared — see below).
-3. Detect dependencies from the item's own content (the CLI does *not* auto-detect).
+2. Resolve **which catalog** it goes into when more than one can be written (Step 0b).
+3. Resolve the source to a **remote URL** when the destination is shared (see below).
+4. Detect dependencies from the item's own content (the CLI does *not* auto-detect).
 
 ## Steps
 
@@ -28,6 +29,30 @@ Only proceed once identity, source format, and type are unambiguous. A wrong gue
 sends the user down the wrong path; the question is cheaper than the PR. Reversibility
 (PR-gating) is **not** a substitute for getting identity right.
 
+### 0b. Resolve the destination catalog
+
+With one writable catalog, there is nothing to decide — omit `--catalog` and read on.
+
+With more than one and no `--catalog`, the CLI **refuses to guess**. It exits `2` with:
+
+```json
+{ "status": "AMBIGUOUS_CATALOG", "catalogs": ["personal", "shared"] }
+```
+
+Handle it by asking **one** question — "your `personal` catalog, or the shared one?" —
+and re-running with `--catalog <id>`. Do not pick for them. The destinations are not
+comparable: one is a file on their disk, the other is a public PR against the team's repo,
+and the wrong choice is either an embarrassment or a leak. This is the cheapest question
+in the whole flow.
+
+If the user is deciding rather than answering, the useful framing is: **shared** if a
+teammate should get it, **personal** if they are iterating on it alone or the source is a
+local path. Adding to a personal catalog that already shadows a shared name is fine and is
+often the point — the CLI warns which copy will now win, and you should pass that on.
+
+If they say "always my personal one", tell them `default_add_catalog: personal` in
+`config.local.yaml` settles it permanently (see [catalog.md](catalog.md)).
+
 ### 1. Determine type and source
 - Type is inferred from the source filename (`SKILL.md` → skill, `AGENT.md` → agent, else
   prompt). Pass `--type` only to override.
@@ -38,21 +63,31 @@ sends the user down the wrong path; the question is cheaper than the PR. Reversi
 - The source must point to a specific file: a **GitHub or Bitbucket URL**
   (`…/blob/<branch>/…`, `…/src/<branch>/…`, or a raw URL).
 
-**Never record a local filesystem path in the shared catalog.** A `/Users/you/…` path
-resolves only on your machine — teammates pulling the catalog can't fetch it. The CLI
-**refuses** local sources for this reason (it errors and, when the file is inside a git
-working copy, suggests the remote URL to use instead).
+**Whether a local path is acceptable is derived from the destination catalog, not from a
+flag.** A `/Users/you/…` path resolves only on this machine:
 
-So when the user points at a local file (e.g. "add the pr-review skill" referring to a
-file in a local checkout of the catalog or source repo):
+- **Destination is a remote catalog** (the shared one): the CLI **refuses** the local
+  source, and when the file is inside a git working copy it suggests the remote URL to use
+  instead. `--allow-local` overrides it, but treat that as a last resort, not an offer —
+  see below.
+- **Destination is a local catalog**: a path is perfectly normal and **no flag is needed**.
+  Never suggest `--allow-local` here; there is nothing to override, and offering it implies
+  the user is doing something irregular when they aren't.
+
+`doctor` warns about any local source it finds sitting in a remote catalog, so a
+`--allow-local` override does not stay invisible.
+
+So when the user points at a local file and the destination is the shared catalog (e.g.
+"add the pr-review skill" referring to a file in a local checkout of the source repo):
 1. Find the repo + remote: `git -C <dir> rev-parse --show-toplevel`, then
    `git -C <root> remote get-url origin` and `git -C <root> rev-parse --abbrev-ref HEAD`.
 2. Build the browser URL — Bitbucket `https://bitbucket.org/<ws>/<repo>/src/<branch>/<path>`,
    GitHub `https://github.com/<org>/<repo>/blob/<branch>/<path>` — and **confirm it with
    the user** before adding.
 3. If you can't derive a remote URL (file isn't in a repo, no origin), **stop and ask**
-   the user for the canonical remote URL. Don't pass `--allow-local` to work around this
-   for a shared catalog; that flag is only for a personal, single-machine catalog.
+   the user for the canonical remote URL — or offer to put the entry in a local catalog
+   instead, where the path is legitimate. Don't reach for `--allow-local` on a shared
+   catalog just to get past the refusal.
 
 Also make sure the file is actually committed and pushed to that branch on the remote,
 or `use`/`sync` will fail for teammates even with a correct URL.
@@ -63,6 +98,14 @@ Read the item's file(s). Look in frontmatter and body for typed references like
 
 For each dependency that isn't already in the catalog, **add it first** with its own
 `<tool-dir>/library add` call (recursively), so no entry references a missing dependency.
+
+**A dependency must live in the same catalog as the entry that requires it.** Refs never
+resolve across catalogs, not even into a higher-precedence one. So adding
+`my-thing` (requires `skill:backend-code-practices`) to `personal` while that skill lives
+only in `shared` produces a dangling ref: `use` warns and installs what it can, and
+`doctor` reports it as an error. Two honest ways out — put the new entry in the same
+catalog as its dependencies, or copy the dependencies into the destination catalog too.
+Name the tradeoff for the user rather than silently picking.
 
 Exception: when you're adding the dependency *and* its dependents **in the same batch**
 (see Step 4a), they can reference each other freely — a `requires` ref satisfied by another
@@ -91,20 +134,24 @@ doesn't matter.
   --description "<one-line description>" \
   --source "<path-or-url>" \
   [--type skill|agent|prompt] \
-  [--requires "skill:foo,agent:bar"] \
+  [--catalog <id>] \
+  [--allow-local] \
   [--json]
 ```
 
 The CLI:
 1. Pulls the catalog clone to get latest
-2. Validates name uniqueness and dependency refs
-3. Creates an ephemeral temp-clone of the catalog repo
+2. Resolves the destination catalog (`--catalog`, else the only writable one, else
+   `default_add_catalog` — else it exits `2`, see Step 0b)
+3. Validates name uniqueness and dependency refs **within that catalog**
 4. Inserts the entry alphabetically, re-parses for safety
-5. Commits on a branch (`library/add-<name>-<ts>`)
-6. Pushes the branch and prints a compare URL (or opens a PR if `autopush: true`)
+5. Writes it the way the destination implies — in place, a direct push, or a temp-clone
+   branch (`library/add-<name>-<ts>`) plus a PR
 
-It refuses to add a name that already exists (telling you to use `use`/`push` instead)
-and warns if a `--requires` ref isn't in the catalog yet.
+It refuses to add a name that already exists **in the destination catalog** (telling you
+to use `use`/`push` instead) and warns if a `--requires` ref isn't in that catalog yet. A
+name that exists in a *different* catalog is not a conflict — it is shadowing, and the CLI
+says which copy will win.
 
 ### 4a. Add several entries in one PR (batch)
 
@@ -132,13 +179,28 @@ Write a YAML (or JSON) file listing the entries, then point `--batch` at it:
 Per-entry fields match the single-add flags (`name`, `description`, `source`, optional
 `type`, optional `requires` as a list or comma-string). The CLI validates every entry up
 front — rejecting intra-batch duplicate names and any name already in the catalog — then
-splices them all into one branch (`library/add-batch-<n>-entries-<ts>`) and opens a single
-PR. `--dry-run` shows the combined diff without pushing. `--batch` can't be combined with
-`--name`/`--source`; put every entry in the file.
+splices them all into one write: one branch (`library/add-batch-<n>-entries-<ts>`) and one
+PR for a protected remote, or one file edit for a local catalog. `--dry-run` shows the
+combined diff without pushing. `--batch` can't be combined with `--name`/`--source`; put
+every entry in the file.
+
+**A batch lands in exactly one catalog** — `--catalog` applies to the whole file, and the
+destination is resolved once (Step 0b). Since dependencies must live alongside their
+dependents, a batch is the natural way to move an entry *and its requirements* into a
+personal catalog together. Entries that belong in different catalogs need separate runs.
 
 ### 5. Confirm
-Relay the CLI's result: what was added, the PR branch name, and the compare/PR URL. If
-you added dependencies first, mention those too.
+
+**Read `mode` before you describe the outcome** — only one of the three involves a PR:
+
+| `mode` | Say |
+|--------|-----|
+| `local` | "added to your `<catalog>` catalog" and the `path`. Mention committing only if `committed` is true. **Not** a PR. |
+| `direct` | "committed and pushed to `<branch>` in `<catalog>`". **Not** a PR. |
+| `pr` | then read `method`: `gh` → "PR opened: `<pr_url>`"; `manual` → "branch pushed; open the PR at `<compare_url>`". |
+
+Name the catalog either way — with a registry, "added to the catalog" is not an answer.
+Pass on any shadowing warning, and mention dependencies you added first.
 
 > The CLI is the source of truth for the YAML edit and PR. Don't hand-edit the catalog
 > or run git commands yourself.

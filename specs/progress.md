@@ -9,7 +9,7 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 
 ## Status
 
-32 of 37 tasks landed. Phases 0–8 complete; Phase 9 is in progress.
+33 of 37 tasks landed. Phases 0–8 complete; Phase 9 is in progress.
 
 | Task | Status | Commit |
 | ---- | ------ | ------ |
@@ -45,8 +45,9 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 | T8.1 per-catalog doctor + registry | done | `8a46478` |
 | T8.2 catalog-scoped deps + shadowing | done | `1338305` |
 | T9.1 SKILL.md catalog model + mode rule | done | `5551b6a` |
-| T9.2 cookbook/catalog.md | done | |
-| T9.3–T9.6 cookbooks, justfile, README | todo | |
+| T9.2 cookbook/catalog.md | done | `7a9d795` |
+| T9.3 write cookbooks | done | |
+| T9.4–T9.6 read cookbooks, justfile, README | todo | |
 
 A task's own hash lands with the *next* commit — a commit cannot contain its own id.
 
@@ -309,7 +310,17 @@ Each is a place the code does something tasks.md or design.md doesn't say, with 
     already landed — a local catalog needs no repo, writes instantly (`mode: "local"`), and
     accepts local-path sources with no `--allow-local`, which is the case R7.6's derived rule
     exists for. Recorded because it is guidance the agent will act on, not just prose.
-54. **Deviation 9's consolidation is deferred, not done.** `doctor` still emits both the
+54. **`remove --purge`'s help string still says "(default + global)"** — the scope name
+    R13.5 renamed to `project`. T2.1 fixed the loop and R16.7 covers the two cookbooks, but
+    nobody covers `library.py:3718`, so the CLI's own `--help` is the last place the stale
+    name survives. One word, no behavior; `library.py` is not in T9.3's file list, so it is
+    reported rather than fixed.
+55. **`remove.md` now leads with reversibility, not with the PR.** Its old framing ("the
+    catalog change is *proposed* via a PR — it doesn't land until merged") is true only in
+    `pr` mode; in `local` and `direct` the entry is gone the moment the command returns.
+    Since the cookbook's job is to make the agent confirm before something destructive, the
+    mode has to be known *before* the confirmation question, not just at the report.
+56. **Deviation 9's consolidation is deferred, not done.** `doctor` still emits both the
     ignored-`default_dirs` warning and the legacy-`default`-scope-key one. The second is now
     worse than redundant: its remedy ("rename it to 'project' in the catalog") is a no-op
     under D7, since the block is ignored either way. Fixing it means changing a message on
