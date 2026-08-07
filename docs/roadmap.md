@@ -130,3 +130,56 @@ item is the narrow one: bound the replaced span to the entry's own property line
 to the next entry's start, leaving interior comments where they are. The other two are spacing
 polish and could stay as-is indefinitely. Anyone attempting this should expect the pinning tests to
 need updating, and should say so in the commit — a golden change is otherwise a red flag.
+
+---
+
+## `git_commit` in the write payload
+
+**What.** Every write returns `mode`, and for `mode: "local"` also `committed` / `pushed`. But
+`committed: false` means *either* "this catalog doesn't set `git_commit`" *or* "a commit was
+attempted and failed" — the payload cannot tell them apart, and `print_write_tail` prints only
+`Wrote <path>` for both. Add the catalog's `git_commit` flag (or a tri-state outcome) so the two
+are distinguishable.
+
+**Why not now.** `SKILL.md` works around it: the agent is told to claim a commit only when
+`committed` is true and to claim nothing otherwise, which is honest but silent about a real
+failure. The failure itself does warn on stderr, so nothing is lost, only under-reported. It is an
+additive payload key (R2.4), so it can land any time.
+
+**Unlocks / depends on.** Lets the agent report "written, but the commit failed" instead of
+"written". Found while verifying T9.1's reporting rule against a live run.
+
+---
+
+## Consolidate `doctor`'s two `default_dirs` warnings
+
+**What.** A catalog declaring `default_dirs` earns two warnings: "declares default_dirs, which has
+no effect" (R12.5) and, if it uses the pre-rename scope key, "default_dirs uses the legacy
+'default' scope key — rename it to 'project' in the catalog". The second one's advice is now a
+no-op: under D7 the block is ignored either way, so renaming the key inside the catalog changes
+nothing.
+
+**Why not now.** Removing a warning changes human output on a path real configs hit today (the
+shared catalog in this repo's own config produces both). It was out of scope for T8.2, whose task
+list didn't include it. The honest options are to drop the second warning or to repoint its remedy
+at `catalog migrate`, which does normalize the key when it lifts the block.
+
+**Unlocks / depends on.** Nothing depends on it. Tracked as deviation 9 in
+[specs/progress.md](../specs/progress.md).
+
+---
+
+## `ci-examples/` is referenced but does not exist
+
+**What.** `README.md` and `docs/contributing.md` both point at `ci-examples/`, and contributing.md
+names `ci-examples/bitbucket-pipelines.catalog.yml` as a template to copy into the catalog repo.
+The directory has never been committed.
+
+**Why not now.** It predates the personal-catalogs work and writing the templates is real work, not
+a doc fix: a catalog-repo pipeline needs to clone the tool, bootstrap a venv, and run `doctor`
+against the PR's working copy, for both Bitbucket Pipelines and GitHub Actions. Deleting the
+references instead would discard a documented intent that still looks right.
+
+**Unlocks / depends on.** Makes catalog integrity a durable gate rather than something each
+maintainer runs by hand. Depends on nothing; `doctor` already exits non-zero on errors only, which
+is exactly the CI contract.

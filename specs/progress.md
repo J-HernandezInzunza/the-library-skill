@@ -9,7 +9,22 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 
 ## Status
 
-**All 37 tasks landed.** Phases 0–9 complete.
+**All 37 tasks landed.** Phases 0–9 complete, plus a post-phase audit and its fixes.
+
+Follow-up commits after T9.6, all from an independent audit of the finished work
+(two subagents: one re-running every documented claim against the CLI, one
+mutation-testing the suite):
+
+| Commit | What |
+| ------ | ---- |
+| `60a297e` | seven false doc claims corrected (deviation 62) |
+| `500dbfd` | **fix:** `init --force` no longer unregisters every other catalog (was deviation 56) |
+| `86e882c` | clone-on-demand-then-read now covered; two mutations that survived the audit now fail |
+| `e6a2271` | two precedence tests that passed by fixture coincidence, doctor's `gh` gate, `--catalog` on add/update, and the last stale `default` scope name |
+
+461 tests. Remaining known issues are parked in [../docs/roadmap.md](../docs/roadmap.md):
+the `git_commit` payload ambiguity (deviation 52), doctor's duplicate `default_dirs`
+warning (deviation 9), and the missing `ci-examples/`.
 
 | Task | Status | Commit |
 | ---- | ------ | ------ |
@@ -49,7 +64,7 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 | T9.3 write cookbooks | done | `0ebf9c8` |
 | T9.4 read cookbooks | done | `8f3e477` |
 | T9.5 justfile recipes | done | `0e7b8d1` |
-| T9.6 README, contributing, example | done | |
+| T9.6 README, contributing, example | done | `e0b8326` |
 
 A task's own hash lands with the *next* commit — a commit cannot contain its own id.
 
