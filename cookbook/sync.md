@@ -18,9 +18,19 @@ re-implement it.
 - Add `--json` if you need to reason over the result.
 - Add `--no-pull` **only when the user is explicitly offline** — stale catalog metadata
   can point sync at outdated source URLs or miss new dependencies.
+- Add `--catalog <id>` to refresh only the items owned by one catalog.
 
-If the CLI prints a staleness warning on stderr (`catalog is N commit(s) behind
-origin/...`), relay it to the user.
+If the CLI prints a staleness warning on stderr (`catalog 'shared' is N commit(s) behind
+origin/...`), relay it to the user. With several catalogs the warning names which one.
+
+**Across catalogs, each installed name is refreshed once**, from the copy precedence
+resolves to. That matters when a personal catalog shadows a shared entry: only the winning
+copy is pulled, so the sync can't end with the loser's files overwriting the winner's.
+Each line names the catalog it pulled from once more than one is registered:
+
+```
+  refreshed [skill] session-retro (global) · no changes (from personal)
+```
 
 ## Report
 

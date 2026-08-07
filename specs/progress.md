@@ -9,7 +9,7 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 
 ## Status
 
-33 of 37 tasks landed. Phases 0–8 complete; Phase 9 is in progress.
+34 of 37 tasks landed. Phases 0–8 complete; Phase 9 is in progress.
 
 | Task | Status | Commit |
 | ---- | ------ | ------ |
@@ -46,8 +46,9 @@ Branch: `claude/personal-catalogs-extension-qr3ic3`.
 | T8.2 catalog-scoped deps + shadowing | done | `1338305` |
 | T9.1 SKILL.md catalog model + mode rule | done | `5551b6a` |
 | T9.2 cookbook/catalog.md | done | `7a9d795` |
-| T9.3 write cookbooks | done | |
-| T9.4–T9.6 read cookbooks, justfile, README | todo | |
+| T9.3 write cookbooks | done | `0ebf9c8` |
+| T9.4 read cookbooks | done | |
+| T9.5–T9.6 justfile, README, contributing | todo | |
 
 A task's own hash lands with the *next* commit — a commit cannot contain its own id.
 
@@ -320,7 +321,16 @@ Each is a place the code does something tasks.md or design.md doesn't say, with 
     `pr` mode; in `local` and `direct` the entry is gone the moment the command returns.
     Since the cookbook's job is to make the agent confirm before something destructive, the
     mode has to be known *before* the confirmation question, not just at the report.
-56. **Deviation 9's consolidation is deferred, not done.** `doctor` still emits both the
+56. **`library init --force` silently drops every catalog but `shared`.** Verified, not
+    inferred: with `personal` and `shared` registered, `init --repo … --force` rewrites the
+    config from its template and leaves only `shared`, with nothing on stdout or stderr
+    about what went. The catalog *file* survives, so it is recoverable with `catalog add`,
+    but the user is never told there is anything to recover. `init` is documented as
+    re-runnable, which makes this reachable by following the docs. T9.4 warns against it in
+    `init.md`; the real fix (preserve non-shared entries, or refuse and list what would be
+    lost) is a `library.py` change outside T9.4's file list. **The most damaging thing found
+    in Phase 9** — worth a roadmap entry or a small off-plan fix.
+57. **Deviation 9's consolidation is deferred, not done.** `doctor` still emits both the
     ignored-`default_dirs` warning and the legacy-`default`-scope-key one. The second is now
     worse than redundant: its remedy ("rename it to 'project' in the catalog") is a no-op
     under D7, since the block is ignored either way. Fixing it means changing a message on
