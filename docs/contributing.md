@@ -39,13 +39,14 @@ Consequences worth knowing when working on `library.py`:
 
 ## Local checks (tool repo)
 
-Run the fast checks before pushing — Python compiles + doc/CLI drift:
+Run the fast checks before pushing — Python compiles, doc/CLI drift, and the test suite:
 
 ```bash
 just check
-# or, without just:
+# or, without just — these three are exactly what `check` runs:
 .venv/bin/python -m py_compile library.py check_docs.py
 .venv/bin/python check_docs.py
+.venv/bin/python -m unittest discover -s tests -t .
 ```
 
 - **`py_compile`** catches broken Python before it ships.

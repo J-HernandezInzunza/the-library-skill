@@ -33,7 +33,9 @@ sends the user down the wrong path; the question is cheaper than the PR. Reversi
 
 With one writable catalog, there is nothing to decide — omit `--catalog` and read on.
 
-With more than one and no `--catalog`, the CLI **refuses to guess**. It exits `2` with:
+With more than one and no `--catalog`, the CLI **refuses to guess** — unless
+`default_add_catalog` already names a writable one, in which case that settles it silently.
+Otherwise it exits `2` with:
 
 ```json
 { "status": "AMBIGUOUS_CATALOG", "catalogs": ["personal", "shared"] }

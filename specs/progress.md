@@ -352,7 +352,20 @@ Each is a place the code does something tasks.md or design.md doesn't say, with 
     the exact thing D7 now ignores, so it taught the wrong shape to anyone copying it. The
     same block is gone from `library.example.yaml`, replaced with a comment explaining why
     it isn't there (R16.13).
-62. **Deviation 9's consolidation is deferred, not done.** `doctor` still emits both the
+62. **Seven doc claims corrected after an independent audit** (commit follows T9.6). Two
+    subagents were pointed at the finished phase — one checking every documented claim
+    against the code by running it, one mutation-testing the suite. The doc auditor found
+    seven false statements, five of them mine from this phase:
+    `--no-pull` described as universal across the CLI-backed commands when it exists only
+    on the five that read the catalog (T9.1 made this worse by adding `catalog` to that
+    list); `--project` still attributed to "the catalog's `project` scope" in SKILL.md and
+    `use.md` after T4.1 moved install dirs to the tool; `search` listed among the commands
+    that name the shadowing winner, when its human output only orders by precedence;
+    README crediting the config field `yaml_path` with the `--yaml-path` flag's default;
+    README claiming `--catalog` works on every command; `add.md` saying the CLI "refuses to
+    guess" without noting `default_add_catalog` settles it; and `just check` described as
+    compile + drift in two places when it also runs the suite.
+63. **Deviation 9's consolidation is deferred, not done.** `doctor` still emits both the
     ignored-`default_dirs` warning and the legacy-`default`-scope-key one. The second is now
     worse than redundant: its remedy ("rename it to 'project' in the catalog") is a no-op
     under D7, since the block is ignored either way. Fixing it means changing a message on

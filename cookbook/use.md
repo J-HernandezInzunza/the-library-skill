@@ -82,7 +82,7 @@ success, and point out that the fix is a copy of the dependency in the same cata
 [add.md](add.md)).
 
 **Install-location contract:** bare `use` installs globally (`~/.claude/...`, absolute,
-CWD-independent). `--project` uses the catalog's `project` scope (`.claude/skills/`), a
+CWD-independent). `--project` uses the tool's `project` scope (`.claude/skills/`), a
 relative path that anchors to the directory you invoke from (the user's CWD). The wrapper
 captures `$PWD` into `LIBRARY_CWD` so this holds even though the CLI itself lives in the
 tool dir.

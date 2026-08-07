@@ -543,11 +543,14 @@ autopush: false
 
 Per catalog:
 
-- **`id`** — short name, used by `--catalog <id>` on every command. Must be unique.
+- **`id`** — short name, used by `--catalog <id>` on the commands that take one (`list`,
+  `search`, `use`, `sync`, `add`, `update`, `remove`, `push`). Must be unique.
 - **`path`** — *local catalog:* a `library.yaml` on this machine (or a directory holding
   one). Must be absolute or start with `~`. Mutually exclusive with `repo`.
 - **`repo`** / **`yaml_path`** / **`branch`** — *remote catalog:* the clone URL, the catalog
-  file's path within that repo (default `library.yaml`), and the branch to read and write.
+  file's path within that repo, and the branch to read and write. All three are required —
+  the `library.yaml` and `main` defaults belong to the `--yaml-path` / `--branch` flags that
+  write this file, not to the file itself.
 - **`protected`** — remote only, default `true`. Writes open a PR instead of pushing.
 - **`git_commit`** — local only, default `false`. Commit and push the file after each write.
 - **`writable`** — default `true`. Set `false` to read a catalog but refuse every write.
@@ -640,7 +643,7 @@ and the tool only stores its path.
 ## Contributing
 
 Working on the tool, or maintaining a catalog? See **[docs/contributing.md](docs/contributing.md)**.
-The short version: run `just check` before pushing (Python compile + doc/CLI drift), enable
+The short version: run `just check` before pushing (Python compile + doc/CLI drift + tests), enable
 the pre-push hook once with `just install-hooks`, and let catalog integrity (`doctor`) run in
 CI on the catalog repo — template in `ci-examples/`.
 
