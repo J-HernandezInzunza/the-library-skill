@@ -2649,6 +2649,56 @@ class TestInitEmitsCanonicalConfig(unittest.TestCase):
         self.assertFalse(json.loads(out)["changed"])
 
 
+class TestCloneOnDemand(unittest.TestCase):
+    """The very first command on a new machine: clone, then read what was cloned.
+
+    `load_config` hydrates before any clone exists, so `refresh_catalogs` has to re-read
+    afterwards or the run sees the pre-clone state. Every other fixture in this suite
+    pre-seeds the clone and most calls pass `--no-pull`, so nothing else exercises it.
+    """
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.repo = TempGitRepo(self.tool.tool_dir, name=".catalog-repo")
+        self.repo.commit("library.yaml", GOLDEN_CATALOG_NO_DIRS)
+        self.repo.push()
+        self.tool.write_config({"catalogs": [
+            {"id": "shared", "repo": str(self.repo.remote),
+             "yaml_path": "library.yaml", "branch": "main", "protected": True},
+        ]})
+        shutil.rmtree(library.CATALOG_CLONE_DIR)  # as it is before the first read
+
+    def test_list_clones_then_reads_the_clone_it_just_made(self) -> None:
+        self.assertFalse(library.CATALOG_CLONE_DIR.exists())
+        code, out, err = run_cli("list")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(library.CATALOG_CLONE_DIR.exists())
+        self.assertIn("4 entries", out)  # not "no catalog loaded"
+        self.assertIn("session-retro", out)
+
+    def test_use_resolves_an_entry_on_the_first_ever_run(self) -> None:
+        code, _, err = run_cli("use", "grill-me")
+        # The source repo is fictional, so the install fails at fetch — but resolution
+        # got that far, which is the part that needs the freshly cloned catalog.
+        self.assertNotIn("not found in catalog", err)
+        self.assertNotIn("no readable catalog", err)
+
+    def test_a_second_catalog_cloned_on_demand_is_read_too(self) -> None:
+        other = TempGitRepo(self.tool.root, name="second")
+        other.commit("library.yaml", PERSONAL_CLEAN)
+        other.push()
+        cfg = yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())
+        cfg["catalogs"].insert(0, {"id": "personal", "repo": str(other.remote),
+                                   "yaml_path": "library.yaml", "branch": "main",
+                                   "protected": False})
+        self.tool.write_config(cfg)
+        code, out, err = run_cli("list")
+        self.assertEqual(code, 0, err)
+        self.assertIn("session-retro           personal", out)
+        self.assertIn("shadowed by personal", out)
+
+
 class TestReinitPreservesTheRegistry(unittest.TestCase):
     """`init --force` repoints the team catalog; it must not unregister the others.
 
