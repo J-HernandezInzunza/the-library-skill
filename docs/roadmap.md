@@ -64,12 +64,12 @@ installed directory.
 
 **Why not now.** Install detection is name-based: `installed_scopes` looks for a directory or file
 matching the entry name under the effective install dirs. That's simple and has no state to go stale.
-The gap only shows under shadowing: if two catalogs define the same name, `push` can't be certain
+The gap only shows under overriding: if two catalogs define the same name, `push` can't be certain
 which source the local copy came from, so it warns and names both candidates. A warning is an honest,
 zero-state substitute.
 
-**Unlocks / depends on.** Would make `push` and `sync` exact under shadowing and let that warning go
-away. Revisit if shadowing turns out to be common rather than occasional.
+**Unlocks / depends on.** Would make `push` and `sync` exact under overriding and let that warning go
+away. Revisit if overriding turns out to be common rather than occasional.
 
 ---
 

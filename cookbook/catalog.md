@@ -90,7 +90,7 @@ The common case, and the one to reach for when the user says "I want my own cata
   failing the write.
 
 **Default `--position first`, and say what that means.** A new catalog at position 1
-shadows everything below it for any name it defines. That is almost always what someone
+overrides everything below it for any name it defines. That is almost always what someone
 wants — but it is also the moment their `add` behavior changes, so tell them (see below).
 
 ## catalog add — register something that already exists
@@ -114,7 +114,7 @@ wants — but it is also the moment their `add` behavior changes, so tell them (
 | `--protected` | Remote only: route writes through a PR instead of pushing to the branch. **Off by default here** — someone registering their own remote catalog does not want a PR gate on their own work. The shared catalog gets `protected: true` from `init`. |
 | `--git-commit` | Local only: commit and push the file after each write. |
 | `--read-only` | Register for reading only; every write to it is refused. Use for a catalog the user follows but does not own. |
-| `--position` | `first` (default, shadows the rest) or `last`. |
+| `--position` | `first` (default, overrides the rest) or `last`. |
 
 **The target is proved to work before the config is touched.** A local path must exist and
 parse; a remote is cloned and read. If that fails, nothing is registered and no clone is
@@ -154,20 +154,20 @@ Use `--dry-run` to show the resulting file first if the user is at all hesitant;
 the config it would write plus a list of what changed. Running it on an already-canonical
 config is a no-op that says so.
 
-## Explaining precedence and shadowing
+## Explaining precedence and overriding
 
 This is the part users get wrong, so be explicit rather than terse:
 
 - **Registry order is precedence, highest first.** The first catalog defining a name wins.
-- **The winner is called the resolution; the losers are shadowed.** They are still listed,
+- **The winner is called the resolution; the losers are overridden.** They are still listed,
   still installable via `--catalog <id>`, just not what a bare name resolves to.
-- **Shadowing is the feature, not a warning.** Registering a personal catalog ahead of the
+- **Overriding is the feature, not a warning.** Registering a personal catalog ahead of the
   shared one is how someone iterates on their own copy of a team skill without touching
   the team's. Report it plainly ("your copy in `personal` will be used instead of the one
   in `shared`") rather than as a problem.
 - **`doctor` reports cross-catalog duplicates as warnings, never errors**, and the run
   still passes. A duplicate *within* one catalog is a different thing and is an error.
-- **`list` marks shadowed entries and `use` names the catalog it installed from.** Pass
+- **`list` marks overridden entries and `use` names the catalog it installed from.** Pass
   those on; the user cannot see the registry from where they are sitting.
 
 ## After registering a second writable catalog

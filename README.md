@@ -352,7 +352,7 @@ Catalogs (highest precedence first)
   2. shared    remote  write: pr      4 entries  git@github.com:yourorg/agent-library.git (develop, library.yaml)
 ```
 
-### Shadowing, worked through
+### Overriding, worked through
 
 Say the team catalog has `session-retro`, and you want your own version. Add it to your
 personal catalog under **the same name**:
@@ -365,7 +365,7 @@ personal catalog under **the same name**:
 ```
 Added [skill] session-retro to skills.
   Wrote /Users/you/dev/my-library/library.yaml
-warning: 'session-retro' also exists in shared; the copy in 'personal' takes precedence and will shadow it
+warning: 'session-retro' also exists in shared; the copy in 'personal' takes precedence and will override it
 ```
 
 Two things just happened that wouldn't have on the shared catalog: the write landed
@@ -379,21 +379,21 @@ Now `list` shows both copies and says which one wins:
 ```
 Skills
   session-retro  personal  not installed         My iterated copy
-  session-retro  shared    shadowed by personal  Distill a finished session into durable style learnings
+  session-retro  shared    overridden by personal  Distill a finished session into durable style learnings
 
-5 entries · 0 installed · 4 not installed · 1 shadowed
+5 entries · 0 installed · 4 not installed · 1 overridden
 ```
 
 ```bash
 ./library use session-retro
-# Installed [skill] session-retro → ~/.claude/skills/session-retro · new install (from personal, shadows shared)
+# Installed [skill] session-retro → ~/.claude/skills/session-retro · new install (from personal, overrides shared)
 
 ./library use session-retro --catalog shared   # …when you want the team's copy anyway
 ```
 
 The shared entry is **not** overridden or edited — it is intact, and everyone else still
 gets it. You just resolve to yours first. Delete your copy and the name falls straight
-back through to the team's. `doctor` reports shadowing as a warning, not an error: it is
+back through to the team's. `doctor` reports overriding as a warning, not an error: it is
 the feature working.
 
 Two rules worth knowing up front:
@@ -659,7 +659,7 @@ being done now, and what it would unlock.
 - **Agent-agnostic**: Default target is `.claude/skills/` but supports any directory for any agent harness.
 - **Catalog, not manifest**: Entries define what's available, not what's installed. Pull on demand.
 - **PR-gated writes where it matters**: a protected catalog's branch is never pushed to directly — shared changes land via reviewed PRs. Your own catalog is yours: a local catalog is edited in place, with no gate and no reviewer to wait for.
-- **Yours wins locally**: a personal catalog registered ahead of the shared one shadows it by name, without editing, forking, or overriding what your team sees.
+- **Yours wins locally**: a personal catalog registered ahead of the shared one overrides it by name, without editing, forking, or overriding what your team sees.
 
 ## The Agentic Stack
 

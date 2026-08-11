@@ -23,7 +23,7 @@ Every finding is attributed to the catalog that produced it:
 ```
   ERROR  [personal/scratch-thing] local source not found: /srv/personal/scratch/SKILL.md
   WARN   [shared] catalog declares default_dirs, which has no effect — …
-  WARN   [session-retro] 'session-retro' is defined in 2 catalogs — 'personal' takes precedence, shadowing shared
+  WARN   [session-retro] 'session-retro' is defined in 2 catalogs — 'personal' overrides shared
   WARN   [-] config still uses the singular 'catalog:' shape — run `library catalog migrate` …
 ```
 
@@ -80,7 +80,7 @@ and the output is exactly what it has always been. In `--json`, each finding car
 
 **Catalog content warnings (exit 0):**
 
-- **The same name in two catalogs** — reported as shadowing, naming the winner and the
+- **The same name in two catalogs** — reported as an override, naming the winner and the
   losers. This is the feature working, not a fault; don't present it as one
 - A catalog declaring `default_dirs`, which is ignored — the warning names the paths
   actually in force

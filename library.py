@@ -156,7 +156,7 @@ class Config:
 
     Holds the catalog registry in precedence order, highest first, so the first
     match for a name wins and a personal catalog registered ahead of the shared one
-    shadows it.
+    overrides it.
     """
     catalogs: list[Catalog] = field(default_factory=list)
     autopush: bool = False        # if true, pr-mode writes also run `gh pr create`
@@ -204,7 +204,7 @@ class Config:
         """First entry named *name* by precedence, or within one catalog if given."""
         return find_exact(self.entries_of(catalog) if catalog else self.entries(), name)
 
-    def shadows(self, name: str) -> list[Entry]:
+    def overridden(self, name: str) -> list[Entry]:
         """Entries named *name* that lost to the resolved one, in precedence order."""
         return [e for e in self.entries() if e.name == name][1:]
 
@@ -574,12 +574,15 @@ def cross_catalog_conflict(cfg: Config, name: str) -> "AmbiguousCatalog | None":
     return AmbiguousCatalog(holders) if len(holders) > 1 else None
 
 
-def shadow_split(cfg: Config, entry: Entry) -> tuple[list[str], list[str]]:
-    """(catalogs *entry* shadows, catalogs that shadow *entry*), in precedence order.
+def override_split(cfg: Config, entry: Entry) -> tuple[list[str], list[str]]:
+    """(catalogs *entry* overrides, catalogs that override *entry*), by precedence.
+
+    "Override" is about which copy resolves, never about editing the other one: the
+    lower-precedence entry is untouched and still installable with `--catalog`.
 
     Relative to *entry*, not to precedence alone: under `--catalog` the resolved entry
-    can be the shadowed one. `cfg.shadows()` slices the merged list positionally, so
-    reading it here reported that a `--catalog shared` install shadowed shared itself.
+    can be the overridden one. `cfg.overridden()` slices the merged list positionally, so
+    reading it here reported that a `--catalog shared` install overrode shared itself.
     """
     order = [c.id for c in cfg.active]
     rank = order.index(entry.catalog) if entry.catalog in order else len(order)
@@ -592,53 +595,53 @@ def shadow_split(cfg: Config, entry: Entry) -> tuple[list[str], list[str]]:
     return list(dict.fromkeys(below)), list(dict.fromkeys(above))
 
 
-def shadow_note(cfg: Config, entry: Entry) -> str:
+def override_note(cfg: Config, entry: Entry) -> str:
     """'' when no other catalog holds the name, else how *entry* relates to the rest.
 
-    Shadowing is the point of a personal catalog, so it is always reported rather
+    Overriding is the point of a personal catalog, so it is always reported rather
     than being silent — the user should know which copy they just got.
     """
-    below, above = shadow_split(cfg, entry)
+    below, above = override_split(cfg, entry)
     if above:  # the surprising direction: what you asked for is not what resolves
-        return "is shadowed by " + ", ".join(above)
-    return "shadows " + ", ".join(below) if below else ""
+        return "is overridden by " + ", ".join(above)
+    return "overrides " + ", ".join(below) if below else ""
 
 
-def new_entry_shadow_warnings(cfg: Config, cat: Catalog, name: str) -> list[str]:
+def new_entry_override_warnings(cfg: Config, cat: Catalog, name: str) -> list[str]:
     """Warnings for adding *name* to *cat* when another catalog already has it (R7.7).
 
-    The add is allowed — shadowing is the point of a personal catalog — but which copy
+    The add is allowed — overriding is the point of a personal catalog — but which copy
     wins is invisible in the command the user typed, so the direction is always named.
     """
     order = [c.id for c in cfg.active]
     if cat.id not in order:
         return []
     rank = order.index(cat.id)
-    shadows: list[str] = []
-    shadowed_by: list[str] = []
+    overrides: list[str] = []
+    overridden_by: list[str] = []
     for other in cfg.active:
         if other.id == cat.id or find_exact(iter_catalog_entries(other), name) is None:
             continue
-        (shadows if order.index(other.id) > rank else shadowed_by).append(other.id)
+        (overrides if order.index(other.id) > rank else overridden_by).append(other.id)
 
     out: list[str] = []
-    if shadows:
-        out.append(f"'{name}' also exists in {', '.join(shadows)}; the copy in "
-                   f"'{cat.id}' takes precedence and will shadow it")
-    if shadowed_by:
-        out.append(f"'{name}' also exists in {', '.join(shadowed_by)}, which takes "
-                   f"precedence; the copy in '{cat.id}' will be shadowed")
+    if overrides:
+        out.append(f"'{name}' also exists in {', '.join(overrides)}; the copy in "
+                   f"'{cat.id}' takes precedence and will override it")
+    if overridden_by:
+        out.append(f"'{name}' also exists in {', '.join(overridden_by)}, which takes "
+                   f"precedence; the copy in '{cat.id}' will be overridden")
     return out
 
 
 def push_source_warning(cfg: Config, entry: Entry) -> str:
     """'' unless the installed copy could have come from more than one catalog (R11.2).
 
-    Nothing on disk records which catalog an installed item came from, so for a shadowed
+    Nothing on disk records which catalog an installed item came from, so for an overridden
     name the source being pushed to is an inference from precedence. Both candidates are
     named, because the cost of guessing wrong is an edit landing in someone else's repo.
     """
-    # Every *other* catalog holding the name, not `cfg.shadows()`: that slices by
+    # Every *other* catalog holding the name, not `cfg.overridden()`: that slices by
     # precedence, so under `--catalog` it would report the resolved entry as its own
     # alternative. What matters here is simply "who else defines this name".
     others = [e for e in cfg.entries()
@@ -1915,15 +1918,15 @@ def cmd_list(args: argparse.Namespace) -> int:
     rows = []
     for e in entries:
         winner = winners.get(e.name)
-        shadowed_by = winner if winner and winner != e.catalog else None
-        # Install status belongs to the resolved winner; a shadowed entry is not the
+        overridden_by = winner if winner and winner != e.catalog else None
+        # Install status belongs to the resolved winner; an overridden entry is not the
         # copy that would be installed, so it never claims to be installed.
-        scopes = [] if shadowed_by else installed_scopes(cfg.dirs, e)
-        if shadowed_by:
-            status = f"shadowed by {shadowed_by}"
+        scopes = [] if overridden_by else installed_scopes(cfg.dirs, e)
+        if overridden_by:
+            status = f"overridden by {overridden_by}"
         else:
             status = f"installed ({', '.join(scopes)})" if scopes else "not installed"
-        rows.append((e, status, scopes, shadowed_by))
+        rows.append((e, status, scopes, overridden_by))
 
     if args.json:
         out = [
@@ -1931,9 +1934,9 @@ def cmd_list(args: argparse.Namespace) -> int:
                 "type": e.type, "name": e.name, "description": e.description,
                 "source": e.source, "requires": e.requires,
                 "installed": bool(scopes), "scopes": scopes,
-                "catalog": e.catalog, "shadowed_by": shadowed_by,
+                "catalog": e.catalog, "overridden_by": overridden_by,
             }
-            for e, _, scopes, shadowed_by in rows
+            for e, _, scopes, overridden_by in rows
         ]
         print(json.dumps(out, indent=2))
         return 0
@@ -1952,9 +1955,9 @@ def cmd_list(args: argparse.Namespace) -> int:
             print(f"  {e.name.ljust(name_w)}  {catalog_col}{status.ljust(22)}  {e.description[:70]}")
 
     installed = sum(1 for _, _, sc, _ in rows if sc)
-    shadowed = sum(1 for _, _, _, sb in rows if sb)
-    not_installed = len(rows) - installed - shadowed
-    tail = f" · {shadowed} shadowed" if multi and shadowed else ""
+    overridden = sum(1 for _, _, _, ov in rows if ov)
+    not_installed = len(rows) - installed - overridden
+    tail = f" · {overridden} overridden" if multi and overridden else ""
     print(f"\n{len(rows)} entries · {installed} installed · {not_installed} not installed{tail}")
 
     if multi:
@@ -1976,14 +1979,14 @@ def cmd_search(args: argparse.Namespace) -> int:
     multi = multi_catalog(cfg)
     winners = winning_catalogs(cfg)
 
-    def shadowed_by(entry: Entry) -> "str | None":
+    def overridden_by(entry: Entry) -> "str | None":
         winner = winners.get(entry.name)
         return winner if winner and winner != entry.catalog else None
 
     if args.json:
         print(json.dumps(
             [{"type": e.type, "name": e.name, "description": e.description, "source": e.source,
-              "catalog": e.catalog, "shadowed_by": shadowed_by(e)}
+              "catalog": e.catalog, "overridden_by": overridden_by(e)}
              for e in matches],
             indent=2,
         ))
@@ -2033,7 +2036,7 @@ def cmd_use(args: argparse.Namespace) -> int:
     # list: a `requires` ref that names an entry in another catalog is simply dangling,
     # which is the error users already understand.
     order = resolve_deps(cfg.entries_of(entry.catalog), entry)
-    note = shadow_note(cfg, entry)
+    note = override_note(cfg, entry)
 
     if args.dry_run:
         plan = [
@@ -2042,10 +2045,10 @@ def cmd_use(args: argparse.Namespace) -> int:
             for e in order
         ]
         if args.json:
-            shadows, shadowed_by = shadow_split(cfg, entry)
+            overrides, overridden_by = override_split(cfg, entry)
             print(json.dumps({"status": "OK", "dry_run": True, "scope": scope,
-                              "shadows": shadows,
-                              "shadowed_by": shadowed_by[0] if shadowed_by else None,
+                              "overrides": overrides,
+                              "overridden_by": overridden_by[0] if overridden_by else None,
                               "would_install": plan}, indent=2))
         else:
             print("Dry run — nothing installed. Would install:")
@@ -2066,9 +2069,9 @@ def cmd_use(args: argparse.Namespace) -> int:
         return 1
 
     if args.json:
-        shadows, shadowed_by = shadow_split(cfg, entry)
-        print(json.dumps({"status": "OK", "installed": results, "shadows": shadows,
-                          "shadowed_by": shadowed_by[0] if shadowed_by else None}, indent=2))
+        overrides, overridden_by = override_split(cfg, entry)
+        print(json.dumps({"status": "OK", "installed": results, "overrides": overrides,
+                          "overridden_by": overridden_by[0] if overridden_by else None}, indent=2))
         return 0
 
     deps = results[:-1]
@@ -2097,7 +2100,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
     dirs = cfg.dirs
     multi = multi_catalog(cfg)
 
-    # Each name is scanned once, against the copy resolution would pick. A shadowed
+    # Each name is scanned once, against the copy resolution would pick. An overridden
     # entry is not what `use` installs, so refreshing it too would quietly replace the
     # winner's files with the loser's.
     installed: list[tuple[Entry, str]] = []
@@ -2321,7 +2324,7 @@ def cmd_add(args: argparse.Namespace) -> int:
         seen.add(e.name)
 
     # Validate against the destination catalog's current contents — not the merged
-    # list. A name held by a *different* catalog is a shadowing decision (warned about
+    # list. A name held by a *different* catalog is an override decision (warned about
     # below), not a duplicate; only the destination can actually collide.
     dest_entries = cfg.entries_of(cat.id)
     label = f"catalog '{cat.id}'" if multi else "catalog"
@@ -2329,7 +2332,7 @@ def cmd_add(args: argparse.Namespace) -> int:
         existing = find_exact(dest_entries, e.name)
         if existing:
             die(f"'{e.name}' already in {label} (type {existing.type}); use `library use` to refresh or `push` to update")
-        for note in new_entry_shadow_warnings(cfg, cat, e.name):
+        for note in new_entry_override_warnings(cfg, cat, e.name):
             warn(note)
 
     # A dependency counts as known if the destination catalog has it (D9) or another
@@ -3261,10 +3264,10 @@ def _doctor_label(catalog: "str | None", entry: "str | None", multi: bool) -> st
     return "/".join(p for p in ((catalog if multi else None), entry) if p) or "-"
 
 
-def _shadow_findings(cfg: Config) -> list[tuple[str, str]]:
+def _override_findings(cfg: Config) -> list[tuple[str, str]]:
     """One warning per name held by more than one catalog: (entry name, message).
 
-    Shadowing is deliberate — it is the whole reason to register a personal catalog —
+    Overriding is deliberate — it is the whole reason to register a personal catalog —
     so this is a warning naming winner and losers (R14.5, R4.5), never an error.
     `cfg.entries()` is in precedence order, so the first holder is the winner.
     """
@@ -3274,8 +3277,8 @@ def _shadow_findings(cfg: Config) -> list[tuple[str, str]]:
         if e.catalog not in ids:  # a within-catalog duplicate is a different finding
             ids.append(e.catalog)
     return [
-        (name, f"'{name}' is defined in {len(ids)} catalogs — '{ids[0]}' takes precedence, "
-               f"shadowing {', '.join(ids[1:])}")
+        (name, f"'{name}' is defined in {len(ids)} catalogs — '{ids[0]}' overrides "
+               f"{', '.join(ids[1:])}")
         for name, ids in holders.items() if len(ids) > 1
     ]
 
@@ -3317,7 +3320,7 @@ def _catalog_findings(
 
     # Duplicate names *within* one catalog: find_exact takes the first, so the rest are
     # unreachable. Scoped per catalog because the same name in two catalogs is
-    # deliberate shadowing, not a mistake — `_shadow_findings` reports that instead.
+    # deliberate overriding, not a mistake — `_override_findings` reports that instead.
     by_name: dict[str, list[Entry]] = {}
     for e in entries:
         by_name.setdefault(e.name, []).append(e)
@@ -3507,9 +3510,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             errors.extend((cat.id, n, m) for n, m in cat_errors)
             warns.extend((cat.id, n, m) for n, m in cat_warns)
 
-        # ── Cross-catalog shadowing (R14.5) — the one check no single ────
+        # ── Cross-catalog overrides (R14.5) — the one check no single ───
         #    catalog owns, so it carries an entry but no catalog id.
-        warns.extend((None, n, m) for n, m in _shadow_findings(cfg))
+        warns.extend((None, n, m) for n, m in _override_findings(cfg))
 
     multi = cfg is not None and multi_catalog(cfg)
 
@@ -3543,7 +3546,7 @@ _LOCAL_CONFIG_TEMPLATE = """\
 # Points this machine's tool at the shared catalog repo. See cookbook/init.md.
 
 # catalogs: precedence order, highest first. Register a personal catalog ahead of the
-# shared one to shadow it locally — see cookbook/catalog.md.
+# shared one to override it locally — see cookbook/catalog.md.
 catalogs:
   - id: shared              # the team catalog
     repo: {repo}            # clone URL of the catalog repo (e.g. agent-library)
@@ -3860,7 +3863,7 @@ def build_parser() -> argparse.ArgumentParser:
     cat_add.add_argument("--protected", action="store_true",
                          help="remote catalog: send writes through a PR instead of a push")
     cat_add.add_argument("--position", choices=("first", "last"), default="first",
-                         help="precedence slot (default: first, so it shadows the rest)")
+                         help="precedence slot (default: first, so it overrides the rest)")
     cat_add.add_argument("--json", action="store_true", help="machine-readable output")
     cat_add.set_defaults(func=cmd_catalog_add)
 
@@ -3870,7 +3873,7 @@ def build_parser() -> argparse.ArgumentParser:
     cat_init.add_argument("--git-commit", dest="git_commit", action="store_true",
                           help="commit and push the file after each write")
     cat_init.add_argument("--position", choices=("first", "last"), default="first",
-                          help="precedence slot (default: first, so it shadows the rest)")
+                          help="precedence slot (default: first, so it overrides the rest)")
     cat_init.add_argument("--json", action="store_true", help="machine-readable output")
     cat_init.set_defaults(func=cmd_catalog_init)
 

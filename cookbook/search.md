@@ -26,9 +26,9 @@ once more than one is registered:
   [skill] session-retro  shared    Distill a finished session into durable style learnings
 ```
 
-**The same name appearing twice is shadowing, not a duplicate.** Results are in precedence
+**The same name appearing twice is an override, not a duplicate.** Results are in precedence
 order, so the first one is what a bare `use <name>` installs. Don't present the pair as
-"two options to choose between" unless the user wants the shadowed one specifically — in
+"two options to choose between" unless the user wants the overridden one specifically — in
 which case that's `use <name> --catalog <id>`.
 
 Relay the results. If the CLI returns no matches, suggest a broader keyword or

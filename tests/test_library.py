@@ -294,7 +294,7 @@ library:
       source: https://github.com/acme/agentics/blob/main/prompts/grill-me.md
 """
 
-# A personal catalog that shadows one shared entry and adds one of its own.
+# A personal catalog that overrides one shared entry and adds one of its own.
 PERSONAL_CATALOG = """\
 library:
   skills:
@@ -313,7 +313,7 @@ def install_two_catalog_fixture(tool: TempTool, personal_text: str = PERSONAL_CA
                                 shared_text: str = GOLDEN_CATALOG) -> TempGitRepo:
     """A personal local catalog ahead of the shared remote one, in precedence order.
 
-    `personal` first means it shadows `shared` — the reason someone registers one.
+    `personal` first means it overrides `shared` — the reason someone registers one.
     """
     repo = TempGitRepo(tool.tool_dir, name=".catalog-repo")
     repo.commit("library.yaml", shared_text)
@@ -1649,14 +1649,14 @@ class TestSingleCatalogGoldens(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(len(payload), 4)
         for item in payload:
-            # `catalog` and `shadowed_by` are the additive keys R2.4 allows; every
+            # `catalog` and `overridden_by` are the additive keys R2.4 allows; every
             # pre-existing key keeps its name, type, and meaning.
             self.assertEqual(
                 sorted(item),
-                ["catalog", "description", "installed", "name", "requires", "scopes",
-                 "shadowed_by", "source", "type"],
+                ["catalog", "description", "installed", "name", "overridden_by",
+                 "requires", "scopes", "source", "type"],
             )
-            self.assertEqual((item["catalog"], item["shadowed_by"]), ("shared", None))
+            self.assertEqual((item["catalog"], item["overridden_by"]), ("shared", None))
         retro = next(i for i in payload if i["name"] == "session-retro")
         self.assertEqual(retro["requires"], ["skill:backend-code-practices"])
         self.assertEqual((retro["installed"], retro["scopes"]), (False, []))
@@ -1666,8 +1666,8 @@ class TestSingleCatalogGoldens(unittest.TestCase):
         payload = json.loads(out)
         self.assertEqual(code, 0)
         self.assertEqual([sorted(i) for i in payload],
-                         [["catalog", "description", "name", "shadowed_by", "source", "type"]])
-        self.assertEqual((payload[0]["catalog"], payload[0]["shadowed_by"]), ("shared", None))
+                         [["catalog", "description", "name", "overridden_by", "source", "type"]])
+        self.assertEqual((payload[0]["catalog"], payload[0]["overridden_by"]), ("shared", None))
 
     def test_doctor_json_keys(self) -> None:
         with stubbed_gh():
@@ -2696,7 +2696,7 @@ class TestCloneOnDemand(unittest.TestCase):
         code, out, err = run_cli("list")
         self.assertEqual(code, 0, err)
         self.assertIn("session-retro           personal", out)
-        self.assertIn("shadowed by personal", out)
+        self.assertIn("overridden by personal", out)
 
 
 class TestReinitPreservesTheRegistry(unittest.TestCase):
@@ -2791,19 +2791,19 @@ class TestReinitPreservesTheRegistry(unittest.TestCase):
         self.assertEqual(json.loads(out)["kept_catalogs"], ["personal"])
 
     def test_the_registry_still_resolves_after_a_reinit(self) -> None:
-        # The end-to-end point: the personal catalog still wins for the name it shadows.
+        # The end-to-end point: the personal catalog still wins for the name it overrides.
         self.reinit()
         code, out, err = run_cli("list", "--no-pull")
         self.assertEqual(code, 0, err)
         self.assertIn("session-retro           personal", out)
-        self.assertIn("shadowed by personal", out)
+        self.assertIn("overridden by personal", out)
 
 
 # --------------------------------------------------------------------------- #
-# --catalog restriction and shadow reporting (R4.1–R4.4)
+# --catalog restriction and override reporting (R4.1–R4.4)
 # --------------------------------------------------------------------------- #
 
-class TestPrecedenceAndShadowing(unittest.TestCase):
+class TestPrecedenceAndOverriding(unittest.TestCase):
     def setUp(self) -> None:
         self.tool = TempTool()
         self.addCleanup(self.tool.stop)
@@ -2830,20 +2830,20 @@ class TestPrecedenceAndShadowing(unittest.TestCase):
         self.assertIn(("session-retro", "shared"), seen)
         self.assertTrue(all(e.catalog for e in self.cfg.entries()))
 
-    def test_shadows_lists_the_losers_in_precedence_order(self) -> None:
-        losers = self.cfg.shadows("session-retro")
+    def test_overrides_lists_the_losers_in_precedence_order(self) -> None:
+        losers = self.cfg.overridden("session-retro")
         self.assertEqual([e.catalog for e in losers], ["shared"])
 
-    def test_shadows_is_empty_for_an_unshadowed_name(self) -> None:
-        self.assertEqual(self.cfg.shadows("grill-me"), [])
-        self.assertEqual(self.cfg.shadows("scratch-thing"), [])
+    def test_overrides_is_empty_for_an_unoverridden_name(self) -> None:
+        self.assertEqual(self.cfg.overridden("grill-me"), [])
+        self.assertEqual(self.cfg.overridden("scratch-thing"), [])
 
-    def test_shadow_note_names_the_losing_catalogs(self) -> None:
-        self.assertEqual(library.shadow_note(self.cfg, self.cfg.resolve("session-retro")),
-                         "shadows shared")
-        self.assertEqual(library.shadow_note(self.cfg, self.cfg.resolve("grill-me")), "")
+    def test_override_note_names_the_losing_catalogs(self) -> None:
+        self.assertEqual(library.override_note(self.cfg, self.cfg.resolve("session-retro")),
+                         "overrides shared")
+        self.assertEqual(library.override_note(self.cfg, self.cfg.resolve("grill-me")), "")
 
-    def test_shadow_note_dedupes_and_orders_several_losers(self) -> None:
+    def test_override_note_dedupes_and_orders_several_losers(self) -> None:
         cfg = library.Config(catalogs=[
             library.Catalog(id="a", kind="local", data={"library": {"skills": [
                 {"name": "dup", "description": "", "source": "/x"}]}}),
@@ -2853,20 +2853,20 @@ class TestPrecedenceAndShadowing(unittest.TestCase):
             library.Catalog(id="c", kind="local", data={"library": {"skills": [
                 {"name": "dup", "description": "", "source": "/x"}]}}),
         ])
-        self.assertEqual(library.shadow_note(cfg, cfg.resolve("dup")), "shadows b, c")
+        self.assertEqual(library.override_note(cfg, cfg.resolve("dup")), "overrides b, c")
 
-    def test_shadow_note_is_written_from_the_entrys_point_of_view(self) -> None:
+    def test_override_note_is_written_from_the_entrys_point_of_view(self) -> None:
         # Found on a real two-catalog setup: `use grill-me --catalog shared` reported
-        # "grill-me shadows shared" — the shared copy shadowing itself. `cfg.shadows()`
+        # "grill-me overrides shared" — the shared copy overriding itself. `cfg.overridden()`
         # slices the merged list positionally, so under --catalog it described the
         # winner's relationship rather than the resolved entry's.
         loser = self.cfg.resolve("session-retro", catalog="shared")
         self.assertEqual(loser.catalog, "shared")
-        self.assertEqual(library.shadow_note(self.cfg, loser), "is shadowed by personal")
-        self.assertEqual(library.shadow_split(self.cfg, loser), ([], ["personal"]))
+        self.assertEqual(library.override_note(self.cfg, loser), "is overridden by personal")
+        self.assertEqual(library.override_split(self.cfg, loser), ([], ["personal"]))
         # …and the winner's own note is unchanged.
         winner = self.cfg.resolve("session-retro")
-        self.assertEqual(library.shadow_split(self.cfg, winner), (["shared"], []))
+        self.assertEqual(library.override_split(self.cfg, winner), (["shared"], []))
 
     def test_by_id_error_lists_the_available_ids(self) -> None:
         with self.assertRaises(library.LibraryError) as ctx:
@@ -2968,7 +2968,7 @@ Skills
   backend-code-practices  shared    not installed           Backend conventions for Spring Boot services
   scratch-thing           personal  installed (global)      Personal scratch skill
   session-retro           personal  installed (global)      My iterated copy of session-retro
-  session-retro           shared    shadowed by personal    Distill a finished session into durable style learnings
+  session-retro           shared    overridden by personal  Distill a finished session into durable style learnings
 
 Agents
   sql-review  shared  not installed           Reviews SQL migrations and stored procedures
@@ -2976,7 +2976,7 @@ Agents
 Prompts
   grill-me  shared  not installed           Interrogate a plan for its load-bearing decisions
 
-6 entries · 2 installed · 3 not installed · 1 shadowed
+6 entries · 2 installed · 3 not installed · 1 overridden
 
 Catalogs
   personal  2 entries
@@ -3016,16 +3016,16 @@ class TestListAcrossCatalogs(unittest.TestCase):
         order = [ln.split()[1] for ln in out.splitlines() if "session-retro" in ln]
         self.assertEqual(order, ["personal", "shared", "aaa-last"])
         # …and precedence, not the id, is what decides the winner.
-        self.assertEqual(self.rows()["aaa-last/session-retro"]["shadowed_by"], "personal")
+        self.assertEqual(self.rows()["aaa-last/session-retro"]["overridden_by"], "personal")
 
-    def test_output_shows_provenance_shadowing_and_a_per_catalog_summary(self) -> None:
+    def test_output_shows_provenance_overriding_and_a_per_catalog_summary(self) -> None:
         self.install("scratch-thing")
         self.install("session-retro")
         code, out, err = run_cli("list", "--no-pull")
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(out, GOLDEN_LIST_TWO_CATALOGS)
 
-    def test_a_shadowed_entry_is_never_reported_installed(self) -> None:
+    def test_a_overridden_entry_is_never_reported_installed(self) -> None:
         # The directory exists, but the shared copy is not what `use` would install.
         self.install("session-retro")
         rows = self.rows()
@@ -3034,11 +3034,11 @@ class TestListAcrossCatalogs(unittest.TestCase):
         self.assertEqual(rows["shared/session-retro"]["installed"], False)
         self.assertEqual(rows["shared/session-retro"]["scopes"], [])
 
-    def test_json_carries_catalog_and_shadowed_by(self) -> None:
+    def test_json_carries_catalog_and_overridden_by(self) -> None:
         rows = self.rows()
-        self.assertIsNone(rows["personal/session-retro"]["shadowed_by"])
-        self.assertEqual(rows["shared/session-retro"]["shadowed_by"], "personal")
-        self.assertIsNone(rows["shared/grill-me"]["shadowed_by"])
+        self.assertIsNone(rows["personal/session-retro"]["overridden_by"])
+        self.assertEqual(rows["shared/session-retro"]["overridden_by"], "personal")
+        self.assertIsNone(rows["shared/grill-me"]["overridden_by"])
         self.assertEqual({r["catalog"] for r in rows.values()}, {"personal", "shared"})
 
     def test_the_filter_restricts_rows_but_keeps_the_registry_summary(self) -> None:
@@ -3050,9 +3050,9 @@ class TestListAcrossCatalogs(unittest.TestCase):
         self.assertIn("  personal  2 entries", out)
         self.assertIn("  shared    4 entries", out)
 
-    def test_a_restricted_entry_is_not_marked_shadowed_by_its_own_catalog(self) -> None:
+    def test_a_restricted_entry_is_not_marked_overridden_by_its_own_catalog(self) -> None:
         rows = self.rows("--catalog", "personal")
-        self.assertIsNone(rows["personal/session-retro"]["shadowed_by"])
+        self.assertIsNone(rows["personal/session-retro"]["overridden_by"])
 
     def test_a_skipped_catalog_is_surfaced_with_its_reason(self) -> None:
         (self.tool.root / "personal" / "library.yaml").unlink()
@@ -3110,10 +3110,10 @@ class TestSearchAcrossCatalogs(unittest.TestCase):
     def test_a_personal_only_match_is_found(self) -> None:
         self.assertEqual([i["catalog"] for i in self.payload("scratch")], ["personal"])
 
-    def test_json_carries_catalog_and_shadowed_by(self) -> None:
+    def test_json_carries_catalog_and_overridden_by(self) -> None:
         by_catalog = {i["catalog"]: i for i in self.payload("retro")}
-        self.assertIsNone(by_catalog["personal"]["shadowed_by"])
-        self.assertEqual(by_catalog["shared"]["shadowed_by"], "personal")
+        self.assertIsNone(by_catalog["personal"]["overridden_by"])
+        self.assertEqual(by_catalog["shared"]["overridden_by"], "personal")
 
     def test_results_are_labelled_with_their_catalog(self) -> None:
         code, out, err = run_cli("search", "retro", "--no-pull")
@@ -3241,10 +3241,10 @@ library:
         self.assertIn("dependency skill:shared-only not found in catalog", self.stderr)
         self.assertFalse(self.installed_dir("shared-only").exists())
 
-    def test_a_shadowed_target_installs_the_winning_copy(self) -> None:
+    def test_a_overridden_target_installs_the_winning_copy(self) -> None:
         payload = self.use("session-retro")
         self.assertEqual(payload["installed"][0]["catalog"], "personal")
-        self.assertEqual(payload["shadows"], ["shared"])
+        self.assertEqual(payload["overrides"], ["shared"])
         self.assertEqual((self.installed_dir("session-retro") / "SKILL.md").read_text(),
                          "# session-retro-personal\n")
 
@@ -3254,39 +3254,39 @@ library:
         self.assertEqual((self.installed_dir("session-retro") / "SKILL.md").read_text(),
                          "# session-retro-shared\n")
 
-    def test_installing_the_shadowed_copy_says_so_rather_than_claiming_it_won(self) -> None:
+    def test_installing_the_overridden_copy_says_so_rather_than_claiming_it_won(self) -> None:
         # The report has to be about the copy actually installed. This said
-        # "session-retro shadows shared" while installing shared's copy.
+        # "session-retro overrides shared" while installing shared's copy.
         payload = self.use("session-retro", "--catalog", "shared")
-        self.assertEqual((payload["shadows"], payload["shadowed_by"]), ([], "personal"))
+        self.assertEqual((payload["overrides"], payload["overridden_by"]), ([], "personal"))
         code, out, _ = run_cli("use", "session-retro", "--catalog", "shared", "--no-pull")
         self.assertEqual(code, 0)
-        self.assertIn("(from shared, is shadowed by personal)", out)
-        self.assertNotIn("shadows shared", out)
+        self.assertIn("(from shared, is overridden by personal)", out)
+        self.assertNotIn("overrides shared", out)
 
-    def test_the_human_report_names_the_catalog_and_the_shadowing(self) -> None:
+    def test_the_human_report_names_the_catalog_and_the_overriding(self) -> None:
         code, out, _ = run_cli("use", "session-retro", "--no-pull")
         self.assertEqual(code, 0)
-        self.assertIn("(from personal, shadows shared)", out)
+        self.assertIn("(from personal, overrides shared)", out)
 
-    def test_an_unshadowed_install_names_only_its_catalog(self) -> None:
+    def test_an_unoverridden_install_names_only_its_catalog(self) -> None:
         code, out, _ = run_cli("use", "own-dep", "--no-pull")
         self.assertEqual(code, 0)
         self.assertIn("(from personal)", out)
-        self.assertNotIn("shadows", out)
+        self.assertNotIn("overrides", out)
 
-    def test_dry_run_names_catalogs_and_the_shadow_note(self) -> None:
+    def test_dry_run_names_catalogs_and_the_override_note(self) -> None:
         code, out, _ = run_cli("use", "session-retro", "--no-pull", "--dry-run")
         self.assertEqual(code, 0)
         self.assertIn("(personal)", out)
-        self.assertIn("session-retro shadows shared", out)
+        self.assertIn("session-retro overrides shared", out)
         self.assertFalse(self.installed_dir("session-retro").exists())
 
-    def test_dry_run_json_carries_catalogs_and_shadows(self) -> None:
+    def test_dry_run_json_carries_catalogs_and_overrides(self) -> None:
         code, out, _ = run_cli("use", "session-retro", "--no-pull", "--dry-run", "--json")
         payload = json.loads(out)
         self.assertEqual(code, 0)
-        self.assertEqual(payload["shadows"], ["shared"])
+        self.assertEqual(payload["overrides"], ["shared"])
         self.assertEqual([i["catalog"] for i in payload["would_install"]], ["personal"])
 
     def test_fuzzy_candidates_are_labelled_with_their_catalog(self) -> None:
@@ -3393,7 +3393,7 @@ library:
         self.assertEqual(self.owners(self.sync()),
                          [("own-dep", "personal"), ("shared-item", "shared")])
 
-    def test_a_shadowed_name_is_refreshed_once_from_the_winner(self) -> None:
+    def test_a_overridden_name_is_refreshed_once_from_the_winner(self) -> None:
         # Both catalogs carry session-retro. Scanning both would refresh the name twice
         # and leave whichever ran last on disk — precedence has to decide, as in `use`.
         self.use("session-retro")
@@ -3410,7 +3410,7 @@ library:
         self.assertEqual(self.owners(self.sync("--catalog", "personal")),
                          [("own-dep", "personal")])
 
-    def test_the_restriction_refreshes_the_shadowed_copy_instead(self) -> None:
+    def test_the_restriction_refreshes_the_overridden_copy_instead(self) -> None:
         # Restricting narrows the resolution universe, so within `shared` its own
         # session-retro wins and that is the copy that lands on disk.
         self.use("session-retro")
@@ -3942,7 +3942,7 @@ class TestAddTargetsACatalog(unittest.TestCase):
         self.tool.write_config(cfg)
         self.assertEqual(self.add("brand-new")["catalog"], "personal")
 
-    # ── duplicates vs shadowing ─────────────────────────────────────────
+    # ── duplicates vs overriding ─────────────────────────────────────────
     def test_a_duplicate_in_the_destination_is_refused(self) -> None:
         code, _, err = run_cli(
             "add", "--name", "scratch-thing", *self.ARGS, "--source",
@@ -3954,20 +3954,20 @@ class TestAddTargetsACatalog(unittest.TestCase):
 
     def test_a_name_held_only_by_another_catalog_is_not_a_duplicate(self) -> None:
         # R7.6/R7.7 — `grill-me` is in shared; adding it to personal is deliberate
-        # shadowing, so it proceeds with a warning rather than being refused.
+        # overriding, so it proceeds with a warning rather than being refused.
         payload = self.add("grill-me", "--catalog", "personal")
         self.assertEqual(payload["catalog"], "personal")
         self.assertIn("also exists in shared", self.stderr)
-        self.assertIn("'personal' takes precedence and will shadow it", self.stderr)
+        self.assertIn("'personal' takes precedence and will override it", self.stderr)
 
     def test_the_warning_names_the_other_direction_too(self) -> None:
         # Adding into the lower-precedence catalog: the new copy is the one that loses.
         payload = self.add("scratch-thing", "--catalog", "shared")
         self.assertEqual(payload["catalog"], "shared")
         self.assertIn("also exists in personal, which takes precedence", self.stderr)
-        self.assertIn("'shared' will be shadowed", self.stderr)
+        self.assertIn("'shared' will be overridden", self.stderr)
 
-    def test_no_shadow_warning_when_the_name_is_new_everywhere(self) -> None:
+    def test_no_override_warning_when_the_name_is_new_everywhere(self) -> None:
         self.add("brand-new", "--catalog", "personal")
         self.assertNotIn("also exists", self.stderr)
 
@@ -4810,8 +4810,8 @@ class TestCatalogInit(unittest.TestCase):
                          str(self.tool.home / ".claude" / "skills" / "handmade"))
 
 
-class TestPushUnderShadowing(unittest.TestCase):
-    """R11.1–R11.4 — pushing a shadowed name is a guess, and says so."""
+class TestPushUnderOverriding(unittest.TestCase):
+    """R11.1–R11.4 — pushing a overridden name is a guess, and says so."""
 
     maxDiff = None
 
@@ -4832,7 +4832,7 @@ library:
       description: My iterated copy
       source: {self.mine / "SKILL.md"}
     - name: only-mine
-      description: Not shadowed at all
+      description: Not overridden at all
       source: {self.mine / "SKILL.md"}
   agents: []
   prompts: []
@@ -4866,7 +4866,7 @@ library:
         return (json.loads(out) if out else {}), err
 
     # ── the ambiguity warning ───────────────────────────────────────────
-    def test_a_shadowed_name_warns_naming_both_candidate_sources(self) -> None:
+    def test_a_overridden_name_warns_naming_both_candidate_sources(self) -> None:
         self.install("session-retro", "global", "# my edits\n")
         payload, err = self.push("session-retro")
         self.assertEqual(payload["catalog"], "personal")
@@ -4892,7 +4892,7 @@ library:
         self.assertIn("Pushing to 'shared'", err)
         self.assertIn(f"also defined by 'personal' → {self.mine / 'SKILL.md'}", err)
 
-    def test_an_unshadowed_name_pushes_quietly(self) -> None:
+    def test_an_unoverridden_name_pushes_quietly(self) -> None:
         self.install("only-mine", "global", "# my edits\n")
         payload, err = self.push("only-mine")
         self.assertEqual(payload["catalog"], "personal")
@@ -5189,8 +5189,8 @@ class TestDoctorAcrossCatalogs(DoctorCase):
         self.assertEqual([(w["catalog"], w["entry"]) for w in payload["warnings"]],
                          [("shared", None), (None, "session-retro")])
         self.assertIn("default_dirs, which has no effect", payload["warnings"][0]["message"])
-        # The shadow warning belongs to no single catalog; TestDoctorCatalogScope pins it.
-        self.assertIn("takes precedence", payload["warnings"][1]["message"])
+        # The override warning belongs to no single catalog; TestDoctorCatalogScope pins it.
+        self.assertIn("'personal' overrides shared", payload["warnings"][1]["message"])
 
     def test_the_human_label_names_the_catalog(self) -> None:
         code, out = self.report()
@@ -5203,7 +5203,7 @@ class TestDoctorAcrossCatalogs(DoctorCase):
         self.assertEqual(payload["entries"], 6)  # 4 shared + 2 personal
 
     def test_the_same_name_in_two_catalogs_is_not_a_duplicate(self) -> None:
-        # The whole point of a personal catalog is shadowing a shared entry, so the
+        # The whole point of a personal catalog is overriding a shared entry, so the
         # duplicate-name check is scoped to one catalog's own entries. T8.2 adds the
         # cross-catalog case back as a *warning*.
         _, payload = self.findings()
@@ -5401,8 +5401,8 @@ class TestDoctorRegistry(DoctorCase):
 # doctor's catalog-scoped checks (T8.2 — R4.5, R14.4, R14.5, R14.6, R14.7)
 # --------------------------------------------------------------------------- #
 
-# A personal catalog with nothing wrong with it, shadowing one shared entry. Its source
-# is a URL, so the only finding a run can produce is the shadow itself.
+# A personal catalog with nothing wrong with it, overriding one shared entry. Its source
+# is a URL, so the only finding a run can produce is the override itself.
 PERSONAL_CLEAN = """\
 library:
   skills:
@@ -5427,7 +5427,7 @@ def skill_block(name: str, requires: str = "") -> str:
 
 
 class TestDoctorCatalogScope(DoctorCase):
-    """D9 — dependencies and cycles are catalog-internal; shadowing is deliberate."""
+    """D9 — dependencies and cycles are catalog-internal; overriding is deliberate."""
 
     def setUp(self) -> None:
         self.tool = TempTool()
@@ -5437,17 +5437,17 @@ class TestDoctorCatalogScope(DoctorCase):
         self.repo = install_two_catalog_fixture(
             self.tool, personal_text=personal, shared_text=shared or GOLDEN_CATALOG_NO_DIRS)
 
-    # ── shadowing (R14.5, R4.5) ─────────────────────────────────────────
-    def test_an_intentional_shadow_is_a_warning_and_the_run_still_passes(self) -> None:
-        # The condition this task is most likely to invert: shadowing is the reason a
+    # ── overriding (R14.5, R4.5) ─────────────────────────────────────────
+    def test_an_intentional_override_is_a_warning_and_the_run_still_passes(self) -> None:
+        # The condition this task is most likely to invert: overriding is the reason a
         # personal catalog exists, so it must never fail `doctor`.
         self.fixture(PERSONAL_CLEAN)
         code, payload = self.findings()
         self.assertEqual((code, payload["errors"]), (0, []))
         self.assertEqual(
             [(w["catalog"], w["entry"], w["message"]) for w in payload["warnings"]],
-            [(None, "session-retro", "'session-retro' is defined in 2 catalogs — 'personal' "
-                                     "takes precedence, shadowing shared")],
+            [(None, "session-retro",
+              "'session-retro' is defined in 2 catalogs — 'personal' overrides shared")],
         )
 
     def test_the_warning_names_the_winner_first_then_every_loser(self) -> None:
@@ -5460,15 +5460,15 @@ class TestDoctorCatalogScope(DoctorCase):
         self.tool.write_config(cfg)
         _, payload = self.findings()
         self.assertEqual([w["message"] for w in payload["warnings"]],
-                         ["'session-retro' is defined in 3 catalogs — 'personal' takes "
-                          "precedence, shadowing third, shared"])
+                         ["'session-retro' is defined in 3 catalogs — 'personal' overrides "
+                          "third, shared"])
 
-    def test_a_name_in_one_catalog_only_is_not_shadowing(self) -> None:
+    def test_a_name_in_one_catalog_only_is_not_overriding(self) -> None:
         self.fixture(personal_text(skill_block("mine-alone")))
         code, payload = self.findings()
         self.assertEqual((code, payload["warnings"]), (0, []))
 
-    def test_a_within_catalog_duplicate_stays_an_error_not_a_shadow(self) -> None:
+    def test_a_within_catalog_duplicate_stays_an_error_not_a_override(self) -> None:
         # R4.5 — the two findings are distinct, and only this one fails the run.
         self.fixture(personal_text(skill_block("twice"), skill_block("twice")))
         code, payload = self.findings()

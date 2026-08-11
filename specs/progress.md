@@ -380,7 +380,22 @@ Each is a place the code does something tasks.md or design.md doesn't say, with 
     README claiming `--catalog` works on every command; `add.md` saying the CLI "refuses to
     guess" without noting `default_add_catalog` settles it; and `just check` described as
     compile + drift in two places when it also runs the suite.
-63. **Deviation 9's consolidation is deferred, not done.** `doctor` still emits both the
+63. **"Shadowing" ships as "overriding"** (post-review wording change). The specs use
+    *shadow* throughout, and it is the precise programming term, but the direction of
+    "X shadows Y" is not self-evident to a reader, and what a user actually wants to know is
+    which copy they got. "Overridden by personal" answers that with no convention to learn.
+    Renamed across output, both JSON keys (`overridden_by`, `overrides`), identifiers
+    (`override_note`, `override_split`, `_override_findings`, `Config.overridden`), 39 doc
+    mentions, and the tests. "Precedence" still names the registry mechanism.
+    The one cost: "override" can imply the other copy was modified, which is exactly the
+    misconception the docs fight. `SKILL.md` and the `override_split` docstring now say
+    outright that the overridden entry is untouched and still installable with `--catalog`.
+    `specs/` was deliberately *not* rewritten — those files record what was specified — so a
+    terminology note in `requirements.md` maps the two words instead.
+    The rename also shifted `GOLDEN_LIST_TWO_CATALOGS`'s column padding and the sort
+    position of the JSON key in three key-set assertions; the golden was re-captured from
+    real output rather than hand-edited.
+64. **Deviation 9's consolidation is deferred, not done.** `doctor` still emits both the
     ignored-`default_dirs` warning and the legacy-`default`-scope-key one. The second is now
     worse than redundant: its remedy ("rename it to 'project' in the catalog") is a no-op
     under D7, since the block is ignored either way. Fixing it means changing a message on

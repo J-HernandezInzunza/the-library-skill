@@ -29,9 +29,9 @@ Skills
   backend-code-practices  shared    not installed           Backend conventions for Spring Boot services
   scratch-thing           personal  not installed           Personal scratch skill
   session-retro           personal  not installed           My iterated copy of session-retro
-  session-retro           shared    shadowed by personal    Distill a finished session into durable style learnings
+  session-retro           shared    overridden by personal    Distill a finished session into durable style learnings
 
-6 entries · 0 installed · 5 not installed · 1 shadowed
+6 entries · 0 installed · 5 not installed · 1 overridden
 
 Catalogs
   personal  2 entries
@@ -41,7 +41,7 @@ Catalogs
 - A **catalog column** appears once more than one catalog is registered, and every entry
   carries its origin. With a single catalog the column is absent and the output is exactly
   what it has always been.
-- **`shadowed by <id>`** in the status column means a higher-precedence catalog defines the
+- **`overridden by <id>`** in the status column means a higher-precedence catalog defines the
   same name, so a bare `use <name>` installs *that* copy, not this one. It is a fact, not a
   fault — say which copy would be installed rather than treating it as a problem.
 - The **`Catalogs` footer** lists each registered catalog and its entry count, in
@@ -49,9 +49,9 @@ Catalogs
   reason, and its entries are simply missing from the list above — worth relaying, since a
   silently short list is the confusing case.
 - Under `--catalog <id>`, entries from other catalogs are filtered out but the status
-  column still reports shadowing, so a shadowed entry stays visibly shadowed.
+  column still reports overriding, so an overridden entry stays visibly overridden.
 
-In `--json`, every item carries `catalog` and `shadowed_by` (`null` when it wins).
+In `--json`, every item carries `catalog` and `overridden_by` (`null` when it wins).
 
 If the CLI prints a staleness warning on stderr (`catalog is N commit(s) behind
 origin/...`), relay it to the user — the list may be missing recent catalog changes.

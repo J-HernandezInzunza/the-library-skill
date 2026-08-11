@@ -49,7 +49,7 @@ in the whole flow.
 
 If the user is deciding rather than answering, the useful framing is: **shared** if a
 teammate should get it, **personal** if they are iterating on it alone or the source is a
-local path. Adding to a personal catalog that already shadows a shared name is fine and is
+local path. Adding to a personal catalog that already overrides a shared name is fine and is
 often the point — the CLI warns which copy will now win, and you should pass that on.
 
 If they say "always my personal one", tell them `default_add_catalog: personal` in
@@ -152,7 +152,7 @@ The CLI:
 
 It refuses to add a name that already exists **in the destination catalog** (telling you
 to use `use`/`push` instead) and warns if a `--requires` ref isn't in that catalog yet. A
-name that exists in a *different* catalog is not a conflict — it is shadowing, and the CLI
+name that exists in a *different* catalog is not a conflict — it is an override, and the CLI
 says which copy will win.
 
 ### 4a. Add several entries in one PR (batch)
@@ -202,7 +202,7 @@ personal catalog together. Entries that belong in different catalogs need separa
 | `pr` | then read `method`: `gh` → "PR opened: `<pr_url>`"; `manual` → "branch pushed; open the PR at `<compare_url>`". |
 
 Name the catalog either way — with a registry, "added to the catalog" is not an answer.
-Pass on any shadowing warning, and mention dependencies you added first.
+Pass on any override warning, and mention dependencies you added first.
 
 > The CLI is the source of truth for the YAML edit and PR. Don't hand-edit the catalog
 > or run git commands yourself.

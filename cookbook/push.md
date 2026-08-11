@@ -20,7 +20,7 @@ copy.
 
 ### 0. Check whether the name is defined in more than one catalog
 
-`push` writes to the **source** an entry points at, so a shadowed name means two possible
+`push` writes to the **source** an entry points at, so an overridden name means two possible
 destinations. Nothing on disk records which copy was installed, so the CLI infers it from
 precedence and says so on stderr:
 

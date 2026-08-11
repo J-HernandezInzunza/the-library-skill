@@ -104,7 +104,7 @@ compile and doc drift. (Both inline the `unittest` command rather than calling `
   and is a bug — except in `doctor`, which may add a finding when it genuinely has a new
   problem to report. `--json` key sets are expected to grow: new keys are additive.
 - **New output gets gated on `multi_catalog(cfg)`.** Provenance columns, catalog ids in
-  labels, shadow notes — all of it appears only once a second catalog is registered, which
+  labels, override notes — all of it appears only once a second catalog is registered, which
   is what keeps the goldens above passing.
 
 **Tests never touch your real environment.** `TempTool` builds a throwaway tool directory and

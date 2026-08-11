@@ -42,9 +42,9 @@ A legacy singular `catalog:` mapping still works and is read as one protected re
 
 **Kinds.** A **local** catalog is a `library.yaml` on this machine (`path`), edited in place. A **remote** catalog is a repo (`repo` + `yaml_path` + `branch`), read through a persistent clone. "Shared" and "personal" are conventions rather than settings: the team catalog is a protected remote, a personal one is usually local.
 
-**Precedence and shadowing.** Registry order is precedence, and the first catalog defining a name wins — the losers are **shadowed**. That is the point of a personal catalog: iterate on your own copy of a team skill without touching the team's. Shadowing is never silent: `list`, `use`, `push`, and `doctor` name the winner and the losers outright, and `search` returns every copy in precedence order with its catalog (so the first hit is the one a bare `use` installs). Pass that on to the user; it is not noise.
+**Precedence and overriding.** Registry order is precedence, and the first catalog defining a name wins — the losers are **overridden**. That is the point of a personal catalog: iterate on your own copy of a team skill without touching the team's. Nothing is silently replaced — the overridden entry is untouched and still installable with `--catalog`. Overriding is never silent either: `list`, `use`, `push`, and `doctor` name the winner and the losers outright, and `search` returns every copy in precedence order with its catalog (so the first hit is the one a bare `use` installs). Pass that on to the user; it is not noise.
 
-**`--catalog <id>`** restricts any name-taking command to one catalog, bypassing precedence. Use it to reach a shadowed copy, or to name a write's destination.
+**`--catalog <id>`** restricts any name-taking command to one catalog, bypassing precedence. Use it to reach an overridden copy, or to name a write's destination.
 
 **Writes need to know where they're going.** With more than one writable catalog and no `--catalog`, a write exits `2` with `status: "AMBIGUOUS_CATALOG"` and the candidate ids rather than guessing — ask the user which, then re-run with `--catalog`. Guessing is expensive here: one destination is a local file, another is a public PR on the team's repo.
 

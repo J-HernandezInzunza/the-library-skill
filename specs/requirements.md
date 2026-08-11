@@ -39,9 +39,19 @@ as "personal, single-machine catalogs only". This change makes that real.
 | **Protected** | A remote catalog whose branch is never pushed to directly; writes go through a PR. |
 | **Registry** | The `catalogs:` list in `config.local.yaml`. |
 | **Precedence** | The order catalogs are searched. First match wins. |
-| **Shadowing** | Two catalogs define the same entry name; the higher-precedence one wins, the other is shadowed. |
+| **Shadowing** | Two catalogs define the same entry name; the higher-precedence one wins, the other is shadowed. **Shipped as "overriding"** — see the terminology note below. |
 | **Write mode** | `local` (direct file write), `pr` (branch + PR), or `direct` (commit + push to the branch). Derived from a catalog's kind and `protected`. |
 | **Effective install dirs** | The one resolved `default_dirs` mapping used for all install targets and install-status detection. Owned by the tool and the local config — never by a catalog. |
+
+> **Terminology note (after implementation).** These documents say *shadow* / *shadowing*
+> throughout, because that is the precise programming term. It shipped as **override** /
+> **overridden by**: the direction of "X shadows Y" is not self-evident to a reader, while
+> "overridden by X" says which copy you get without a convention to learn. The concept is
+> unchanged, so every requirement below reads the same with the words swapped. Identifiers
+> and payload keys follow the shipped word (`override_note`, `override_split`,
+> `overridden_by`), and "precedence" remains the term for the registry mechanism.
+> Deliberately not rewritten here: these files record what was specified, and retroactively
+> editing them would make the ledger's cross-references harder to follow, not easier.
 
 ## Decisions
 

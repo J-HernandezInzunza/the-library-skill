@@ -38,7 +38,7 @@ exits `2` and says so:
 Ask which, then re-run with `--catalog <id>`. Precedence deliberately does not break this
 tie: deleting the team's copy when the user meant their own is not recoverable by re-running.
 
-Removing a shadowing copy has a side effect worth stating: the entry does not disappear,
+Removing an overriding copy has a side effect worth stating: the entry does not disappear,
 it **falls through** to the next catalog that defines it. "Removing your personal copy
 means `use session-retro` goes back to the shared one" is the sentence the user needs.
 

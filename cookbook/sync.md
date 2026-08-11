@@ -24,7 +24,7 @@ If the CLI prints a staleness warning on stderr (`catalog 'shared' is N commit(s
 origin/...`), relay it to the user. With several catalogs the warning names which one.
 
 **Across catalogs, each installed name is refreshed once**, from the copy precedence
-resolves to. That matters when a personal catalog shadows a shared entry: only the winning
+resolves to. That matters when a personal catalog overrides a shared entry: only the winning
 copy is pulled, so the sync can't end with the loser's files overwriting the winner's.
 Each line names the catalog it pulled from once more than one is registered:
 

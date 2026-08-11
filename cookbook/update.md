@@ -38,7 +38,7 @@ exits `2` and says so:
 Ask which copy — "your personal one, or the shared one?" — and re-run with `--catalog <id>`.
 Precedence is deliberately *not* used to break the tie here: editing the copy the user
 happens to be resolving to is a coin flip when the other one is the team's. `--catalog`
-also reaches a shadowed copy on purpose, which is the usual reason someone updates the
+also reaches an overridden copy on purpose, which is the usual reason someone updates the
 shared entry while their own copy wins locally.
 
 A read-only catalog (`writable: false`) refuses the write outright, naming itself.

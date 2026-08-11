@@ -67,12 +67,12 @@ Optional flags:
 highest-precedence one, and the CLI says so in the report:
 
 ```
-Installed [skill] session-retro → ~/.claude/skills/session-retro · new install (from personal, shadows shared)
+Installed [skill] session-retro → ~/.claude/skills/session-retro · new install (from personal, overrides shared)
 ```
 
 Relay that clause. "Installed session-retro" is an incomplete answer when two copies
 exist — the user needs to know they got their own, not the team's. If they actually wanted
-the shadowed one, re-run with `--catalog shared`.
+the overridden one, re-run with `--catalog shared`.
 
 **Dependencies resolve inside the resolved entry's own catalog.** A `requires` ref is never
 satisfied by an entry in a different catalog, even a higher-precedence one. When a ref
@@ -96,7 +96,7 @@ The CLI exits non-zero and emits one of these when it can't act on its own:
   its catalog. **This is the step that needs you.** Pick the best match if it's obvious
   from the user's intent, or ask the user to choose, then re-run
   `<tool-dir>/library use "<exact-name>"`. Note that two candidates sharing a name are one
-  entry shadowing another, not two things to choose between.
+  entry overriding another, not two things to choose between.
 - `status: "NOT_FOUND"` → no match. Suggest `<tool-dir>/library search <keyword>` or ask the user
   to clarify.
 
