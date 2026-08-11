@@ -4,7 +4,7 @@ Things we may want to do, collected so they don't get lost. Not commitments — 
 idea with enough context that Future Us can judge it without re-deriving the reasoning.
 
 Each item records **what** it is, **why not now**, and **what it unlocks or depends on**. When
-something graduates into real work, move it into a spec under `specs/` and delete it from here.
+something graduates into real work, write it up properly and delete it from here.
 
 Add to this file freely. A one-paragraph entry beats a lost idea.
 
@@ -164,8 +164,9 @@ shared catalog in this repo's own config produces both). It was out of scope for
 list didn't include it. The honest options are to drop the second warning or to repoint its remedy
 at `catalog migrate`, which does normalize the key when it lifts the block.
 
-**Unlocks / depends on.** Nothing depends on it. Tracked as deviation 9 in
-[specs/progress.md](../specs/progress.md).
+**Unlocks / depends on.** Nothing depends on it. Noted during the personal-catalogs work as
+soon as install-dir ownership moved to the tool, and deliberately left alone in the two tasks
+that touched `doctor` afterwards.
 
 ---
 

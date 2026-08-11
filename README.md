@@ -632,7 +632,6 @@ auth/setup gotchas, lives in **[docs/troubleshooting.md](docs/troubleshooting.md
     .githooks/pre-push        # Local checks before push (enable: `just install-hooks`)
     ci-examples/              # CI templates for the catalog repo (doctor on PRs)
     docs/                     # Human docs: troubleshooting, contributing, roadmap
-    specs/                    # Requirements, design, and task plan for in-flight work
     .venv/                    # PyYAML for the CLI (gitignored)
     README.md                 # This file
 ```
