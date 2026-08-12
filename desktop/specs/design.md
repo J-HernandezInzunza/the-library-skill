@@ -1,0 +1,356 @@
+# Design — Library Desktop App
+
+Implements [requirements.md](requirements.md). Read that first; requirement ids (R1.1, D7, …)
+are referenced throughout.
+
+**Base branch.** This work sits on `claude/personal-catalogs-extension-qr3ic3`, not `main`. The
+requirements assume the 13-command CLI (registry, `update`, `--dry-run`, `--catalog`,
+`AMBIGUOUS_CATALOG`); `main`'s 8-command CLI cannot support R2.4, R3.2, or R4.1–R4.4. Verified at
+the time of writing: `main` = 1093 lines / 8 commands, this base = 3912 lines / 13 commands.
+
+**Versions verified at the time of writing.** Tauri 2.11, Vue 3 + Vite 6, Rust 1.97,
+Claude Code 2.1.228. Line references are to `library.py` on the base branch.
+
+## 1. Shape of the change
+
+The prototype already established the core seam: the Rust backend runs the `library` wrapper with
+`--json` and hands parsed JSON to Vue. Everything below extends that one seam rather than
+introducing a second one.
+
+```
+                        ┌──────────────────────────────────────────┐
+                        │            Vue 3 frontend                │
+                        │  catalog view · forms · walkthrough chat │
+                        └───────────────┬──────────────────────────┘
+                                        │ invoke(cmd, args)  /  event listeners
+                        ┌───────────────▼──────────────────────────┐
+                        │           Rust backend (src-tauri)       │
+                        │                                          │
+   deterministic ◀──────┤  cli::run_json(&["list"])                │
+   (no LLM)             │      └─▶ `library <sub> --json`          │
+                        │                                          │
+   interactive  ◀───────┤  agent::spawn(prompt, session)           │
+   (walkthrough)        │      └─▶ `claude -p --output-format …`   │
+                        │              ▲                           │
+                        │              │ stdio (MCP)               │
+                        │  mcp::server ┘  library_cmd, read_skill_doc,
+                        │                 request_secret, run_skill_setup
+                        └──────────────────────────────────────────┘
+```
+
+Two subprocess families, one rule each:
+
+- **CLI calls** are synchronous, request/response, and return parsed JSON (R1.1).
+- **Agent calls** are long-lived and streaming; they emit Tauri events to the frontend (R5.2).
+
+The agent never touches the catalog directly. When it needs a catalog operation it calls the
+app's MCP tool, which runs the same `cli::run_json` path the GUI uses. One implementation of
+catalog mechanics, reached two ways.
+
+## 2. Backend module layout
+
+```
+src-tauri/src/
+    lib.rs          # Tauri builder, command registration, state
+    cli.rs          # library.py invocation + JSON parsing        (R1)
+    agent.rs        # claude subprocess, stream-json parsing      (R5)
+    mcp.rs          # MCP server exposing the D4 tool whitelist   (R5.3, R6)
+    secrets.rs      # secure-input brokering + keychain           (R6)
+    error.rs        # AppError -> serializable frontend error     (R1.4, R7)
+```
+
+The prototype's single `lib.rs` splits along these lines at T1.1. Nothing else about the
+prototype's mechanism changes.
+
+## 3. Deterministic CLI layer (`cli.rs`)
+
+### 3.1 Locating the wrapper
+
+Unchanged from the prototype and already correct per R1.3:
+
+```rust
+fn library_wrapper() -> PathBuf   // LIBRARY_HOME/library, else CARGO_MANIFEST_DIR/../../library
+```
+
+`CARGO_MANIFEST_DIR` is baked at compile time, so resolution never depends on the process cwd.
+
+### 3.2 The invocation contract
+
+```rust
+fn run_json(args: &[&str]) -> Result<serde_json::Value, AppError>
+```
+
+Rules, all load-bearing:
+
+- `--json` is appended by `run_json`, never by callers (R1.1). A caller cannot forget it.
+- `LIBRARY_CWD` is set explicitly on every invocation (see §3.3).
+- Non-zero exit → `AppError::Cli { code, stderr }`, surfaced to the UI verbatim (R1.4).
+- stdout that fails to parse → `AppError::Json`. Never silently coerced to an empty list.
+
+### 3.3 The cwd contract (the subtle one)
+
+`library.py` resolves `project`-scope installs against `project_cwd()`, whose priority is
+`--cwd` > `LIBRARY_CWD` env > `os.getcwd()`. The `library` bash wrapper sets `LIBRARY_CWD="$PWD"`.
+
+A GUI app's `$PWD` is meaningless — it is wherever the app was launched from, often `/`. So a
+`--project` install driven from the GUI would land in an arbitrary directory.
+
+**Therefore:** the backend always sets `LIBRARY_CWD` explicitly to the project directory the user
+selected in the UI, and the UI has no "project" scope option until a project directory has been
+chosen. R3.1's requirement to confirm the resolved destination is satisfied by running
+`use --dry-run --json` first and showing `would_install[].dest` (verified present in the
+`--dry-run` payload on this base branch).
+
+### 3.4 Command surface
+
+One Tauri command per operation (R1.2) — never a generic passthrough:
+
+| Tauri command | CLI invocation | Req |
+| --- | --- | --- |
+| `catalog_list` | `list --json` | R2.1 |
+| `catalog_doctor` | `doctor --json` (+`--deep`) | R7.3 |
+| `entry_use_preview` | `use <name> --dry-run --json` (+scope/`--catalog`) | R3.2 |
+| `entry_use` | `use <name> --json` (+`--project`/`--dir`/`--catalog`) | R3.1 |
+| `catalog_sync` | `sync --json` | R3.3 |
+| `entry_add` | `add --name … --type … --description … --source … [--requires]… [--catalog]` | R4.1 |
+| `entry_update` | `update <name> [--add-requires …] [--catalog]` | R4.4 |
+| `entry_remove` | `remove <name> [--catalog]` | R4.4 |
+| `entry_push` | `push <name> [--catalog]` | R4.5 |
+| `registry_list` | `catalog list --json` | R2.4, R4.1 |
+
+Search is deliberately absent: R2.2 filters `catalog_list`'s payload client-side because
+`search --json` returns a leaner record (verified: 4 keys vs. `list`'s 9, missing `installed`,
+`scopes`, `requires`, `overridden_by`). Using it would make install badges wrong.
+
+### 3.5 Typed payloads
+
+`list --json` entries carry exactly: `type`, `name`, `description`, `source`, `requires`,
+`installed`, `scopes`, `catalog`, `overridden_by` (verified on this base). These are mirrored in
+one TypeScript interface (§6.1) and one Rust struct. `library.py`'s documented contract is that
+existing keys never change name/type/meaning while new keys may be added, so both mirrors
+**ignore unknown fields** rather than failing to deserialize.
+
+### 3.6 Exit-code semantics
+
+`library.py` uses exit 2 for "you decide" (`AMBIGUOUS_CATALOG`, ambiguous name), distinct from
+exit 1 failures. The backend maps exit 2 + a JSON body containing `status: "AMBIGUOUS_CATALOG"`
+to `AppError::Ambiguous { catalogs }`, which the frontend renders as a catalog picker rather than
+an error toast (R4.4). Treating exit 2 as a generic failure would turn a routine choice into a
+dead end.
+
+## 4. Agent layer (`agent.rs`)
+
+### 4.1 Invocation
+
+```
+claude -p "<prompt>"
+  --output-format stream-json
+  --verbose                        # required by stream-json
+  --mcp-config <app-mcp.json>      # the D4 tool whitelist (§5)
+  --allowedTools "mcp__library__library_cmd,mcp__library__read_skill_doc,
+                  mcp__library__request_secret,mcp__library__run_skill_setup"
+  --permission-mode dontAsk        # deny anything not explicitly allowed
+  [--resume <session-id>]          # turns 2..n of a walkthrough (D8)
+```
+
+### 4.2 Why not `--bare` (load-bearing, verified)
+
+`--bare` is the documented recommendation for scripted calls, and this design **rejects** it.
+Per the Claude Code docs: *"bare mode doesn't use your subscription login"* and *"In bare mode,
+Claude Code never reads OAuth credentials or the system keychain."*
+
+D2 requires that a teammate authed by subscription login works with no app-side credentials.
+`--bare` would force `ANTHROPIC_API_KEY`, breaking that for every subscription user.
+
+**Accepted consequence:** without `--bare`, the session also loads the teammate's own hooks,
+plugins, MCP servers, auto memory, and `CLAUDE.md`. Walkthroughs are therefore not bit-identical
+across machines. We accept this non-determinism because the walkthrough is an interactive,
+human-supervised flow, not a CI gate. `--permission-mode dontAsk` still prevents the agent from
+using tools we did not allow.
+
+### 4.3 Stream handling
+
+stdout is newline-delimited JSON. The backend reads it line by line and re-emits Tauri events;
+it does not buffer the whole run (R5.2).
+
+| Stream event | Backend action | UI result |
+| --- | --- | --- |
+| `system` / `init` | capture `session_id`; check `mcp_servers`, `mcp_server_errors` | store for `--resume`; fail fast if our MCP server didn't load |
+| `assistant` (text) | emit `agent://text` | chat bubble |
+| `assistant` (tool_use) | emit `agent://tool` with tool name + input | "Running: `library use deploy`" (R5.5, D5) |
+| `user` (tool_result) | emit `agent://tool_result` | result under the command |
+| `system` / `api_retry` | emit `agent://retry` | transient "retrying" notice |
+| `result` (last line) | emit `agent://done` with session id | re-enable input |
+
+Messages with a non-null `parent_tool_use_id` come from subagents; the UI nests or hides them
+rather than interleaving them with the main transcript.
+
+`mcp_server_errors` being non-empty is treated as fatal for the walkthrough: if the app's own
+MCP server was skipped, the agent silently loses `request_secret` and would fall back to asking
+for the token in chat — exactly the D7 leak this design exists to prevent.
+
+### 4.4 Session model (D8)
+
+One `claude` process per user turn, not one long-lived process. Turn 1 captures `session_id` from
+`system/init`; turns 2..n pass `--resume <session-id>`. State held per walkthrough:
+
+```rust
+struct Walkthrough { session_id: Option<String>, skill: String, cwd: PathBuf,
+                     pending_secret: Option<PendingSecret> }
+```
+
+Resuming by explicit id (rather than `--continue`) is required because the app may run several
+walkthroughs, and `--continue` would attach to whichever conversation was most recent.
+
+### 4.5 Preconditions (R7.2)
+
+Before offering a walkthrough the backend checks `claude --version` resolves. If not, walkthrough
+UI is disabled with an explanatory message and every deterministic op continues to work. The
+agent is an enhancement, never a dependency of the catalog features.
+
+## 5. MCP tool surface (`mcp.rs`) — the D4 whitelist
+
+The app hosts a stdio MCP server passed via `--mcp-config`. This is what makes D4 enforceable and
+D7 possible: the agent's only capabilities are these four tools, and `request_secret` gives
+secret collection a *structured* signal instead of prose the app would have to pattern-match.
+
+| Tool | Input | Behavior |
+| --- | --- | --- |
+| `library_cmd` | `subcommand`, `args[]` | Runs the library CLI through `cli::run_json`, but only for a subcommand on an allowlist. Rejects anything else. |
+| `read_skill_doc` | `skill`, `relative_path` | Reads a file **inside that installed skill's directory**. Path is canonicalized and must stay within the skill dir; rejects `..` traversal and symlink escape. |
+| `request_secret` | `key`, `guidance`, `url?` | Does **not** return the value. Signals the app to render a secure input (R6.1–R6.2) and returns only an acknowledgement once the user submits. |
+| `run_skill_setup` | `skill`, `command_id` | Runs a setup command **declared by the skill itself**, with collected secrets injected as env vars (R6.3). The agent chooses *which* declared command to run; it cannot compose an arbitrary one. |
+
+No raw `Bash`, no general file read, no network tool. `--permission-mode dontAsk` denies anything
+outside `--allowedTools`.
+
+### 5.1 Why `run_skill_setup` takes a `command_id`, not a command string
+
+If the agent could pass a shell string, the whitelist would be decorative — `run_skill_setup`
+would be `Bash` with extra steps. Instead the skill declares its setup commands, and the agent
+selects one by id. This keeps "what can run" a property of the skill, not of model output.
+
+Skills declare this in their own frontmatter/manifest; the exact schema is deferred to
+implementation (see Open questions), and a skill with no declaration simply has no walkthrough.
+
+## 6. Frontend
+
+### 6.1 Types and data flow
+
+One `Entry` interface mirroring §3.5, with `installed`/`scopes`/`overridden_by` optional so a
+future CLI key addition can't break parsing. `catalog_list` loads once into a store; R2.2 search
+is a `computed` filter over it. The prototype already does exactly this.
+
+### 6.2 Views
+
+| View | Purpose | Req |
+| --- | --- | --- |
+| Catalog | list + filter + install status/override badges | R2 |
+| Entry detail | source, requires, catalogs holding the name, install/sync actions | R2.1, R3 |
+| Add / Update form | explicit fields; requires-multiselect; catalog dropdown from `registry_list` | R4.1–R4.4 |
+| Command log | every command run + exit status | D5, R3.4 |
+| Walkthrough | chat transcript, tool activity, secure-input modal | R5, R6 |
+| Doctor | errors/warnings from `doctor --json` | R7.3 |
+
+### 6.3 Command transparency (D5)
+
+Because there is no approval gate, transparency is the only safeguard, so it is structural: every
+backend subprocess emits a `command://started` event carrying the exact argv before spawning, and
+`command://finished` with the exit code. The command log view is fed by these events and cannot
+be bypassed — a command that does not emit is a bug. This applies to CLI calls and to
+agent-initiated `library_cmd` calls alike.
+
+## 7. Secrets (`secrets.rs`, R6 / D7)
+
+The invariant: **a secret value never enters the agent process, the prompt, or any payload sent
+to the model.**
+
+```
+agent ──tool_use: request_secret{key, guidance}──▶ mcp.rs
+                                                     │ (does not resolve yet)
+                                                     ▼
+                                            emit secret://requested
+                                                     │
+                                              Vue secure input  ◀── user types token
+                                                     │ invoke("submit_secret", …)
+                                                     ▼
+                                        secrets.rs holds value in memory
+                                                     │
+                            mcp.rs resolves tool_result = "received" ──▶ agent
+                                                     │
+        agent ──tool_use: run_skill_setup{skill, command_id}──▶ mcp.rs
+                                                     │ injects value as env var
+                                                     ▼
+                                          skill's own setup command
+```
+
+Consequences that fall out of this and must hold:
+
+- `request_secret`'s `tool_result` is a fixed acknowledgement string. It never echoes the value,
+  its length, or a prefix.
+- The value lives in backend memory for the walkthrough and is zeroized after
+  `run_skill_setup` completes.
+- Persistence follows the skill's own documented expectation (R6.4) — keychain, or the skill's
+  config file. The app does not invent a second store, because two stores means one is stale.
+- The command log (§6.3) redacts env values for keys collected via `request_secret`; it logs
+  `ATLASSIAN_API_TOKEN=***`, never the value.
+
+Worked example (atlassian-toolkit, the motivating case): agent reads the skill's README via
+`read_skill_doc` → learns it needs `ATLASSIAN_EMAIL` + `ATLASSIAN_API_TOKEN` → calls
+`request_secret` for the token with guidance pointing at the Atlassian token page → app collects
+it in a native field → agent calls `run_skill_setup(skill="atlassian-toolkit",
+command_id="config-init")` → app runs the skill's own `jira.mjs config init` with the env
+injected → agent calls `run_skill_setup(command_id="smoke")` to verify → reports success.
+
+## 8. Errors (`error.rs`)
+
+```rust
+enum AppError {
+  WrapperMissing { path },       // R1.3 — actionable: set LIBRARY_HOME
+  Cli { code, stderr },          // R1.4 — show stderr verbatim
+  Ambiguous { catalogs },        // exit 2 — render a picker, not an error (§3.6)
+  Json { detail },
+  AgentMissing,                  // R7.2 — disable walkthroughs only
+  AgentStream { detail },
+  McpNotLoaded { detail },       // §4.3 — fatal for a walkthrough (D7 integrity)
+}
+```
+
+All subprocesses run non-interactively (R7.1). `library.py` already forces this for git
+(`GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS`, `ssh -oBatchMode=yes`), and the backend must not
+reintroduce a TTY that could let a child prompt and hang the GUI.
+
+## 9. Testing strategy
+
+| Layer | Approach |
+| --- | --- |
+| `cli.rs` | Point `LIBRARY_HOME` at a fixture repo; assert argv construction, JSON parsing, exit-2 → `Ambiguous`, non-zero → `Cli{stderr}`. |
+| `agent.rs` | Feed recorded stream-json fixtures through the parser. No network, no live `claude`. Cover: normal run, `api_retry`, subagent `parent_tool_use_id`, `mcp_server_errors` non-empty. |
+| `mcp.rs` | Assert `library_cmd` rejects non-allowlisted subcommands; `read_skill_doc` rejects `..` and symlink escape; `run_skill_setup` rejects unknown `command_id`. |
+| `secrets.rs` | Assert the value never appears in any emitted event, tool_result, or command-log entry. This is the D7 regression test and is non-negotiable. |
+| Frontend | Vitest on the filter logic and event→state reducers. |
+| Gate | `vue-tsc --noEmit`, `cargo check`, `cargo test`, `vite build` (R8.2). |
+
+## 10. What this design deliberately does not do
+
+- **No agent involvement in catalog mechanics** (D6). `add`/`push` fuzziness is removed by making
+  the GUI form explicit, not by asking a model to infer fields.
+- **No bundled agent runtime or Agent SDK** (D1/D2). The SDK is API-key oriented; shelling the
+  CLI is what preserves subscription auth.
+- **No app-side catalog logic** (R1.1). If the GUI needs a behavior the CLI lacks, the change
+  belongs in `library.py`, where the terminal and agent front doors get it too.
+- **No `config.local.yaml` editing from the GUI** (out of scope in requirements).
+
+## Open questions for implementation
+
+1. **Skill setup-command declaration schema.** `run_skill_setup` needs skills to declare their
+   setup commands by id. Options: `SKILL.md` frontmatter, or a sibling `setup.yaml`. This is a
+   change to the skill format, so it deserves its own decision; until it exists, walkthroughs can
+   ship for zero skills. Suggest resolving before Phase 3.
+2. **Whether `library_cmd`'s allowlist includes writes.** Reads (`list`, `search`, `doctor`) are
+   clearly safe. Whether a walkthrough agent may run `use` is a judgment call — it makes
+   "install this dependency for you" possible, but widens the blast radius. Defaulting to
+   reads + `use`, excluding `add`/`update`/`remove`/`push`.
+3. **Project-directory selection UX.** §3.3 requires an explicit project dir before any
+   `--project` install. Whether that is a per-install picker or an app-level "current project"
+   setting is reversible; suggest per-install picker first.
