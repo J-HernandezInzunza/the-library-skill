@@ -64,6 +64,8 @@ implementation; changing one is a spec change, not an implementation choice.
 | D9 | The app is run from source. No codesigning or notarization in scope. | Team is technical and has Rust + Node; signing is deferred until distribution beyond source is needed. |
 | D10 | The agent is invoked **without** `--bare`. | `--bare` never reads OAuth credentials or the keychain, so it would break subscription auth and force `ANTHROPIC_API_KEY`, contradicting D2. Accepted cost: the teammate's own hooks, plugins, MCP servers, and `CLAUDE.md` load into walkthrough sessions, so walkthroughs are not bit-identical across machines. |
 | D11 | The D4 whitelist is delivered as an app-hosted MCP server (`--mcp-config`) plus `--allowedTools` and `--permission-mode dontAsk`. | Gives `request_secret` (D7) a structured tool call instead of prose the app would have to pattern-match, and makes the whitelist enforceable rather than advisory. |
+| D12 | Skills declare setup in a `metadata.setup` block in `SKILL.md` frontmatter, per [skill-setup-schema.md](skill-setup-schema.md). Absence means no walkthrough. | Extends the `metadata:` convention all three existing toolkits already use, rather than adding a parallel manifest file. Declaring commands by id is what makes `run_skill_setup` enforceable. |
+| D13 | A collected secret is delivered per the skill's declared `delivery` mode: `config-file` (default), `env`, or `manual`. The app writes only to the skill's declared `config.path`. | `atlassian-toolkit`'s durable store is a config file, so env injection alone would not persist. Skills that want the human to type the credential themselves declare `manual`. |
 
 ## Requirements
 
@@ -117,8 +119,11 @@ implementation; changing one is a spec change, not an implementation choice.
 
 ### R5 — Agent walkthroughs (interactive)
 
-- R5.1 A skill can declare a setup walkthrough. When present, the app offers to start it after
-  install.
+- R5.1 A skill declares a setup walkthrough via `metadata.setup` (D12). When present, the app
+  offers to start it after install. When absent, the skill simply has no walkthrough and this is
+  never an error.
+- R5.1a Declared prerequisites are checked by the app before the agent starts; an unmet
+  prerequisite aborts the walkthrough naming the specific item.
 - R5.2 A walkthrough runs the agent as `claude -p --output-format stream-json`, streaming text
   and tool activity into an in-app chat panel.
 - R5.3 The agent's tools are restricted to the D4 whitelist via `--allowedTools` (or equivalent).
@@ -132,11 +137,16 @@ implementation; changing one is a spec change, not an implementation choice.
   naming the secret and giving acquisition guidance (e.g. where to mint the token).
 - R6.2 The app renders a native secure input for that secret. The value is never placed in the
   chat, the prompt, or any payload sent to the model.
-- R6.3 The app injects the collected value as an environment variable into the subprocess that
-  runs the skill's setup command; the `tool_result` returned to the agent contains only a
-  non-sensitive acknowledgement.
-- R6.4 Where the secret is persisted (OS keychain vs. the skill's own config file) follows the
-  skill's documented expectation; the app does not invent a second store.
+- R6.3 The `tool_result` returned to the agent for `request_secret` contains only a fixed,
+  non-sensitive acknowledgement. It never echoes the value, its length, or a prefix.
+- R6.4 The collected value is delivered per the skill's declared `delivery` mode (D13):
+  written into the skill's declared config file (default), injected as an env var for the
+  walkthrough's subprocesses, or never received by the app at all (`manual`). The app writes to
+  no location other than the skill's declared `config.path`, and invents no second store.
+- R6.5 Any file the app writes a secret into is chmod'd to the declared permissions (default
+  `0600`) immediately after the write.
+- R6.6 The command log redacts every value collected for a secret, including where it appears in
+  captured stdout/stderr.
 
 ### R7 — Errors and offline
 

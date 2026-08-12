@@ -230,8 +230,9 @@ If the agent could pass a shell string, the whitelist would be decorative — `r
 would be `Bash` with extra steps. Instead the skill declares its setup commands, and the agent
 selects one by id. This keeps "what can run" a property of the skill, not of model output.
 
-Skills declare this in their own frontmatter/manifest; the exact schema is deferred to
-implementation (see Open questions), and a skill with no declaration simply has no walkthrough.
+Skills declare this in `metadata.setup` in their `SKILL.md` frontmatter, specified in
+[skill-setup-schema.md](skill-setup-schema.md). A skill with no declaration simply has no
+walkthrough.
 
 ## 6. Frontend
 
@@ -290,17 +291,26 @@ Consequences that fall out of this and must hold:
   its length, or a prefix.
 - The value lives in backend memory for the walkthrough and is zeroized after
   `run_skill_setup` completes.
-- Persistence follows the skill's own documented expectation (R6.4) — keychain, or the skill's
-  config file. The app does not invent a second store, because two stores means one is stale.
+- Persistence follows the skill's declared `delivery` mode (`config-file` by default, or `env` /
+  `manual`). For `config-file` the app runs the skill's scaffold command, writes the value at the
+  declared key, and chmods to `0600`. The app writes only to the skill's declared `config.path`
+  and invents no second store, because two stores means one is stale.
 - The command log (§6.3) redacts env values for keys collected via `request_secret`; it logs
   `ATLASSIAN_API_TOKEN=***`, never the value.
 
 Worked example (atlassian-toolkit, the motivating case): agent reads the skill's README via
-`read_skill_doc` → learns it needs `ATLASSIAN_EMAIL` + `ATLASSIAN_API_TOKEN` → calls
-`request_secret` for the token with guidance pointing at the Atlassian token page → app collects
-it in a native field → agent calls `run_skill_setup(skill="atlassian-toolkit",
-command_id="config-init")` → app runs the skill's own `jira.mjs config init` with the env
-injected → agent calls `run_skill_setup(command_id="smoke")` to verify → reports success.
+`read_skill_doc` → learns the credential model → calls `request_secret("account.api_token")` with
+guidance pointing at the Atlassian token page → app collects it in a native field, runs the
+skill's declared scaffold command, writes the value into
+`~/.config/atlassian-toolkit/config.json`, chmods `0600` → agent calls
+`run_skill_setup(command_id="check")` → app runs the skill's own `jira.mjs config check` → agent
+reports readiness. Full flow in [skill-setup-schema.md](skill-setup-schema.md) §9.
+
+Note this supersedes atlassian-toolkit's current README policy ("an agent … runs `config init`,
+shows you the file path, and stops") **for the app specifically**: that text addresses an agent
+in a chat, which leaks by construction, whereas the app is a native non-model input. A skill that
+still wants the strict behavior declares `delivery: manual`. Revising that README is a tracked
+follow-up.
 
 ## 8. Errors (`error.rs`)
 
@@ -343,10 +353,9 @@ reintroduce a TTY that could let a child prompt and hang the GUI.
 
 ## Open questions for implementation
 
-1. **Skill setup-command declaration schema.** `run_skill_setup` needs skills to declare their
-   setup commands by id. Options: `SKILL.md` frontmatter, or a sibling `setup.yaml`. This is a
-   change to the skill format, so it deserves its own decision; until it exists, walkthroughs can
-   ship for zero skills. Suggest resolving before Phase 3.
+1. ~~**Skill setup-command declaration schema.**~~ **Resolved** — see
+   [skill-setup-schema.md](skill-setup-schema.md). Extends the existing `metadata:` frontmatter
+   block with a `setup:` key; secrets declare a `delivery` mode defaulting to `config-file`.
 2. **Whether `library_cmd`'s allowlist includes writes.** Reads (`list`, `search`, `doctor`) are
    clearly safe. Whether a walkthrough agent may run `use` is a judgment call — it makes
    "install this dependency for you" possible, but widens the blast radius. Defaulting to
