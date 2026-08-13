@@ -226,6 +226,11 @@ currently-installed copy *before* overwriting it. Note this is "source vs. insta
 not "since last sync" — local edits to an installed copy show up as modified and get
 overwritten.
 
+Items whose source and local copy are both unchanged are **skipped, not re-cloned** —
+one `git ls-remote` per source repo answers that for every entry from it. They report
+`up to date`. `--force` re-fetches everything regardless. See
+[Install Receipts](#install-receipts) for what "unchanged" is measured against.
+
 ## Commands
 
 Two ways to drive it, same result:
@@ -292,7 +297,11 @@ just list --catalog mine   # ...or just one catalog's (flags pass straight throu
 just search "keyword"      # Search by keyword
 just use my-skill          # Pull a skill (exact name) → ~/.claude/... (global)
 just use-project my-skill  # Pull into the .claude/ of the dir you run from
-just sync                  # Re-pull all installed items
+just sync                  # Re-pull all installed items (skips what hasn't changed)
+just sync --force          # ...re-fetch everything anyway
+just show my-skill         # One entry in full: copies, overrides, deps, source, installs
+just setup my-skill        # What an installed skill needs to work (never runs it)
+just uninstall my-skill    # Delete the installed copy (the catalog entry is kept)
 just doctor                # Validate config, registry, and every catalog
 just doctor --deep         # ...and check every source is reachable
 just self-update           # Update the tool itself (git pull)
@@ -585,6 +594,48 @@ Top level:
 This file is machine-owned: `library catalog add|init|remove|migrate` rewrite it, so
 hand-added comments don't survive. Install locations are **not** taken from any catalog —
 they come from the tool, overridable by `default_dirs` here.
+
+### Install Receipts (`.installs.json`, gitignored)
+
+Every install writes a receipt next to `config.local.yaml`, recording what landed where:
+
+```json
+{
+  "dest": "/Users/me/.claude/skills/atlassian-toolkit",
+  "name": "atlassian-toolkit", "type": "skill",
+  "catalog": "shared", "scope": "global",
+  "source": "https://github.com/org/repo/blob/main/atlassian-toolkit/SKILL.md",
+  "commit": "a1b2c3d…", "content_hash": "sha256:…",
+  "installed_at": "2026-08-13T13:35:19Z"
+}
+```
+
+The receipt is what makes provenance answerable: *which catalog did this copy come from,
+what commit is it, has anyone edited it since.* Keyed by destination, because `--dir` and
+the two scopes mean one entry can legitimately live in several places.
+
+**State is derived on every read**, never stored, so it cannot disagree with the disk:
+
+| `state` | Meaning |
+| ------- | ------- |
+| `installed` | present, and identical to what was installed |
+| `drifted` | present, but edited since — `use`/`sync` **will overwrite it** |
+| `untracked` | present with no receipt: hand-installed, or installed before receipts existed |
+| `missing` | a receipt whose files are gone |
+| `stale` | behind its source's current head — **only** with `list --check-remote` |
+| `not_installed` | neither |
+
+Two deliberate choices:
+
+- **A missing receipt is never an error.** Every install that predates receipts, and every
+  hand-copied skill, reads as `untracked` and keeps working. `library use` adopts it.
+- **Drift is reported, never enforced.** `use` and `sync` overwrite exactly as they always
+  have. `use --dry-run --json` and `sync` report the state *before* overwriting, so a
+  caller can warn first — that decision belongs to whoever is driving, not to the CLI.
+
+Receipts are device state, like `config.local.yaml`: gitignored, machine-owned, written
+atomically under a lock, and re-creatable by re-installing. `library uninstall` drops them
+alongside the files; `library doctor` reports drifted, untracked, and orphaned ones.
 
 ### Source Formats
 

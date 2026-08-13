@@ -230,7 +230,7 @@ Commit style follows the repo's history: `feat(scope): …`, `fix(scope): …`, 
     `just check` passes.
   - **Commit:** `fix(config): write the per-device config atomically under a lock`
 
-- [ ] **G2 — Docs pass over the new surface**
+- [x] **G2 — Docs pass over the new surface**
   - **Files:** `SKILL.md`, `README.md`, `docs/troubleshooting.md`
   - **Design:** all
   - **Do:** One coherent pass now that the surface has settled: receipts and what `state` means, the

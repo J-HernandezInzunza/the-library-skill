@@ -46,7 +46,7 @@ Every write returns `mode` and `catalog` in its `--json` payload. Read them befo
 
 The mechanical parts of the workflow — reading the catalog, parsing sources, resolving dependencies, cloning/copying — are handled by a small deterministic CLI (`library.py`, invoked via the `library` wrapper). The agent is only needed for judgment: fuzzy name matching, dependency detection from prose, and conflict narration.
 
-- **CLI-backed (no LLM needed):** `init`, `self-update`, `link`, `list`, `search`, `use`, `sync`, `doctor`, `catalog`. Invoke them by the wrapper's absolute path (e.g. `<tool-dir>/library use <name>`) **from the user's current working directory — do not `cd` into the tool directory first.** All support `--json` (machine-readable). `--no-pull` (skip the catalog git pull) exists only on the five that read the catalog — `list`, `search`, `use`, `sync`, `doctor` — and is an argparse error anywhere else.
+- **CLI-backed (no LLM needed):** `init`, `self-update`, `link`, `list`, `show`, `search`, `use`, `uninstall`, `setup`, `sync`, `doctor`, `catalog`. Invoke them by the wrapper's absolute path (e.g. `<tool-dir>/library use <name>`) **from the user's current working directory — do not `cd` into the tool directory first.** All support `--json` (machine-readable). `--no-pull` (skip the catalog git pull) exists only on the commands that read the catalog — `list`, `show`, `search`, `use`, `uninstall`, `setup`, `sync`, `doctor` — and is an argparse error anywhere else.
   - **Install-location contract:** bare `use <name>` installs **globally** (`~/.claude/...`, absolute, CWD-independent) — that is the default. `--project` and a relative `--dir` anchor to the directory you invoke from, so **never `cd` into the tool dir to run these** — that would anchor the install to the tool dir instead of the user's project. `--cwd <dir>` overrides the anchor explicitly. Details in [cookbook/use.md](cookbook/use.md).
   - **Project-local installs are confirmed first:** before running `use <name> --project` (or a relative `--dir`), run it with `--dry-run --json`, tell the user the absolute destination path(s), and get a yes — the anchor CWD is easy to get wrong. Global installs need no confirmation.
 - **Agent-mediated (fallback):** `add`, `update`, `push`, `remove`, and any _fuzzy_ request (vague name, natural-language intent). The CLI signals when it needs the agent by exiting non-zero with `status: "AMBIGUOUS"` or `status: "NOT_FOUND"`.
@@ -54,6 +54,24 @@ The mechanical parts of the workflow — reading the catalog, parsing sources, r
   - **Several agentics in one request → one write, via `--batch`.** Do **not** loop `library add` once per entry; that opens a separate PR each time. Write a YAML manifest and run `library add --batch <file>` so the whole set lands together, and co-add a dependent with its dependencies — refs satisfied inside the same batch resolve cleanly. See [cookbook/add.md](cookbook/add.md) Step 4a.
   - **Editing an existing entry (e.g. "make X also require skill:Y") is `update`, not `add`.** `add` refuses names that already exist. If the new `requires` ref isn't in the catalog yet, add it first (or in the same session), then `library update <name> --add-requires <ref>`. See [cookbook/update.md](cookbook/update.md).
   - When the judgment is ambiguous (multiple name matches, local-vs-remote source, type/wording conflict), the agent's first move is to **ask the user a single clarifying question** — not to pick the most likely candidate and proceed. Reversibility (PR-gating) is not a substitute for getting identity right.
+
+**Install state comes from receipts — read it before you act.** Every install writes a
+receipt (`.installs.json`, next to the config), so `list`/`search`/`show` return a `state`
+per entry alongside the existing `installed` bool: `installed`, `drifted` (the local copy
+was edited), `untracked` (present, but this tool didn't install it), `missing`, or
+`not_installed`. Two rules follow from it:
+
+- **Never re-install over `drifted` silently.** `use` and `sync` overwrite by design and
+  the CLI will not stop them, so *you* are the warning. Say the copy has local edits, and
+  offer [cookbook/push.md](cookbook/push.md) before overwriting them.
+- **`untracked` is not a fault.** Hand-installed skills and everything installed before
+  receipts existed look like this. Report it neutrally; `use` adopts it.
+
+`list --check-remote` adds `stale` (behind the source's head) at the cost of one network
+call per source repo — pass it only when the user asks whether things are out of date, and
+never by reflex. Deleting an installed copy is `uninstall` (the entry stays in the
+catalog); removing the entry itself is `remove`. Confusing the two is the expensive
+mistake — see [cookbook/uninstall.md](cookbook/uninstall.md).
 
 **Exit 3 means "not bootstrapped" — run bootstrap, don't debug.** Any `library` command
 exits `3` with `PyYAML not found` when the clone's `.venv` is missing. That code is

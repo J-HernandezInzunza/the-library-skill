@@ -19,6 +19,12 @@ catalog in one pass and is the fastest way to find what's wrong.
 | `doctor --deep` is slow | It does one network round-trip per source. Normal for large catalogs; use plain `./library doctor` for a quick offline check. |
 | `./library init` fails / `config.local.yaml` not found | Run `./library init --repo <url> --branch <branch>` from the tool directory. This is the one-time per-device setup step. |
 | Config points at the wrong catalog URL | Re-run `./library init --repo <new-url> --branch <branch> --force` to overwrite. |
+| `doctor` warns *"installed copy … has local modifications"* | Someone edited the installed copy. `use`/`sync` overwrite it. Send the edits back with `./library push <name>`, or accept the loss and re-sync. |
+| `doctor` warns *"installed copy … has no install receipt"* | The copy was installed by hand, or before receipts existed. Harmless. `./library use <name>` reinstalls it from the catalog and records a receipt. |
+| `doctor` warns *"receipt points at … which no longer exists"* | The files were deleted outside the tool. `./library use <name>` reinstalls; `./library uninstall <name>` clears the stale receipt. |
+| `./library uninstall` refuses with *"no install receipt"* | The tool can't prove it installed that directory, and it may be hand-written. Check the contents, then re-run with `--force` if it really is disposable. |
+| `sync` reports `up to date` but you expected a refresh | The source head and the local copy both match the receipt, so the clone was skipped. `./library sync --force` re-fetches unconditionally. |
+| `doctor` errors on an invalid `setup.yaml` | A skill's setup manifest failed validation, so its walkthrough is disabled (an unknown `version` or `delivery` is fatal on purpose). Fix it in the skill's own repo; `./library setup <name>` shows the specific problems. |
 | A local-path `source` won't install for a teammate | Local paths only exist on the machine that added them. Re-add the entry with a GitHub/Bitbucket URL; `add` refuses local sources for a shared catalog unless you pass `--allow-local`. |
 
 ## Exit codes
