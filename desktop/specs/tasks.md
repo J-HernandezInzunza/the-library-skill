@@ -11,9 +11,22 @@ phases run in order, with one deliberate exception (Phase 0's spike, see below).
 box means the task's own verify step passed, not that the code was written. Anything learned along
 the way that changes later tasks goes in [progress.md](progress.md), not here.
 
-**Base branch.** `claude/personal-catalogs-extension-qr3ic3`. The CLI surface this app drives
-(registry, `update`, `--dry-run`, `--catalog`, `AMBIGUOUS_CATALOG`) does not exist on `main`. When
-that branch merges, rebase this one; nothing here should need rewriting.
+**Base branch.** `feat/cli-app-support`, which itself sits on
+`claude/personal-catalogs-extension-qr3ic3`. The CLI surface this app drives does not exist on
+`main`. When the base merges, rebase this one; nothing here should need rewriting.
+
+**What the CLI provides, so the app never reimplements it.** `feat/cli-app-support`
+([specs](../../specs/cli-app-support/design.md)) landed six things this plan previously assumed the
+app would build. Each is a place where writing Rust would be the R1.1 failure, not progress:
+
+| CLI capability | What the app does instead |
+| --- | --- |
+| Install receipts + derived `state` (`installed`/`drifted`/`untracked`/`missing`/`stale`) | Renders a badge; never inspects the filesystem to infer install status |
+| `use --dry-run --json` reporting `state` per destination | Warns before overwriting a `drifted` copy (C-D4 put that decision here on purpose) |
+| `library uninstall` | Calls it; never deletes a directory itself |
+| `library show <name> --json` | Populates the detail view from one call instead of reassembling it from the `list` array |
+| `library setup <name> --json` (validated manifest + prerequisite results) | Renders and executes; **does not** parse or validate `setup.yaml` |
+| `bootstrap.py --json` + exit code 3 | Detects an unbootstrapped tool dir and offers to fix it |
 
 **Invariant for every commit.** The gate (T0.1) passes: `vue-tsc --noEmit`, `cargo check`,
 `cargo test`, `vite build`. A commit that leaves the gate red is a bug, not a work-in-progress.
@@ -29,9 +42,11 @@ Commit style follows the repo's history: `feat(scope): …`, `fix(scope): …`, 
 `docs(scope): …`, `test(scope): …`. Scope is `desktop` or a module (`desktop/cli`, `desktop/agent`).
 
 **Already satisfied by the prototype**, so no task claims them — listed here so they don't read as
-gaps: **R2.2** (client-side filtering over the loaded list, deliberately not the `search`
-subcommand, whose `--json` payload lacks install status) and **R2.3** (refresh re-runs `list`).
-Both must keep working; the gate covers them.
+gaps: **R2.2** (client-side filtering over the loaded list) and **R2.3** (refresh re-runs `list`).
+Both must keep working; the gate covers them. The original reason for filtering client-side —
+`search --json` returned a thinner record than `list --json` — is gone: the two now return an
+identical record. Client-side filtering stays because it is instant and offline, not because
+`search` is deficient.
 
 ---
 
@@ -109,10 +124,14 @@ constant refactoring of a single `lib.rs`.
 - [ ] **T1.5 — Typed entry payloads that tolerate CLI growth**
   - **Files:** `desktop/src-tauri/src/cli.rs`, `desktop/src/types.ts`
   - **Requirements:** R1.1, R2.1
-  - **Do:** Mirror the nine `list --json` keys (design.md §3.5) in one Rust struct and one TS
-    interface. **Ignore unknown fields** in both: `library.py`'s contract is that existing keys never
-    change meaning while new keys may be added, so a strict parse would break on a CLI upgrade.
-  - **Verify:** Test that a payload with an extra unknown key still deserializes. Gate passes.
+  - **Do:** Mirror the twelve `list --json` keys in one Rust struct and one TS interface: the nine
+    from design.md §3.5 plus `state`, `receipt`, and `has_setup`. **Ignore unknown fields** in both:
+    `library.py`'s contract is that existing keys never change meaning while new keys may be added
+    (C-D8), so a strict parse would break on a CLI upgrade — as it would have on this one. `state`
+    is an open string set, not a Rust enum: a future CLI state must render as unknown, not fail the
+    parse. `search --json` returns this same record, so there is one type, not two.
+  - **Verify:** Test that a payload with an extra unknown key still deserializes, and that an
+    unrecognized `state` value round-trips instead of erroring. Gate passes.
   - **Commit:** `feat(desktop/cli): add typed catalog entries that tolerate new CLI keys`
 
 - [ ] **T1.6 — CLI-layer test harness against a fixture**
@@ -122,6 +141,50 @@ constant refactoring of a single `lib.rs`.
     dependence on the developer's real catalog or network. Cover argv construction and JSON parsing.
   - **Verify:** `cargo test` passes with the developer's real config absent.
   - **Commit:** `test(desktop/cli): run CLI tests against a fixture catalog`
+
+---
+
+## Phase 1a — First run
+
+The app is the front door for people who would not otherwise clone a repo, so it must survive
+meeting a tool dir that has never been bootstrapped. Ahead of the read surface because every
+command in Phase 2 fails on that machine until this exists.
+
+- [ ] **T1a.1 — Exit code 3 means "not bootstrapped"**
+  - **Files:** `desktop/src-tauri/src/{cli,error}.rs`, `desktop/src/types.ts`
+  - **Requirements:** R1.3, R7.1
+  - **Do:** Map exit 3 from any `library` invocation to `AppError::NotBootstrapped { tool_dir }`.
+    The CLI reserves exit 3 for exactly one condition — PyYAML missing, i.e. no `.venv` — and
+    documents it as a stable contract precisely so a front door can detect a fresh clone without
+    parsing stderr. Treating it as a generic failure would show "command failed" on the one machine
+    state that has a one-click fix.
+  - **Verify:** Test with a recorded exit-3 payload asserting `NotBootstrapped`, alongside T1.3's
+    exit-2 and exit-1 cases. Gate passes.
+  - **Commit:** `feat(desktop/cli): map CLI exit 3 to a not-bootstrapped state`
+
+- [ ] **T1a.2 — First-run screen that bootstraps the tool**
+  - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/components/FirstRun.vue`
+  - **Requirements:** R7.1, R8.1
+  - **Do:** On `NotBootstrapped`, replace the catalog view with a first-run screen that explains the
+    state and offers to run `python3 bootstrap.py --json` in the tool dir. Render its JSON report
+    (`venv_python`, `wrapper`, `config_path`, `config_exists`) and retry the original command on
+    success. `bootstrap.py` is stdlib-only and idempotent, so re-running it is safe — no
+    "are you sure" is warranted.
+  - **Verify:** Point `LIBRARY_HOME` at a fixture clone with no `.venv`: the screen appears, the run
+    succeeds, and the catalog loads without restarting the app. Gate passes.
+  - **Commit:** `feat(desktop): bootstrap an unprepared tool directory on first run`
+
+- [ ] **T1a.3 — Missing config is explained, not silently empty**
+  - **Files:** `desktop/src/components/FirstRun.vue`
+  - **Requirements:** R7.1
+  - **Do:** A bootstrapped tool with no `config.local.yaml` (`config_exists: false`, or `doctor`
+    reporting no config) shows what to run — `library init --repo <url> --branch <branch>` — rather
+    than an empty catalog that reads as "your team has no skills". The app does **not** write config:
+    `init` and `catalog add` own that file, and registry editing is deferred out of the GUI on
+    purpose.
+  - **Verify:** Against a fixture with a venv but no config, the guidance appears and no config file
+    is created. Gate passes.
+  - **Commit:** `feat(desktop): explain an unconfigured tool instead of showing an empty catalog`
 
 ---
 
@@ -146,13 +209,17 @@ constant refactoring of a single `lib.rs`.
     display stays as-is. Gate passes.
   - **Commit:** `feat(desktop): surface the catalog registry and per-entry origin`
 
-- [ ] **T2.3 — Entry detail view**
-  - **Files:** `desktop/src/components/EntryDetail.vue`
-  - **Requirements:** R2.1
-  - **Do:** Source, requires, install scopes, and which catalogs hold the name (including the ones
-    this entry overrides or is overridden by).
-  - **Verify:** An overridden entry shows both copies and which one resolves. Gate passes.
-  - **Commit:** `feat(desktop): add an entry detail view`
+- [ ] **T2.3 — Entry detail view from `library show`**
+  - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/components/EntryDetail.vue`
+  - **Requirements:** R2.1, R1.1
+  - **Do:** Add `entry_show` running `show <name> --json` and render it: the resolved winner, every
+    copy with the override chain in both directions, resolved `requires`, the parsed source
+    (host/repo/branch/path), `has_setup`, and every install record for the name. Do **not**
+    reassemble this from the `list` array — that was the prototype's workaround for a detail view
+    the CLI could not answer, and it cannot show install provenance at all.
+  - **Verify:** An overridden entry shows both copies and which one resolves; an entry installed in
+    two scopes lists both, each with its own catalog and commit. Gate passes.
+  - **Commit:** `feat(desktop): add an entry detail view backed by library show`
 
 - [ ] **T2.4 — Doctor view**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/components/Doctor.vue`
@@ -164,24 +231,37 @@ constant refactoring of a single `lib.rs`.
 
 ---
 
-## Phase 3 — Install and sync
+## Phase 3 — Install, uninstall, and sync
 
-- [ ] **T3.1 — Install preview**
+Every task here reads install state from receipts rather than inferring it from the filesystem.
+The app's job is to render that state and to decide what to do about it; the CLI's job is to
+report it truthfully and then do exactly what it was told (C-D4).
+
+- [ ] **T3.1 — Install preview, including local modifications**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/`
   - **Requirements:** R3.2
   - **Do:** `entry_use_preview` running `use <name> --dry-run --json`; show `would_install[].dest`
-    before anything is written.
-  - **Verify:** Preview of an installed and a not-installed entry both show the correct dest, and
-    nothing lands on disk. Gate passes.
-  - **Commit:** `feat(desktop): preview an install destination before running it`
+    before anything is written, and each item's `state`. When a destination is `drifted`, warn that
+    installing overwrites local edits and require a second confirmation. The CLI reports drift and
+    still overwrites by design — **the app is the warning**, which is why C-D4 put this decision
+    here rather than changing `use` for the terminal and agent too.
+  - **Verify:** Preview of an installed, a not-installed, and a locally-edited entry each show the
+    correct dest and state; nothing lands on disk. A drifted preview cannot be confirmed in one
+    click. Gate passes.
+  - **Commit:** `feat(desktop): preview an install destination and warn about local edits`
 
-- [ ] **T3.2 — Global install**
+- [ ] **T3.2 — Global install with receipt-backed status**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/`
-  - **Requirements:** R3.1
-  - **Do:** `entry_use` for global scope, with the change summary from the CLI's payload.
-  - **Verify:** Install a skill; it appears at `~/.claude/skills/<name>` and the badge flips to
-    installed after refresh. Gate passes.
-  - **Commit:** `feat(desktop): install an entry globally`
+  - **Requirements:** R3.1, R2.1
+  - **Do:** `entry_use` for global scope, with the change summary from the CLI's payload. The
+    installed badge renders `state`, not a boolean: `installed`, `drifted`, and `untracked` are
+    three different things to say, and `untracked` (installed by hand, or before receipts existed)
+    must read as normal rather than as an error — it is the state every pre-existing install starts
+    in.
+  - **Verify:** Install a skill; it appears at `~/.claude/skills/<name>` and the badge shows
+    `installed` after refresh. A hand-created directory shows `untracked`, and installing over it
+    flips it to `installed`. Gate passes.
+  - **Commit:** `feat(desktop): install an entry globally and show its receipt-backed state`
 
 - [ ] **T3.3 — Project install with a per-install directory picker**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/`
@@ -198,9 +278,29 @@ constant refactoring of a single `lib.rs`.
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/`
   - **Requirements:** R3.3
   - **Do:** `catalog_sync` with per-item change summaries (`~`/`+`/`-`, `no changes`, `new install`).
-  - **Verify:** Modify an installed skill locally, sync, and confirm it reports modified and is
-    overwritten. Gate passes.
+    Render `up_to_date` items distinctly from refreshed ones — sync now skips anything whose source
+    head and local copy both match the receipt, so "nothing happened" is the common, healthy result
+    and must not look like a failure. Surface each item's pre-refresh `state`, since a `drifted`
+    item's local edits are gone once sync reports it. Offer `--force` as an explicit action, not a
+    default.
+  - **Verify:** Sync twice; the second run reports every item `up to date` and spawns no clone.
+    Modify an installed skill locally, sync, and confirm it reports `drifted` and is overwritten.
+    Gate passes.
   - **Commit:** `feat(desktop): sync installed entries with change summaries`
+
+- [ ] **T3.5 — Uninstall**
+  - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/`
+  - **Requirements:** R3.1
+  - **Do:** `entry_uninstall` running `uninstall <name> --scope … --json`, with a confirmation that
+    names the exact paths and states plainly that the catalog entry is untouched. Handle the
+    documented refusal: `status: "REFUSED"` (exit 2) means a destination has no install receipt, so
+    the tool cannot prove it put it there. Surface that as a distinct, second confirmation naming
+    the path — never auto-retry with `--force`. Uninstalling a local copy and removing a catalog
+    entry are different operations with different blast radii; the UI must not blur them.
+  - **Verify:** Uninstall a tool-installed skill: files gone, receipt gone, entry still listed and
+    reinstallable. Uninstall a hand-created directory: refused, nothing deleted, and the escalation
+    path is explicit. Gate passes.
+  - **Commit:** `feat(desktop): uninstall an installed copy without touching the catalog`
 
 ---
 
@@ -261,25 +361,28 @@ an agent used to resolve from prose.
 Deliberately ahead of the agent work: the manifest is what makes `run_skill_setup` enforceable, so
 it exists before anything can call it.
 
-- [ ] **T5.1 — Parse and validate `setup.yaml`**
-  - **Files:** `desktop/src-tauri/src/setup.rs`
-  - **Requirements:** R5.1, skill-setup-schema.md §3, §7
-  - **Do:** Read `<skill-dir>/setup.yaml`; discovery is file presence. Enforce every §7 rule:
-    required known `version`, ids referenced by `scaffold`/`verify` exist, argv rules, closed enums.
-    **An unknown `version` or an unknown enum value disables the walkthrough** rather than falling
-    back to a default — silently downgrading `delivery: manual` to `config-file` would write a
-    secret the skill intended the app never to hold.
-  - **Verify:** Table-driven tests: valid manifest, unknown version, unknown `delivery`, dangling
-    command id, shell metacharacters in `run`, `..` in a path. Gate passes.
-  - **Commit:** `feat(desktop/setup): parse and validate skill setup manifests`
+**T5.1 and T5.2 are deleted.** They specified a Rust parser, a schema §7 validator, and four
+prerequisite checks. All of that is now `library setup <name> --json` (C-D7), including the
+`sibling-skill` check, which needs to know what is installed — i.e. receipts — and therefore
+belongs where the receipts are. Re-implementing the schema in Rust would be the exact "app owns
+catalog logic" failure R1.1 exists to prevent, and would give two validators to keep in sync as
+the schema versions. **The app renders and executes; it does not parse or validate.**
 
-- [ ] **T5.2 — Prerequisite checks**
-  - **Files:** `desktop/src-tauri/src/setup.rs`
-  - **Requirements:** R5.1a
-  - **Do:** Check `node` semver, `sibling-skill` installed, `env` set, `binary` on PATH. Report the
-    specific unmet item.
-  - **Verify:** Tests for each kind, met and unmet. Gate passes.
-  - **Commit:** `feat(desktop/setup): check declared prerequisites before a walkthrough`
+- [ ] **T5.1 — Setup readiness from `library setup --json`**
+  - **Files:** `desktop/src-tauri/src/setup.rs`, `desktop/src/components/SetupReadiness.vue`
+  - **Requirements:** R5.1, R5.1a, R1.1
+  - **Do:** Add `entry_setup` running `setup <name> --json`, and type its payload: `has_setup`,
+    `manifest`, `problems[]`, `prerequisites[] {kind, value, met, detail}`, and `ready`. Render the
+    summary, the secrets that will be requested (passing each one's `guidance` and `url`
+    **verbatim** — a paraphrased token-scope list is a support ticket), and any unmet prerequisite
+    by its `detail`. Start the walkthrough only when `ready` is true. `problems[]` non-empty means
+    the manifest is invalid and the walkthrough is disabled: report it as a defect in the skill,
+    which is where the fix lives. Absent manifest is `has_setup: false` — the common case, and never
+    an error.
+  - **Verify:** Fixture skills covering: no manifest, a valid one with every prerequisite met, one
+    with an unmet `sibling-skill`, and one with an unknown `version`. Only the second offers a
+    walkthrough. Gate passes.
+  - **Commit:** `feat(desktop/setup): drive setup readiness from the CLI's manifest report`
 
 ---
 
@@ -389,7 +492,8 @@ The security-critical phase. Every task here is a place where a mistake leaks a 
   - **Files:** `desktop/src-tauri/src/{mcp,secrets}.rs`
   - **Requirements:** R6.4, R6.5, skill-setup-schema.md §4, §5
   - **Do:** Accept only a `command_id` present in the manifest — never a command string, which would
-    make the whitelist decorative. Run the scaffold, write `config-file` secrets at their declared
+    make the whitelist decorative. The manifest is the one T5.1 fetched from `library setup --json`,
+    already validated against schema §7; do not re-read or re-validate `setup.yaml` here. Run the scaffold, write `config-file` secrets at their declared
     key, chmod to the declared permissions (default `0600`). Implement `json` format only; `ini` and
     `env` have no consumer yet (schema §10.3).
   - **Verify:** Tests for an unknown `command_id`, correct dotted-path write, resulting file mode,
@@ -449,6 +553,7 @@ Parked deliberately; each would expand scope without changing what v1 must prove
 | Codesigning / notarization | D9 — run from source; needed only for distribution beyond source |
 | Editing the catalog registry from the GUI | Out of scope in requirements; registration stays a CLI concern |
 | `ini` / `env` config formats | No skill needs them yet (schema §10.3) |
-| `library doctor` validation of `setup.yaml` | Nice-to-have; T5.1 already validates at walkthrough time (schema §10.2) |
+| ~~`library doctor` validation of `setup.yaml`~~ | **Delivered** in `feat/cli-app-support`: `doctor` validates every installed skill's manifest and reports drifted, untracked, and orphaned installs |
+| NDJSON progress events from the CLI (`--progress-json`) | Parked CLI-side: skipping unchanged items removed most of the waiting that motivated it. Revisit if syncs still feel slow in the GUI |
 | Reconciling frontmatter `metadata:` hints with `setup.yaml` | Real duplication, but it drifts slowly; pick a direction before more skills adopt (schema §10.3) |
 | Revising atlassian-toolkit's README secret policy | Different repo; tracked in schema §10.1 |
