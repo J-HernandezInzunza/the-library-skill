@@ -111,7 +111,7 @@ constant refactoring of a single `lib.rs`.
     asserting `Cli`. Gate passes.
   - **Commit:** `feat(desktop/cli): map CLI exit 2 to an explicit catalog choice`
 
-- [ ] **T1.4 — Pin the cwd contract for project-scope installs**
+- [x] **T1.4 — Pin the cwd contract for project-scope installs**
   - **Files:** `desktop/src-tauri/src/cli.rs`
   - **Requirements:** R3.1
   - **Do:** Per design.md §3.3, always set `LIBRARY_CWD` explicitly on every invocation. A GUI's

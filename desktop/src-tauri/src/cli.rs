@@ -5,27 +5,45 @@
 // up. Anything this layer would have to *decide* belongs in `library.py`, where
 // the terminal and the agent front doors get it too.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::error::AppError;
 
-/// Absolute path to the tool repo's `library` wrapper.
+/// Absolute path to the tool repo the app drives.
 ///
 /// Resolved from `LIBRARY_HOME` when set (lets you point the app at a clone
 /// elsewhere), otherwise from the compile-time crate dir: `desktop/src-tauri`
 /// sits two levels below the tool root. Baked at build time, so it does not
 /// depend on the process working directory.
-pub fn library_wrapper() -> PathBuf {
+pub fn library_home() -> PathBuf {
     if let Ok(home) = std::env::var("LIBRARY_HOME") {
-        return PathBuf::from(home).join("library");
+        return PathBuf::from(home);
     }
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")); // desktop/src-tauri
     manifest
         .parent() // desktop
         .and_then(|p| p.parent()) // tool root
-        .map(|p| p.join("library"))
-        .unwrap_or_else(|| PathBuf::from("library"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Absolute path to the tool repo's `library` wrapper.
+pub fn library_wrapper() -> PathBuf {
+    library_home().join("library")
+}
+
+/// The invocation every call goes through: wrapper, args, `--json`, anchored cwd.
+///
+/// `LIBRARY_CWD` is set explicitly rather than inherited (design §3.3). The
+/// wrapper defaults it to `$PWD`, and a GUI's `$PWD` is wherever Finder launched
+/// the app from — often `/` — so inheriting it would scatter `--project` installs
+/// into arbitrary directories. Until the user picks a project directory (T3.3)
+/// the anchor is the tool repo itself, and the UI exposes no project scope.
+pub fn command(args: &[&str], cwd: &Path) -> Command {
+    let mut cmd = Command::new(library_wrapper());
+    cmd.args(args).arg("--json").env("LIBRARY_CWD", cwd);
+    cmd
 }
 
 /// Run a library subcommand with `--json` and return the parsed JSON.
@@ -40,7 +58,7 @@ pub fn run_json(args: &[&str]) -> Result<serde_json::Value, AppError> {
         });
     }
 
-    let output = match Command::new(&wrapper).args(args).arg("--json").output() {
+    let output = match command(args, &library_home()).output() {
         Ok(output) => output,
         // The wrapper is on disk but would not execute (not executable, missing
         // interpreter). There is no exit status to report, so -1 stands in and the
@@ -106,6 +124,33 @@ fn ambiguous_catalogs(stdout: &[u8]) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Argv the child would see, wrapper included — what a test can assert on.
+    fn argv(cmd: &Command) -> Vec<String> {
+        std::iter::once(cmd.get_program())
+            .chain(cmd.get_args())
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn every_call_anchors_library_cwd_explicitly() {
+        let cwd = Path::new("/tmp/some-project");
+        let cmd = command(&["use", "a-skill", "--project"], cwd);
+        let anchored = cmd
+            .get_envs()
+            .find(|(k, _)| *k == "LIBRARY_CWD")
+            .and_then(|(_, v)| v);
+        assert_eq!(anchored, Some(cwd.as_os_str()));
+    }
+
+    #[test]
+    fn json_is_appended_by_the_layer_not_the_caller() {
+        let cmd = command(&["list"], Path::new("/tmp"));
+        let args = argv(&cmd);
+        assert!(args[0].ends_with("/library"), "unexpected program: {}", args[0]);
+        assert_eq!(&args[1..], ["list", "--json"]);
+    }
 
     #[test]
     fn success_parses_stdout_as_json() {
