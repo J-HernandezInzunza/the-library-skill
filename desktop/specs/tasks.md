@@ -83,7 +83,7 @@ identical record. Client-side filtering stays because it is instant and offline,
 Everything here is invisible to the user. It exists so Phases 2–4 are additive rather than
 constant refactoring of a single `lib.rs`.
 
-- [ ] **T1.1 — Split the prototype backend into modules**
+- [x] **T1.1 — Split the prototype backend into modules**
   - **Files:** `desktop/src-tauri/src/{lib,cli,error}.rs`
   - **Requirements:** R1.1, R1.2
   - **Do:** Move wrapper resolution and `run_json` from `lib.rs` into `cli.rs`; create an empty
