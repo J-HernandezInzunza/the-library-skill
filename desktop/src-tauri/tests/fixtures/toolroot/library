@@ -1,0 +1,46 @@
+#!/bin/sh
+# Fake `library` wrapper: replays recorded CLI payloads so the desktop app's CLI
+# layer can be tested without a bootstrapped clone, a catalog, or the network.
+# Each subcommand below stands for one thing the real CLI can do to a caller.
+set -eu
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+sub=$1
+shift
+
+case "$sub" in
+  list)
+    cat "$here/payloads/list.json"
+    ;;
+  probe)
+    # Proves the layer's own contract reached the child: `--json` appended by
+    # run_json, and LIBRARY_CWD anchored rather than inherited from the GUI's $PWD.
+    printf '{"argv":['
+    sep=''
+    for a in "$@"; do
+      printf '%s"%s"' "$sep" "$a"
+      sep=','
+    done
+    printf '],"library_cwd":"%s"}\n' "${LIBRARY_CWD:-UNSET}"
+    ;;
+  ambiguous)
+    cat "$here/payloads/ambiguous.json"
+    exit 2
+    ;;
+  refused)
+    # The other exit 2: a refusal, not a choice. Must not read as ambiguity.
+    echo '{"status": "REFUSED", "dest": "/tmp/hand-made"}'
+    echo 'no install receipt for /tmp/hand-made' >&2
+    exit 2
+    ;;
+  boom)
+    echo 'no such entry: nope' >&2
+    exit 1
+    ;;
+  garbage)
+    echo 'Usage: library [-h] ...'
+    ;;
+  *)
+    echo "fixture has no case for: $sub" >&2
+    exit 1
+    ;;
+esac

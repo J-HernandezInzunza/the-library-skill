@@ -134,7 +134,7 @@ constant refactoring of a single `lib.rs`.
     unrecognized `state` value round-trips instead of erroring. Gate passes.
   - **Commit:** `feat(desktop/cli): add typed catalog entries that tolerate new CLI keys`
 
-- [ ] **T1.6 — CLI-layer test harness against a fixture**
+- [x] **T1.6 — CLI-layer test harness against a fixture**
   - **Files:** `desktop/src-tauri/tests/`, fixture catalog
   - **Requirements:** R8.2
   - **Do:** Point `LIBRARY_HOME` at a fixture repo so `cli.rs` tests run hermetically, with no
