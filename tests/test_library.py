@@ -4161,6 +4161,94 @@ library:
         self.assertIn("was not installed by this tool", out)
 
 
+class TestDoctorInstallHealth(unittest.TestCase):
+    """doctor validates setup manifests and reports install drift (design §4.5)."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in ("alpha", "beta"):
+            (self.src / name).mkdir(parents=True)
+            (self.src / name / "SKILL.md").write_text(f"# {name}\n")
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: alpha
+      description: First
+      source: {self.src}/alpha/SKILL.md
+    - name: beta
+      description: Second
+      source: {self.src}/beta/SKILL.md
+  agents: []
+  prompts: []
+""")
+
+    def install(self, name: str) -> Path:
+        code, _, err = run_cli("use", name, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        return self.tool.home / ".claude/skills" / name
+
+    def doctor(self) -> dict[str, Any]:
+        with stubbed_gh():
+            code, out, err = run_cli("doctor", "--no-pull", "--json")
+        self.assertIn(code, (0, 1), err)
+        return json.loads(out)
+
+    def messages(self, payload: dict[str, Any], key: str) -> list[str]:
+        return [f["message"] for f in payload[key]]
+
+    def test_a_clean_tree_produces_no_install_findings(self) -> None:
+        self.install("alpha")
+        payload = self.doctor()
+        for message in self.messages(payload, "warnings") + self.messages(payload, "errors"):
+            self.assertNotIn("installed copy", message)
+            self.assertNotIn("setup.yaml", message)
+
+    def test_a_drifted_install_warns(self) -> None:
+        dest = self.install("alpha")
+        (dest / "SKILL.md").write_text("# edited by hand\n")
+        warnings = self.messages(self.doctor(), "warnings")
+        self.assertTrue(any("local modifications" in w for w in warnings), warnings)
+
+    def test_an_untracked_install_warns(self) -> None:
+        dest = self.tool.home / ".claude/skills/beta"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("# hand written\n")
+        warnings = self.messages(self.doctor(), "warnings")
+        self.assertTrue(any("no install receipt" in w for w in warnings), warnings)
+
+    def test_a_receipt_whose_files_are_gone_warns(self) -> None:
+        dest = self.install("alpha")
+        shutil.rmtree(dest)
+        warnings = self.messages(self.doctor(), "warnings")
+        self.assertTrue(any("no longer exists" in w for w in warnings), warnings)
+
+    def test_an_invalid_setup_manifest_is_an_error(self) -> None:
+        dest = self.install("alpha")
+        (dest / "setup.yaml").write_text(yaml.safe_dump(setup_manifest(version=99)))
+        payload = self.doctor()
+        errors = self.messages(payload, "errors")
+        self.assertTrue(any("invalid setup.yaml" in e and "unknown setup version" in e
+                            for e in errors), errors)
+        self.assertEqual(payload["status"], "PROBLEMS")
+
+    def test_a_valid_setup_manifest_is_not_flagged(self) -> None:
+        dest = self.install("alpha")
+        (dest / "setup.yaml").write_text(yaml.safe_dump(setup_manifest()))
+        self.assertEqual([e for e in self.messages(self.doctor(), "errors")
+                          if "setup.yaml" in e], [])
+
+    def test_both_findings_are_reported_from_one_run(self) -> None:
+        drifted = self.install("alpha")
+        (drifted / "SKILL.md").write_text("# edited\n")
+        broken = self.install("beta")
+        (broken / "setup.yaml").write_text(yaml.safe_dump(setup_manifest(verify="nope")))
+        payload = self.doctor()
+        self.assertTrue(any("local modifications" in w for w in self.messages(payload, "warnings")))
+        self.assertTrue(any("invalid setup.yaml" in e for e in self.messages(payload, "errors")))
+
+
 class TestSetupCommand(unittest.TestCase):
     """`library setup <name>`: the manifest plus per-prerequisite state (design §4.5)."""
 

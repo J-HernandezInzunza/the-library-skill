@@ -4302,6 +4302,34 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         #    catalog owns, so it carries an entry but no catalog id.
         warns.extend((None, n, m) for n, m in _override_findings(cfg))
 
+        # ── Installed copies: setup manifests and install health (§4.5) ─
+        #    Each name is checked once, against the copy resolution picks — the same
+        #    rule `sync` follows, so doctor doesn't report the losing copy's dest.
+        receipts = load_receipts()
+        checked: set[str] = set()
+        for e in entries:
+            if e.name in checked:
+                continue
+            checked.add(e.name)
+            for dest, receipt in sorted(entry_dests(cfg.dirs, e, receipts).items()):
+                state = dest_state(Path(dest), receipt)
+                if state == "drifted":
+                    warns.append((e.catalog, e.name,
+                        f"installed copy at {dest} has local modifications; "
+                        "`use`/`sync` will overwrite them (`library push` sends them back)"))
+                elif state == "untracked":
+                    warns.append((e.catalog, e.name,
+                        f"installed copy at {dest} has no install receipt — installed by "
+                        "hand, or before receipts existed; `library use` adopts it"))
+                elif state == "missing":
+                    warns.append((e.catalog, e.name,
+                        f"receipt points at {dest}, which no longer exists"))
+                    continue
+                elif state == "not_installed":
+                    continue
+                for problem in load_setup(Path(dest))[1]:
+                    errors.append((e.catalog, e.name, f"invalid {SETUP_FILE} at {dest}: {problem}"))
+
     multi = cfg is not None and multi_catalog(cfg)
 
     if args.json:

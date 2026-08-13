@@ -185,7 +185,7 @@ Commit style follows the repo's history: `feat(scope): …`, `fix(scope): …`, 
     `check_docs.py` passes with the new subcommand documented.
   - **Commit:** `feat(setup): report a skill's setup manifest and prerequisite state`
 
-- [ ] **E3 — `doctor` reports manifests and install health**
+- [x] **E3 — `doctor` reports manifests and install health**
   - **Files:** `library.py`, `cookbook/doctor.md`, `tests/test_library.py`
   - **Design:** §4.5
   - **Do:** Reuse E1's validator to flag invalid `setup.yaml` files, and report `drifted` and
