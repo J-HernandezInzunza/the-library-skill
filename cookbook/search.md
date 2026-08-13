@@ -14,7 +14,10 @@ This is a deterministic operation handled entirely by the `library` CLI
 <tool-dir>/library search "<keyword>"
 ```
 
-- Add `--json` if you need to reason over the matches (e.g. rank them or pick one for the user).
+- Add `--json` if you need to reason over the matches (e.g. rank them or pick one for the
+  user). Each match is the **same record `list --json` returns** — including `installed`,
+  `scopes`, `state`, `receipt`, `requires`, and `has_setup` — so there is never a reason
+  to run `list` and filter it yourself. See [list.md](list.md) for what each key means.
 - Add `--no-pull` to skip pulling the catalog.
 - Add `--catalog <id>` to search one catalog only.
 

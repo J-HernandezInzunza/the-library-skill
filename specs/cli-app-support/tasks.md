@@ -114,7 +114,7 @@ Commit style follows the repo's history: `feat(scope): …`, `fix(scope): …`, 
     type. `just check` passes.
   - **Commit:** `feat(list): report install state, receipt, and setup availability`
 
-- [ ] **C2 — `search --json` matches `list --json`'s shape**
+- [x] **C2 — `search --json` matches `list --json`'s shape**
   - **Files:** `library.py`, `cookbook/search.md`, `tests/test_library.py`
   - **Design:** §4.1
   - **Do:** Return the same record as `list`. The 6-vs-9-key difference is why the desktop app filters

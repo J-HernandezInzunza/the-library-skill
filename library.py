@@ -2142,6 +2142,36 @@ def winning_catalogs(cfg: Config) -> dict[str, str]:
     return winners
 
 
+def entry_record(cfg: Config, entry: Entry, winners: dict[str, str],
+                 receipts: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """The one JSON shape for a catalog entry, shared by `list` and `search` (§4.1).
+
+    Two commands answering the same question must answer it identically; when `search`
+    returned a thinner record, callers filtered `list` client-side instead of using it.
+
+    Install status belongs to the resolved winner: an overridden entry is not the copy
+    `use` would install, so it never claims to be installed. Receipts key on the
+    destination, which both copies share, so provenance follows the same rule rather
+    than letting the losing copy claim the winner's install.
+    """
+    winner = winners.get(entry.name)
+    overridden_by = winner if winner and winner != entry.catalog else None
+    scopes = [] if overridden_by else installed_scopes(cfg.dirs, entry)
+    state, receipt = (("not_installed", None) if overridden_by
+                      else entry_install_state(cfg.dirs, entry, receipts))
+    return {
+        # The nine keys below are the documented contract (C-D8): never renamed, never
+        # retyped. New information arrives as new keys instead.
+        "type": entry.type, "name": entry.name, "description": entry.description,
+        "source": entry.source, "requires": entry.requires,
+        "installed": bool(scopes), "scopes": scopes,
+        "catalog": entry.catalog, "overridden_by": overridden_by,
+        "state": state,
+        "receipt": receipt,
+        "has_setup": bool(scopes) and entry_has_setup(cfg.dirs, entry, receipts),
+    }
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     cfg = load_config()
     pull_errors = refresh_catalogs(cfg, args.no_pull)
@@ -2151,39 +2181,19 @@ def cmd_list(args: argparse.Namespace) -> int:
     winners = winning_catalogs(cfg)
 
     receipts = load_receipts()
+    records = [entry_record(cfg, e, winners, receipts) for e in entries]
+    if args.json:
+        print(json.dumps(records, indent=2))
+        return 0
+
     rows = []
-    for e in entries:
-        winner = winners.get(e.name)
-        overridden_by = winner if winner and winner != e.catalog else None
-        # Install status belongs to the resolved winner; an overridden entry is not the
-        # copy that would be installed, so it never claims to be installed. Receipts key
-        # on the destination, which both copies share, so provenance follows the same
-        # rule rather than letting the loser claim the winner's install.
-        scopes = [] if overridden_by else installed_scopes(cfg.dirs, e)
+    for e, rec in zip(entries, records):
+        overridden_by, scopes = rec["overridden_by"], rec["scopes"]
         if overridden_by:
             status = f"overridden by {overridden_by}"
         else:
             status = f"installed ({', '.join(scopes)})" if scopes else "not installed"
         rows.append((e, status, scopes, overridden_by))
-
-    if args.json:
-        out = []
-        for e, _, scopes, overridden_by in rows:
-            state, receipt = ("not_installed", None) if overridden_by else \
-                entry_install_state(cfg.dirs, e, receipts)
-            out.append({
-                # The nine keys below are the documented contract (C-D8): never renamed,
-                # never retyped. New information arrives as new keys instead.
-                "type": e.type, "name": e.name, "description": e.description,
-                "source": e.source, "requires": e.requires,
-                "installed": bool(scopes), "scopes": scopes,
-                "catalog": e.catalog, "overridden_by": overridden_by,
-                "state": state,
-                "receipt": receipt,
-                "has_setup": bool(scopes) and entry_has_setup(cfg.dirs, e, receipts),
-            })
-        print(json.dumps(out, indent=2))
-        return 0
 
     for section in TYPES:
         group = [(e, s) for e, s, _, _ in rows if e.section == section]
@@ -2223,17 +2233,9 @@ def cmd_search(args: argparse.Namespace) -> int:
     multi = multi_catalog(cfg)
     winners = winning_catalogs(cfg)
 
-    def overridden_by(entry: Entry) -> "str | None":
-        winner = winners.get(entry.name)
-        return winner if winner and winner != entry.catalog else None
-
     if args.json:
-        print(json.dumps(
-            [{"type": e.type, "name": e.name, "description": e.description, "source": e.source,
-              "catalog": e.catalog, "overridden_by": overridden_by(e)}
-             for e in matches],
-            indent=2,
-        ))
+        receipts = load_receipts()
+        print(json.dumps([entry_record(cfg, e, winners, receipts) for e in matches], indent=2))
         return 0
 
     if not matches:

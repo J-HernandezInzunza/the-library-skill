@@ -1670,8 +1670,11 @@ class TestSingleCatalogGoldens(unittest.TestCase):
         code, out, _ = run_cli("search", "retro", "--no-pull", "--json")
         payload = json.loads(out)
         self.assertEqual(code, 0)
+        # §4.1: the same record as `list`, not a thinner one.
         self.assertEqual([sorted(i) for i in payload],
-                         [["catalog", "description", "name", "overridden_by", "source", "type"]])
+                         [["catalog", "description", "has_setup", "installed", "name",
+                           "overridden_by", "receipt", "requires", "scopes", "source",
+                           "state", "type"]])
         self.assertEqual((payload[0]["catalog"], payload[0]["overridden_by"]), ("shared", None))
 
     def test_doctor_json_keys(self) -> None:
@@ -3330,6 +3333,16 @@ class TestSearchAcrossCatalogs(unittest.TestCase):
         by_catalog = {i["catalog"]: i for i in self.payload("retro")}
         self.assertIsNone(by_catalog["personal"]["overridden_by"])
         self.assertEqual(by_catalog["shared"]["overridden_by"], "personal")
+
+    def test_the_record_is_identical_to_the_one_list_returns(self) -> None:
+        # §4.1: the shape difference is why callers filtered `list` client-side instead
+        # of calling `search` — a CLI shortcoming that became an app workaround.
+        (self.tool.home / ".claude/skills/scratch-thing").mkdir(parents=True)
+        found = next(i for i in self.payload("scratch"))
+        code, out, err = run_cli("list", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        listed = next(i for i in json.loads(out) if i["name"] == "scratch-thing")
+        self.assertEqual(found, listed)
 
     def test_results_are_labelled_with_their_catalog(self) -> None:
         code, out, err = run_cli("search", "retro", "--no-pull")
