@@ -1797,6 +1797,23 @@ class TestRemovePurgeScopes(unittest.TestCase):
         payload = self.purge("session-retro")
         self.assertEqual(payload["deleted"], [])
 
+    def test_a_purge_drops_the_receipt_too(self) -> None:
+        # The purge runs through `uninstall_entry`, so device state is left consistent:
+        # no receipt pointing at a path that no longer exists.
+        target = self.install("global", "session-retro")
+        library.save_receipts({str(target): make_receipt(
+            str(target), content_hash=library.content_hash(target))})
+        self.purge("session-retro")
+        self.assertEqual(library.load_receipts(), {})
+
+    def test_an_untracked_copy_is_still_purged(self) -> None:
+        # `uninstall` refuses a receipt-less copy; `remove --purge` does not. The user
+        # asked to delete the catalog entry, which is the stronger statement.
+        target = self.install("global", "session-retro")
+        self.assertEqual(library.load_receipts(), {})
+        self.purge("session-retro")
+        self.assertFalse(target.exists())
+
     def test_local_copies_survive_without_the_flag(self) -> None:
         targets = [self.install("project", "session-retro"),
                    self.install("global", "session-retro")]

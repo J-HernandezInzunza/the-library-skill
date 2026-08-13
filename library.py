@@ -2799,21 +2799,14 @@ def cmd_remove(args: argparse.Namespace) -> int:
             print_dry_run_tail(result)
         return 0
 
-    # --purge: delete local copies immediately (unrelated to the catalog edit)
+    # --purge: delete local copies immediately (unrelated to the catalog edit). Runs
+    # through the same path as `uninstall` so deletion behaves identically either way.
+    # force=True: the user asked to purge a *catalog* entry, which is the stronger
+    # statement — refusing on a missing receipt here would block a delete they already
+    # confirmed, and `remove` predates receipts.
     deleted: list[str] = []
     if args.purge:
-        for scope in ("project", "global"):
-            try:
-                base = resolve_target_base(dirs, entry, scope, None)
-            except LibraryError:
-                continue
-            target = base / entry.name if entry.type == "skill" else base / f"{entry.name}.md"
-            if target.is_dir():
-                shutil.rmtree(target)
-                deleted.append(str(target))
-            elif target.is_file():
-                target.unlink()
-                deleted.append(str(target))
+        deleted = uninstall_entry(dirs, entry, force=True)["deleted"]
 
     if args.json:
         print(json.dumps({

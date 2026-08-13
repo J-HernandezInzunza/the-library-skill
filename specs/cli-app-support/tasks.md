@@ -92,7 +92,7 @@ Commit style follows the repo's history: `feat(scope): …`, `fix(scope): …`, 
     `--force` overriding it. `check_docs.py` passes with the new subcommand documented.
   - **Commit:** `feat(uninstall): remove an installed copy without touching the catalog`
 
-- [ ] **B2 — `remove --purge` runs through `uninstall`**
+- [x] **B2 — `remove --purge` runs through `uninstall`**
   - **Files:** `library.py`, `cookbook/remove.md`, `tests/test_library.py`
   - **Design:** §4.3
   - **Do:** Reimplement the purge half of `remove` on top of B1 so there is exactly one deletion path.
