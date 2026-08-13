@@ -5,8 +5,10 @@
 // command per operation (R1.2) — never a generic "run any args" passthrough,
 // so the frontend cannot drive arbitrary CLI invocations.
 
-mod cli;
-mod error;
+pub mod cli;
+pub mod error;
+
+use error::AppError;
 
 /// The full catalog with install status — backs the list view.
 ///
@@ -14,7 +16,7 @@ mod error;
 /// subcommand: filtering in the UI is instant, offline, and costs no subprocess
 /// per keystroke.
 #[tauri::command]
-fn library_list() -> Result<serde_json::Value, String> {
+fn library_list() -> Result<serde_json::Value, AppError> {
     cli::run_json(&["list"])
 }
 

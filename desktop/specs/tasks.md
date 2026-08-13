@@ -91,7 +91,7 @@ constant refactoring of a single `lib.rs`.
   - **Verify:** Gate passes; `npm run tauri dev` still lists the catalog.
   - **Commit:** `refactor(desktop): split the backend into cli and error modules`
 
-- [ ] **T1.2 — `AppError` with a typed frontend contract**
+- [x] **T1.2 — `AppError` with a typed frontend contract**
   - **Files:** `desktop/src-tauri/src/error.rs`, `desktop/src-tauri/src/cli.rs`, `desktop/src/types.ts`
   - **Requirements:** R1.3, R1.4, R7.1
   - **Do:** Define the `AppError` variants from design.md §8 and serialize them as a tagged union

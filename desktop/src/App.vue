@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { describeAppError } from "./types";
 
 /** One catalog entry as emitted by `library list --json`. */
 interface Entry {
@@ -27,7 +28,7 @@ async function load() {
   try {
     entries.value = await invoke<Entry[]>("library_list");
   } catch (e) {
-    error.value = String(e);
+    error.value = describeAppError(e);
     entries.value = [];
   } finally {
     loading.value = false;
