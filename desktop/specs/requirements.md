@@ -64,7 +64,7 @@ implementation; changing one is a spec change, not an implementation choice.
 | D9 | The app is run from source. No codesigning or notarization in scope. | Team is technical and has Rust + Node; signing is deferred until distribution beyond source is needed. |
 | D10 | The agent is invoked **without** `--bare`. | `--bare` never reads OAuth credentials or the keychain, so it would break subscription auth and force `ANTHROPIC_API_KEY`, contradicting D2. Accepted cost: the teammate's own hooks, plugins, MCP servers, and `CLAUDE.md` load into walkthrough sessions, so walkthroughs are not bit-identical across machines. |
 | D11 | The D4 whitelist is delivered as an app-hosted MCP server (`--mcp-config`) plus `--allowedTools` and `--permission-mode dontAsk`. | Gives `request_secret` (D7) a structured tool call instead of prose the app would have to pattern-match, and makes the whitelist enforceable rather than advisory. |
-| D12 | Skills declare setup in a `metadata.setup` block in `SKILL.md` frontmatter, per [skill-setup-schema.md](skill-setup-schema.md). Absence means no walkthrough. | Extends the `metadata:` convention all three existing toolkits already use, rather than adding a parallel manifest file. Declaring commands by id is what makes `run_skill_setup` enforceable. |
+| D12 | Skills declare setup in a `setup.yaml` file in the skill's own directory, per [skill-setup-schema.md](skill-setup-schema.md). Discovery is file presence; absence means no walkthrough. | Keeps install-time data out of `SKILL.md`'s runtime frontmatter, avoids teaching the tooling to parse frontmatter at all (`library.py` doesn't today), and lets a ~45-line block be validated and reviewed as its own file. Declaring commands by id is what makes `run_skill_setup` enforceable. |
 | D13 | A collected secret is delivered per the skill's declared `delivery` mode: `config-file` (default), `env`, or `manual`. The app writes only to the skill's declared `config.path`. | `atlassian-toolkit`'s durable store is a config file, so env injection alone would not persist. Skills that want the human to type the credential themselves declare `manual`. |
 
 ## Requirements
@@ -119,14 +119,17 @@ implementation; changing one is a spec change, not an implementation choice.
 
 ### R5 — Agent walkthroughs (interactive)
 
-- R5.1 A skill declares a setup walkthrough via `metadata.setup` (D12). When present, the app
-  offers to start it after install. When absent, the skill simply has no walkthrough and this is
-  never an error.
+- R5.1 A skill declares a setup walkthrough via a `setup.yaml` in its directory (D12). When
+  present, the app offers to start it after install. When absent, the skill simply has no
+  walkthrough and this is never an error.
 - R5.1a Declared prerequisites are checked by the app before the agent starts; an unmet
   prerequisite aborts the walkthrough naming the specific item.
 - R5.2 A walkthrough runs the agent as `claude -p --output-format stream-json`, streaming text
   and tool activity into an in-app chat panel.
 - R5.3 The agent's tools are restricted to the D4 whitelist via `--allowedTools` (or equivalent).
+- R5.3a `library_cmd` exposes the read commands (`list`, `search`, `doctor`) plus `use`, so the
+  agent can install a declared `sibling-skill` prerequisite mid-walkthrough. It never exposes
+  `add`, `update`, `remove`, or `push` — catalog mutation is a GUI form (D6), not agent work.
 - R5.4 The walkthrough is one resumable session; each user turn continues it via `--resume` (D8).
 - R5.5 Every command the agent runs is displayed verbatim in the panel (D5).
 - R5.6 The agent inherits the teammate's Claude Code auth; the app sets no key (D2).

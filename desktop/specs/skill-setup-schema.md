@@ -20,76 +20,119 @@ secrets are required, and where to obtain each one.
 
 ## 2. Where it lives
 
-Extends the **existing** `metadata:` block in `SKILL.md` frontmatter. All three current toolkits
-already use `metadata:` with `role`, `requires-env`, `requires-env-optional`, `requires-config`,
-and `requires-sibling-skill`, so this adds one key (`setup:`) to an established convention rather
-than introducing a parallel manifest file.
+A **`setup.yaml` file in the skill's own directory**, a sibling of `SKILL.md`:
 
-`library.py` does not currently parse frontmatter (it reads `SKILL.md` only for the legacy
-`## Variables` block and to locate the main file). Reading `metadata.setup` is new capability
-wherever it lands; putting it in frontmatter keeps a skill a single self-describing directory.
+```
+atlassian-toolkit/
+├── SKILL.md
+├── README.md
+├── setup.yaml        ← this schema
+└── bin/
+```
 
-**A skill with no `metadata.setup` has no walkthrough.** Absence is the default and is never an
-error. This keeps every existing skill valid and unchanged.
+**Discovery is file presence.** A skill directory containing `setup.yaml` has a walkthrough; one
+without it does not. Absence is the default and is never an error, so every existing skill stays
+valid and unchanged.
 
-## 3. Schema
+### 2.1 Why a sibling file rather than `SKILL.md` frontmatter
+
+Frontmatter was the obvious candidate — Claude Code documents `metadata` as a "free-form YAML map
+for your own key-value data, such as … catalog fields, read by your own tooling," it is one of the
+six fields portable across every distribution path, and it costs no model context (only
+`description` and `when_to_use` count toward the skill-listing budget). A `metadata.setup` block
+would have worked.
+
+The sibling file wins on three practical points:
+
+1. **No frontmatter parsing anywhere.** `library.py` does not parse frontmatter today (it reads
+   `SKILL.md` only for the legacy `## Variables` block and to locate the entry file). A
+   standalone YAML file is `yaml.safe_load`, which the codebase already does everywhere.
+2. **Install-time data stays out of runtime config.** `SKILL.md` frontmatter configures how the
+   *model* uses the skill (`description`, `allowed-tools`, `disable-model-invocation`). Setup is
+   consumed by an *installer*. Different consumer, different file.
+3. **Authoring and validation.** atlassian-toolkit's block is ~45 lines. As its own file it can be
+   validated against a standalone JSON Schema, edited without touching `SKILL.md`, and reviewed as
+   a self-contained diff.
+
+The cost accepted: nothing in `SKILL.md` announces that setup exists. Mitigated by discovery being
+a single `exists()` check, and by `library doctor` gaining a validation pass (§10).
+
+### 2.2 Relationship to the existing `metadata:` keys
+
+All three current toolkits carry human-facing hints in frontmatter today:
 
 ```yaml
 metadata:
   role: toolkit
-  setup:
-    summary: One-time credential setup for Jira, Confluence, and Bitbucket.
+  requires-env-optional: [ATLASSIAN_BIN_DIR]
+  requires-config: ~/.config/atlassian-toolkit/config.json (…)
+  requires-sibling-skill: atlassian-toolkit
+```
 
-    prerequisites:
-      - node: ">=20"                      # semver range checked against `node --version`
-      - sibling-skill: atlassian-toolkit  # must be installed alongside this skill
-      - env: RETRO_CYCLE_PATH             # must be set in the environment
+These overlap with `prerequisites` and `config` below. **`setup.yaml` is authoritative for
+tooling**; the `metadata:` keys remain as prose documentation for a human reading `SKILL.md`.
+That is duplication, and duplication drifts — reconciling the two is a tracked follow-up (§10),
+not something this schema forces now.
 
-    config:
-      path: ~/.config/atlassian-toolkit/config.json
-      format: json                        # json | ini | env  (how the app writes into it)
-      scaffold: config-init               # command id that creates the file
-      permissions: "0600"                 # applied by the app after any write
+## 3. Schema
 
-    secrets:
-      - key: account.email                # dotted path within the config file
-        label: Atlassian account email
-        secret: false                     # plain text; shown normally, not masked
-        delivery: config-file
-      - key: account.api_token
-        label: Atlassian API token (Jira + Confluence)
-        url: https://id.atlassian.com/manage-profile/security/api-tokens
-        guidance: Create this token WITHOUT scopes.
-        delivery: config-file             # config-file | env | manual
-        env_override: ATLASSIAN_API_TOKEN # optional: env name that overrides the file
-      - key: bitbucket.api_token
-        label: Bitbucket API token (scoped)
-        url: https://id.atlassian.com/manage-profile/security/api-tokens
-        guidance: >-
-          Separate, scoped token. Select: read:account, read:user:bitbucket,
-          read:repository:bitbucket, read:pullrequest:bitbucket,
-          write:pullrequest:bitbucket, read:workspace:bitbucket.
-        delivery: config-file
-        optional: true                    # setup succeeds without it
+`atlassian-toolkit/setup.yaml`:
 
-    commands:
-      config-init:
-        run: bin/jira.mjs config init
-        description: Scaffold the config file
-      check:
-        run: bin/jira.mjs config check
-        description: Report per-product readiness
-      verify:
-        run: bin/smoke.mjs
-        description: End-to-end smoke test
+```yaml
+version: 1                            # schema version; see §7
+summary: One-time credential setup for Jira, Confluence, and Bitbucket.
 
-    verify: check                         # command id that decides success
+prerequisites:
+  - node: ">=20"                      # semver range checked against `node --version`
+  - sibling-skill: atlassian-toolkit  # must be installed alongside this skill
+  - env: RETRO_CYCLE_PATH             # must be set in the environment
+
+config:
+  path: ~/.config/atlassian-toolkit/config.json
+  format: json                        # json | ini | env  (how the app writes into it)
+  scaffold: config-init               # command id that creates the file
+  permissions: "0600"                 # applied by the app after any write
+
+secrets:
+  - key: account.email                # dotted path within the config file
+    label: Atlassian account email
+    secret: false                     # plain text; shown normally, not masked
+    delivery: config-file
+  - key: account.api_token
+    label: Atlassian API token (Jira + Confluence)
+    url: https://id.atlassian.com/manage-profile/security/api-tokens
+    guidance: Create this token WITHOUT scopes.
+    delivery: config-file             # config-file | env | manual
+    env_override: ATLASSIAN_API_TOKEN # optional: env name that overrides the file
+  - key: bitbucket.api_token
+    label: Bitbucket API token (scoped)
+    url: https://id.atlassian.com/manage-profile/security/api-tokens
+    guidance: >-
+      Separate, scoped token. Select: read:account, read:user:bitbucket,
+      read:repository:bitbucket, read:pullrequest:bitbucket,
+      write:pullrequest:bitbucket, read:workspace:bitbucket.
+    delivery: config-file
+    optional: true                    # setup succeeds without it
+
+commands:
+  config-init:
+    run: bin/jira.mjs config init
+    description: Scaffold the config file
+  check:
+    run: bin/jira.mjs config check
+    description: Report per-product readiness
+  verify:
+    run: bin/smoke.mjs
+    description: End-to-end smoke test
+
+verify: check                         # command id that decides success
 ```
 
 ### 3.1 Field rules
 
 | Field | Rule |
 | --- | --- |
+| `version` | Schema version integer. Required. An unrecognized version disables the walkthrough rather than being parsed optimistically (§7). |
 | `summary` | One line, shown in the app before the walkthrough starts. |
 | `prerequisites[]` | Each entry has exactly one of `node`, `sibling-skill`, `env`, `binary`. Checked by the app before the agent runs; a failure aborts with the unmet item named. |
 | `config.path` | Absolute or `~`-prefixed. The only file the app will write for this skill. |
@@ -161,9 +204,12 @@ These are the D7 regression surface and must be covered by tests (design.md §9)
 
 ## 7. Validation
 
-A `metadata.setup` block is validated before a walkthrough starts. Any failure disables the
-walkthrough for that skill with the reason shown, and never silently degrades to a looser mode:
+`setup.yaml` is validated before a walkthrough starts. Any failure disables the walkthrough for
+that skill with the reason shown, and never silently degrades to a looser mode:
 
+- `version` is present and recognized. An unknown version disables the walkthrough: a future
+  schema could change the meaning of `delivery`, and guessing could write a secret a skill
+  intended the app never to hold.
 - Every `config.scaffold` and `verify` value references an id present in `commands`.
 - Every `commands.<id>.run` passes the §5 argv rules (no shell metacharacters, resolves inside
   the skill dir).
@@ -176,56 +222,52 @@ walkthrough for that skill with the reason shown, and never silently degrades to
 
 ## 8. Worked examples
 
-### 8.1 `slack-toolkit` (webhook, one secret)
+### 8.1 `slack-toolkit/setup.yaml` (webhook, one secret)
 
 ```yaml
-metadata:
-  role: toolkit
-  setup:
-    summary: Configure a Slack incoming webhook for notifications.
-    prerequisites:
-      - node: ">=20"
-    config:
-      path: ~/.config/slack-toolkit/config.json
-      format: json
-      scaffold: config-init
-    secrets:
-      - key: webhook_url
-        label: Slack incoming webhook URL
-        url: https://api.slack.com/messaging/webhooks
-        guidance: Create an incoming webhook for the target channel.
-        delivery: config-file
-        env_override: SLACK_WEBHOOK_URL
-      - key: bot_token
-        label: Slack bot token (advanced, full Web API)
-        delivery: config-file
-        optional: true
-        env_override: SLACK_BOT_TOKEN
-    commands:
-      config-init: { run: bin/slack.mjs config init, description: Scaffold the config file }
-      check:       { run: bin/slack.mjs config check, description: Verify the webhook works }
-    verify: check
+version: 1
+summary: Configure a Slack incoming webhook for notifications.
+prerequisites:
+  - node: ">=20"
+config:
+  path: ~/.config/slack-toolkit/config.json
+  format: json
+  scaffold: config-init
+secrets:
+  - key: webhook_url
+    label: Slack incoming webhook URL
+    url: https://api.slack.com/messaging/webhooks
+    guidance: Create an incoming webhook for the target channel.
+    delivery: config-file
+    env_override: SLACK_WEBHOOK_URL
+  - key: bot_token
+    label: Slack bot token (advanced, full Web API)
+    delivery: config-file
+    optional: true
+    env_override: SLACK_BOT_TOKEN
+commands:
+  config-init: { run: bin/slack.mjs config init, description: Scaffold the config file }
+  check:       { run: bin/slack.mjs config check, description: Verify the webhook works }
+verify: check
 ```
 
-### 8.2 `retro-toolkit` (no secrets; a sibling and an env var)
+### 8.2 `retro-toolkit/setup.yaml` (no secrets; a sibling and an env var)
 
 ```yaml
-metadata:
-  role: toolkit
-  setup:
-    summary: Point the retro bins at your team's cycle definition.
-    prerequisites:
-      - sibling-skill: atlassian-toolkit
-      - node: ">=20"
-    secrets:
-      - key: RETRO_CYCLE_PATH
-        label: Path to the retro cycle JSON
-        secret: false
-        delivery: manual
-        guidance: Set RETRO_CYCLE_PATH in your shell rc to the cycle file path.
-    commands:
-      check: { run: bin/next-retro.mjs, description: Print the next retro date }
-    verify: check
+version: 1
+summary: Point the retro bins at your team's cycle definition.
+prerequisites:
+  - sibling-skill: atlassian-toolkit
+  - node: ">=20"
+secrets:
+  - key: RETRO_CYCLE_PATH
+    label: Path to the retro cycle JSON
+    secret: false
+    delivery: manual
+    guidance: Set RETRO_CYCLE_PATH in your shell rc to the cycle file path.
+commands:
+  check: { run: bin/next-retro.mjs, description: Print the next retro date }
+verify: check
 ```
 
 Shows the two edges: a skill whose "setup" is a sibling dependency plus an env var, and a
@@ -239,7 +281,7 @@ The full example in §3.
 ## 9. Walkthrough flow using this schema
 
 ```
-app: read metadata.setup                     (no agent involved)
+app: read <skill-dir>/setup.yaml             (no agent involved)
 app: check prerequisites                     → abort naming any unmet item
 app: start claude session, pass summary + the skill's doc paths
 agent: read_skill_doc(README.md)             → learns the credential model
@@ -256,8 +298,12 @@ the whole point of the schema.
 
 1. **Revise `atlassian-toolkit`'s README** so its stated policy distinguishes an agent in chat
    from the app's secure input (§4.1).
-2. **Authoring validation.** A `library doctor` check that validates `metadata.setup` for
-   installed skills would catch a malformed block at catalog time rather than at walkthrough
-   time. Deferred; not required for v1.
+2. **Authoring validation.** A `library doctor` check that validates `setup.yaml` for installed
+   skills would catch a malformed file at catalog time rather than at walkthrough time. Deferred;
+   not required for v1.
+3. **Reconcile the frontmatter `metadata:` hints with `setup.yaml`** (§2.2). `requires-env`,
+   `requires-config`, and `requires-sibling-skill` duplicate `prerequisites`/`config`. Options:
+   leave them as prose, or generate them from `setup.yaml`. Duplication drifts; pick one before
+   more skills adopt the schema.
 3. **`ini`/`env` config formats** are declared in the schema but only `json` has a confirmed
    consumer today. Implement `json` first; add the others when a skill needs one.

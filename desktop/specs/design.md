@@ -230,9 +230,9 @@ If the agent could pass a shell string, the whitelist would be decorative — `r
 would be `Bash` with extra steps. Instead the skill declares its setup commands, and the agent
 selects one by id. This keeps "what can run" a property of the skill, not of model output.
 
-Skills declare this in `metadata.setup` in their `SKILL.md` frontmatter, specified in
-[skill-setup-schema.md](skill-setup-schema.md). A skill with no declaration simply has no
-walkthrough.
+Skills declare this in a `setup.yaml` in their own directory, specified in
+[skill-setup-schema.md](skill-setup-schema.md). Discovery is file presence; a skill without one
+simply has no walkthrough.
 
 ## 6. Frontend
 
@@ -353,13 +353,15 @@ reintroduce a TTY that could let a child prompt and hang the GUI.
 
 ## Open questions for implementation
 
+All three are resolved. Kept here as the record of what was decided and why.
+
 1. ~~**Skill setup-command declaration schema.**~~ **Resolved** — see
-   [skill-setup-schema.md](skill-setup-schema.md). Extends the existing `metadata:` frontmatter
-   block with a `setup:` key; secrets declare a `delivery` mode defaulting to `config-file`.
-2. **Whether `library_cmd`'s allowlist includes writes.** Reads (`list`, `search`, `doctor`) are
-   clearly safe. Whether a walkthrough agent may run `use` is a judgment call — it makes
-   "install this dependency for you" possible, but widens the blast radius. Defaulting to
-   reads + `use`, excluding `add`/`update`/`remove`/`push`.
-3. **Project-directory selection UX.** §3.3 requires an explicit project dir before any
-   `--project` install. Whether that is a per-install picker or an app-level "current project"
-   setting is reversible; suggest per-install picker first.
+   [skill-setup-schema.md](skill-setup-schema.md). A `setup.yaml` in the skill directory, not
+   frontmatter; secrets declare a `delivery` mode defaulting to `config-file`.
+2. ~~**Whether `library_cmd`'s allowlist includes writes.**~~ **Resolved** — reads (`list`,
+   `search`, `doctor`) plus `use`, excluding `add`/`update`/`remove`/`push` (R5.3a). `use` lets
+   the agent satisfy a declared `sibling-skill` prerequisite mid-walkthrough (retro-toolkit needs
+   atlassian-toolkit) and is idempotent; catalog mutation stays a GUI form per D6.
+3. ~~**Project-directory selection UX.**~~ **Resolved** — per-install picker, with a recent-projects
+   list. An app-level "current project" setting invites installing into the wrong project from a
+   stale global mode. Reversible if it proves tedious.
