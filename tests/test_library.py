@@ -3754,6 +3754,108 @@ library:
         self.assertEqual(after["content_hash"], library.content_hash(self.installed_dir("own-dep")))
 
 
+class TestDerivedInstallState(unittest.TestCase):
+    """State computed from receipt + disk, never stored (design §3.1)."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in ("alpha", "beta"):
+            (self.src / name).mkdir(parents=True)
+            (self.src / name / "SKILL.md").write_text(f"# {name}\n")
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: alpha
+      description: First
+      source: {self.src}/alpha/SKILL.md
+    - name: beta
+      description: Second
+      source: {self.src}/beta/SKILL.md
+  agents: []
+  prompts: []
+""")
+        self.cfg = library.load_config()
+        self.entries = {e.name: e for e in self.cfg.entries()}
+
+    def use(self, *argv: str) -> None:
+        code, _, err = run_cli("use", *argv, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+    def installed_dir(self, name: str) -> Path:
+        return self.tool.home / ".claude/skills" / name
+
+    def state(self, name: str) -> str:
+        return library.entry_install_state(self.cfg.dirs, self.entries[name],
+                                           library.load_receipts())[0]
+
+    def test_a_fresh_install_is_installed(self) -> None:
+        self.use("alpha")
+        state, receipt = library.entry_install_state(
+            self.cfg.dirs, self.entries["alpha"], library.load_receipts())
+        self.assertEqual(state, "installed")
+        self.assertEqual(receipt["dest"], str(self.installed_dir("alpha")))
+
+    def test_an_entry_that_was_never_installed_is_not_installed(self) -> None:
+        self.assertEqual(self.state("alpha"), "not_installed")
+
+    def test_editing_the_installed_copy_reads_as_drifted(self) -> None:
+        self.use("alpha")
+        (self.installed_dir("alpha") / "SKILL.md").write_text("# edited by hand\n")
+        self.assertEqual(self.state("alpha"), "drifted")
+
+    def test_adding_a_file_to_the_installed_copy_reads_as_drifted(self) -> None:
+        self.use("alpha")
+        (self.installed_dir("alpha") / "notes.md").write_text("mine\n")
+        self.assertEqual(self.state("alpha"), "drifted")
+
+    def test_a_hand_created_directory_reads_as_untracked(self) -> None:
+        # C-D3: legitimate, and every install predating receipts looks like this.
+        d = self.installed_dir("alpha")
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text("# hand written\n")
+        self.assertEqual(self.state("alpha"), "untracked")
+
+    def test_a_deleted_install_with_a_receipt_reads_as_missing(self) -> None:
+        self.use("alpha")
+        shutil.rmtree(self.installed_dir("alpha"))
+        self.assertEqual(self.state("alpha"), "missing")
+
+    def test_the_worst_state_across_scopes_is_the_one_reported(self) -> None:
+        self.use("alpha")
+        self.use("alpha", "--project")
+        self.assertEqual(self.state("alpha"), "installed")
+        (self.tool.project / ".claude/skills/alpha/SKILL.md").write_text("# edited\n")
+        self.assertEqual(self.state("alpha"), "drifted")
+
+    def test_a_custom_dir_install_stays_visible_through_its_receipt(self) -> None:
+        custom = self.tool.root / "elsewhere"
+        code, _, err = run_cli("use", "alpha", "--dir", str(custom), "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        state, receipt = library.entry_install_state(
+            self.cfg.dirs, self.entries["alpha"], library.load_receipts())
+        self.assertEqual((state, receipt["dest"]), ("installed", str(custom / "alpha")))
+
+    def test_installed_scopes_still_answers_presence_for_an_untracked_copy(self) -> None:
+        # §3: receipts add provenance; they never become the presence check, or an
+        # untracked install would vanish from `list`.
+        d = self.installed_dir("alpha")
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text("# hand written\n")
+        self.assertEqual(library.installed_scopes(self.cfg.dirs, self.entries["alpha"]),
+                         ["global"])
+
+    def test_dest_state_of_a_file_entry(self) -> None:
+        dest = self.tool.root / "agents" / "sql-review.md"
+        dest.parent.mkdir(parents=True)
+        dest.write_text("# agent\n")
+        rec = make_receipt(str(dest), type="agent", content_hash=library.content_hash(dest))
+        self.assertEqual(library.dest_state(dest, rec), "installed")
+        dest.write_text("# edited\n")
+        self.assertEqual(library.dest_state(dest, rec), "drifted")
+
+
 class TestWriteTarget(unittest.TestCase):
     """R7.1–R7.5, R6.11 — the four branches of design §8's targeting, in order."""
 

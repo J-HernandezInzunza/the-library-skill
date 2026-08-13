@@ -57,7 +57,7 @@ Commit style follows the repo's history: `feat(scope): …`, `fix(scope): …`, 
     `just check` passes.
   - **Commit:** `feat(use): record an install receipt for every installed item`
 
-- [ ] **A4 — Derived install state**
+- [x] **A4 — Derived install state**
   - **Files:** `library.py`, `tests/test_library.py`
   - **Design:** §3.1
   - **Do:** Compute `installed` / `drifted` / `untracked` / `missing` from the receipt plus the disk.

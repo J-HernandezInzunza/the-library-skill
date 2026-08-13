@@ -1172,6 +1172,70 @@ def installed_scopes(dirs: dict[str, dict[str, str]], entry: Entry) -> list[str]
     return found
 
 
+# Worst-first: what a single badge should say when an entry occupies more than one
+# destination. Drift outranks everything because silently overwriting an edit is the
+# failure that costs work; "not installed" is the floor.
+_STATE_RANK = ("not_installed", "installed", "missing", "untracked", "drifted")
+
+
+def dest_state(dest: Path, receipt: "dict[str, Any] | None") -> str:
+    """State of one installed destination (design §3.1).
+
+    Derived on every read, never stored, so it cannot disagree with the disk:
+
+    - `installed`  — present, contents match the receipt
+    - `drifted`    — present, contents differ: someone edited the installed copy
+    - `untracked`  — present, no receipt: hand-installed, or installed before receipts
+    - `missing`    — a receipt with nothing at its dest
+    - `not_installed` — neither
+    """
+    if not dest.exists():
+        return "missing" if receipt else "not_installed"
+    if receipt is None:
+        return "untracked"
+    return "installed" if receipt.get("content_hash") == content_hash(dest) else "drifted"
+
+
+def entry_dests(dirs: dict[str, dict[str, str]], entry: Entry,
+                receipts: dict[str, dict[str, Any]]) -> dict[str, "dict[str, Any] | None"]:
+    """Every destination *entry* could occupy, mapped to its receipt (or None).
+
+    The configured scopes, plus any destination a receipt claims for this name — which
+    is how a `--dir` install stays visible even though no scope resolves to it.
+    """
+    dests: dict[str, dict[str, Any] | None] = {}
+    for scope in dirs[entry.section]:
+        try:
+            base = resolve_target_base(dirs, entry, scope, None)
+        except LibraryError:
+            continue  # an unconfigured scope is not a destination
+        dests[str(install_dest(entry, base))] = None
+    for dest, rec in receipts.items():
+        if rec.get("name") == entry.name and rec.get("type") == entry.type:
+            dests[dest] = rec
+    for dest in dests:
+        if dests[dest] is None:
+            dests[dest] = receipts.get(dest)
+    return dests
+
+
+def entry_install_state(dirs: dict[str, dict[str, str]], entry: Entry,
+                        receipts: dict[str, dict[str, Any]]) -> tuple[str, "dict[str, Any] | None"]:
+    """(state, receipt) for *entry* across every destination it could occupy.
+
+    One name can legitimately be installed in both scopes and under `--dir`, so the
+    reported state is the worst of them (`_STATE_RANK`) and the receipt is that
+    destination's. `installed_scopes()` stays the presence check (§3) — this adds
+    provenance on top of it and never replaces it.
+    """
+    worst, worst_receipt = "not_installed", None
+    for dest, receipt in sorted(entry_dests(dirs, entry, receipts).items()):
+        state = dest_state(Path(dest), receipt)
+        if _STATE_RANK.index(state) > _STATE_RANK.index(worst):
+            worst, worst_receipt = state, receipt
+    return worst, worst_receipt
+
+
 # --------------------------------------------------------------------------- #
 # Dependency resolution
 # --------------------------------------------------------------------------- #
