@@ -33,6 +33,10 @@ link *args:
 list *args:
     @{{lib}} list {{args}}
 
+# Everything about one entry: copies, overrides, deps, source, installs (--json)
+show name *args:
+    @{{lib}} show "{{name}}" {{args}}
+
 # Search every catalog by keyword (--catalog <id>, --json)
 search keyword *args:
     @{{lib}} search "{{keyword}}" {{args}}

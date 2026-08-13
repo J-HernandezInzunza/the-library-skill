@@ -2251,6 +2251,131 @@ def cmd_search(args: argparse.Namespace) -> int:
     return 0
 
 
+def source_record(entry: Entry) -> dict[str, Any]:
+    """The entry's source, parsed into its parts — or the reason it couldn't be.
+
+    An unparseable source is reported, not raised: `show` is a read command, and "this
+    entry's source is malformed" is exactly what someone runs it to find out.
+    """
+    try:
+        src = parse_source(entry.source)
+    except LibraryError as ex:
+        return {"raw": entry.source, "kind": "unknown", "error": str(ex)}
+    if src.kind == "local":
+        return {"raw": entry.source, "kind": "local", "path": str(src.path),
+                "exists": bool(src.path and src.path.exists())}
+    return {"raw": entry.source, "kind": src.kind, "org": src.org, "repo": src.repo,
+            "branch": src.branch, "file_path": src.file_path,
+            "clone_urls": src.clone_urls()}
+
+
+def cmd_show(args: argparse.Namespace) -> int:
+    cfg = load_config()
+    refresh_catalogs(cfg, args.no_pull)
+    entries = resolved_entries(cfg, args)
+    multi = multi_catalog(cfg)
+    winners = winning_catalogs(cfg)
+    receipts = load_receipts()
+
+    copies = [e for e in entries if e.name == args.name]
+    if not copies:
+        cands = fuzzy_candidates(entries, args.name)
+        payload = {
+            "status": "AMBIGUOUS" if cands else "NOT_FOUND",
+            "query": args.name,
+            "candidates": [{"type": c.type, "name": c.name, "description": c.description,
+                            "catalog": c.catalog} for c in cands],
+        }
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        elif cands:
+            print(f'No entry named "{args.name}". Did you mean:')
+            for c in cands:
+                print(f"  [{c.type}] {c.name}" + (f"  ({c.catalog})" if multi else ""))
+        else:
+            print(f'No entry named "{args.name}". Try `library search`.')
+        return 2
+
+    # copies are already in precedence order, so the first one is what `use` installs.
+    winner = copies[0]
+    winner_record = entry_record(cfg, winner, winners, receipts)
+
+    copy_records = []
+    for e in copies:
+        overrides, overridden_by = override_split(cfg, e)
+        copy_records.append({"catalog": e.catalog, "type": e.type,
+                             "description": e.description, "source": e.source,
+                             "requires": e.requires, "wins": e is winner,
+                             "overrides": overrides, "overridden_by": overridden_by})
+
+    # Dependencies resolve within the winner's own catalog, as `use` resolves them (D9);
+    # showing them from the merged list would promise an install that won't happen.
+    deps = [d for d in resolve_deps(cfg.entries_of(winner.catalog), winner) if d is not winner]
+
+    installs = sorted((r for r in receipts.values() if r["name"] == winner.name),
+                      key=lambda r: r["dest"])
+
+    payload = {
+        "status": "OK",
+        "name": winner.name,
+        "entry": winner_record,
+        "copies": copy_records,
+        "requires": [{"type": d.type, "name": d.name, "catalog": d.catalog,
+                      "description": d.description} for d in deps],
+        "installs": installs,
+        "has_setup": winner_record["has_setup"],
+        "source": source_record(winner),
+    }
+
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    print(f"[{winner.type}] {winner.name}" + (f"  ({winner.catalog})" if multi else ""))
+    print(f"  {winner.description}")
+    print(f"\nSource: {winner.source}")
+    src = payload["source"]
+    if src["kind"] in ("github", "bitbucket"):
+        print(f"  {src['kind']}: {src['org']}/{src['repo']} @ {src['branch']} — {src['file_path']}")
+    elif src["kind"] == "local":
+        print(f"  local path{'' if src['exists'] else ' (missing)'}: {src['path']}")
+    else:
+        print(f"  unparseable: {src['error']}")
+
+    print(f"\nState: {winner_record['state']}" +
+          (f" ({', '.join(winner_record['scopes'])})" if winner_record["scopes"] else ""))
+    if payload["has_setup"]:
+        print(f"  ships a setup walkthrough — run `library setup {winner.name}`")
+
+    if deps:
+        print("\nRequires:")
+        for d in deps:
+            print(f"  [{d.type}] {d.name}  {d.description[:60]}")
+
+    if multi:
+        print("\nCopies (precedence order):")
+        for c in copy_records:
+            marker = "*" if c["wins"] else " "
+            note = ""
+            if c["overridden_by"]:
+                note = f"  overridden by {', '.join(c['overridden_by'])}"
+            elif c["overrides"]:
+                note = f"  overrides {', '.join(c['overrides'])}"
+            print(f"  {marker} {c['catalog']}{note}")
+            print(f"      {c['source']}")
+
+    if installs:
+        print("\nInstalled copies:")
+        for rec in installs:
+            commit = f" @ {rec['commit'][:8]}" if rec.get("commit") else ""
+            state = dest_state(Path(rec["dest"]), rec)
+            print(f"  {rec['dest']}  ({rec['scope']}, from {rec['catalog']}{commit}) · {state}")
+            print(f"      installed {rec['installed_at']}")
+    else:
+        print("\nInstalled copies: none recorded by this tool")
+    return 0
+
+
 def cmd_use(args: argparse.Namespace) -> int:
     cfg = load_config()
     refresh_catalogs(cfg, args.no_pull)
@@ -4130,6 +4255,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(sp)
     add_catalog_flag(sp)
     sp.set_defaults(func=cmd_use)
+
+    sp = sub.add_parser("show", help="everything known about one entry (exact name)")
+    sp.add_argument("name")
+    add_common(sp)
+    add_catalog_flag(sp)
+    sp.set_defaults(func=cmd_show)
 
     sp = sub.add_parser("uninstall", help="delete an installed copy (the catalog entry is kept)")
     sp.add_argument("name")

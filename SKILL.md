@@ -84,6 +84,7 @@ Never say "PR opened" unless `mode == "pr"` **and** `method == "gh"`. Claiming a
 | `/library uninstall <name>` | Delete the installed copy from this machine (the catalog entry is kept)               |
 | `/library remove <name>`    | Remove from a catalog (same three modes); optionally purge local                       |
 | `/library list`             | Show full catalog with install status                                                 |
+| `/library show <name>`      | Everything about one entry: copies, overrides, deps, source, installs                 |
 | `/library sync`             | Re-pull all installed items from source                                               |
 | `/library search <keyword>` | Find entries by keyword                                                               |
 | `/library catalog <action>` | Manage the catalog registry: `list`, `add`, `init`, `remove`, `migrate`                |
@@ -105,6 +106,7 @@ Each command has a detailed step-by-step guide. **Read the relevant cookbook fil
 | uninstall | [cookbook/uninstall.md](cookbook/uninstall.md) | User wants an installed skill off their machine, but not out of the catalog                        |
 | remove  | [cookbook/remove.md](cookbook/remove.md)   | User wants to remove an entry from the catalog                                                           |
 | list    | [cookbook/list.md](cookbook/list.md)       | User wants to see what's available and what's installed                                                  |
+| show    | [cookbook/show.md](cookbook/show.md)       | User asks about one specific entry (where it came from, what it needs, where it's installed)             |
 | sync    | [cookbook/sync.md](cookbook/sync.md)       | User wants to refresh all installed items at once                                                        |
 | search  | [cookbook/search.md](cookbook/search.md)   | User is looking for a skill but doesn't know the exact name                                              |
 | doctor  | [cookbook/doctor.md](cookbook/doctor.md)   | User wants to validate catalog integrity / find broken entries                                           |

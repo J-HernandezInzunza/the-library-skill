@@ -123,7 +123,7 @@ Commit style follows the repo's history: `feat(scope): …`, `fix(scope): …`, 
     passes.
   - **Commit:** `feat(search): return the same entry record as list`
 
-- [ ] **C3 — `library show <name>`**
+- [x] **C3 — `library show <name>`**
   - **Files:** `library.py`, `cookbook/show.md`, `SKILL.md`, `README.md`, `tests/test_library.py`
   - **Design:** §4.2
   - **Do:** One entry in full: resolved winner, every copy across catalogs with the override chain in

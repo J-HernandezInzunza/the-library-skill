@@ -3999,6 +3999,119 @@ library:
         self.assertIn("was not installed by this tool", out)
 
 
+class TestShow(unittest.TestCase):
+    """One entry in full: winner, every copy, deps, installs, source (design §4.2)."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in ("session-retro", "own-dep"):
+            (self.src / name).mkdir(parents=True)
+            (self.src / name / "SKILL.md").write_text(f"# {name}\n")
+        personal = f"""\
+library:
+  skills:
+    - name: session-retro
+      description: My iterated copy
+      source: {self.src}/session-retro/SKILL.md
+      requires: ["skill:own-dep"]
+    - name: own-dep
+      description: A dependency in the same catalog
+      source: {self.src}/own-dep/SKILL.md
+  agents: []
+  prompts: []
+"""
+        install_two_catalog_fixture(self.tool, personal)
+
+    def show(self, name: str, *extra: str, expect: int = 0) -> dict[str, Any]:
+        code, out, err = run_cli("show", name, *extra, "--no-pull", "--json")
+        self.assertEqual(code, expect, err or out)
+        return json.loads(out)
+
+    def test_reports_every_copy_and_which_one_wins(self) -> None:
+        payload = self.show("session-retro")
+        self.assertEqual([c["catalog"] for c in payload["copies"]], ["personal", "shared"])
+        self.assertEqual([c["wins"] for c in payload["copies"]], [True, False])
+        self.assertEqual(payload["entry"]["catalog"], "personal")
+
+    def test_the_override_chain_reads_in_both_directions(self) -> None:
+        copies = {c["catalog"]: c for c in self.show("session-retro")["copies"]}
+        self.assertEqual((copies["personal"]["overrides"], copies["personal"]["overridden_by"]),
+                         (["shared"], []))
+        self.assertEqual((copies["shared"]["overrides"], copies["shared"]["overridden_by"]),
+                         ([], ["personal"]))
+
+    def test_requires_resolve_within_the_winners_catalog(self) -> None:
+        self.assertEqual([d["name"] for d in self.show("session-retro")["requires"]],
+                         ["own-dep"])
+
+    def test_the_entry_record_matches_lists(self) -> None:
+        code, out, err = run_cli("list", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        listed = next(i for i in json.loads(out)
+                      if i["name"] == "session-retro" and i["catalog"] == "personal")
+        self.assertEqual(self.show("session-retro")["entry"], listed)
+
+    def test_every_install_of_the_name_is_listed(self) -> None:
+        for argv in ((), ("--project",)):
+            code, _, err = run_cli("use", "session-retro", *argv, "--no-pull", "--json")
+            self.assertEqual(code, 0, err)
+        installs = self.show("session-retro")["installs"]
+        self.assertEqual(sorted(r["scope"] for r in installs), ["global", "project"])
+        self.assertEqual({r["catalog"] for r in installs}, {"personal"})
+
+    def test_a_never_installed_entry_reports_no_installs(self) -> None:
+        payload = self.show("own-dep")
+        self.assertEqual(payload["installs"], [])
+        self.assertEqual(payload["entry"]["state"], "not_installed")
+
+    def test_a_local_source_is_parsed_and_checked(self) -> None:
+        src = self.show("own-dep")["source"]
+        self.assertEqual((src["kind"], src["exists"]), ("local", True))
+
+    def test_a_remote_source_is_broken_into_its_parts(self) -> None:
+        src = self.show("backend-code-practices")["source"]
+        self.assertEqual((src["kind"], src["org"], src["repo"], src["branch"]),
+                         ("github", "acme", "agentics", "main"))
+        self.assertEqual(src["file_path"], "skills/backend-code-practices/SKILL.md")
+
+    def test_an_unparseable_source_is_reported_not_raised(self) -> None:
+        path = self.tool.root / "personal" / "library.yaml"
+        path.write_text(path.read_text().replace(f"{self.src}/own-dep/SKILL.md", "nonsense"))
+        src = self.show("own-dep")["source"]
+        self.assertEqual(src["kind"], "unknown")
+        self.assertIn("unrecognized source format", src["error"])
+
+    def test_has_setup_follows_the_installed_copy(self) -> None:
+        code, _, err = run_cli("use", "session-retro", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertFalse(self.show("session-retro")["has_setup"])
+        (self.tool.home / ".claude/skills/session-retro/setup.yaml").write_text("version: 1\n")
+        self.assertTrue(self.show("session-retro")["has_setup"])
+
+    def test_the_catalog_restriction_picks_the_other_copy(self) -> None:
+        payload = self.show("session-retro", "--catalog", "shared")
+        self.assertEqual([c["catalog"] for c in payload["copies"]], ["shared"])
+        self.assertEqual(payload["entry"]["catalog"], "shared")
+
+    def test_an_unknown_name_reports_not_found(self) -> None:
+        self.assertEqual(self.show("nope", expect=2)["status"], "NOT_FOUND")
+
+    def test_a_near_miss_reports_candidates(self) -> None:
+        payload = self.show("retro", expect=2)
+        self.assertEqual(payload["status"], "AMBIGUOUS")
+        self.assertEqual({c["name"] for c in payload["candidates"]}, {"session-retro"})
+
+    def test_the_human_output_names_both_copies_and_the_winner(self) -> None:
+        code, out, err = run_cli("show", "session-retro", "--no-pull")
+        self.assertEqual(code, 0, err)
+        self.assertIn("* personal  overrides shared", out)
+        self.assertIn("  shared  overridden by personal", out)
+        self.assertIn("Installed copies: none recorded by this tool", out)
+        self.assertIn("[skill] own-dep", out)  # the resolved dependency
+
+
 class TestUninstall(unittest.TestCase):
     """Deleting installed copies without touching the catalog (design §4.3)."""
 

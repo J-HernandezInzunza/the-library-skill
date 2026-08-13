@@ -231,6 +231,7 @@ Two ways to drive it, same result:
 | First-time setup | "set up the library from `<url>` on the `<branch>` branch" | `./library init --repo <url> --branch <branch>` |
 | List the catalog | "what's in the skill library?" | `./library list` |
 | Search | "search the library for a jira skill" | `./library search jira` |
+| Inspect one entry | "where did session-retro come from?" | `./library show session-retro` |
 | Install a skill (global) | "install the deploy skill from the library" | `./library use deploy` |
 | Install into this project | "install deploy just for this project" | `./library use deploy --project` |
 | Add an entry | "add this skill to the library: `<url>`" | `./library add --name … --source … --description …` |
@@ -622,6 +623,7 @@ auth/setup gotchas, lives in **[docs/troubleshooting.md](docs/troubleshooting.md
         uninstall.md
         remove.md
         list.md
+        show.md
         sync.md
         search.md
         doctor.md
