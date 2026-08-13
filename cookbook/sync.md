@@ -19,6 +19,21 @@ re-implement it.
 - Add `--no-pull` **only when the user is explicitly offline** — stale catalog metadata
   can point sync at outdated source URLs or miss new dependencies.
 - Add `--catalog <id>` to refresh only the items owned by one catalog.
+- Add `--force` to re-fetch everything, including items sync would otherwise skip.
+
+**Sync skips what hasn't changed.** For each item it compares the source's current head
+(one `git ls-remote` per repo, not per entry) against the commit recorded in the install
+receipt, and the installed copy's hash against what was installed. When both match, the
+clone is skipped and the item reports `up to date`:
+
+```
+  up to date [skill] grill-me (global)
+  refreshed [skill] bug-investigator (global) · 2 modified
+```
+
+Anything unknown falls back to fetching: no receipt, no recorded commit, an unreachable
+remote, or a locally-modified copy. That is deliberate — "don't know" must never be
+reported as "up to date". In `--json`, each synced item carries `up_to_date`.
 
 If the CLI prints a staleness warning on stderr (`catalog 'shared' is N commit(s) behind
 origin/...`), relay it to the user. With several catalogs the warning names which one.

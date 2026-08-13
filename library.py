@@ -1662,6 +1662,54 @@ def fetch_remote(src: Source, entry: Entry, target_base: Path) -> tuple[Path, di
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def remote_head(src: Source, cache: dict[str, "str | None"]) -> "str | None":
+    """Current sha of *src*'s branch, or None when it can't be determined.
+
+    One `git ls-remote` per distinct repo+branch, memoized in *cache*: twenty skills from
+    one repo is one round trip, not twenty. None means "don't know" — unreachable,
+    offline, or auth — and callers must treat it as "refresh anyway" rather than
+    "unchanged", or a network blip would silently stop updating everything.
+    """
+    key = f"{src.kind}:{src.org}/{src.repo}@{src.branch}"
+    if key in cache:
+        return cache[key]
+    head: str | None = None
+    for url in src.clone_urls():
+        proc = subprocess.run(["git", "ls-remote", url, src.branch],
+                              capture_output=True, text=True)
+        if proc.returncode == 0 and proc.stdout.strip():
+            head = proc.stdout.split()[0]
+            break
+    cache[key] = head
+    return head
+
+
+def source_unchanged(entry: Entry, dest: Path, receipt: "dict[str, Any] | None",
+                     heads: dict[str, "str | None"]) -> bool:
+    """Can this item's refresh be skipped? (design §5)
+
+    True only when both ends are provably unchanged: the source is at the sha the receipt
+    recorded, and the installed copy still hashes to what was installed. Anything unknown
+    — no receipt, no commit, unreachable remote, drifted copy — is False, so the
+    fallback is always today's behavior: fetch it.
+    """
+    if receipt is None or dest_state(dest, receipt) != "installed":
+        return False
+    try:
+        src = parse_source(entry.source)
+    except LibraryError:
+        return False
+    if src.kind == "local":
+        # No sha to compare, so compare the trees themselves.
+        if src.path is None or not src.path.exists():
+            return False
+        if entry.type == "skill":
+            return content_hash(src.path.parent) == content_hash(dest)
+        return dest.is_file() and filecmp.cmp(src.path, dest, shallow=False)
+    head = remote_head(src, heads)
+    return bool(head) and head == receipt.get("commit")
+
+
 def fetch(entry: Entry, target_base: Path) -> tuple[Path, dict[str, Any], "str | None"]:
     """Install *entry* under *target_base*; returns (dest, diff, source commit or None)."""
     src = parse_source(entry.source)
@@ -2910,6 +2958,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
         return 0
 
     receipts = load_receipts()
+    heads: dict[str, str | None] = {}  # one ls-remote per repo+branch, not per entry
     synced, failed = [], []
     for e, scope in installed:
         # Read the state before refreshing: afterwards the copy matches its source and
@@ -2918,10 +2967,21 @@ def cmd_sync(args: argparse.Namespace) -> int:
         state = dest_state(dest, receipts.get(str(dest)))
         # Dependencies come from the item's own catalog, as in `use` (D9).
         try:
-            results = [_install_one(dirs, dep, scope, None)
-                       for dep in resolve_deps(cfg.entries_of(e.catalog), e)]
+            results = []
+            for dep in resolve_deps(cfg.entries_of(e.catalog), e):
+                dep_dest = install_dest(dep, resolve_target_base(dirs, dep, scope, None))
+                if not args.force and source_unchanged(dep, dep_dest,
+                                                       receipts.get(str(dep_dest)), heads):
+                    results.append({"type": dep.type, "name": dep.name, "catalog": dep.catalog,
+                                    "dest": str(dep_dest), "verified": True,
+                                    "changes": {"new_install": False, "added": [],
+                                                "removed": [], "modified": []},
+                                    "up_to_date": True})
+                else:
+                    results.append(_install_one(dirs, dep, scope, None))
             synced.append({"type": e.type, "name": e.name, "catalog": e.catalog,
-                           "scope": scope, "state": state, "changes": results[-1]["changes"]})
+                           "scope": scope, "state": state, "changes": results[-1]["changes"],
+                           "up_to_date": results[-1].get("up_to_date", False)})
         except LibraryError as ex:
             failed.append({"type": e.type, "name": e.name, "catalog": e.catalog,
                            "reason": str(ex)})
@@ -2938,6 +2998,9 @@ def cmd_sync(args: argparse.Namespace) -> int:
         if summary != "no changes":
             changed_count += 1
         origin = f" (from {r['catalog']})" if multi else ""
+        if r["up_to_date"]:
+            print(f"  up to date [{r['type']}] {r['name']} ({r['scope']}){origin}")
+            continue
         print(f"  refreshed [{r['type']}] {r['name']} ({r['scope']}) · "
               f"{summary}{origin}{_state_note(r['state'], past=True)}")
         for line in _change_detail_lines(ch):
@@ -4620,6 +4683,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_uninstall)
 
     sp = sub.add_parser("sync", help="re-pull every installed item")
+    sp.add_argument("--force", action="store_true",
+                    help="re-fetch everything, even items whose source and local copy are unchanged")
     add_common(sp)
     add_catalog_flag(sp)
     sp.set_defaults(func=cmd_sync)

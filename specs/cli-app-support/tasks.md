@@ -198,7 +198,7 @@ Commit style follows the repo's history: `feat(scope): …`, `fix(scope): …`, 
 
 ## Phase F — Refresh that doesn't re-clone
 
-- [ ] **F1 — `sync` skips unchanged items**
+- [x] **F1 — `sync` skips unchanged items**
   - **Files:** `library.py`, `cookbook/sync.md`, `tests/test_library.py`
   - **Design:** §5
   - **Do:** One `git ls-remote` per distinct source repo (not per entry). When the head sha matches the

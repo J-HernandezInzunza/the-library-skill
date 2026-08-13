@@ -3835,8 +3835,10 @@ library:
         self.assertTrue((self.installed_dir("own-dep") / "SKILL.md").is_file())
 
     def test_the_human_report_names_the_catalog(self) -> None:
+        # --force, so this exercises the refresh line rather than the skip line; the
+        # skip path has its own coverage in TestSyncSkipsUnchangedItems.
         self.use("own-dep")
-        code, out, _ = run_cli("sync", "--no-pull")
+        code, out, _ = run_cli("sync", "--force", "--no-pull")
         self.assertEqual(code, 0)
         self.assertIn("refreshed [skill] own-dep (global)", out)
         self.assertIn("(from personal)", out)
@@ -3854,7 +3856,7 @@ library:
         self.tool.write_config({"catalogs": [{"id": "personal",
                                               "path": str(self.tool.root / "personal/library.yaml")}],
                                 "autopush": False})
-        code, out, _ = run_cli("sync", "--no-pull")
+        code, out, _ = run_cli("sync", "--force", "--no-pull")
         self.assertEqual(code, 0)
         self.assertIn("refreshed [skill] own-dep (global)", out)
         self.assertNotIn("(from ", out)
@@ -4159,6 +4161,170 @@ library:
         code, out, err = run_cli("sync", "--no-pull")
         self.assertEqual(code, 0, err)
         self.assertIn("was not installed by this tool", out)
+
+
+class TestSyncSkipsUnchangedItems(unittest.TestCase):
+    """sync doesn't re-clone what hasn't changed (design §5)."""
+
+    REMOTE_SOURCE = "https://github.com/acme/agentics/blob/main/skills/from-git/SKILL.md"
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        (self.src / "local-skill").mkdir(parents=True)
+        (self.src / "local-skill" / "SKILL.md").write_text("# local-skill\n")
+        (self.src / "sql-review.md").write_text("# sql-review\n")
+
+        self.repo = TempGitRepo(self.tool.root, name="agentics")
+        self.repo.commit("skills/from-git/SKILL.md", "# from-git v1\n")
+        self.repo.push()
+
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: local-skill
+      description: From a path on this machine
+      source: {self.src}/local-skill/SKILL.md
+    - name: from-git
+      description: From a git remote
+      source: {self.REMOTE_SOURCE}
+  agents:
+    - name: sql-review
+      description: A single-file entry
+      source: {self.src}/sql-review.md
+  prompts: []
+""")
+
+    @contextlib.contextmanager
+    def local_remote(self):
+        """Point every clone/ls-remote at the local bare repo — no network (R18.6)."""
+        remote = str(self.repo.remote)
+        with patch.object(library.Source, "clone_urls", lambda _self: [remote]):
+            yield
+
+    @contextlib.contextmanager
+    def counted_clones(self) -> Any:
+        """Count real fetches, so "skipped" means "did not clone", not "looked fast"."""
+        calls: list[str] = []
+        real = library.fetch_remote
+
+        def counting(src, entry, target_base):
+            calls.append(entry.name)
+            return real(src, entry, target_base)
+
+        with patch.object(library, "fetch_remote", counting):
+            yield calls
+
+    def use(self, name: str) -> None:
+        with self.local_remote():
+            code, _, err = run_cli("use", name, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+    def sync(self, *extra: str) -> dict[str, Any]:
+        with self.local_remote():
+            code, out, err = run_cli("sync", *extra, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        return json.loads(out)
+
+    def test_an_unchanged_remote_item_is_not_cloned_again(self) -> None:
+        self.use("from-git")
+        with self.counted_clones() as calls:
+            payload = self.sync()
+        self.assertEqual(calls, [], "sync cloned a repo whose head hasn't moved")
+        self.assertTrue(payload["synced"][0]["up_to_date"])
+
+    def test_a_moved_head_is_refreshed(self) -> None:
+        self.use("from-git")
+        self.repo.commit("skills/from-git/SKILL.md", "# from-git v2\n")
+        self.repo.push()
+        with self.counted_clones() as calls:
+            payload = self.sync()
+        self.assertEqual(calls, ["from-git"])
+        self.assertFalse(payload["synced"][0]["up_to_date"])
+        self.assertEqual(payload["synced"][0]["changes"]["modified"], ["SKILL.md"])
+
+    def test_force_refetches_an_unchanged_item(self) -> None:
+        self.use("from-git")
+        with self.counted_clones() as calls:
+            payload = self.sync("--force")
+        self.assertEqual(calls, ["from-git"])
+        self.assertFalse(payload["synced"][0]["up_to_date"])
+
+    def test_a_drifted_copy_is_refreshed_even_when_the_source_is_unchanged(self) -> None:
+        # Skipping here would leave the local edit in place and report "up to date",
+        # which is the one answer that would be a lie.
+        self.use("from-git")
+        (self.tool.home / ".claude/skills/from-git/SKILL.md").write_text("# edited\n")
+        with self.counted_clones() as calls:
+            payload = self.sync()
+        self.assertEqual(calls, ["from-git"])
+        self.assertEqual(payload["synced"][0]["state"], "drifted")
+
+    def test_an_untracked_copy_is_refreshed(self) -> None:
+        dest = self.tool.home / ".claude/skills/from-git"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("# hand written\n")
+        with self.counted_clones() as calls:
+            self.sync()
+        self.assertEqual(calls, ["from-git"], "a copy with no receipt cannot be assumed current")
+
+    def test_an_unreachable_remote_falls_back_to_fetching(self) -> None:
+        # "Don't know" must never read as "unchanged", or one network blip stops updates.
+        self.use("from-git")
+        with patch.object(library, "remote_head", lambda src, cache: None), \
+                self.counted_clones() as calls:
+            self.sync()
+        self.assertEqual(calls, ["from-git"])
+
+    def test_one_ls_remote_per_repo_not_per_entry(self) -> None:
+        cache: dict[str, Any] = {}
+        src = library.parse_source(self.REMOTE_SOURCE)
+        runs: list[list[str]] = []
+        real = library.subprocess.run
+
+        def counting(cmd, *a, **kw):
+            if cmd[:2] == ["git", "ls-remote"]:
+                runs.append(cmd)
+            return real(cmd, *a, **kw)
+
+        with self.local_remote(), patch.object(library.subprocess, "run", counting):
+            for _ in range(3):
+                library.remote_head(src, cache)
+        self.assertEqual(len(runs), 1, runs)
+
+    def test_an_unchanged_local_source_is_skipped(self) -> None:
+        self.use("local-skill")
+        self.assertTrue(self.sync()["synced"][0]["up_to_date"])
+
+    def test_an_edited_local_source_is_refreshed(self) -> None:
+        self.use("local-skill")
+        (self.src / "local-skill" / "SKILL.md").write_text("# local-skill v2\n")
+        synced = self.sync()["synced"][0]
+        self.assertFalse(synced["up_to_date"])
+        self.assertEqual(synced["changes"]["modified"], ["SKILL.md"])
+
+    def test_a_single_file_local_entry_compares_bytes(self) -> None:
+        # Its dest is renamed to <name>.md, so a tree hash would never match; the file
+        # comparison is what makes skipping possible here at all.
+        self.use("sql-review")
+        self.assertTrue(self.sync()["synced"][0]["up_to_date"])
+        (self.src / "sql-review.md").write_text("# sql-review v2\n")
+        self.assertFalse(self.sync()["synced"][0]["up_to_date"])
+
+    def test_a_vanished_local_source_still_reports_the_failure(self) -> None:
+        self.use("local-skill")
+        shutil.rmtree(self.src / "local-skill")
+        code, out, _ = run_cli("sync", "--no-pull", "--json")
+        self.assertEqual(code, 1)
+        self.assertEqual([f["name"] for f in json.loads(out)["failed"]], ["local-skill"])
+
+    def test_the_human_output_says_up_to_date(self) -> None:
+        self.use("local-skill")
+        code, out, err = run_cli("sync", "--no-pull")
+        self.assertEqual(code, 0, err)
+        self.assertIn("up to date [skill] local-skill (global)", out)
+        self.assertIn("0 changed", out)
 
 
 class TestDoctorInstallHealth(unittest.TestCase):
