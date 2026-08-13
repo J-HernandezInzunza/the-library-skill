@@ -3933,6 +3933,130 @@ library:
         self.assertIn("was not installed by this tool", out)
 
 
+class TestUninstall(unittest.TestCase):
+    """Deleting installed copies without touching the catalog (design §4.3)."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in ("alpha", "beta"):
+            (self.src / name).mkdir(parents=True)
+            (self.src / name / "SKILL.md").write_text(f"# {name}\n")
+        (self.src / "sql-review.md").write_text("# sql-review\n")
+        self.catalog = install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: alpha
+      description: First
+      source: {self.src}/alpha/SKILL.md
+    - name: beta
+      description: Second
+      source: {self.src}/beta/SKILL.md
+  agents:
+    - name: sql-review
+      description: Reviews SQL
+      source: {self.src}/sql-review.md
+  prompts: []
+""")
+
+    def use(self, *argv: str) -> None:
+        code, _, err = run_cli("use", *argv, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+    def uninstall(self, *argv: str, expect: int = 0) -> dict[str, Any]:
+        code, out, err = run_cli("uninstall", *argv, "--no-pull", "--json")
+        self.assertEqual(code, expect, err or out)
+        return json.loads(out)
+
+    @property
+    def global_dest(self) -> Path:
+        return self.tool.home / ".claude/skills/alpha"
+
+    @property
+    def project_dest(self) -> Path:
+        return self.tool.project / ".claude/skills/alpha"
+
+    def test_all_scopes_removes_both_copies_and_their_receipts(self) -> None:
+        self.use("alpha")
+        self.use("alpha", "--project")
+        payload = self.uninstall("alpha")
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual(sorted(payload["deleted"]),
+                         sorted([str(self.global_dest), str(self.project_dest)]))
+        self.assertFalse(self.global_dest.exists())
+        self.assertFalse(self.project_dest.exists())
+        self.assertEqual(library.load_receipts(), {})
+
+    def test_a_scope_leaves_the_other_copy_alone(self) -> None:
+        self.use("alpha")
+        self.use("alpha", "--project")
+        payload = self.uninstall("alpha", "--scope", "project")
+        self.assertEqual(payload["deleted"], [str(self.project_dest)])
+        self.assertTrue(self.global_dest.exists())
+        self.assertEqual(list(library.load_receipts()), [str(self.global_dest)])
+
+    def test_the_catalog_entry_survives(self) -> None:
+        self.use("alpha")
+        before = self.catalog.read_text()
+        self.uninstall("alpha")
+        self.assertEqual(self.catalog.read_text(), before)
+        code, out, _ = run_cli("list", "--no-pull", "--json")
+        self.assertEqual(code, 0)
+        alpha = next(e for e in json.loads(out) if e["name"] == "alpha")
+        self.assertFalse(alpha["installed"])
+
+    def test_a_single_file_entry_is_deleted_too(self) -> None:
+        self.use("sql-review")
+        dest = self.tool.home / ".claude/agents/sql-review.md"
+        self.assertTrue(dest.is_file())
+        self.assertEqual(self.uninstall("sql-review")["deleted"], [str(dest)])
+        self.assertFalse(dest.exists())
+
+    def test_a_custom_dir_copy_is_deleted_with_the_same_flag_it_was_installed_with(self) -> None:
+        custom = self.tool.root / "elsewhere"
+        code, _, err = run_cli("use", "alpha", "--dir", str(custom), "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.uninstall("alpha", "--dir", str(custom))["deleted"],
+                         [str(custom / "alpha")])
+
+    def test_an_untracked_copy_is_refused(self) -> None:
+        # §4.3: it may be something the user wrote by hand, and this is unrecoverable.
+        self.global_dest.mkdir(parents=True)
+        (self.global_dest / "SKILL.md").write_text("# hand written\n")
+        payload = self.uninstall("alpha", expect=2)
+        self.assertEqual(payload["status"], "REFUSED")
+        self.assertEqual(payload["refused"], [str(self.global_dest)])
+        self.assertTrue(self.global_dest.exists())
+
+    def test_force_overrides_the_refusal(self) -> None:
+        self.global_dest.mkdir(parents=True)
+        (self.global_dest / "SKILL.md").write_text("# hand written\n")
+        payload = self.uninstall("alpha", "--force")
+        self.assertEqual(payload["deleted"], [str(self.global_dest)])
+        self.assertFalse(self.global_dest.exists())
+
+    def test_nothing_installed_is_a_clean_no_op(self) -> None:
+        payload = self.uninstall("alpha")
+        self.assertEqual((payload["deleted"], payload["refused"]), ([], []))
+
+    def test_a_stale_receipt_for_a_deleted_copy_is_pruned(self) -> None:
+        self.use("alpha")
+        shutil.rmtree(self.global_dest)
+        self.uninstall("alpha")
+        self.assertEqual(library.load_receipts(), {})
+
+    def test_an_unknown_name_reports_not_found(self) -> None:
+        payload = self.uninstall("nope", expect=2)
+        self.assertEqual(payload["status"], "NOT_FOUND")
+
+    def test_the_human_output_names_force_when_it_refuses(self) -> None:
+        self.global_dest.mkdir(parents=True)
+        code, out, _ = run_cli("uninstall", "alpha", "--no-pull")
+        self.assertEqual(code, 2)
+        self.assertIn("--force", out)
+
+
 class TestWriteTarget(unittest.TestCase):
     """R7.1–R7.5, R6.11 — the four branches of design §8's targeting, in order."""
 

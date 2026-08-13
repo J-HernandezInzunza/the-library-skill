@@ -2311,6 +2311,107 @@ def cmd_use(args: argparse.Namespace) -> int:
     return 0 if all(r["verified"] for r in results) else 1
 
 
+def uninstall_entry(
+    dirs: dict[str, dict[str, str]],
+    entry: Entry,
+    scope: str = "all",
+    custom: "str | None" = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Delete installed copies of *entry* and drop their receipts (design §4.3).
+
+    The one deletion path: `uninstall` and `remove --purge` both come through here, so
+    there is a single answer to "what does deleting an install mean".
+
+    A destination with no receipt is **refused** unless *force*. A directory under
+    `~/.claude/skills/` that this tool didn't write may be something the user authored
+    by hand, and deleting it because a catalog name matched is unrecoverable.
+
+    Only the scope destinations (or *custom*) are considered — never every dest a
+    receipt happens to mention, or `uninstall alpha` would also take out a `--dir`
+    install the user never named.
+    """
+    targets: list[Path] = []
+    if custom:
+        targets.append(install_dest(entry, resolve_install_dir(custom)))
+    else:
+        for sc in (("global", "project") if scope == "all" else (scope,)):
+            try:
+                targets.append(install_dest(entry, resolve_target_base(dirs, entry, sc, None)))
+            except LibraryError:
+                continue  # scope not configured for this section: nothing to delete
+
+    receipts = load_receipts()
+    deleted: list[str] = []
+    refused: list[str] = []
+    touched = False
+    for target in targets:
+        key = str(target)
+        if not target.exists():
+            touched = receipts.pop(key, None) is not None or touched  # prune a stale receipt
+            continue
+        if key not in receipts and not force:
+            refused.append(key)
+            continue
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+        deleted.append(key)
+        touched = receipts.pop(key, None) is not None or touched
+    if touched:
+        save_receipts(receipts)
+    return {"deleted": deleted, "refused": refused}
+
+
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    cfg = load_config()
+    refresh_catalogs(cfg, args.no_pull)
+    entries = resolved_entries(cfg, args)
+    multi = multi_catalog(cfg)
+
+    entry = find_exact(entries, args.name)
+    if entry is None:
+        cands = fuzzy_candidates(entries, args.name)
+        payload = {
+            "status": "AMBIGUOUS" if cands else "NOT_FOUND",
+            "query": args.name,
+            "candidates": [{"type": c.type, "name": c.name, "description": c.description,
+                            "catalog": c.catalog} for c in cands],
+        }
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        elif cands:
+            print(f'No exact match for "{args.name}". Did you mean:')
+            for c in cands:
+                print(f"  [{c.type}] {c.name}" + (f"  ({c.catalog})" if multi else ""))
+        else:
+            print(f'No match for "{args.name}". Try `library list`.')
+        return 2
+
+    result = uninstall_entry(cfg.dirs, entry, args.scope, args.dir, args.force)
+    deleted, refused = result["deleted"], result["refused"]
+
+    if args.json:
+        print(json.dumps({"status": "REFUSED" if refused else "OK",
+                          "type": entry.type, "name": entry.name,
+                          "deleted": deleted, "refused": refused}, indent=2))
+        return 2 if refused else 0
+
+    if deleted:
+        print(f"Uninstalled [{entry.type}] {entry.name}:")
+        for d in deleted:
+            print(f"  removed {d}")
+    elif not refused:
+        print(f"[{entry.type}] {entry.name} is not installed here — nothing to remove.")
+    for r in refused:
+        print(f"  refused {r}: no install receipt — this tool didn't install it. "
+              "Pass --force to delete it anyway.")
+    if deleted:
+        print("The catalog entry is untouched; `library use` reinstalls it.")
+    return 2 if refused else 0
+
+
 def cmd_sync(args: argparse.Namespace) -> int:
     cfg = load_config()
     pull_errors = refresh_catalogs(cfg, args.no_pull)
@@ -4004,6 +4105,17 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(sp)
     add_catalog_flag(sp)
     sp.set_defaults(func=cmd_use)
+
+    sp = sub.add_parser("uninstall", help="delete an installed copy (the catalog entry is kept)")
+    sp.add_argument("name")
+    sp.add_argument("--scope", choices=["global", "project", "all"], default="all",
+                    help="which installed copies to delete (default: all)")
+    sp.add_argument("--dir", help="delete the copy under a custom directory instead")
+    sp.add_argument("--force", action="store_true",
+                    help="delete a copy this tool has no receipt for (may be hand-written)")
+    add_common(sp)
+    add_catalog_flag(sp)
+    sp.set_defaults(func=cmd_uninstall)
 
     sp = sub.add_parser("sync", help="re-pull every installed item")
     add_common(sp)

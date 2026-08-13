@@ -236,6 +236,7 @@ Two ways to drive it, same result:
 | Add an entry | "add this skill to the library: `<url>`" | `./library add --name … --source … --description …` |
 | Update an entry | "make session-retro also require backend-code-practices" | `./library update session-retro --add-requires skill:backend-code-practices` |
 | Push changes back | "push my deploy changes back to the library" | `./library push deploy` |
+| Uninstall a skill | "uninstall deploy from my machine" | `./library uninstall deploy` |
 | Remove an entry | "remove deploy from the library" | `./library remove deploy` |
 | Sync everything | "sync all my installed library skills" | `./library sync` |
 | Health check | "check the library catalog for problems" | `./library doctor` |
@@ -618,6 +619,7 @@ auth/setup gotchas, lives in **[docs/troubleshooting.md](docs/troubleshooting.md
         update.md
         use.md
         push.md
+        uninstall.md
         remove.md
         list.md
         sync.md

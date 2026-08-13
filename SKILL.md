@@ -81,6 +81,7 @@ Never say "PR opened" unless `mode == "pr"` **and** `method == "gh"`. Claiming a
 | `/library update <name>`    | Edit an existing entry's description/source/requires (same three modes)               |
 | `/library use <name>`       | Pull from source (install or refresh)                                                 |
 | `/library push <name>`      | Push local changes back to source (PR for GitHub/Bitbucket sources)                   |
+| `/library uninstall <name>` | Delete the installed copy from this machine (the catalog entry is kept)               |
 | `/library remove <name>`    | Remove from a catalog (same three modes); optionally purge local                       |
 | `/library list`             | Show full catalog with install status                                                 |
 | `/library sync`             | Re-pull all installed items from source                                               |
@@ -101,6 +102,7 @@ Each command has a detailed step-by-step guide. **Read the relevant cookbook fil
 | update  | [cookbook/update.md](cookbook/update.md)   | User wants to edit an existing entry's description/source/requires (e.g. add a dependency)               |
 | use     | [cookbook/use.md](cookbook/use.md)         | User wants to pull or refresh a skill from the catalog                                                   |
 | push    | [cookbook/push.md](cookbook/push.md)       | User improved a skill locally and wants to update the source                                             |
+| uninstall | [cookbook/uninstall.md](cookbook/uninstall.md) | User wants an installed skill off their machine, but not out of the catalog                        |
 | remove  | [cookbook/remove.md](cookbook/remove.md)   | User wants to remove an entry from the catalog                                                           |
 | list    | [cookbook/list.md](cookbook/list.md)       | User wants to see what's available and what's installed                                                  |
 | sync    | [cookbook/sync.md](cookbook/sync.md)       | User wants to refresh all installed items at once                                                        |

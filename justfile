@@ -45,6 +45,10 @@ use name *args:
 use-project name *args:
     @{{lib}} use "{{name}}" --project {{args}}
 
+# Delete an installed copy (--scope global|project|all, --dir <path>); catalog entry kept
+uninstall name *args:
+    @{{lib}} uninstall "{{name}}" {{args}}
+
 # Sync all installed items (re-pull from source; --catalog <id> to scope it)
 sync *args:
     @{{lib}} sync {{args}}

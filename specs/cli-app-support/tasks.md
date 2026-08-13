@@ -81,7 +81,7 @@ Commit style follows the repo's history: `feat(scope): …`, `fix(scope): …`, 
 
 ## Phase B — Uninstall
 
-- [ ] **B1 — `library uninstall`**
+- [x] **B1 — `library uninstall`**
   - **Files:** `library.py`, `cookbook/`, `SKILL.md`, `README.md`, `tests/test_library.py`
   - **Design:** §4.3
   - **Do:** Delete installed copies by scope (or `--dir`), drop their receipts, leave the catalog
