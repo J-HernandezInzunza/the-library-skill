@@ -10,7 +10,7 @@ catalog in one pass and is the fastest way to find what's wrong.
 
 | Symptom | Likely cause / fix |
 | ------- | ------------------ |
-| CLI won't run / `ModuleNotFoundError: No module named 'yaml'` | The `.venv` isn't set up. Run `python3 -m venv .venv && .venv/bin/pip install pyyaml` (or `just bootstrap`) once from the tool dir. |
+| CLI won't run / any command **exits 3** / `PyYAML not found` | The clone isn't bootstrapped. Run `python3 bootstrap.py` (or `just bootstrap`) once from the tool dir — stdlib-only and idempotent. Exit 3 means exactly this and nothing else. |
 | `pip install pyyaml` fails with *externally-managed-environment* | Expected on Homebrew/Debian Python (PEP 668). Don't install globally — use the `.venv` to avoid this. |
 | `/library use <name>` warns about a missing dependency, or installs behave oddly | Run `./library doctor` — it catches dangling `requires`, duplicate names, and cycles. |
 | `use`/`sync` fails to clone a source | Run `./library doctor --deep`. If it reports the repo/branch unreachable, the source moved or the branch was deleted — fix the entry's `source`. If `--deep` says it's reachable but the clone still fails, it's auth (see next row). |
@@ -20,6 +20,15 @@ catalog in one pass and is the fastest way to find what's wrong.
 | `./library init` fails / `config.local.yaml` not found | Run `./library init --repo <url> --branch <branch>` from the tool directory. This is the one-time per-device setup step. |
 | Config points at the wrong catalog URL | Re-run `./library init --repo <new-url> --branch <branch> --force` to overwrite. |
 | A local-path `source` won't install for a teammate | Local paths only exist on the machine that added them. Re-add the entry with a GitHub/Bitbucket URL; `add` refuses local sources for a shared catalog unless you pass `--allow-local`. |
+
+## Exit codes
+
+| Code | Meaning |
+| ---- | ------- |
+| `0` | success |
+| `1` | the command failed (bad config, failed clone, invalid catalog, refused write) |
+| `2` | the CLI needs a decision it can't make: `AMBIGUOUS` / `NOT_FOUND` name, more than one writable catalog, or an `uninstall` refused for lack of an install receipt |
+| `3` | **not bootstrapped** — PyYAML is missing. Run `python3 bootstrap.py`. This code is reserved for that one condition, so a front door can detect a fresh clone reliably rather than parsing stderr |
 
 `doctor` exits non-zero when it finds errors, so you can wire it into CI on your **catalog**
 repo to block a broken catalog before it merges — see

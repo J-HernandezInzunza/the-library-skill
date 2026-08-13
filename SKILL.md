@@ -55,6 +55,13 @@ The mechanical parts of the workflow — reading the catalog, parsing sources, r
   - **Editing an existing entry (e.g. "make X also require skill:Y") is `update`, not `add`.** `add` refuses names that already exist. If the new `requires` ref isn't in the catalog yet, add it first (or in the same session), then `library update <name> --add-requires <ref>`. See [cookbook/update.md](cookbook/update.md).
   - When the judgment is ambiguous (multiple name matches, local-vs-remote source, type/wording conflict), the agent's first move is to **ask the user a single clarifying question** — not to pick the most likely candidate and proceed. Reversibility (PR-gating) is not a substitute for getting identity right.
 
+**Exit 3 means "not bootstrapped" — run bootstrap, don't debug.** Any `library` command
+exits `3` with `PyYAML not found` when the clone's `.venv` is missing. That code is
+reserved for exactly this: fix it by running `python3 <tool-dir>/bootstrap.py` (stdlib
+only, idempotent, safe to re-run), then re-run the original command. Do not attempt a
+manual `pip install`, and do not report the failure to the user as a broken tool — it is
+a first-run state. See [cookbook/install.md](cookbook/install.md).
+
 **Catalog writes go through the CLI only — never hand-roll `git`/`gh`.** Every catalog change (`add`, `update`, `remove`) must be made by running `library add|update|remove`, which owns the branch, commit, PR, and the `autopush` policy. Do **not** clone the catalog, edit `library.yaml`, or call `gh pr create` yourself — that bypasses the config and produces the inconsistency this tool exists to prevent. If the CLI can't express the change, that's a gap to fix in `library.py`, not to work around by hand. (Editing an existing entry is `update`; there is no longer any catalog edit that requires manual git.)
 
 **Report a write's outcome from the CLI's payload — never editorialize.** Read `mode` **first**: only one of the three modes involves a PR at all, so a habit of saying "PR opened" is a habit of lying two-thirds of the time.

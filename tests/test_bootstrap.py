@@ -153,6 +153,39 @@ class TestBootstrap(unittest.TestCase):
         self.assertIn("--help` failed", err)
 
 
+class TestNotBootstrappedSignal(unittest.TestCase):
+    """Exit 3 is the contract every front door detects a fresh clone with (C-D6)."""
+
+    def setUp(self) -> None:
+        self.clone = TempClone()
+        self.addCleanup(self.clone.stop)
+        # A venv with no PyYAML in it — exactly the state before bootstrap runs.
+        bootstrap.venv.EnvBuilder(with_pip=False, clear=True).create(self.clone.dir / ".venv")
+
+    def run_cli(self, *argv: str) -> subprocess.CompletedProcess:
+        return subprocess.run([str(self.clone.dir / "library"), *argv],
+                              capture_output=True, text=True)
+
+    def test_a_clone_without_pyyaml_exits_three_and_names_the_script(self) -> None:
+        proc = self.run_cli("--help")
+        self.assertEqual(proc.returncode, 3, proc.stderr)
+        self.assertIn("not bootstrapped", proc.stderr)
+        self.assertIn("bootstrap.py", proc.stderr)
+
+    def test_every_subcommand_reports_it_the_same_way(self) -> None:
+        # The check runs at import, so it precedes argument parsing: a caller gets the
+        # same signal whatever it asked for, and never has to parse a command's output.
+        for argv in (["list"], ["doctor"], ["use", "anything"], ["--version"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.run_cli(*argv).returncode, 3)
+
+    def test_bootstrapping_clears_it(self) -> None:
+        with patch.object(bootstrap, "pip_install", fake_pip_install), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(bootstrap.main(["--dir", str(self.clone.dir), "--json"]), 0)
+        self.assertEqual(self.run_cli("--help").returncode, 0)
+
+
 class TestBootstrapUnits(unittest.TestCase):
     def test_venv_python_is_where_the_wrapper_looks(self) -> None:
         # The wrapper hardcodes .venv/bin/python; if these ever disagree, bootstrap

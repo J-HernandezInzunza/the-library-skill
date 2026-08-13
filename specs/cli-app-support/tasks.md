@@ -149,7 +149,7 @@ Commit style follows the repo's history: `feat(scope): …`, `fix(scope): …`, 
     second run is a no-op. A missing-`git` preflight names `git` specifically. `just check` passes.
   - **Commit:** `feat(bootstrap): add a standalone, idempotent bootstrap script`
 
-- [ ] **D2 — Exit 3 is documented as "not bootstrapped"**
+- [x] **D2 — Exit 3 is documented as "not bootstrapped"**
   - **Files:** `library.py`, `SKILL.md`, `docs/troubleshooting.md`
   - **Design:** C-D6
   - **Do:** Make the PyYAML-missing message name `bootstrap.py` as the fix, and document exit 3 as a

@@ -36,9 +36,12 @@ try:
     import yaml
 except ModuleNotFoundError:
     sys.stderr.write(
-        "PyYAML not found. Run `just bootstrap` in the library dir "
-        "(or: python3 -m venv .venv && .venv/bin/pip install pyyaml).\n"
+        "PyYAML not found: this clone is not bootstrapped. "
+        "Run `python3 bootstrap.py` in the library dir (or `just bootstrap`).\n"
     )
+    # Exit 3 is a contract, not an implementation detail: it is how any front door
+    # (terminal, agent, desktop app) detects an unbootstrapped install and offers to
+    # fix it. Nothing else in this CLI exits 3. Never reuse or renumber it.
     sys.exit(3)
 
 # Keep git non-interactive: a private remote would otherwise prompt for credentials
