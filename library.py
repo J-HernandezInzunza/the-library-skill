@@ -236,6 +236,145 @@ def record_install(entry: "Entry", dest: Path, scope: str, commit: "str | None")
 
 
 # --------------------------------------------------------------------------- #
+# Setup manifests (<installed skill>/setup.yaml)
+# --------------------------------------------------------------------------- #
+
+SETUP_VERSIONS = (1,)                                     # recognized schema versions
+PREREQ_KINDS = ("node", "sibling-skill", "env", "binary")
+DELIVERY_MODES = ("config-file", "env", "manual")
+CONFIG_FORMATS = ("json", "ini", "env")
+_SHELL_METACHARS = "&|;<>`$()\n"  # exactly the schema §5 set — no stricter, or valid manifests break
+
+
+def _run_problems(cid: str, run: Any, skill_dir: "Path | None") -> list[str]:
+    """Argv rules for one command (schema §5): a command is argv, never a shell line."""
+    if not isinstance(run, str) or not run.strip():
+        return [f"commands.{cid}.run must be a non-empty string"]
+    bad = sorted({c for c in run if c in _SHELL_METACHARS})
+    if bad:
+        return [f"commands.{cid}.run contains shell metacharacters ({''.join(bad)}); "
+                "run is argv, not a shell line"]
+    argv0 = run.split()[0]
+    if Path(argv0).is_absolute():
+        return [f"commands.{cid}.run must be relative to the skill dir, got '{argv0}'"]
+    if ".." in Path(argv0).parts:
+        return [f"commands.{cid}.run escapes the skill dir: '{argv0}'"]
+    if skill_dir is not None:
+        # Resolved, so a symlink pointing out of the skill dir is caught too — the
+        # textual '..' check above cannot see one.
+        target = (skill_dir / argv0).resolve()
+        if not str(target).startswith(str(skill_dir.resolve())):
+            return [f"commands.{cid}.run resolves outside the skill dir: '{argv0}'"]
+    return []
+
+
+def validate_setup(data: Any, skill_dir: "Path | None" = None) -> list[str]:
+    """Every schema violation in a parsed `setup.yaml` (empty list = valid).
+
+    Implements skill-setup-schema §7. Two rules there are load-bearing rather than
+    pedantic, and both fail *closed*:
+
+    - An unknown `version` invalidates the manifest instead of being parsed optimistically.
+      A later schema could change what `delivery` means.
+    - An unknown value for a closed enum is an error, never a fallback to the default.
+      Silently downgrading `delivery: manual` to `config-file` would write a secret the
+      skill intended nothing to store.
+
+    Unknown *keys* are ignored on purpose: that is the forward-compatibility half.
+    """
+    if not isinstance(data, dict):
+        return ["setup.yaml must be a mapping"]
+    version = data.get("version")
+    if version not in SETUP_VERSIONS:
+        known = ", ".join(str(v) for v in SETUP_VERSIONS)
+        return [f"unknown setup version {version!r} (known: {known}); "
+                "the manifest is not used rather than guessed at"]
+
+    problems: list[str] = []
+
+    commands = data.get("commands") or {}
+    if not isinstance(commands, dict):
+        problems.append("commands must be a mapping of id -> {run, description}")
+        commands = {}
+    for cid, spec in commands.items():
+        if not isinstance(spec, dict):
+            problems.append(f"commands.{cid} must be a mapping with a 'run'")
+            continue
+        problems += _run_problems(str(cid), spec.get("run"), skill_dir)
+
+    config = data.get("config") or {}
+    if config and not isinstance(config, dict):
+        problems.append("config must be a mapping")
+        config = {}
+    if config:
+        path = config.get("path")
+        if not isinstance(path, str) or not path.strip():
+            problems.append("config.path is required when config is present")
+        elif not (path.startswith("/") or path.startswith("~")):
+            problems.append(f"config.path must be absolute or ~-prefixed, got '{path}'")
+        fmt = config.get("format")
+        if fmt is not None and fmt not in CONFIG_FORMATS:
+            problems.append(f"unknown config.format '{fmt}' (known: {', '.join(CONFIG_FORMATS)})")
+        scaffold = config.get("scaffold")
+        if scaffold is not None and scaffold not in commands:
+            problems.append(f"config.scaffold '{scaffold}' is not a command id")
+
+    verify = data.get("verify")
+    if verify is not None and verify not in commands:
+        problems.append(f"verify '{verify}' is not a command id")
+
+    secrets = data.get("secrets") or []
+    if not isinstance(secrets, list):
+        problems.append("secrets must be a list")
+        secrets = []
+    for i, sec in enumerate(secrets):
+        if not isinstance(sec, dict):
+            problems.append(f"secrets[{i}] must be a mapping")
+            continue
+        if not sec.get("key"):
+            problems.append(f"secrets[{i}] is missing 'key'")
+        delivery = sec.get("delivery", "config-file")
+        if delivery not in DELIVERY_MODES:
+            problems.append(f"unknown delivery '{delivery}' for secrets[{i}] "
+                            f"(known: {', '.join(DELIVERY_MODES)})")
+        elif delivery == "config-file" and not (config.get("path") and config.get("format")):
+            problems.append(f"secrets[{i}] delivers to the config file, "
+                            "which needs config.path and config.format")
+
+    prereqs = data.get("prerequisites") or []
+    if not isinstance(prereqs, list):
+        problems.append("prerequisites must be a list")
+        prereqs = []
+    for i, pre in enumerate(prereqs):
+        if not isinstance(pre, dict):
+            problems.append(f"prerequisites[{i}] must be a mapping")
+            continue
+        kinds = [k for k in pre if k in PREREQ_KINDS]
+        if len(kinds) != 1:
+            problems.append(f"prerequisites[{i}] needs exactly one of "
+                            f"{', '.join(PREREQ_KINDS)}")
+    return problems
+
+
+def load_setup(dest: Path) -> tuple["dict[str, Any] | None", list[str]]:
+    """Parse the setup manifest of the installed copy at *dest*.
+
+    Returns (manifest, problems). No manifest is `(None, [])` — absence is the default
+    and never an error (schema §2). Unparseable YAML is `(None, [reason])`, because a
+    file that exists and doesn't load is a real fault worth reporting.
+    """
+    path = dest / SETUP_FILE
+    if not path.is_file():
+        return None, []
+    try:
+        data = yaml.safe_load(path.read_text())
+    except (OSError, yaml.YAMLError) as ex:
+        return None, [f"{path}: unreadable ({ex.__class__.__name__})"]
+    problems = validate_setup(data, dest)
+    return (data if isinstance(data, dict) else None), problems
+
+
+# --------------------------------------------------------------------------- #
 # Local config (per-device; gitignored config.local.yaml)
 # --------------------------------------------------------------------------- #
 

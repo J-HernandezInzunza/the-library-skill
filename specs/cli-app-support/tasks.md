@@ -163,7 +163,7 @@ Commit style follows the repo's history: `feat(scope): …`, `fix(scope): …`, 
 
 ## Phase E — Setup manifests
 
-- [ ] **E1 — Parse and validate `setup.yaml`**
+- [x] **E1 — Parse and validate `setup.yaml`**
   - **Files:** `library.py`, `tests/test_library.py`
   - **Design:** §4.5, C-D7, [skill-setup-schema.md](../../desktop/specs/skill-setup-schema.md) §7
   - **Do:** Validate every §7 rule: known `version`, ids referenced by `scaffold`/`verify` exist, argv

