@@ -35,7 +35,7 @@ Commit style follows the repo's history: `feat(scope): …`, `fix(scope): …`, 
     for a stale lock not deadlocking. `just check` passes.
   - **Commit:** `feat(state): add atomic locked writes for machine-owned files`
 
-- [ ] **A2 — The receipt store**
+- [x] **A2 — The receipt store**
   - **Files:** `library.py`, `.gitignore`, `tests/test_library.py`
   - **Design:** §3
   - **Do:** Read/write `SKILL_DIR/.installs.json` with the §3 schema, keyed by `dest`. Include the

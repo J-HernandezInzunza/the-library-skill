@@ -20,6 +20,7 @@ import datetime
 import difflib
 import fcntl
 import filecmp
+import hashlib
 import json
 import os
 import re
@@ -52,6 +53,7 @@ os.environ.setdefault("GIT_SSH_COMMAND", "ssh -oBatchMode=yes")
 
 SKILL_DIR = Path(__file__).resolve().parent
 LOCAL_CONFIG_PATH = SKILL_DIR / "config.local.yaml"
+RECEIPTS_PATH = SKILL_DIR / ".installs.json"  # install receipts; device state, gitignored
 CATALOG_CLONE_DIR = SKILL_DIR / ".catalog-repo"  # the 'shared' catalog's clone
 CATALOGS_DIR = SKILL_DIR / ".catalogs"           # every other remote catalog's clone
 GLOBAL_SKILLS_DIR = Path("~/.claude/skills").expanduser()
@@ -135,6 +137,71 @@ def write_machine_file(path: Path, text: str) -> None:
             raise
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+# --------------------------------------------------------------------------- #
+# Install receipts (per-device; gitignored .installs.json)
+# --------------------------------------------------------------------------- #
+
+RECEIPTS_VERSION = 1
+RECEIPT_KEYS = ("dest", "name", "type", "catalog", "scope", "source",
+                "commit", "content_hash", "installed_at")
+
+
+def content_hash(path: Path) -> str:
+    """Digest of an installed tree (or single file) as `sha256:<hex>`.
+
+    Hashes sorted relative paths *and* their bytes, so the digest is stable across
+    machines and copy order while a rename still counts as a change. A path that does
+    not exist hashes as empty rather than raising: "is it gone" is answered by looking
+    at the dest, not by this.
+    """
+    h = hashlib.sha256()
+    if path.is_dir():
+        base, rels = path, sorted(_walk_files(path))
+    elif path.is_file():
+        base, rels = path.parent, [path.name]
+    else:
+        base, rels = path, []
+    for rel in rels:
+        h.update(rel.encode())
+        h.update(b"\0")
+        h.update((base / rel).read_bytes())
+        h.update(b"\0")
+    return "sha256:" + h.hexdigest()
+
+
+def load_receipts() -> dict[str, dict[str, Any]]:
+    """Every install receipt, keyed by `dest` (design §3).
+
+    Fail-soft by contract (C-D3): a missing, unreadable, malformed, or
+    future-versioned file reads as "no receipts". Every install that exists today
+    predates receipts, so treating an unreadable one as fatal would have the first run
+    of this CLI declare a working setup broken. Callers report a receipt-less install
+    as `untracked`, never as an error.
+    """
+    try:
+        data = json.loads(RECEIPTS_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict) or data.get("version") != RECEIPTS_VERSION:
+        return {}
+    receipts = {}
+    for rec in data.get("installs") or []:
+        if isinstance(rec, dict) and isinstance(rec.get("dest"), str):
+            receipts[rec["dest"]] = {k: rec.get(k) for k in RECEIPT_KEYS}
+    return receipts
+
+
+def save_receipts(receipts: dict[str, dict[str, Any]]) -> None:
+    """Replace the receipt file with *receipts*, atomically and under the lock (§7).
+
+    Written sorted by dest so two runs that installed the same things produce the same
+    file, which keeps a diff of device state readable.
+    """
+    installs = [{k: receipts[dest].get(k) for k in RECEIPT_KEYS} for dest in sorted(receipts)]
+    payload = {"version": RECEIPTS_VERSION, "installs": installs}
+    write_machine_file(RECEIPTS_PATH, json.dumps(payload, indent=2) + "\n")
 
 
 # --------------------------------------------------------------------------- #

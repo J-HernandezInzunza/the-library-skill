@@ -7,8 +7,10 @@
 __pycache__/
 *.pyc
 
-# per-device config + local catalog clones (never committed)
+# per-device config, install receipts, and local catalog clones (never committed)
 config.local.yaml
+.installs.json
+*.lock
 .catalog-repo/
 .catalogs/
 

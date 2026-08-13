@@ -61,6 +61,7 @@ class TempTool:
         self.project = self.root / "project"
         self.clone_dir = self.tool_dir / ".catalog-repo"
         self.config_path = self.tool_dir / "config.local.yaml"
+        self.receipts_path = self.tool_dir / ".installs.json"
         # clone_dir is deliberately NOT created: "the clone is absent" is a real state
         # the code branches on, and a pre-made empty directory would hide it.
         for d in (self.tool_dir, self.home, self.project):
@@ -69,6 +70,7 @@ class TempTool:
         self._stack = contextlib.ExitStack()
         self._patch("SKILL_DIR", self.tool_dir)
         self._patch("LOCAL_CONFIG_PATH", self.config_path)
+        self._patch("RECEIPTS_PATH", self.receipts_path)
         self._patch("CATALOG_CLONE_DIR", self.clone_dir)
         self._patch("CATALOGS_DIR", self.tool_dir / ".catalogs")
         self._patch("GLOBAL_SKILLS_DIR", self.home / ".claude" / "skills")
@@ -2595,6 +2597,111 @@ class TestCatalogMigrate(unittest.TestCase):
         self.assertTrue(library.load_config().legacy_shape)
         self.migrate()
         self.assertFalse(library.load_config().legacy_shape)
+
+
+def make_receipt(dest: str, **kw: Any) -> dict[str, Any]:
+    """A receipt record with every §3 key present; override what a test cares about."""
+    rec = {
+        "dest": dest,
+        "name": Path(dest).name,
+        "type": "skill",
+        "catalog": "shared",
+        "scope": "global",
+        "source": "https://github.com/org/repo/blob/main/x/SKILL.md",
+        "commit": "a" * 40,
+        "content_hash": "sha256:deadbeef",
+        "installed_at": "2026-08-13T13:35:19Z",
+    }
+    rec.update(kw)
+    return rec
+
+
+class TestReceiptStore(unittest.TestCase):
+    """Reading and writing .installs.json (design §3)."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+
+    def test_round_trips_a_receipt(self) -> None:
+        rec = make_receipt(str(self.tool.home / ".claude/skills/alpha"))
+        library.save_receipts({rec["dest"]: rec})
+        self.assertEqual(library.load_receipts(), {rec["dest"]: rec})
+
+    def test_writes_the_documented_envelope_sorted_by_dest(self) -> None:
+        library.save_receipts({d: make_receipt(d) for d in ("/b/two", "/a/one")})
+        data = json.loads(self.tool.receipts_path.read_text())
+        self.assertEqual(data["version"], 1)
+        self.assertEqual([r["dest"] for r in data["installs"]], ["/a/one", "/b/two"])
+        self.assertEqual(set(data["installs"][0]), set(library.RECEIPT_KEYS))
+
+    def test_a_missing_file_reads_as_no_receipts(self) -> None:
+        self.assertEqual(library.load_receipts(), {})
+
+    def test_a_corrupt_file_degrades_to_empty_instead_of_failing(self) -> None:
+        # C-D3: the first run of this CLI must not declare a working setup broken.
+        for junk in ("{not json", "[]", '{"version": 99, "installs": [{"dest": "/x"}]}'):
+            self.tool.receipts_path.write_text(junk)
+            self.assertEqual(library.load_receipts(), {}, junk)
+
+    def test_records_without_a_dest_are_dropped_not_fatal(self) -> None:
+        self.tool.receipts_path.write_text(json.dumps({
+            "version": 1,
+            "installs": [{"name": "nodest"}, "garbage", make_receipt("/a/one")],
+        }))
+        self.assertEqual(list(library.load_receipts()), ["/a/one"])
+
+    def test_a_partial_record_reads_back_with_null_keys(self) -> None:
+        self.tool.receipts_path.write_text(json.dumps({
+            "version": 1, "installs": [{"dest": "/a/one", "name": "one"}],
+        }))
+        rec = library.load_receipts()["/a/one"]
+        self.assertEqual(set(rec), set(library.RECEIPT_KEYS))
+        self.assertIsNone(rec["commit"])
+
+
+class TestContentHash(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+
+    def _tree(self, name: str) -> Path:
+        root = self.tool.root / name
+        (root / "sub").mkdir(parents=True)
+        (root / "SKILL.md").write_text("body\n")
+        (root / "sub" / "ref.md").write_text("ref\n")
+        return root
+
+    def test_identical_trees_hash_the_same(self) -> None:
+        self.assertEqual(library.content_hash(self._tree("a")),
+                         library.content_hash(self._tree("b")))
+
+    def test_edited_content_changes_the_hash(self) -> None:
+        tree = self._tree("a")
+        before = library.content_hash(tree)
+        (tree / "SKILL.md").write_text("edited\n")
+        self.assertNotEqual(before, library.content_hash(tree))
+
+    def test_a_rename_changes_the_hash(self) -> None:
+        # Paths are hashed alongside bytes, so moving a file is a change even though
+        # the byte total is identical.
+        tree = self._tree("a")
+        before = library.content_hash(tree)
+        (tree / "sub" / "ref.md").rename(tree / "sub" / "other.md")
+        self.assertNotEqual(before, library.content_hash(tree))
+
+    def test_hashes_a_single_file(self) -> None:
+        one = self.tool.root / "agent.md"
+        one.write_text("hello\n")
+        two = self.tool.root / "copy.md"
+        two.write_text("hello\n")
+        self.assertNotEqual(library.content_hash(one), library.content_hash(two),
+                            "the file's name is part of its identity")
+        self.assertTrue(library.content_hash(one).startswith("sha256:"))
+
+    def test_a_missing_path_hashes_as_empty(self) -> None:
+        self.assertEqual(library.content_hash(self.tool.root / "gone"),
+                         library.content_hash(self.tool.root / "also-gone"))
 
 
 class TestWriteMachineFile(unittest.TestCase):
