@@ -93,6 +93,7 @@ Never say "PR opened" unless `mode == "pr"` **and** `method == "gh"`. Claiming a
 | `/library list`             | Show full catalog with install status                                                 |
 | `/library show <name>`      | Everything about one entry: copies, overrides, deps, source, installs                 |
 | `/library sync`             | Re-pull all installed items from source                                               |
+| `/library setup <name>`     | Report an installed skill's setup manifest + prerequisite state (never executes it)   |
 | `/library search <keyword>` | Find entries by keyword                                                               |
 | `/library catalog <action>` | Manage the catalog registry: `list`, `add`, `init`, `remove`, `migrate`                |
 | `/library doctor`           | Validate config + catalog integrity (`--deep` checks sources)                          |
@@ -115,6 +116,7 @@ Each command has a detailed step-by-step guide. **Read the relevant cookbook fil
 | list    | [cookbook/list.md](cookbook/list.md)       | User wants to see what's available and what's installed                                                  |
 | show    | [cookbook/show.md](cookbook/show.md)       | User asks about one specific entry (where it came from, what it needs, where it's installed)             |
 | sync    | [cookbook/sync.md](cookbook/sync.md)       | User wants to refresh all installed items at once                                                        |
+| setup   | [cookbook/setup.md](cookbook/setup.md)     | A skill needs credentials/config after install, or the user asks "what does this need to work?"           |
 | search  | [cookbook/search.md](cookbook/search.md)   | User is looking for a skill but doesn't know the exact name                                              |
 | doctor  | [cookbook/doctor.md](cookbook/doctor.md)   | User wants to validate catalog integrity / find broken entries                                           |
 | install | [cookbook/install.md](cookbook/install.md) | First-time device setup — bootstrap the venv, configure the catalog, verify. **New device starts here.** |

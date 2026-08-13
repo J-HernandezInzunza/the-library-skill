@@ -4161,6 +4161,159 @@ library:
         self.assertIn("was not installed by this tool", out)
 
 
+class TestSetupCommand(unittest.TestCase):
+    """`library setup <name>`: the manifest plus per-prerequisite state (design §4.5)."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in ("toolkit", "sibling", "plain"):
+            (self.src / name).mkdir(parents=True)
+            (self.src / name / "SKILL.md").write_text(f"# {name}\n")
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: toolkit
+      description: Needs credentials
+      source: {self.src}/toolkit/SKILL.md
+    - name: sibling
+      description: A sibling skill
+      source: {self.src}/sibling/SKILL.md
+    - name: plain
+      description: No setup at all
+      source: {self.src}/plain/SKILL.md
+  agents: []
+  prompts: []
+""")
+
+    def install(self, name: str) -> Path:
+        code, _, err = run_cli("use", name, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        return self.tool.home / ".claude/skills" / name
+
+    def write_manifest(self, dest: Path, **overrides: Any) -> None:
+        (dest / "setup.yaml").write_text(yaml.safe_dump(setup_manifest(**overrides)))
+
+    def setup(self, name: str, *extra: str, expect: int = 0) -> dict[str, Any]:
+        code, out, err = run_cli("setup", name, *extra, "--no-pull", "--json")
+        self.assertEqual(code, expect, err or out)
+        return json.loads(out)
+
+    def test_a_skill_with_no_manifest_is_not_an_error(self) -> None:
+        self.install("plain")
+        payload = self.setup("plain")
+        self.assertEqual((payload["status"], payload["has_setup"], payload["manifest"]),
+                         ("OK", False, None))
+        self.assertEqual(payload["problems"], [])
+
+    def test_an_uninstalled_skill_reports_nothing_to_set_up(self) -> None:
+        payload = self.setup("toolkit")
+        self.assertEqual((payload["installed"], payload["has_setup"], payload["dest"]),
+                         (False, False, None))
+
+    def test_a_valid_manifest_comes_back_whole(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[], config={}, secrets=[],
+                            commands={"check": {"run": "bin/check.mjs"}}, verify="check")
+        payload = self.setup("toolkit")
+        self.assertTrue(payload["has_setup"])
+        self.assertEqual(payload["manifest"]["verify"], "check")
+        self.assertEqual(payload["dest"], str(dest))
+        self.assertTrue(payload["ready"])
+
+    def test_an_invalid_manifest_is_reported_and_never_ready(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, verify="nope")
+        payload = self.setup("toolkit")
+        self.assertTrue(any("verify 'nope'" in p for p in payload["problems"]))
+        self.assertFalse(payload["ready"])
+
+    def test_a_sibling_skill_prerequisite_reads_what_is_installed(self) -> None:
+        # The reason this lives in Python at all: answering it means knowing what's
+        # installed, which is receipts (C-D7).
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[{"sibling-skill": "sibling"}],
+                            config={}, secrets=[],
+                            commands={"check": {"run": "bin/check.mjs"}}, verify="check")
+        unmet = self.setup("toolkit")["prerequisites"][0]
+        self.assertEqual((unmet["kind"], unmet["met"], unmet["detail"]),
+                         ("sibling-skill", False, "not installed"))
+        self.install("sibling")
+        met = self.setup("toolkit")["prerequisites"][0]
+        self.assertTrue(met["met"])
+        self.assertIn("global", met["detail"])
+
+    def test_an_env_prerequisite_reads_the_environment(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[{"env": "LIBRARY_TEST_ENV_PREREQ"}],
+                            config={}, secrets=[],
+                            commands={"check": {"run": "bin/check.mjs"}}, verify="check")
+        self.assertFalse(self.setup("toolkit")["prerequisites"][0]["met"])
+        with patch.dict(os.environ, {"LIBRARY_TEST_ENV_PREREQ": "/tmp/cycle.json"}):
+            self.assertTrue(self.setup("toolkit")["prerequisites"][0]["met"])
+
+    def test_a_binary_prerequisite_reads_the_path(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[{"binary": "git"}, {"binary": "definitely-not-a-binary"}],
+                            config={}, secrets=[],
+                            commands={"check": {"run": "bin/check.mjs"}}, verify="check")
+        met, unmet = self.setup("toolkit")["prerequisites"]
+        self.assertTrue(met["met"])
+        self.assertEqual((unmet["met"], unmet["detail"]), (False, "not on PATH"))
+
+    def test_a_node_prerequisite_compares_versions(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[{"node": ">=20"}], config={}, secrets=[],
+                            commands={"check": {"run": "bin/check.mjs"}}, verify="check")
+        with patch.object(library, "_node_version", lambda: "v22.19.0"):
+            self.assertTrue(self.setup("toolkit")["prerequisites"][0]["met"])
+        with patch.object(library, "_node_version", lambda: "v18.4.0"):
+            self.assertFalse(self.setup("toolkit")["prerequisites"][0]["met"])
+        with patch.object(library, "_node_version", lambda: None):
+            miss = self.setup("toolkit")["prerequisites"][0]
+        self.assertEqual((miss["met"], miss["detail"]), (False, "node not on PATH"))
+
+    def test_an_unmet_prerequisite_blocks_ready_even_on_a_valid_manifest(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[{"sibling-skill": "sibling"}],
+                            config={}, secrets=[],
+                            commands={"check": {"run": "bin/check.mjs"}}, verify="check")
+        payload = self.setup("toolkit")
+        self.assertEqual(payload["problems"], [])
+        self.assertFalse(payload["ready"])
+
+    def test_an_unknown_name_reports_not_found(self) -> None:
+        self.assertEqual(self.setup("nope", expect=2)["status"], "NOT_FOUND")
+
+    def test_the_human_output_lists_prerequisites_and_readiness(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[{"binary": "git"}])
+        code, out, err = run_cli("setup", "toolkit", "--no-pull")
+        self.assertEqual(code, 0, err)
+        self.assertIn("[ok  ] binary: git", out)
+        self.assertIn("account.api_token via config-file", out)
+        self.assertIn("Ready: yes", out)
+
+
+class TestVersionSatisfies(unittest.TestCase):
+    def test_ranges_it_understands(self) -> None:
+        for have, want, expected in (("v22.19.0", ">=20", True), ("v18.4.0", ">=20", False),
+                                     ("20.0.0", ">=20", True), ("v20.1.0", ">20.0", True),
+                                     ("v20.0.0", ">20", False), ("v18.0.0", "<20", True),
+                                     ("v20.0.0", "<=20", True), ("v20.1.0", "==20.1", True),
+                                     ("v22.1.0", "20", True)):
+            with self.subTest(have=have, want=want):
+                self.assertEqual(library._version_satisfies(have, want), expected)
+
+    def test_a_range_it_cannot_parse_returns_none_rather_than_guessing(self) -> None:
+        # Reported as "couldn't check", never as a pass — the schema permits ranges this
+        # deliberately small comparator doesn't cover.
+        for want in ("^20", "~20.1", ">=20 <23", "latest", ""):
+            with self.subTest(want=want):
+                self.assertIsNone(library._version_satisfies("v22.0.0", want))
+
+
 class TestShow(unittest.TestCase):
     """One entry in full: winner, every copy, deps, installs, source (design §4.2)."""
 

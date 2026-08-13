@@ -174,7 +174,7 @@ Commit style follows the repo's history: `feat(scope): …`, `fix(scope): …`, 
     command id, shell metacharacters in `run`, `..` in a path. `just check` passes.
   - **Commit:** `feat(setup): validate skill setup manifests`
 
-- [ ] **E2 — `library setup <name>` with prerequisite checks**
+- [x] **E2 — `library setup <name>` with prerequisite checks**
   - **Files:** `library.py`, `cookbook/setup.md`, `SKILL.md`, `README.md`, `tests/test_library.py`
   - **Design:** §4.5
   - **Do:** Return the validated manifest plus per-prerequisite results (`node` semver, `binary` on

@@ -55,6 +55,10 @@ uninstall name *args:
 sync *args:
     @{{lib}} sync {{args}}
 
+# Report an installed skill's setup manifest + prerequisite state (--json)
+setup name *args:
+    @{{lib}} setup "{{name}}" {{args}}
+
 # Validate config, the catalog registry, and every catalog (--deep checks source liveness)
 doctor *args:
     @{{lib}} doctor {{args}}

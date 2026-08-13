@@ -356,6 +356,88 @@ def validate_setup(data: Any, skill_dir: "Path | None" = None) -> list[str]:
     return problems
 
 
+def _version_tuple(raw: str) -> tuple[int, ...]:
+    """'v22.19.0' / '20.1' -> (22, 19, 0). A trailing prerelease ('-rc.1') is dropped."""
+    parts = []
+    for chunk in raw.strip().lstrip("vV").split("."):
+        digits = ""
+        for c in chunk:
+            if not c.isdigit():
+                break
+            digits += c
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+def _version_satisfies(have: str, want: str) -> "bool | None":
+    """Does version *have* satisfy the range *want*? None when the range isn't understood.
+
+    Deliberately small: `>=`, `>`, `<=`, `<`, `==`, or a bare version meaning `>=`. An
+    unparseable range returns None so the caller can report "couldn't check" rather than
+    inventing a pass or a failure — the schema allows ranges this doesn't cover yet.
+    """
+    want = str(want).strip()
+    if not want or any(c.isspace() for c in want):
+        return None  # a compound range ('>=20 <23') is not something this can answer
+    for op in (">=", "<=", "==", ">", "<"):
+        if want.startswith(op):
+            target = want[len(op):].strip()
+            break
+    else:
+        op, target = ">=", want
+    if not target or not target[0].isdigit() and not target[0] in "vV":
+        return None
+    a, b = _version_tuple(have), _version_tuple(target)
+    if not a or not b:
+        return None
+    b = b + (0,) * (len(a) - len(b))
+    a = a + (0,) * (len(b) - len(a))
+    return {">=": a >= b, ">": a > b, "<=": a <= b, "<": a < b, "==": a == b}[op]
+
+
+def _node_version() -> "str | None":
+    if shutil.which("node") is None:
+        return None
+    proc = subprocess.run(["node", "--version"], capture_output=True, text=True)
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def check_prerequisite(pre: dict[str, Any], dirs: dict[str, dict[str, str]],
+                       receipts: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Check one declared prerequisite. Returns {kind, value, met, detail}.
+
+    `sibling-skill` is why this lives in Python rather than in the app: answering it
+    means knowing what is installed, which is receipts.
+    """
+    kind = next((k for k in pre if k in PREREQ_KINDS), None)
+    if kind is None:
+        return {"kind": None, "value": None, "met": False, "detail": "unknown prerequisite kind"}
+    value = pre[kind]
+    if kind == "binary":
+        found = shutil.which(str(value))
+        return {"kind": kind, "value": value, "met": bool(found),
+                "detail": found or "not on PATH"}
+    if kind == "env":
+        present = bool(os.environ.get(str(value)))
+        return {"kind": kind, "value": value, "met": present,
+                "detail": "set" if present else "not set"}
+    if kind == "node":
+        have = _node_version()
+        if have is None:
+            return {"kind": kind, "value": value, "met": False, "detail": "node not on PATH"}
+        ok = _version_satisfies(have, str(value))
+        if ok is None:
+            return {"kind": kind, "value": value, "met": False,
+                    "detail": f"{have} found; range '{value}' not understood"}
+        return {"kind": kind, "value": value, "met": ok, "detail": have}
+    sibling = Entry(type="skill", name=str(value), description="", source="")
+    scopes = installed_scopes(dirs, sibling)
+    return {"kind": kind, "value": value, "met": bool(scopes),
+            "detail": f"installed ({', '.join(scopes)})" if scopes else "not installed"}
+
+
 def load_setup(dest: Path) -> tuple["dict[str, Any] | None", list[str]]:
     """Parse the setup manifest of the installed copy at *dest*.
 
@@ -2610,6 +2692,94 @@ def cmd_use(args: argparse.Namespace) -> int:
     return 0 if all(r["verified"] for r in results) else 1
 
 
+def cmd_setup(args: argparse.Namespace) -> int:
+    cfg = load_config()
+    refresh_catalogs(cfg, args.no_pull)
+    entries = resolved_entries(cfg, args)
+    multi = multi_catalog(cfg)
+    receipts = load_receipts()
+
+    entry = find_exact(entries, args.name)
+    if entry is None:
+        cands = fuzzy_candidates(entries, args.name)
+        payload = {
+            "status": "AMBIGUOUS" if cands else "NOT_FOUND",
+            "query": args.name,
+            "candidates": [{"type": c.type, "name": c.name, "description": c.description,
+                            "catalog": c.catalog} for c in cands],
+        }
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        elif cands:
+            print(f'No exact match for "{args.name}". Did you mean:')
+            for c in cands:
+                print(f"  [{c.type}] {c.name}" + (f"  ({c.catalog})" if multi else ""))
+        else:
+            print(f'No match for "{args.name}". Try `library search`.')
+        return 2
+
+    # The manifest belongs to the *installed* copy, so this reads the disk, not the
+    # catalog. Nothing installed means nothing to report — not an error (§4.5).
+    dest = next((Path(d) for d in sorted(entry_dests(cfg.dirs, entry, receipts))
+                 if Path(d).exists()), None)
+    manifest, problems = (None, []) if dest is None else load_setup(dest)
+    prerequisites = [check_prerequisite(p, cfg.dirs, receipts)
+                     for p in (manifest or {}).get("prerequisites") or []]
+    unmet = [p for p in prerequisites if not p["met"]]
+
+    payload = {
+        "status": "OK",
+        "name": entry.name,
+        "type": entry.type,
+        "catalog": entry.catalog,
+        "installed": dest is not None,
+        "dest": str(dest) if dest else None,
+        "has_setup": manifest is not None,
+        "manifest": manifest,
+        "problems": problems,
+        "prerequisites": prerequisites,
+        # Ready means the app can start the walkthrough: a manifest that validates and
+        # every prerequisite met. A manifest with problems is never "ready anyway".
+        "ready": manifest is not None and not problems and not unmet,
+    }
+
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    if dest is None:
+        print(f"[{entry.type}] {entry.name} is not installed — nothing to set up. "
+              f"Install it first: library use {entry.name}")
+        return 0
+    if manifest is None:
+        print(f"[{entry.type}] {entry.name} has no {SETUP_FILE} — no setup needed.")
+        for p in problems:
+            print(f"  problem: {p}")
+        return 0
+
+    print(f"[{entry.type}] {entry.name} — {manifest.get('summary', 'setup available')}")
+    print(f"  manifest: {dest / SETUP_FILE}")
+    if problems:
+        print("  INVALID — the walkthrough is disabled until these are fixed:")
+        for p in problems:
+            print(f"    {p}")
+    if prerequisites:
+        print("  Prerequisites:")
+        for p in prerequisites:
+            mark = "ok  " if p["met"] else "MISS"
+            print(f"    [{mark}] {p['kind']}: {p['value']} — {p['detail']}")
+    secrets = manifest.get("secrets") or []
+    if secrets:
+        print("  Values to collect:")
+        for s in secrets:
+            if not isinstance(s, dict):
+                continue
+            tail = " (optional)" if s.get("optional") else ""
+            print(f"    {s.get('key')} via {s.get('delivery', 'config-file')}{tail}")
+    print(f"  Ready: {'yes' if payload['ready'] else 'no'}")
+    return 0
+
+
 def uninstall_entry(
     dirs: dict[str, dict[str, str]],
     entry: Entry,
@@ -4397,6 +4567,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(sp)
     add_catalog_flag(sp)
     sp.set_defaults(func=cmd_use)
+
+    sp = sub.add_parser("setup", help="report an installed skill's setup manifest and prerequisites")
+    sp.add_argument("name")
+    add_common(sp)
+    add_catalog_flag(sp)
+    sp.set_defaults(func=cmd_setup)
 
     sp = sub.add_parser("show", help="everything known about one entry (exact name)")
     sp.add_argument("name")
