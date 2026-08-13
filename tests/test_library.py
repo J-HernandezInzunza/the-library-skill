@@ -3651,6 +3651,109 @@ library:
                          ("OK", [], []))
 
 
+# --------------------------------------------------------------------------- #
+# Install receipts written by use/sync (design §3)
+# --------------------------------------------------------------------------- #
+
+class TestInstallsWriteReceipts(unittest.TestCase):
+    REMOTE_SOURCE = "https://github.com/acme/agentics/blob/main/skills/from-git/SKILL.md"
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in ("own-dep", "needs-own"):
+            (self.src / name).mkdir(parents=True)
+            (self.src / name / "SKILL.md").write_text(f"# {name}\n")
+
+        # A bare repo standing in for GitHub: the source URL parses as remote, and
+        # clone_urls is redirected at it so the clone stays offline (R18.6).
+        self.repo = TempGitRepo(self.tool.root, name="agentics")
+        self.repo.commit("skills/from-git/SKILL.md", "# from-git\n")
+        self.repo.push()
+        self.head = self.repo.head()
+
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: needs-own
+      description: Needs a dep from its own catalog
+      source: {self.src}/needs-own/SKILL.md
+      requires: ["skill:own-dep"]
+    - name: own-dep
+      description: Dependency living in the same catalog
+      source: {self.src}/own-dep/SKILL.md
+    - name: from-git
+      description: Installed from a git remote
+      source: {self.REMOTE_SOURCE}
+  agents: []
+  prompts: []
+""")
+
+    def use(self, *argv: str) -> None:
+        code, _, err = run_cli("use", *argv, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+    @contextlib.contextmanager
+    def _local_remote(self):
+        remote = str(self.repo.remote)
+        with patch.object(library.Source, "clone_urls", lambda _self: [remote]):
+            yield
+
+    def installed_dir(self, name: str) -> Path:
+        return self.tool.home / ".claude/skills" / name
+
+    def test_every_installed_item_including_dependencies_gets_a_receipt(self) -> None:
+        self.use("needs-own")
+        receipts = library.load_receipts()
+        self.assertEqual(sorted(r["name"] for r in receipts.values()),
+                         ["needs-own", "own-dep"])
+        rec = receipts[str(self.installed_dir("needs-own"))]
+        self.assertEqual(rec["catalog"], "personal")
+        self.assertEqual(rec["scope"], "global")
+        self.assertEqual(rec["type"], "skill")
+        self.assertEqual(rec["content_hash"],
+                         library.content_hash(self.installed_dir("needs-own")))
+        self.assertTrue(rec["installed_at"].endswith("Z"))
+
+    def test_reinstalling_updates_the_receipt_instead_of_duplicating_it(self) -> None:
+        self.use("own-dep")
+        first = library.load_receipts()[str(self.installed_dir("own-dep"))]
+        (self.src / "own-dep" / "SKILL.md").write_text("# own-dep v2\n")
+        self.use("own-dep")
+        receipts = library.load_receipts()
+        self.assertEqual(len(receipts), 1)
+        self.assertNotEqual(receipts[first["dest"]]["content_hash"], first["content_hash"])
+
+    def test_a_local_source_records_a_null_commit(self) -> None:
+        # Nothing to record: a directory on disk has no sha (§3).
+        self.use("own-dep")
+        self.assertIsNone(library.load_receipts()[str(self.installed_dir("own-dep"))]["commit"])
+
+    def test_a_remote_source_records_the_commit_it_was_cloned_from(self) -> None:
+        with self._local_remote():
+            self.use("from-git")
+        rec = library.load_receipts()[str(self.installed_dir("from-git"))]
+        self.assertEqual(rec["commit"], self.head)
+        self.assertEqual(rec["source"], self.REMOTE_SOURCE)
+
+    def test_a_project_scope_install_records_its_own_dest_and_scope(self) -> None:
+        code, _, err = run_cli("use", "own-dep", "--project", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        rec = library.load_receipts()[str(self.tool.project / ".claude/skills/own-dep")]
+        self.assertEqual(rec["scope"], "project")
+
+    def test_sync_refreshes_the_receipt(self) -> None:
+        self.use("own-dep")
+        before = library.load_receipts()[str(self.installed_dir("own-dep"))]
+        (self.src / "own-dep" / "SKILL.md").write_text("# own-dep v2\n")
+        code, _, err = run_cli("sync", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        after = library.load_receipts()[before["dest"]]
+        self.assertNotEqual(after["content_hash"], before["content_hash"])
+        self.assertEqual(after["content_hash"], library.content_hash(self.installed_dir("own-dep")))
+
+
 class TestWriteTarget(unittest.TestCase):
     """R7.1–R7.5, R6.11 — the four branches of design §8's targeting, in order."""
 

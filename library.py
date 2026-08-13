@@ -204,6 +204,33 @@ def save_receipts(receipts: dict[str, dict[str, Any]]) -> None:
     write_machine_file(RECEIPTS_PATH, json.dumps(payload, indent=2) + "\n")
 
 
+def record_install(entry: "Entry", dest: Path, scope: str, commit: "str | None") -> dict[str, Any]:
+    """Record what was just installed at *dest*, replacing any earlier receipt for it.
+
+    Keyed by dest (not name + scope), because `--dir` allows arbitrary destinations and
+    the same entry can legitimately live in several places. Re-installing therefore
+    updates one record instead of accumulating duplicates.
+
+    Called from `_install_one`, the single choke point every install passes through, so
+    `use` and `sync` get receipts without either command knowing they exist.
+    """
+    receipt = {
+        "dest": str(dest),
+        "name": entry.name,
+        "type": entry.type,
+        "catalog": entry.catalog,
+        "scope": scope,
+        "source": entry.source,
+        "commit": commit,
+        "content_hash": content_hash(dest),
+        "installed_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    receipts = load_receipts()
+    receipts[receipt["dest"]] = receipt
+    save_receipts(receipts)
+    return receipt
+
+
 # --------------------------------------------------------------------------- #
 # Local config (per-device; gitignored config.local.yaml)
 # --------------------------------------------------------------------------- #
@@ -1282,17 +1309,18 @@ def install_dest(entry: Entry, target_base: Path) -> Path:
     return target_base / f"{entry.name}.md"
 
 
-def fetch_local(src: Source, entry: Entry, target_base: Path) -> tuple[Path, dict[str, Any]]:
+def fetch_local(src: Source, entry: Entry, target_base: Path) -> tuple[Path, dict[str, Any], "str | None"]:
+    """Install from a path on this machine. No commit to record — hence the None (§3)."""
     ref = src.path
     if ref is None or not ref.exists():
         raise LibraryError(f"local source not found: {src.path}")
     dest = install_dest(entry, target_base)
     if entry.type == "skill":
-        return dest, _copy_dir(ref.parent, dest)
-    return dest, _copy_file(ref, dest)
+        return dest, _copy_dir(ref.parent, dest), None
+    return dest, _copy_file(ref, dest), None
 
 
-def fetch_remote(src: Source, entry: Entry, target_base: Path) -> tuple[Path, dict[str, Any]]:
+def fetch_remote(src: Source, entry: Entry, target_base: Path) -> tuple[Path, dict[str, Any], "str | None"]:
     tmp = Path(tempfile.mkdtemp(prefix="library-"))
     try:
         cloned = False
@@ -1312,15 +1340,21 @@ def fetch_remote(src: Source, entry: Entry, target_base: Path) -> tuple[Path, di
         ref = repo / src.file_path
         if not ref.exists():
             raise LibraryError(f"referenced file missing in repo: {src.file_path}")
+        # The clone is already on disk, so the sha it came from is free here and
+        # impossible to recover later: the tree is deleted on the way out.
+        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                              capture_output=True, text=True)
+        commit = head.stdout.strip() if head.returncode == 0 else None
         dest = install_dest(entry, target_base)
         if entry.type == "skill":
-            return dest, _copy_dir(ref.parent, dest)
-        return dest, _copy_file(ref, dest)
+            return dest, _copy_dir(ref.parent, dest), commit
+        return dest, _copy_file(ref, dest), commit
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def fetch(entry: Entry, target_base: Path) -> tuple[Path, dict[str, Any]]:
+def fetch(entry: Entry, target_base: Path) -> tuple[Path, dict[str, Any], "str | None"]:
+    """Install *entry* under *target_base*; returns (dest, diff, source commit or None)."""
     src = parse_source(entry.source)
     if src.kind == "local":
         return fetch_local(src, entry, target_base)
@@ -1989,9 +2023,10 @@ def _install_one(
     custom: str | None,
 ) -> dict[str, Any]:
     base = resolve_target_base(dirs, entry, scope, custom)
-    dest, changes = fetch(entry, base)
+    dest, changes, commit = fetch(entry, base)
     main = main_file_for(entry, dest)
     ok = main.exists()
+    record_install(entry, dest, scope, commit)
     return {"type": entry.type, "name": entry.name, "catalog": entry.catalog,
             "dest": str(dest), "verified": ok, "changes": changes}
 

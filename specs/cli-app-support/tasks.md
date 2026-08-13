@@ -46,7 +46,7 @@ Commit style follows the repo's history: `feat(scope): …`, `fix(scope): …`, 
     identical trees written twice. `just check` passes.
   - **Commit:** `feat(receipts): add the install receipt store`
 
-- [ ] **A3 — `use` and `sync` write receipts**
+- [x] **A3 — `use` and `sync` write receipts**
   - **Files:** `library.py`, `tests/test_library.py`
   - **Design:** §3
   - **Do:** Record the receipt in `_install_one` (L1884), the single choke point for installs. Capture
