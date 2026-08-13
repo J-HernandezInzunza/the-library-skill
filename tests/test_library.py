@@ -20,6 +20,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -2594,6 +2595,61 @@ class TestCatalogMigrate(unittest.TestCase):
         self.assertTrue(library.load_config().legacy_shape)
         self.migrate()
         self.assertFalse(library.load_config().legacy_shape)
+
+
+class TestWriteMachineFile(unittest.TestCase):
+    """Atomic, locked writes for machine-owned state (design §7)."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.target = self.tool.tool_dir / "state.json"
+
+    def _spawn_writer(self, marker: str, size: int) -> subprocess.Popen:
+        """A separate *process* writing a big payload — threads would share the fd table
+        and so would not exercise the inter-process lock the real front doors need."""
+        script = (
+            "import sys; sys.path.insert(0, %r)\n"
+            "import library\n"
+            "from pathlib import Path\n"
+            "library.write_machine_file(Path(%r), %r * %d)\n"
+            % (str(REAL_TOOL_DIR), str(self.target), marker, size)
+        )
+        return subprocess.Popen([sys.executable, "-c", script],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def test_concurrent_writers_leave_one_whole_payload(self) -> None:
+        size = 200_000
+        procs = [self._spawn_writer(m, size) for m in "abcd"]
+        for p in procs:
+            _, err = p.communicate(timeout=60)
+            self.assertEqual(p.returncode, 0, err.decode())
+        text = self.target.read_text()
+        self.assertEqual(len(text), size, "file was truncated or interleaved")
+        self.assertIn(text[0], "abcd")
+        self.assertEqual(text, text[0] * size, "two writers' bytes were interleaved")
+
+    def test_a_leftover_lock_file_does_not_deadlock(self) -> None:
+        # flock dies with the process that took it, so a lock file on disk from a
+        # crashed run is inert. Writing must not wait on it.
+        self.target.with_name(self.target.name + ".lock").write_text("")
+        library.write_machine_file(self.target, "ok")
+        self.assertEqual(self.target.read_text(), "ok")
+
+    def test_creates_missing_parent_directories(self) -> None:
+        nested = self.tool.tool_dir / "a" / "b" / "state.json"
+        library.write_machine_file(nested, "ok")
+        self.assertEqual(nested.read_text(), "ok")
+
+    def test_a_failed_write_leaves_no_temp_file_behind(self) -> None:
+        class Boom(Exception):
+            pass
+
+        with patch("library.os.replace", side_effect=Boom):
+            with self.assertRaises(Boom):
+                library.write_machine_file(self.target, "nope")
+        self.assertFalse(self.target.exists())
+        self.assertEqual([p.name for p in self.tool.tool_dir.glob("*.tmp")], [])
 
 
 class TestWriteConfig(unittest.TestCase):

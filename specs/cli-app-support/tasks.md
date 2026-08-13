@@ -25,7 +25,7 @@ Commit style follows the repo's history: `feat(scope): …`, `fix(scope): …`, 
 
 ## Phase A — Receipts, the keystone
 
-- [ ] **A1 — Atomic, locked writes for machine-owned state**
+- [x] **A1 — Atomic, locked writes for machine-owned state**
   - **Files:** `library.py`, `tests/test_library.py`
   - **Design:** §7
   - **Do:** Add one helper that writes a machine-owned file atomically (temp + `os.replace`) under an

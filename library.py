@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import difflib
+import fcntl
 import filecmp
 import json
 import os
@@ -101,6 +102,39 @@ class AmbiguousCatalog(Exception):
     def __init__(self, catalogs: list[str]) -> None:
         super().__init__("more than one writable catalog: " + ", ".join(catalogs))
         self.catalogs = catalogs
+
+
+# --------------------------------------------------------------------------- #
+# Machine-owned state files
+# --------------------------------------------------------------------------- #
+
+def write_machine_file(path: Path, text: str) -> None:
+    """Write *text* to *path* atomically, serialized against other writers.
+
+    Machine-owned files (config.local.yaml, .installs.json) are rewritten wholesale by
+    commands that can now run from three front doors at once. Two guards, because they
+    cover different failures: the advisory lock keeps two writers from interleaving,
+    and the temp-file rename means a *reader* — which takes no lock — never observes a
+    half-written file. Last writer wins; neither file merges.
+
+    The lock is `flock` on a sidecar file, so it is released by the kernel when the
+    holder exits. A lock file left behind by a crashed process is inert, not a deadlock.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_name(path.name + ".lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 # --------------------------------------------------------------------------- #
