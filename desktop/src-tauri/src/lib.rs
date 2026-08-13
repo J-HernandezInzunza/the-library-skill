@@ -8,6 +8,7 @@
 pub mod cli;
 pub mod error;
 
+use cli::Entry;
 use error::AppError;
 
 /// The full catalog with install status — backs the list view.
@@ -16,8 +17,8 @@ use error::AppError;
 /// subcommand: filtering in the UI is instant, offline, and costs no subprocess
 /// per keystroke.
 #[tauri::command]
-fn library_list() -> Result<serde_json::Value, AppError> {
-    cli::run_json(&["list"])
+fn library_list() -> Result<Vec<Entry>, AppError> {
+    cli::list()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

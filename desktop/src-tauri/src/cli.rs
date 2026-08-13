@@ -8,7 +8,63 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::AppError;
+
+/// One record from `list --json` (and, identically, `search --json`).
+///
+/// The first nine fields are `library.py`'s documented contract: existing keys
+/// never change name, type, or meaning, while new keys may appear (C-D8). So this
+/// mirror **ignores unknown fields** rather than failing to deserialize — a strict
+/// parse would break the app on the next CLI release, as it would have on this one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Entry {
+    pub r#type: String,
+    pub name: String,
+    pub description: String,
+    pub source: String,
+    #[serde(default)]
+    pub requires: Vec<String>,
+    #[serde(default)]
+    pub installed: bool,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    pub catalog: String,
+    #[serde(default)]
+    pub overridden_by: Option<String>,
+    /// `installed` / `drifted` / `untracked` / `missing` / `stale`, derived by the
+    /// CLI from install receipts. Deliberately a `String`, not an enum: a state a
+    /// future CLI adds must render as unknown, not fail the whole parse.
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub receipt: Option<Receipt>,
+    #[serde(default)]
+    pub has_setup: bool,
+}
+
+/// The install receipt behind an entry's `state`, when the tool put the copy there.
+///
+/// Absent for `untracked` and never-installed entries, so every field is optional
+/// in practice; the app renders what it has rather than requiring a full record.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Receipt {
+    #[serde(default)]
+    pub dest: String,
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default)]
+    pub catalog: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub commit: String,
+    #[serde(default)]
+    pub content_hash: String,
+    #[serde(default)]
+    pub installed_at: String,
+}
 
 /// Absolute path to the tool repo the app drives.
 ///
@@ -72,6 +128,14 @@ pub fn run_json(args: &[&str]) -> Result<serde_json::Value, AppError> {
     };
 
     interpret(output.status.code(), &output.stdout, &output.stderr)
+}
+
+/// The full catalog with install state (R2.1).
+pub fn list() -> Result<Vec<Entry>, AppError> {
+    let payload = run_json(&["list"])?;
+    serde_json::from_value(payload).map_err(|e| AppError::Json {
+        detail: e.to_string(),
+    })
 }
 
 /// Turn a finished `library` run into JSON or a typed error.
@@ -194,6 +258,39 @@ mod tests {
         let body = br#"{"status": "REFUSED", "dest": "/tmp/x"}"#;
         let err = interpret(Some(2), body, b"no install receipt").unwrap_err();
         assert!(matches!(err, AppError::Cli { code: 2, .. }));
+    }
+
+    /// A minimal record plus whatever the caller wants to add.
+    fn entry_json(extra: &str) -> String {
+        format!(
+            r#"{{"type":"skill","name":"a","description":"d","source":"s",
+               "requires":[],"installed":true,"scopes":["global"],"catalog":"personal",
+               "overridden_by":null,"state":"installed","receipt":null,"has_setup":false
+               {extra}}}"#
+        )
+    }
+
+    #[test]
+    fn a_key_the_app_has_never_heard_of_does_not_break_the_parse() {
+        let entry: Entry =
+            serde_json::from_str(&entry_json(r#","invented_next_release":42"#)).expect("parse");
+        assert_eq!(entry.name, "a");
+        assert!(entry.has_setup == false);
+    }
+
+    #[test]
+    fn an_unrecognised_state_round_trips_instead_of_erroring() {
+        let raw = entry_json("").replace("\"installed\",", "\"quarantined\",");
+        let entry: Entry = serde_json::from_str(&raw).expect("parse");
+        assert_eq!(entry.state, "quarantined");
+    }
+
+    #[test]
+    fn a_receipt_is_parsed_when_the_tool_placed_the_copy() {
+        let receipt = r#","receipt":{"dest":"/x","scope":"global","commit":"abc"}"#;
+        let raw = entry_json("").replace(",\"receipt\":null", receipt);
+        let entry: Entry = serde_json::from_str(&raw).expect("parse");
+        assert_eq!(entry.receipt.expect("receipt").commit, "abc");
     }
 
     #[test]

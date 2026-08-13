@@ -1,20 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { describeAppError } from "./types";
-
-/** One catalog entry as emitted by `library list --json`. */
-interface Entry {
-  type: string;
-  name: string;
-  description: string;
-  source: string;
-  requires: string[];
-  installed?: boolean;
-  scopes?: string[];
-  catalog: string;
-  overridden_by?: string | null;
-}
+import { describeAppError, type Entry } from "./types";
 
 const entries = ref<Entry[]>([]);
 const query = ref("");
@@ -83,7 +70,7 @@ onMounted(load);
           <span class="type">{{ e.type }}</span>
           <span class="catalog">{{ e.catalog }}</span>
           <span v-if="e.installed" class="badge installed">
-            installed{{ e.scopes?.length ? ` · ${e.scopes.join(", ")}` : "" }}
+            installed{{ e.scopes.length ? ` · ${e.scopes.join(", ")}` : "" }}
           </span>
           <span v-else class="badge missing">not installed</span>
           <span v-if="e.overridden_by" class="badge overridden">
@@ -91,7 +78,7 @@ onMounted(load);
           </span>
         </div>
         <p class="desc">{{ e.description }}</p>
-        <p v-if="e.requires?.length" class="requires">
+        <p v-if="e.requires.length" class="requires">
           requires: {{ e.requires.join(", ") }}
         </p>
       </li>

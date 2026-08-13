@@ -1,4 +1,46 @@
 /**
+ * The install receipt behind an entry's state, when the tool placed the copy.
+ *
+ * Absent for hand-installed (`untracked`) and never-installed entries.
+ */
+export interface Receipt {
+  dest: string;
+  scope: string;
+  catalog: string;
+  source: string;
+  commit: string;
+  content_hash: string;
+  installed_at: string;
+}
+
+/**
+ * One record from `library list --json`, mirrored from `src-tauri/src/cli.rs`.
+ *
+ * `search --json` returns the same record, so there is one type, not two. Extra
+ * keys from a newer CLI are ignored rather than fatal: the CLI's contract is that
+ * existing keys never change meaning while new ones may be added.
+ */
+export interface Entry {
+  type: string;
+  name: string;
+  description: string;
+  source: string;
+  requires: string[];
+  installed: boolean;
+  scopes: string[];
+  catalog: string;
+  overridden_by: string | null;
+  /**
+   * `installed` | `drifted` | `untracked` | `missing` | `stale`, derived by the
+   * CLI from receipts. Typed as `string` on purpose: a state added by a future
+   * CLI must render as unknown rather than break the view.
+   */
+  state: string;
+  receipt: Receipt | null;
+  has_setup: boolean;
+}
+
+/**
  * The backend contract, mirrored from `src-tauri/src/error.rs`.
  *
  * Errors arrive as a tagged union so the UI can act on them rather than dump a

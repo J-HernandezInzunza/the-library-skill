@@ -121,7 +121,7 @@ constant refactoring of a single `lib.rs`.
   - **Verify:** Test asserting `LIBRARY_CWD` is present in the child env for every call. Gate passes.
   - **Commit:** `fix(desktop/cli): always set LIBRARY_CWD so project installs are anchored`
 
-- [ ] **T1.5 — Typed entry payloads that tolerate CLI growth**
+- [x] **T1.5 — Typed entry payloads that tolerate CLI growth**
   - **Files:** `desktop/src-tauri/src/cli.rs`, `desktop/src/types.ts`
   - **Requirements:** R1.1, R2.1
   - **Do:** Mirror the twelve `list --json` keys in one Rust struct and one TS interface: the nine
