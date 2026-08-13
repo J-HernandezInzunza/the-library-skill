@@ -257,6 +257,8 @@ Two ways to drive it, same result:
 | Update the tool | "update the library tool" | `./library self-update` |
 
 **CLI flags:** `--json` (machine-readable) · `--no-pull` (skip catalog refresh) ·
+`--check-remote` (`list`: mark installs whose source has moved as `stale`) ·
+`--force` (`sync`: re-fetch even unchanged items) ·
 `--dry-run` (preview `add`/`update`/`remove`/`push`, or resolve a `use` destination
 without installing) · `--project`/`--dir` (`use` target; default is global) ·
 `--deep` (`doctor` source-liveness) · `--catalog <id>` (restrict any name-taking command

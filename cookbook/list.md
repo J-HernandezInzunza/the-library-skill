@@ -56,12 +56,19 @@ three keys that come from the install receipt rather than the catalog:
 
 | Key | Meaning |
 | --- | --- |
-| `state` | `not_installed`, `installed` (present, untouched), `drifted` (the installed copy was edited), `untracked` (present, but this tool didn't install it), or `missing` (a receipt whose files are gone) |
+| `state` | `not_installed`, `installed` (present, untouched), `drifted` (the installed copy was edited), `untracked` (present, but this tool didn't install it), `missing` (a receipt whose files are gone), or `stale` (**only with `--check-remote`**) |
 | `receipt` | the install record — `catalog`, `scope`, `source`, `commit`, `installed_at` — or `null` when there is none |
 | `has_setup` | the installed copy ships a `setup.yaml` walkthrough (see `library setup <name>`) |
 
 `installed` stays a plain bool and keeps its meaning: *is a copy present*. `state` is the
 finer answer on top of it — an `untracked` or `drifted` item is still `installed: true`.
+
+**`--check-remote` is opt-in on purpose.** It asks each source repo for its current head
+(one call per repo, not per entry) and marks a clean install `stale` when the source has
+moved past the commit it was installed from. A plain `list` never touches the network, so
+it works offline and never hangs. Pass it when the user asks "is anything out of date?" —
+not as a default. An unreachable source leaves the state unchanged rather than guessing,
+and a `drifted` copy stays `drifted`: the local edit is the more urgent fact.
 
 Use `state` when the user's question is about their machine ("is this up to date?",
 "did I change this?") and `installed` when it's about presence. When something reads

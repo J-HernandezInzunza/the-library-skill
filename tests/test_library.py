@@ -4327,6 +4327,100 @@ library:
         self.assertIn("0 changed", out)
 
 
+class TestListCheckRemote(unittest.TestCase):
+    """Opt-in staleness against the source (design §3.1, C-D5)."""
+
+    REMOTE_SOURCE = "https://github.com/acme/agentics/blob/main/skills/from-git/SKILL.md"
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        (self.src / "local-skill").mkdir(parents=True)
+        (self.src / "local-skill" / "SKILL.md").write_text("# local-skill\n")
+        self.repo = TempGitRepo(self.tool.root, name="agentics")
+        self.repo.commit("skills/from-git/SKILL.md", "# from-git v1\n")
+        self.repo.push()
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: from-git
+      description: From a git remote
+      source: {self.REMOTE_SOURCE}
+    - name: local-skill
+      description: From a path on this machine
+      source: {self.src}/local-skill/SKILL.md
+  agents: []
+  prompts: []
+""")
+
+    @contextlib.contextmanager
+    def local_remote(self):
+        remote = str(self.repo.remote)
+        with patch.object(library.Source, "clone_urls", lambda _self: [remote]):
+            yield
+
+    def use(self, name: str) -> None:
+        with self.local_remote():
+            code, _, err = run_cli("use", name, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+    def rows(self, *extra: str) -> dict[str, dict[str, Any]]:
+        with self.local_remote():
+            code, out, err = run_cli("list", *extra, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        return {i["name"]: i for i in json.loads(out)}
+
+    def test_a_plain_list_makes_no_network_call(self) -> None:
+        # C-D5: a read command that silently hits the network hangs on a plane.
+        self.use("from-git")
+        self.repo.commit("skills/from-git/SKILL.md", "# from-git v2\n")
+        self.repo.push()
+        calls: list[Any] = []
+        with patch.object(library, "remote_head",
+                          lambda src, cache: calls.append(src) or "deadbeef"):
+            rows = self.rows()
+        self.assertEqual(calls, [])
+        self.assertEqual(rows["from-git"]["state"], "installed")
+
+    def test_check_remote_marks_a_behind_install_stale(self) -> None:
+        self.use("from-git")
+        self.repo.commit("skills/from-git/SKILL.md", "# from-git v2\n")
+        self.repo.push()
+        self.assertEqual(self.rows("--check-remote")["from-git"]["state"], "stale")
+
+    def test_check_remote_leaves_a_current_install_installed(self) -> None:
+        self.use("from-git")
+        self.assertEqual(self.rows("--check-remote")["from-git"]["state"], "installed")
+
+    def test_a_local_source_is_never_stale(self) -> None:
+        # There is no head to be behind; sync compares trees for these instead.
+        self.use("local-skill")
+        self.assertEqual(self.rows("--check-remote")["local-skill"]["state"], "installed")
+
+    def test_drift_outranks_staleness(self) -> None:
+        self.use("from-git")
+        (self.tool.home / ".claude/skills/from-git/SKILL.md").write_text("# edited\n")
+        self.repo.commit("skills/from-git/SKILL.md", "# from-git v2\n")
+        self.repo.push()
+        self.assertEqual(self.rows("--check-remote")["from-git"]["state"], "drifted")
+
+    def test_an_unreachable_remote_leaves_the_state_alone(self) -> None:
+        self.use("from-git")
+        with patch.object(library, "remote_head", lambda src, cache: None):
+            rows = self.rows("--check-remote")
+        self.assertEqual(rows["from-git"]["state"], "installed")
+
+    def test_the_human_output_says_stale(self) -> None:
+        self.use("from-git")
+        self.repo.commit("skills/from-git/SKILL.md", "# from-git v2\n")
+        self.repo.push()
+        with self.local_remote():
+            code, out, err = run_cli("list", "--check-remote", "--no-pull")
+        self.assertEqual(code, 0, err)
+        self.assertIn("stale (global)", out)
+
+
 class TestDoctorInstallHealth(unittest.TestCase):
     """doctor validates setup manifests and reports install drift (design §4.5)."""
 

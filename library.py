@@ -2415,7 +2415,8 @@ def winning_catalogs(cfg: Config) -> dict[str, str]:
 
 
 def entry_record(cfg: Config, entry: Entry, winners: dict[str, str],
-                 receipts: dict[str, dict[str, Any]]) -> dict[str, Any]:
+                 receipts: dict[str, dict[str, Any]],
+                 heads: "dict[str, str | None] | None" = None) -> dict[str, Any]:
     """The one JSON shape for a catalog entry, shared by `list` and `search` (§4.1).
 
     Two commands answering the same question must answer it identically; when `search`
@@ -2431,6 +2432,19 @@ def entry_record(cfg: Config, entry: Entry, winners: dict[str, str],
     scopes = [] if overridden_by else installed_scopes(cfg.dirs, entry)
     state, receipt = (("not_installed", None) if overridden_by
                       else entry_install_state(cfg.dirs, entry, receipts))
+    # Staleness costs a network round trip, so it is only computed when asked for
+    # (C-D5: a read command that silently hits the network hangs on a plane). Only a
+    # clean install can be `stale`; a drifted or untracked copy has a more urgent
+    # answer already, and it isn't about the source.
+    if heads is not None and state == "installed" and receipt and receipt.get("commit"):
+        try:
+            src = parse_source(entry.source)
+        except LibraryError:
+            src = None
+        if src is not None and src.kind != "local":
+            head = remote_head(src, heads)
+            if head and head != receipt["commit"]:
+                state = "stale"
     return {
         # The nine keys below are the documented contract (C-D8): never renamed, never
         # retyped. New information arrives as new keys instead.
@@ -2453,7 +2467,8 @@ def cmd_list(args: argparse.Namespace) -> int:
     winners = winning_catalogs(cfg)
 
     receipts = load_receipts()
-    records = [entry_record(cfg, e, winners, receipts) for e in entries]
+    heads: dict[str, str | None] | None = {} if args.check_remote else None
+    records = [entry_record(cfg, e, winners, receipts, heads) for e in entries]
     if args.json:
         print(json.dumps(records, indent=2))
         return 0
@@ -2463,6 +2478,8 @@ def cmd_list(args: argparse.Namespace) -> int:
         overridden_by, scopes = rec["overridden_by"], rec["scopes"]
         if overridden_by:
             status = f"overridden by {overridden_by}"
+        elif rec["state"] == "stale":
+            status = f"stale ({', '.join(scopes)})"
         else:
             status = f"installed ({', '.join(scopes)})" if scopes else "not installed"
         rows.append((e, status, scopes, overridden_by))
@@ -4635,6 +4652,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_link)
 
     sp = sub.add_parser("list", help="show the catalog with install status")
+    sp.add_argument("--check-remote", dest="check_remote", action="store_true",
+                    help="also check each installed item against its source's current head "
+                         "(one network call per source repo)")
     add_common(sp)
     add_catalog_flag(sp)
     sp.set_defaults(func=cmd_list)

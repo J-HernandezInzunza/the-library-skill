@@ -208,7 +208,7 @@ Commit style follows the repo's history: `feat(scope): …`, `fix(scope): …`, 
     called) and that a changed sha still refreshes. `just check` passes.
   - **Commit:** `perf(sync): skip items whose source and local copy are both unchanged`
 
-- [ ] **F2 — Optional staleness against the remote**
+- [x] **F2 — Optional staleness against the remote**
   - **Files:** `library.py`, `cookbook/list.md`, `tests/test_library.py`
   - **Design:** §3.1, C-D5
   - **Do:** `list --check-remote` adds the `stale` state using F1's `ls-remote` path. Off by default:
