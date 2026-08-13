@@ -137,7 +137,7 @@ Commit style follows the repo's history: `feat(scope): …`, `fix(scope): …`, 
 
 ## Phase D — Bootstrap
 
-- [ ] **D1 — `bootstrap.py`**
+- [x] **D1 — `bootstrap.py`**
   - **Files:** `bootstrap.py`, `justfile`, `cookbook/install.md`, `README.md`, `tests/`
   - **Design:** §4.4, C-D6
   - **Do:** Stdlib-only, idempotent: preflight `git` and `python3`, create `.venv`, install PyYAML,

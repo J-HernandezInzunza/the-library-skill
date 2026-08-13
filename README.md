@@ -23,7 +23,7 @@ the catalog looks like, why it's built this way — see [What It Is](#what-it-is
 - **gh** (optional) — GitHub CLI, needed only when `autopush: true` on a **GitHub** catalog (auto-open PRs). Bitbucket catalogs never need a CLI — Bitbucket is fully supported and always uses the compare-URL flow. Install: `brew install gh` or see [gh docs](https://cli.github.com)
 - **git auth for your host(s)** — an SSH key (recommended) or a credential helper / token, for private catalog and source repos. GitHub: SSH key, `GITHUB_TOKEN`, or `gh auth login`. Bitbucket: SSH key or an app password. The tool is **non-interactive** — it never prompts for credentials (see Troubleshooting).
 - **just** (optional) — for justfile shortcuts. Install: `brew install just` or see [just docs](https://github.com/casey/just)
-- **python3** — for the deterministic CLI. PyYAML is installed into a local `.venv` via `just bootstrap` (one-time).
+- **python3** (3.9+) — for the deterministic CLI. PyYAML is installed into a local `.venv` by `python3 bootstrap.py` (or `just bootstrap`) — one-time, idempotent, stdlib-only. Any `library` command exiting `3` means that step hasn't run yet.
 - **Windows: use [WSL](https://learn.microsoft.com/windows/wsl/install)** — the `library` wrapper, the venv bin paths, and `library link` (which creates a symlink) assume a Unix shell, so run everything from inside WSL. Native PowerShell/cmd is not supported; Git Bash mostly works but the venv lands in `.venv/Scripts/` there, so the wrapper misses its bundled Python — WSL avoids that.
 
 ## Installation
@@ -47,13 +47,22 @@ Clone it wherever you keep your repos — it's a normal working clone you update
 
 ### 3. Bootstrap the CLI
 
-One-time per device — create the `.venv` and install PyYAML (no extra tooling needed):
+One-time per device — create the `.venv` and install PyYAML. `bootstrap.py` is stdlib-only
+(so it runs before anything is set up), idempotent (so re-running it is safe), and it
+verifies the CLI afterwards:
 
 ```bash
 # ⌨ from the clone dir:
-python3 -m venv .venv && .venv/bin/pip install pyyaml
-./library --help          # confirm it runs
+python3 bootstrap.py      # or: just bootstrap
+./library --help          # confirm it runs (bootstrap.py already did)
 ```
+
+`--json` reports the resolved paths (`venv_python`, `wrapper`, `config_path`,
+`config_exists`) for scripts and GUIs. A missing prerequisite is named specifically
+rather than generically ("git not found on PATH — install git, then re-run this script").
+
+**Exit code 3 from any `library` command means "not bootstrapped"** — PyYAML is missing.
+Run this step; nothing else is wrong.
 
 ### 4. Link the Skill
 
@@ -269,7 +278,7 @@ to one catalog, bypassing precedence — see [Personal Catalogs](#personal-catal
 The included `justfile` lets you run library commands from your terminal.
 
 ```bash
-just bootstrap             # One-time: create .venv + install PyYAML for the CLI
+just bootstrap             # One-time: create .venv + install PyYAML (runs bootstrap.py)
 
 # First-time setup:
 just init <catalog-url> <branch>   # Create per-device config + clone catalog repo
@@ -628,6 +637,7 @@ auth/setup gotchas, lives in **[docs/troubleshooting.md](docs/troubleshooting.md
         search.md
         doctor.md
         link.md
+    bootstrap.py              # Stdlib-only, idempotent venv + PyYAML setup (`just bootstrap`)
     library.py                # Deterministic CLI — the mechanics for every catalog op
     library                   # Wrapper that selects .venv python, then runs library.py
     check_docs.py             # Doc/CLI drift guard (run by `just check` + the pre-push hook)

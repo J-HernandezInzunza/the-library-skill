@@ -6,12 +6,10 @@ lib := justfile_directory() / "library"
 default:
     @just --list
 
-# One-time setup: create the .venv and install PyYAML for the CLI
-bootstrap:
-    python3 -m venv {{justfile_directory()}}/.venv
-    {{justfile_directory()}}/.venv/bin/pip install --quiet --upgrade pip pyyaml
+# One-time setup: create the .venv and install PyYAML for the CLI (idempotent)
+bootstrap *args:
+    @python3 {{justfile_directory()}}/bootstrap.py {{args}}
     -@git -C {{justfile_directory()}} config core.hooksPath .githooks 2>/dev/null && echo "Git hooks enabled (.githooks)"
-    @echo "Bootstrapped: PyYAML installed in .venv"
 
 # --- First-time setup ---------------------------------------------------
 
@@ -95,7 +93,7 @@ test:
 
 # All fast pre-push checks: Python compiles + doc/CLI drift + tests (no network). Run by the hook.
 check:
-    @{{justfile_directory()}}/.venv/bin/python -m py_compile {{justfile_directory()}}/library.py {{justfile_directory()}}/check_docs.py
+    @{{justfile_directory()}}/.venv/bin/python -m py_compile {{justfile_directory()}}/library.py {{justfile_directory()}}/bootstrap.py {{justfile_directory()}}/check_docs.py
     @{{justfile_directory()}}/.venv/bin/python {{justfile_directory()}}/check_docs.py
     @{{justfile_directory()}}/.venv/bin/python -m unittest discover -s {{justfile_directory()}}/tests -t {{justfile_directory()}}
 
