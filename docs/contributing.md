@@ -37,6 +37,25 @@ Consequences worth knowing when working on `library.py`:
   This is the rule `SKILL.md` puts on the agent, and the reason `mode` exists in the
   payload at all.
 
+## Source parsing (`parse_source`)
+
+One function turns an entry's `source` string into a `Source` record, and every fetch and
+push depends on it. The mappings it implements, for reference when changing it:
+
+| `source` | Parses to | Clone URL |
+|---|---|---|
+| `/abs/path/…` or `~/…` | `kind="local"`, `path` | none — copied from disk |
+| `https://github.com/<org>/<repo>/blob/<branch>/<path>` | org, repo, branch, file_path | `https://github.com/<org>/<repo>.git` |
+| `https://raw.githubusercontent.com/<org>/<repo>/<branch>/<path>` | org, repo, branch, file_path | `https://github.com/<org>/<repo>.git` |
+| `https://bitbucket.org/<ws>/<repo>/src/<branch>/<path>` (or `/raw/`) | workspace, repo, branch, file_path | `https://bitbucket.org/<ws>/<repo>.git` |
+
+Trailing `?at=` / `#lines` fragments are stripped from Bitbucket URLs. A source always names
+a *file*, and the fetch copies that file's whole parent directory. `clone_urls()` returns
+candidates in order so SSH can be tried before HTTPS.
+
+This is deliberately not in `SKILL.md`: the agent never parses a source itself, and telling
+it how to would invite it to try.
+
 ## Local checks (tool repo)
 
 Run the fast checks before pushing — Python compiles, doc/CLI drift, and the test suite:
