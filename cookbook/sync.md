@@ -49,14 +49,19 @@ overwriting it:
 - `~` modified · `+` added · `-` removed (relative paths within the item).
 - `new install` means the item wasn't present locally before this sync.
 - The footer reports `Synced N · M changed · failed K`.
-- `--json` adds a `changes` object (`{new_install, added, removed, modified}`) to each
-  synced entry; all pre-existing fields are unchanged.
+- `--json` adds a `changes` object (`{new_install, added, removed, modified}`) and a
+  `state` to each synced entry; all pre-existing fields are unchanged.
+- `state` is what the installed copy looked like **before** the refresh, from its install
+  receipt: `installed` (untouched), `drifted` (someone edited it), `untracked` (no receipt
+  — hand-installed, or installed before receipts existed), or `not_installed`. A drifted
+  or untracked item is called out on its line: *"was locally modified — overwritten"*.
+  Relay that; it's the only notice the user gets that local edits are gone.
 
 **Caveat — this is "source vs. currently-installed", not "since last sync".** If you've
 edited an installed copy locally, that local drift shows up as `modified` and the sync
-**overwrites it**. That's a useful "you're about to lose local edits" signal, but it is
-not a changelog of what the source author changed. True since-last-sync tracking would
-require storing per-install hashes (not implemented).
+**overwrites it** (by design — the CLI reports drift, it never refuses on it). That's a
+useful "you just lost local edits" signal, but it is not a changelog of what the source
+author changed.
 
 If items failed, surface them so the user can fix individually with
 `<tool-dir>/library use <name>`.

@@ -3856,6 +3856,83 @@ library:
         self.assertEqual(library.dest_state(dest, rec), "drifted")
 
 
+class TestDriftIsReportedBeforeOverwriting(unittest.TestCase):
+    """C-D4: drift is recorded and reported, never enforced — both still overwrite."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources" / "alpha"
+        self.src.mkdir(parents=True)
+        (self.src / "SKILL.md").write_text("# alpha\n")
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: alpha
+      description: First
+      source: {self.src}/SKILL.md
+  agents: []
+  prompts: []
+""")
+
+    @property
+    def dest(self) -> Path:
+        return self.tool.home / ".claude/skills/alpha"
+
+    def use(self, *argv: str) -> dict[str, Any]:
+        code, out, err = run_cli("use", "alpha", *argv, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        return json.loads(out)
+
+    def drift(self) -> None:
+        (self.dest / "SKILL.md").write_text("# alpha, edited by hand\n")
+
+    def test_a_dry_run_flags_drift_and_writes_nothing(self) -> None:
+        self.use()
+        self.drift()
+        payload = self.use("--dry-run")
+        self.assertEqual([i["state"] for i in payload["would_install"]], ["drifted"])
+        self.assertEqual((self.dest / "SKILL.md").read_text(), "# alpha, edited by hand\n")
+
+    def test_a_dry_run_over_a_clean_install_reports_installed(self) -> None:
+        self.use()
+        self.assertEqual([i["state"] for i in self.use("--dry-run")["would_install"]],
+                         ["installed"])
+
+    def test_a_dry_run_before_any_install_reports_not_installed(self) -> None:
+        self.assertEqual([i["state"] for i in self.use("--dry-run")["would_install"]],
+                         ["not_installed"])
+
+    def test_the_human_dry_run_names_the_modification(self) -> None:
+        self.use()
+        self.drift()
+        code, out, err = run_cli("use", "alpha", "--dry-run", "--no-pull")
+        self.assertEqual(code, 0, err)
+        self.assertIn("locally modified", out)
+
+    def test_use_still_overwrites_a_drifted_copy_and_says_what_changed(self) -> None:
+        self.use()
+        self.drift()
+        payload = self.use()
+        self.assertEqual((self.dest / "SKILL.md").read_text(), "# alpha\n")
+        self.assertEqual(payload["installed"][0]["changes"]["modified"], ["SKILL.md"])
+
+    def test_sync_reports_the_state_it_found_before_refreshing(self) -> None:
+        self.use()
+        self.drift()
+        code, out, err = run_cli("sync", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([r["state"] for r in json.loads(out)["synced"]], ["drifted"])
+        self.assertEqual((self.dest / "SKILL.md").read_text(), "# alpha\n")
+
+    def test_sync_reports_a_hand_installed_copy_as_untracked(self) -> None:
+        self.dest.mkdir(parents=True)
+        (self.dest / "SKILL.md").write_text("# hand written\n")
+        code, out, err = run_cli("sync", "--no-pull")
+        self.assertEqual(code, 0, err)
+        self.assertIn("was not installed by this tool", out)
+
+
 class TestWriteTarget(unittest.TestCase):
     """R7.1–R7.5, R6.11 — the four branches of design §8's targeting, in order."""
 

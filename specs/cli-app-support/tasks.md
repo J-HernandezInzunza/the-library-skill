@@ -67,7 +67,7 @@ Commit style follows the repo's history: `feat(scope): …`, `fix(scope): …`, 
     hand-created directory producing `untracked`. `just check` passes.
   - **Commit:** `feat(receipts): derive install state from receipts and disk`
 
-- [ ] **A5 — Drift visible before it's overwritten**
+- [x] **A5 — Drift visible before it's overwritten**
   - **Files:** `library.py`, `cookbook/use.md`, `tests/test_library.py`
   - **Design:** §3.1, C-D4
   - **Do:** Report drift in `use --dry-run --json` (per would-install item) and in `sync`'s output.

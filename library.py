@@ -2080,6 +2080,20 @@ def print_dry_run_tail(result: dict[str, Any]) -> None:
 # Commands — reads (Phase 2: config + catalog clone)
 # --------------------------------------------------------------------------- #
 
+# Pre-install states worth interrupting a line for, phrased for a dry run (before) and
+# for a completed sync (after). The other states are unremarkable and print nothing.
+_STATE_NOTES = {
+    "drifted": ("locally modified — will be overwritten", "was locally modified — overwritten"),
+    "untracked": ("not installed by this tool", "was not installed by this tool"),
+}
+
+
+def _state_note(state: str, past: bool = False) -> str:
+    """Human suffix for a destination's pre-install state ('' when there is none)."""
+    note = _STATE_NOTES.get(state)
+    return f"  ({note[1 if past else 0]})" if note else ""
+
+
 def _install_one(
     dirs: dict[str, dict[str, str]],
     entry: Entry,
@@ -2239,11 +2253,16 @@ def cmd_use(args: argparse.Namespace) -> int:
     note = override_note(cfg, entry)
 
     if args.dry_run:
-        plan = [
-            {"type": e.type, "name": e.name, "catalog": e.catalog,
-             "dest": str(install_dest(e, resolve_target_base(dirs, e, scope, args.dir)))}
-            for e in order
-        ]
+        # A dry run is the only chance to see the destination before `use` overwrites it,
+        # so it reports each dest's current state (C-D4: reported, never enforced). The
+        # app warns on `drifted` here; the CLI still overwrites when asked.
+        receipts = load_receipts()
+        plan = []
+        for e in order:
+            dest = install_dest(e, resolve_target_base(dirs, e, scope, args.dir))
+            plan.append({"type": e.type, "name": e.name, "catalog": e.catalog,
+                         "dest": str(dest),
+                         "state": dest_state(dest, receipts.get(str(dest)))})
         if args.json:
             overrides, overridden_by = override_split(cfg, entry)
             print(json.dumps({"status": "OK", "dry_run": True, "scope": scope,
@@ -2254,7 +2273,7 @@ def cmd_use(args: argparse.Namespace) -> int:
             print("Dry run — nothing installed. Would install:")
             for p in plan:
                 catalog_col = f"  ({p['catalog']})" if multi else ""
-                print(f"  [{p['type']}] {p['name']}{catalog_col} → {p['dest']}")
+                print(f"  [{p['type']}] {p['name']}{catalog_col} → {p['dest']}{_state_note(p['state'])}")
             if note:
                 print(f"  {entry.name} {note}")
         return 0
@@ -2320,14 +2339,19 @@ def cmd_sync(args: argparse.Namespace) -> int:
             print("Nothing installed locally. Use `library use <name>` first.")
         return 0
 
+    receipts = load_receipts()
     synced, failed = [], []
     for e, scope in installed:
+        # Read the state before refreshing: afterwards the copy matches its source and
+        # any local edit is gone, so this is the last moment drift is observable (C-D4).
+        dest = install_dest(e, resolve_target_base(dirs, e, scope, None))
+        state = dest_state(dest, receipts.get(str(dest)))
         # Dependencies come from the item's own catalog, as in `use` (D9).
         try:
             results = [_install_one(dirs, dep, scope, None)
                        for dep in resolve_deps(cfg.entries_of(e.catalog), e)]
             synced.append({"type": e.type, "name": e.name, "catalog": e.catalog,
-                           "scope": scope, "changes": results[-1]["changes"]})
+                           "scope": scope, "state": state, "changes": results[-1]["changes"]})
         except LibraryError as ex:
             failed.append({"type": e.type, "name": e.name, "catalog": e.catalog,
                            "reason": str(ex)})
@@ -2344,7 +2368,8 @@ def cmd_sync(args: argparse.Namespace) -> int:
         if summary != "no changes":
             changed_count += 1
         origin = f" (from {r['catalog']})" if multi else ""
-        print(f"  refreshed [{r['type']}] {r['name']} ({r['scope']}) · {summary}{origin}")
+        print(f"  refreshed [{r['type']}] {r['name']} ({r['scope']}) · "
+              f"{summary}{origin}{_state_note(r['state'], past=True)}")
         for line in _change_detail_lines(ch):
             print(line)
     for r in failed:

@@ -42,6 +42,20 @@ installing anything. Show the user where it will land ("this will install into
 `/Users/you/project/.claude/skills/deploy/`"), confirm, then re-run without `--dry-run`.
 Global installs skip this — the destination is unambiguous.
 
+**Check the dry run for local modifications.** Each `would_install` item carries a `state`
+for its destination, derived from the install receipt plus what's on disk:
+
+| `state` | Meaning | What to say |
+| --- | --- | --- |
+| `not_installed` | nothing there yet | nothing |
+| `installed` | present and untouched since the last install | nothing |
+| `drifted` | someone edited the installed copy | **warn before re-running**: `use` overwrites, and those edits are gone |
+| `untracked` | present, but this tool didn't install it | say so — it may be hand-written |
+
+`use` never refuses on drift; it reports it. Deciding what to do with a `drifted`
+destination is the caller's job, so surface it rather than installing over it silently.
+Offer [push.md](push.md) if the user wants those edits sent back to the source first.
+
 ## Steps
 
 ### 1. Try the CLI directly with the user's name
