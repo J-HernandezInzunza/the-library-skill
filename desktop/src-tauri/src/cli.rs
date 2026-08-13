@@ -66,6 +66,15 @@ pub fn interpret(
     stderr: &[u8],
 ) -> Result<serde_json::Value, AppError> {
     if code != Some(0) {
+        // Exit 2 is the CLI's "you decide", not a failure (design §3.6): it prints an
+        // AMBIGUOUS_CATALOG payload on stdout and expects the caller to re-run with
+        // --catalog. Folding it into the generic error path would turn a routine
+        // choice into a dead end. Exit 2 with any other body stays a failure.
+        if code == Some(2) {
+            if let Some(catalogs) = ambiguous_catalogs(stdout) {
+                return Err(AppError::Ambiguous { catalogs });
+            }
+        }
         return Err(AppError::Cli {
             // `None` means killed by a signal, which has no exit code of its own.
             code: code.unwrap_or(-1),
@@ -76,6 +85,22 @@ pub fn interpret(
     serde_json::from_slice(stdout).map_err(|e| AppError::Json {
         detail: e.to_string(),
     })
+}
+
+/// The candidate catalogs from an `AMBIGUOUS_CATALOG` body, or `None` if this
+/// isn't one.
+fn ambiguous_catalogs(stdout: &[u8]) -> Option<Vec<String>> {
+    let body: serde_json::Value = serde_json::from_slice(stdout).ok()?;
+    if body.get("status")? != "AMBIGUOUS_CATALOG" {
+        return None;
+    }
+    Some(
+        body.get("catalogs")?
+            .as_array()?
+            .iter()
+            .filter_map(|c| c.as_str().map(String::from))
+            .collect(),
+    )
 }
 
 #[cfg(test)]
@@ -104,6 +129,26 @@ mod tests {
     fn a_signal_death_reports_minus_one_rather_than_pretending_to_succeed() {
         let err = interpret(None, b"", b"").unwrap_err();
         assert!(matches!(err, AppError::Cli { code: -1, .. }));
+    }
+
+    #[test]
+    fn exit_two_with_an_ambiguous_body_is_a_choice_not_a_failure() {
+        let body = br#"{"status": "AMBIGUOUS_CATALOG", "catalogs": ["personal", "team"]}"#;
+        let err = interpret(Some(2), body, b"").unwrap_err();
+        assert_eq!(
+            err,
+            AppError::Ambiguous {
+                catalogs: vec!["personal".into(), "team".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn exit_two_with_some_other_body_stays_a_failure() {
+        // `uninstall` also exits 2, with status REFUSED — a refusal, not a choice.
+        let body = br#"{"status": "REFUSED", "dest": "/tmp/x"}"#;
+        let err = interpret(Some(2), body, b"no install receipt").unwrap_err();
+        assert!(matches!(err, AppError::Cli { code: 2, .. }));
     }
 
     #[test]

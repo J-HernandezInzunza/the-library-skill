@@ -101,7 +101,7 @@ constant refactoring of a single `lib.rs`.
     wrapper, confirm the UI shows an actionable message rather than a blank list.
   - **Commit:** `feat(desktop/cli): add a typed error contract for the frontend`
 
-- [ ] **T1.3 — Exit code 2 maps to a choice, not a failure**
+- [x] **T1.3 — Exit code 2 maps to a choice, not a failure**
   - **Files:** `desktop/src-tauri/src/cli.rs`, `desktop/src-tauri/src/error.rs`
   - **Requirements:** R4.4
   - **Do:** Per design.md §3.6, map exit 2 with a JSON body of `status: "AMBIGUOUS_CATALOG"` to
