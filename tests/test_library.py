@@ -2955,6 +2955,32 @@ class TestWriteConfig(unittest.TestCase):
         self.assertEqual([c.id for c in cfg.catalogs], ["personal"])
         self.assertTrue(self.tool.config_path.read_text().startswith("# The Library"))
 
+    def test_concurrent_writers_never_leave_a_truncated_config(self) -> None:
+        # §7: `catalog add/remove/init` can run from three front doors at once, and each
+        # rewrites this file whole. A reader mid-write would otherwise see no catalogs.
+        paths = []
+        for i in range(4):
+            path = self.tool.root / f"cat{i}.yaml"
+            path.write_text("library:\n  skills: []\n")
+            paths.append(path)
+        script = (
+            "import sys; sys.path.insert(0, %r)\n"
+            "import library\n"
+            "from pathlib import Path\n"
+            "library.LOCAL_CONFIG_PATH = Path(%r)\n"
+            "library.write_config({'catalogs': [{'id': 'c%%d' %% i, 'path': p} "
+            "for i, p in enumerate(%r)]})\n"
+            % (str(REAL_TOOL_DIR), str(self.tool.config_path), [str(p) for p in paths])
+        )
+        procs = [subprocess.Popen([sys.executable, "-c", script],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                 for _ in range(4)]
+        for proc in procs:
+            _, err = proc.communicate(timeout=60)
+            self.assertEqual(proc.returncode, 0, err.decode())
+        data = yaml.safe_load(self.tool.config_path.read_text())
+        self.assertEqual([c["id"] for c in data["catalogs"]], ["c0", "c1", "c2", "c3"])
+
     def test_refuses_an_invalid_config_without_touching_the_file(self) -> None:
         self.tool.write_config(LEGACY_CONFIG)
         before = self.tool.config_path.read_text()

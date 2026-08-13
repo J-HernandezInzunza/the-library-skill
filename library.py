@@ -736,7 +736,11 @@ def write_config(data: dict[str, Any]) -> Config:
     problems = Config.problems(data)
     if problems:
         die(f"refusing to write an invalid config: {problems[0]}")
-    LOCAL_CONFIG_PATH.write_text(_CONFIG_HEADER + "\n" + yaml.safe_dump(data, sort_keys=False))
+    # Atomic and locked (§7): three front doors can now rewrite the registry at once, and
+    # this file is rewritten whole. Without the lock, two `catalog add`s interleave; without
+    # the rename, a reader can catch a half-written registry and see no catalogs at all.
+    write_machine_file(LOCAL_CONFIG_PATH,
+                       _CONFIG_HEADER + "\n" + yaml.safe_dump(data, sort_keys=False))
     return load_config()  # re-read: success is only reported for a config that loads
 
 
@@ -4528,7 +4532,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         bool(args.autopush),
     )
     if merged is None:
-        LOCAL_CONFIG_PATH.write_text(_LOCAL_CONFIG_TEMPLATE.format(
+        write_machine_file(LOCAL_CONFIG_PATH, _LOCAL_CONFIG_TEMPLATE.format(
             repo=args.repo,
             yaml_path=yaml_path,
             branch=args.branch,

@@ -221,7 +221,7 @@ Commit style follows the repo's history: `feat(scope): …`, `fix(scope): …`, 
 
 ## Phase G — Safety and polish
 
-- [ ] **G1 — `config.local.yaml` writes take the lock**
+- [x] **G1 — `config.local.yaml` writes take the lock**
   - **Files:** `library.py`, `tests/test_library.py`
   - **Design:** §7
   - **Do:** Route `write_config` (L375) through A1's helper. Three front doors can now rewrite the
