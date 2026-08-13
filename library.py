@@ -144,6 +144,7 @@ def write_machine_file(path: Path, text: str) -> None:
 # --------------------------------------------------------------------------- #
 
 RECEIPTS_VERSION = 1
+SETUP_FILE = "setup.yaml"  # a skill's optional setup manifest, inside its installed dir
 RECEIPT_KEYS = ("dest", "name", "type", "catalog", "scope", "source",
                 "commit", "content_hash", "installed_at")
 
@@ -1219,6 +1220,26 @@ def entry_dests(dirs: dict[str, dict[str, str]], entry: Entry,
     return dests
 
 
+def has_setup(dest: Path) -> bool:
+    """Does the installed copy at *dest* ship a setup manifest? (design §4.5)
+
+    Answered from the installed copy, never the catalog: the catalog records where an
+    entry comes from, not what its directory contains. An entry that is not installed
+    therefore has no answer here, and reports false.
+    """
+    return (dest / SETUP_FILE).is_file()
+
+
+def entry_has_setup(dirs: dict[str, dict[str, str]], entry: Entry,
+                    receipts: dict[str, dict[str, Any]]) -> bool:
+    """Does any installed copy of *entry* ship a setup manifest?
+
+    Reads the disk rather than the receipt, so an untracked (hand-installed) copy with a
+    manifest still reports one — having no receipt says nothing about the contents.
+    """
+    return any(has_setup(Path(d)) for d in entry_dests(dirs, entry, receipts))
+
+
 def entry_install_state(dirs: dict[str, dict[str, str]], entry: Entry,
                         receipts: dict[str, dict[str, Any]]) -> tuple[str, "dict[str, Any] | None"]:
     """(state, receipt) for *entry* across every destination it could occupy.
@@ -2129,12 +2150,15 @@ def cmd_list(args: argparse.Namespace) -> int:
     multi = multi_catalog(cfg)
     winners = winning_catalogs(cfg)
 
+    receipts = load_receipts()
     rows = []
     for e in entries:
         winner = winners.get(e.name)
         overridden_by = winner if winner and winner != e.catalog else None
         # Install status belongs to the resolved winner; an overridden entry is not the
-        # copy that would be installed, so it never claims to be installed.
+        # copy that would be installed, so it never claims to be installed. Receipts key
+        # on the destination, which both copies share, so provenance follows the same
+        # rule rather than letting the loser claim the winner's install.
         scopes = [] if overridden_by else installed_scopes(cfg.dirs, e)
         if overridden_by:
             status = f"overridden by {overridden_by}"
@@ -2143,15 +2167,21 @@ def cmd_list(args: argparse.Namespace) -> int:
         rows.append((e, status, scopes, overridden_by))
 
     if args.json:
-        out = [
-            {
+        out = []
+        for e, _, scopes, overridden_by in rows:
+            state, receipt = ("not_installed", None) if overridden_by else \
+                entry_install_state(cfg.dirs, e, receipts)
+            out.append({
+                # The nine keys below are the documented contract (C-D8): never renamed,
+                # never retyped. New information arrives as new keys instead.
                 "type": e.type, "name": e.name, "description": e.description,
                 "source": e.source, "requires": e.requires,
                 "installed": bool(scopes), "scopes": scopes,
                 "catalog": e.catalog, "overridden_by": overridden_by,
-            }
-            for e, _, scopes, overridden_by in rows
-        ]
+                "state": state,
+                "receipt": receipt,
+                "has_setup": bool(scopes) and entry_has_setup(cfg.dirs, e, receipts),
+            })
         print(json.dumps(out, indent=2))
         return 0
 

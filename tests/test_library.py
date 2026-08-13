@@ -1652,12 +1652,14 @@ class TestSingleCatalogGoldens(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(len(payload), 4)
         for item in payload:
-            # `catalog` and `overridden_by` are the additive keys R2.4 allows; every
-            # pre-existing key keeps its name, type, and meaning.
+            # `catalog`/`overridden_by` (R2.4) and `state`/`receipt`/`has_setup`
+            # (design §4.1) are the additive keys; every pre-existing key keeps its
+            # name, type, and meaning (C-D8).
             self.assertEqual(
                 sorted(item),
-                ["catalog", "description", "installed", "name", "overridden_by",
-                 "requires", "scopes", "source", "type"],
+                ["catalog", "description", "has_setup", "installed", "name",
+                 "overridden_by", "receipt", "requires", "scopes", "source", "state",
+                 "type"],
             )
             self.assertEqual((item["catalog"], item["overridden_by"]), ("shared", None))
         retro = next(i for i in payload if i["name"] == "session-retro")
@@ -3233,6 +3235,40 @@ class TestListAcrossCatalogs(unittest.TestCase):
     def test_a_restricted_entry_is_not_marked_overridden_by_its_own_catalog(self) -> None:
         rows = self.rows("--catalog", "personal")
         self.assertIsNone(rows["personal/session-retro"]["overridden_by"])
+
+    def test_the_pre_existing_json_keys_keep_their_name_and_type(self) -> None:
+        # C-D8: the desktop backend and the agent both parse against this promise, so
+        # the nine original keys are pinned by name *and* type, not just by presence.
+        expected = {"type": str, "name": str, "description": str, "source": str,
+                    "requires": list, "installed": bool, "scopes": list, "catalog": str}
+        row = self.rows()["personal/session-retro"]
+        for key, kind in expected.items():
+            self.assertIsInstance(row[key], kind, key)
+        self.assertIn("overridden_by", row)  # str or None
+
+    def test_json_carries_state_receipt_and_has_setup(self) -> None:
+        row = self.rows()["personal/scratch-thing"]
+        self.assertEqual((row["state"], row["receipt"], row["has_setup"]),
+                         ("not_installed", None, False))
+
+    def test_a_hand_installed_copy_is_installed_but_untracked(self) -> None:
+        self.install("scratch-thing")
+        row = self.rows()["personal/scratch-thing"]
+        self.assertEqual((row["installed"], row["state"], row["receipt"]),
+                         (True, "untracked", None))
+
+    def test_an_overridden_row_reports_no_state_of_its_own(self) -> None:
+        # The dest belongs to the winner; the losing copy must not claim its receipt.
+        self.install("session-retro")
+        rows = self.rows()
+        self.assertEqual(rows["shared/session-retro"]["state"], "not_installed")
+        self.assertEqual(rows["personal/session-retro"]["state"], "untracked")
+
+    def test_has_setup_follows_the_installed_copy(self) -> None:
+        self.install("scratch-thing")
+        self.assertFalse(self.rows()["personal/scratch-thing"]["has_setup"])
+        (self.tool.home / ".claude/skills/scratch-thing/setup.yaml").write_text("version: 1\n")
+        self.assertTrue(self.rows()["personal/scratch-thing"]["has_setup"])
 
     def test_a_skipped_catalog_is_surfaced_with_its_reason(self) -> None:
         (self.tool.root / "personal" / "library.yaml").unlink()

@@ -105,7 +105,7 @@ Commit style follows the repo's history: `feat(scope): …`, `fix(scope): …`, 
 
 ## Phase C — Read payloads
 
-- [ ] **C1 — `list --json` carries state, receipt, and `has_setup`**
+- [x] **C1 — `list --json` carries state, receipt, and `has_setup`**
   - **Files:** `library.py`, `cookbook/list.md`, `tests/test_library.py`
   - **Design:** §4.1
   - **Do:** Add the three new keys. Leave the existing nine exactly as they are (C-D8), including

@@ -51,7 +51,21 @@ Catalogs
 - Under `--catalog <id>`, entries from other catalogs are filtered out but the status
   column still reports overriding, so an overridden entry stays visibly overridden.
 
-In `--json`, every item carries `catalog` and `overridden_by` (`null` when it wins).
+In `--json`, every item carries `catalog` and `overridden_by` (`null` when it wins), plus
+three keys that come from the install receipt rather than the catalog:
+
+| Key | Meaning |
+| --- | --- |
+| `state` | `not_installed`, `installed` (present, untouched), `drifted` (the installed copy was edited), `untracked` (present, but this tool didn't install it), or `missing` (a receipt whose files are gone) |
+| `receipt` | the install record — `catalog`, `scope`, `source`, `commit`, `installed_at` — or `null` when there is none |
+| `has_setup` | the installed copy ships a `setup.yaml` walkthrough (see `library setup <name>`) |
+
+`installed` stays a plain bool and keeps its meaning: *is a copy present*. `state` is the
+finer answer on top of it — an `untracked` or `drifted` item is still `installed: true`.
+
+Use `state` when the user's question is about their machine ("is this up to date?",
+"did I change this?") and `installed` when it's about presence. When something reads
+`drifted`, say so before suggesting `use`/`sync`: both overwrite it.
 
 If the CLI prints a staleness warning on stderr (`catalog is N commit(s) behind
 origin/...`), relay it to the user — the list may be missing recent catalog changes.
