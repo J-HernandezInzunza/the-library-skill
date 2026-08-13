@@ -62,8 +62,9 @@ implementation; changing one is a spec change, not an implementation choice.
 | D7 | Secrets are collected in a native secure input, never through chat. The agent emits a `request_secret` signal; the app collects the value and injects it as an env var into the setup subprocess. The agent never receives the secret. | A team-shared tool must not leak API tokens into a model transcript. |
 | D8 | One resumable `claude` session per walkthrough (`--resume <session-id>`). | Walkthroughs are multi-turn; a persisted session id continues the same conversation across turns. |
 | D9 | The app is run from source. No codesigning or notarization in scope. | Team is technical and has Rust + Node; signing is deferred until distribution beyond source is needed. |
-| D10 | The agent is invoked **without** `--bare`. | `--bare` never reads OAuth credentials or the keychain, so it would break subscription auth and force `ANTHROPIC_API_KEY`, contradicting D2. Accepted cost: the teammate's own hooks, plugins, MCP servers, and `CLAUDE.md` load into walkthrough sessions, so walkthroughs are not bit-identical across machines. |
-| D11 | The D4 whitelist is delivered as an app-hosted MCP server (`--mcp-config`) plus `--allowedTools` and `--permission-mode dontAsk`. | Gives `request_secret` (D7) a structured tool call instead of prose the app would have to pattern-match, and makes the whitelist enforceable rather than advisory. |
+| D10 | The agent is invoked **without** `--bare`, but **with** `--strict-mcp-config`. | `--bare` never reads OAuth credentials or the keychain, so it would break subscription auth and force `ANTHROPIC_API_KEY`, contradicting D2. `--strict-mcp-config` recovers most of the cost by keeping the teammate's personal MCP servers out (verified in the T0.2 spike). Remaining accepted cost: their hooks, plugins, auto memory, and `CLAUDE.md` still load, so walkthroughs are not bit-identical across machines. |
+| D11 | The D4 whitelist is delivered as an app-hosted MCP server (`--mcp-config`) for the allowed capabilities, and enforced by a **`PreToolUse` hook that denies every tool not named `mcp__library__*`**. `--allowedTools` and `--permission-mode dontAsk` only suppress prompting for the allowed calls; they are not the boundary. | The MCP server gives `request_secret` (D7) a structured tool call instead of prose the app would have to pattern-match. The hook is what makes the whitelist enforceable: the T0.2 spike proved `--allowedTools` + `dontAsk` still let the agent run `Bash` freely, and that a deny-list of builtins is a moving target across Claude Code releases. Deny-by-default on tool name is the only form that survives a CLI upgrade. |
+| D14 | The app hosts its MCP server **in-process over loopback HTTP** (`127.0.0.1`, ephemeral port, per-walkthrough bearer token), not over stdio. | A stdio server is spawned by `claude` as a fresh child process per turn (twice per turn, measured in T0.2), so it cannot own walkthrough state or reach the GUI. `request_secret` (D7) must suspend until the user submits in a Vue field, which requires the tool handler to live in the process that owns the UI. |
 | D12 | Skills declare setup in a `setup.yaml` file in the skill's own directory, per [skill-setup-schema.md](skill-setup-schema.md). Discovery is file presence; absence means no walkthrough. | Keeps install-time data out of `SKILL.md`'s runtime frontmatter, avoids teaching the tooling to parse frontmatter at all (`library.py` doesn't today), and lets a ~45-line block be validated and reviewed as its own file. Declaring commands by id is what makes `run_skill_setup` enforceable. |
 | D13 | A collected secret is delivered per the skill's declared `delivery` mode: `config-file` (default), `env`, or `manual`. The app writes only to the skill's declared `config.path`. | `atlassian-toolkit`'s durable store is a config file, so env injection alone would not persist. Skills that want the human to type the credential themselves declare `manual`. |
 
@@ -126,7 +127,10 @@ implementation; changing one is a spec change, not an implementation choice.
   prerequisite aborts the walkthrough naming the specific item.
 - R5.2 A walkthrough runs the agent as `claude -p --output-format stream-json`, streaming text
   and tool activity into an in-app chat panel.
-- R5.3 The agent's tools are restricted to the D4 whitelist via `--allowedTools` (or equivalent).
+- R5.3 The agent's tools are restricted to the D4 whitelist by a deny-by-default `PreToolUse` hook
+  that permits only the app's `mcp__library__*` tools (D11). `--allowedTools` alone does not
+  restrict anything: with it set, the agent still ran `Bash` (T0.2/F1). The hook is the boundary;
+  the flags only keep allowed calls from prompting.
 - R5.3a `library_cmd` exposes the read commands (`list`, `search`, `doctor`) plus `use`, so the
   agent can install a declared `sibling-skill` prerequisite mid-walkthrough. It never exposes
   `add`, `update`, `remove`, or `push` — catalog mutation is a GUI form (D6), not agent work.
@@ -141,7 +145,10 @@ implementation; changing one is a spec change, not an implementation choice.
 - R6.2 The app renders a native secure input for that secret. The value is never placed in the
   chat, the prompt, or any payload sent to the model.
 - R6.3 The `tool_result` returned to the agent for `request_secret` contains only a fixed,
-  non-sensitive acknowledgement. It never echoes the value, its length, or a prefix.
+  non-sensitive acknowledgement. It never echoes the value, its length, or a prefix. The
+  acknowledgement must also be unambiguous about success: a bare `"received"` read as an empty
+  result and the agent offered to retry (T0.2/F4), so it states that the user submitted the named
+  key and that the agent should proceed without asking.
 - R6.4 The collected value is delivered per the skill's declared `delivery` mode (D13):
   written into the skill's declared config file (default), injected as an env var for the
   walkthrough's subprocesses, or never received by the app at all (`manual`). The app writes to
@@ -157,6 +164,10 @@ implementation; changing one is a spec change, not an implementation choice.
   waiting on an interactive prompt (git and claude are run non-interactively).
 - R7.2 If `claude` is not installed or not authed, walkthroughs are disabled with an explanatory
   message; deterministic ops still work.
+- R7.2a A walkthrough aborts before its first prompt unless the app's MCP server reports
+  `status: "connected"` **and** every expected `mcp__library__*` tool is present in the session's
+  advertised tool list. With the server down, the agent answered from invention rather than
+  failing (T0.2/F2), which is precisely the D7 leak path: no `request_secret` means asking in chat.
 - R7.3 A stale-catalog condition reported by the CLI (behind origin) is surfaced, not hidden.
 
 ### R8 — Build and run from source

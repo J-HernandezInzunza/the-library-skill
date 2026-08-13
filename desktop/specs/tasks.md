@@ -281,20 +281,37 @@ it exists before anything can call it.
 
 ## Phase 6 — Agent layer
 
-Assumes T0.2's findings. If the spike contradicted design.md §4, revise the design first.
+T0.2 ran; its findings are in [progress.md](progress.md) and design.md §4–§5 and requirements
+D10/D11/D14 were revised to match. The tasks below assume the revised text, not the original.
 
 ### T6.1 — Spawn the agent and parse the stream
 - **Files:** `desktop/src-tauri/src/agent.rs`
 - **Requirements:** R5.2, R5.6, D3, D10
-- **Do:** Spawn `claude -p --output-format stream-json --verbose …` per design.md §4.1. The app
-  sets no credential of its own (R5.6): auth is whatever the teammate's Claude Code already uses,
-  which is precisely what omitting `--bare` preserves.
+- **Do:** Spawn `claude -p --output-format stream-json --verbose …` per design.md §4.1, including
+  `--strict-mcp-config` (D10: keeps the teammate's personal MCP servers out of the session). The
+  app sets no credential of its own (R5.6): auth is whatever the teammate's Claude Code already
+  uses, which is precisely what omitting `--bare` preserves.
   **Do not pass `--bare`** (D10): it never reads OAuth credentials, which would break every
   teammate on a subscription login. Parse newline-delimited JSON incrementally and re-emit as
-  Tauri events; never buffer the whole run.
-- **Verify:** Recorded-fixture tests for text, `tool_use`, `tool_result`, `api_retry`, and
-  subagent messages carrying `parent_tool_use_id`. No live `claude` in tests. Gate passes.
+  Tauri events; never buffer the whole run. Ignore unknown top-level `type`s and unknown
+  `system.subtype`s rather than erroring — the spike saw four events design.md never listed.
+- **Verify:** Recorded-fixture tests for text, `tool_use`, `tool_result`, `rate_limit_event`, an
+  unknown event type, and subagent messages carrying `parent_tool_use_id`. No live `claude` in
+  tests. Gate passes.
 - **Commit:** `feat(desktop/agent): spawn the agent and stream its events`
+
+### T6.1a — The `PreToolUse` deny-by-default gate
+- **Files:** `desktop/src-tauri/src/agent.rs`
+- **Requirements:** R5.3, D4, D11
+- **Do:** Generate the `--settings` file and hook command that deny every tool whose name is not
+  `mcp__library__*`, and pass `--disallowedTools ToolSearch` so the app's tools are advertised
+  directly. Per design.md §4.1a this hook — **not** `--allowedTools` or `--permission-mode dontAsk` —
+  is the whitelist. The spike proved the flags alone let the agent run `Bash` and get its output,
+  so anything that treats them as the boundary is a security bug, not a style choice.
+- **Verify:** Tests that the generated settings deny a name outside the prefix and allow one inside
+  it. Manually, once T6.4 exists: ask the agent to run a shell command and confirm the denial
+  surfaces as an errored `tool_result`. Gate passes.
+- **Commit:** `feat(desktop/agent): enforce the tool whitelist with a deny-by-default hook`
 
 ### T6.2 — Session capture and resume
 - **Files:** `desktop/src-tauri/src/agent.rs`
@@ -307,21 +324,27 @@ Assumes T0.2's findings. If the spike contradicted design.md §4, revise the des
 
 ### T6.3 — Preconditions and MCP load failure
 - **Files:** `desktop/src-tauri/src/agent.rs`
-- **Requirements:** R7.2, design.md §4.3
+- **Requirements:** R7.2, R7.2a, design.md §4.3.1
 - **Do:** If `claude` is absent, disable walkthroughs with an explanation and leave every
-  deterministic feature working — the agent is an enhancement, never a dependency. Treat a
-  non-empty `mcp_server_errors` as fatal **for the walkthrough**: without our MCP server the agent
-  has no `request_secret` and would fall back to asking for the token in chat, which is exactly
-  the leak D7 exists to prevent.
+  deterministic feature working — the agent is an enhancement, never a dependency. Gate the
+  walkthrough **positively** on `system/init`: our server must report `status: "connected"` and
+  every expected `mcp__library__*` tool must appear in `tools`. Do **not** gate on
+  `mcp_server_errors`; the spike measured it as `null` even with the server dead, and the run then
+  succeeded with the agent inventing a tool result. Without our MCP server the agent has no
+  `request_secret` and would fall back to asking for the token in chat, which is exactly the leak
+  D7 exists to prevent.
 - **Verify:** With `claude` renamed, the catalog UI works and walkthroughs are disabled. Fixture
-  test for the `mcp_server_errors` abort. Gate passes.
+  tests for both abort paths: server `status: "failed"`, and a connected server missing an expected
+  tool. Gate passes.
 - **Commit:** `feat(desktop/agent): fail closed when claude or the MCP server is unavailable`
 
 ### T6.4 — Walkthrough chat UI
 - **Files:** `desktop/src/components/Walkthrough.vue`
 - **Requirements:** R5.2, R5.5
 - **Do:** Transcript, tool activity rendered as the verbatim command, retry notices, turn input.
-  Subagent messages nested or hidden, never interleaved with the main transcript.
+  Subagent messages nested or hidden, never interleaved with the main transcript. Turn 1's prompt
+  must carry the setup context (which skill, what the credential is for, that the app collects it
+  outside the chat); the spike had a context-free credential request refused on safety grounds.
 - **Verify:** Driven by fixture events, each event type renders correctly. Gate passes.
 - **Commit:** `feat(desktop): add the walkthrough chat view`
 
@@ -333,12 +356,16 @@ The security-critical phase. Every task here is a place where a mistake leaks a 
 
 ### T7.1 — MCP server with the read-only tools
 - **Files:** `desktop/src-tauri/src/mcp.rs`
-- **Requirements:** R5.3, D4, D11
-- **Do:** Host the stdio MCP server passed via `--mcp-config`. Implement `library_cmd` (allowlist:
+- **Requirements:** R5.3, D4, D11, D14
+- **Do:** Host the MCP server in-process over loopback HTTP per design.md §5.1 (`127.0.0.1`,
+  ephemeral port, per-walkthrough bearer token), passed via `--mcp-config`. Not stdio: `claude`
+  spawns a stdio server as a fresh child twice per turn, so it can neither hold walkthrough state
+  nor reach the GUI that T7.2's secure input lives in. Implement `library_cmd` (allowlist:
   `list`, `search`, `doctor`, `use` — never `add`/`update`/`remove`/`push`, per R5.3a) and
   `read_skill_doc` (canonicalized, must stay inside the skill dir).
-- **Verify:** Tests that `library_cmd` rejects a non-allowlisted subcommand and that
-  `read_skill_doc` rejects `..` traversal and a symlink escaping the skill dir. Gate passes.
+- **Verify:** Tests that `library_cmd` rejects a non-allowlisted subcommand, that `read_skill_doc`
+  rejects `..` traversal and a symlink escaping the skill dir, and that the endpoint 401s on a
+  missing or wrong bearer token. Gate passes.
 - **Commit:** `feat(desktop/mcp): expose the read-only agent tool whitelist`
 
 ### T7.2 — `request_secret` and the secure input
@@ -346,7 +373,10 @@ The security-critical phase. Every task here is a place where a mistake leaks a 
 - **Requirements:** R6.1, R6.2, R6.3, D7
 - **Do:** `request_secret` does not resolve immediately: it emits `secret://requested`, the app
   renders a native masked field, and the tool resolves only once the user submits — returning a
-  **fixed acknowledgement string**. It never echoes the value, its length, or a prefix.
+  **fixed acknowledgement string**. It never echoes the value, its length, or a prefix. Make the
+  ack explicit about success (design.md §7): the spike's bare `"received"` was read by the agent as
+  an empty result and it offered to retry. The spike also confirmed a 5s-blocking tool call
+  resolves normally, so the user's typing time is not a timeout risk.
 - **Verify:** Test asserting the tool_result is byte-identical regardless of the value submitted.
   Gate passes.
 - **Commit:** `feat(desktop/secrets): collect secrets in a native field, never in chat`

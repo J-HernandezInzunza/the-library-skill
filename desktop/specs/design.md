@@ -32,7 +32,7 @@ introducing a second one.
    interactive  ◀───────┤  agent::spawn(prompt, session)           │
    (walkthrough)        │      └─▶ `claude -p --output-format …`   │
                         │              ▲                           │
-                        │              │ stdio (MCP)               │
+                        │              │ loopback HTTP (MCP)       │
                         │  mcp::server ┘  library_cmd, read_skill_doc,
                         │                 request_secret, run_skill_setup
                         └──────────────────────────────────────────┘
@@ -146,12 +146,39 @@ dead end.
 claude -p "<prompt>"
   --output-format stream-json
   --verbose                        # required by stream-json
-  --mcp-config <app-mcp.json>      # the D4 tool whitelist (§5)
+  --mcp-config <app-mcp.json>      # the app's tool surface (§5)
+  --strict-mcp-config              # our servers only, not the teammate's (D10)
+  --settings <app-hook.json>       # PreToolUse deny-by-default gate (§4.1a, D11)
+  --disallowedTools ToolSearch     # so mcp tools are advertised directly (§4.1a)
   --allowedTools "mcp__library__library_cmd,mcp__library__read_skill_doc,
                   mcp__library__request_secret,mcp__library__run_skill_setup"
-  --permission-mode dontAsk        # deny anything not explicitly allowed
+  --permission-mode dontAsk        # no prompting for the allowed calls
   [--resume <session-id>]          # turns 2..n of a walkthrough (D8)
 ```
+
+All of it verified end to end in the T0.2 spike; see [progress.md](progress.md) for the raw
+findings.
+
+### 4.1a Tool restriction is a hook, not a flag (load-bearing, verified)
+
+The original design claimed `--allowedTools` plus `--permission-mode dontAsk` denied everything
+else. **It does not.** With `--allowedTools mcp__library__ping --permission-mode dontAsk`, the
+spike's agent ran `Bash("echo …")` and received the output; `system/init` advertised 31 builtins
+alongside our tools. `--allowedTools` pre-approves; it never excludes.
+
+What the app relies on instead:
+
+| Lever | Role | Why not on its own |
+| --- | --- | --- |
+| `PreToolUse` hook, deny unless `mcp__library__*` | **The boundary.** Returns `permissionDecision: "deny"` for any other tool name. | — |
+| `--disallowedTools ToolSearch` | Removes the lazy tool-search indirection so our MCP tools appear directly in `init.tools`. | A deny-list is a moving target: denying `ToolSearch` revealed `Glob`/`Grep`, and any builtin added in a future release is allowed by default. |
+| `--allowedTools` + `dontAsk` | Keeps allowed calls from prompting in a non-interactive run. | Proven not to restrict anything. |
+
+`--disallowedTools "*"` is not an option: it removes our MCP tools too (`init.tools == []`), after
+which the model invented a tool list.
+
+A denied call surfaces as a normal `tool_result` with `is_error: true` carrying the hook's reason,
+so the agent can adapt in-conversation instead of the run dying.
 
 ### 4.2 Why not `--bare` (load-bearing, verified)
 
@@ -163,10 +190,11 @@ D2 requires that a teammate authed by subscription login works with no app-side 
 `--bare` would force `ANTHROPIC_API_KEY`, breaking that for every subscription user.
 
 **Accepted consequence:** without `--bare`, the session also loads the teammate's own hooks,
-plugins, MCP servers, auto memory, and `CLAUDE.md`. Walkthroughs are therefore not bit-identical
-across machines. We accept this non-determinism because the walkthrough is an interactive,
-human-supervised flow, not a CI gate. `--permission-mode dontAsk` still prevents the agent from
-using tools we did not allow.
+plugins, MCP servers, auto memory, and `CLAUDE.md`. `--strict-mcp-config` claws back the MCP part
+(verified: only our server connects), leaving hooks, plugins, memory, and `CLAUDE.md`. Walkthroughs
+are therefore still not bit-identical across machines. We accept this non-determinism because the
+walkthrough is an interactive, human-supervised flow, not a CI gate. The §4.1a hook, not the
+permission mode, is what keeps the tool surface bounded regardless of what else loads.
 
 ### 4.3 Stream handling
 
@@ -175,19 +203,32 @@ it does not buffer the whole run (R5.2).
 
 | Stream event | Backend action | UI result |
 | --- | --- | --- |
-| `system` / `init` | capture `session_id`; check `mcp_servers`, `mcp_server_errors` | store for `--resume`; fail fast if our MCP server didn't load |
+| `system` / `init` | capture `session_id`; require `mcp_servers[library].status == "connected"` **and** our `mcp__library__*` tools present in `tools` | store for `--resume`; fail fast if either check fails (§4.3.1) |
 | `assistant` (text) | emit `agent://text` | chat bubble |
 | `assistant` (tool_use) | emit `agent://tool` with tool name + input | "Running: `library use deploy`" (R5.5, D5) |
 | `user` (tool_result) | emit `agent://tool_result` | result under the command |
-| `system` / `api_retry` | emit `agent://retry` | transient "retrying" notice |
+| `rate_limit_event` | emit `agent://retry` | transient "retrying" notice |
 | `result` (last line) | emit `agent://done` with session id | re-enable input |
 
 Messages with a non-null `parent_tool_use_id` come from subagents; the UI nests or hides them
 rather than interleaving them with the main transcript.
 
-`mcp_server_errors` being non-empty is treated as fatal for the walkthrough: if the app's own
-MCP server was skipped, the agent silently loses `request_secret` and would fall back to asking
-for the token in chat — exactly the D7 leak this design exists to prevent.
+The stream carries more than this table: `system/hook_started`, `system/hook_response`, and
+`system/thinking_tokens` were all observed, and `system/api_retry` was **not** (`rate_limit_event`
+appears to be its current form). Unknown top-level `type`s and unknown `system.subtype`s are
+ignored, on the same reasoning as §3.5's unknown JSON keys: the stream grows between releases.
+
+#### 4.3.1 The preflight gate (corrected)
+
+An earlier draft gated on `mcp_server_errors` being non-empty. **That check never fires.** With the
+MCP server killed, the spike saw `mcp_servers: [{"name":"library","status":"failed"}]`,
+`mcp_server_errors: null`, no `mcp__` entries in `tools` — and the run then *succeeded*, with the
+model fabricating a plausible tool result for a tool it never called.
+
+So the gate is positive, not negative: every expected server `connected` and every expected tool
+advertised, or the walkthrough aborts before its first prompt (R7.2a). `mcp_server_errors` is a
+secondary diagnostic to display, never the condition. Without `request_secret` the agent falls back
+to asking for the token in chat, which is exactly the D7 leak this design exists to prevent.
 
 ### 4.4 Session model (D8)
 
@@ -196,8 +237,11 @@ One `claude` process per user turn, not one long-lived process. Turn 1 captures 
 
 ```rust
 struct Walkthrough { session_id: Option<String>, skill: String, cwd: PathBuf,
-                     pending_secret: Option<PendingSecret> }
+                     mcp_token: String, pending_secret: Option<PendingSecret> }
 ```
+
+`mcp_token` is the per-walkthrough bearer token for the loopback MCP endpoint (§5.1), which is how
+a tool call is attributed to the walkthrough that authorized it.
 
 Resuming by explicit id (rather than `--continue`) is required because the app may run several
 walkthroughs, and `--continue` would attach to whichever conversation was most recent.
@@ -208,11 +252,17 @@ Before offering a walkthrough the backend checks `claude --version` resolves. If
 UI is disabled with an explanatory message and every deterministic op continues to work. The
 agent is an enhancement, never a dependency of the catalog features.
 
+The prompt itself is a precondition of a different kind: a cold "collect this credential" request
+was **refused** on safety grounds in the spike. Turn 1 must carry the setup context — which skill,
+what it needs the credential for, and that the app collects it outside the chat — or the
+walkthrough stalls on its first turn.
+
 ## 5. MCP tool surface (`mcp.rs`) — the D4 whitelist
 
-The app hosts a stdio MCP server passed via `--mcp-config`. This is what makes D4 enforceable and
-D7 possible: the agent's only capabilities are these four tools, and `request_secret` gives
-secret collection a *structured* signal instead of prose the app would have to pattern-match.
+The app hosts an MCP server passed via `--mcp-config`. It supplies the capabilities; the §4.1a hook
+is what withholds everything else. Together they make D4 enforceable and D7 possible: the agent's
+only usable capabilities are these four tools, and `request_secret` gives secret collection a
+*structured* signal instead of prose the app would have to pattern-match.
 
 | Tool | Input | Behavior |
 | --- | --- | --- |
@@ -224,7 +274,29 @@ secret collection a *structured* signal instead of prose the app would have to p
 No raw `Bash`, no general file read, no network tool. `--permission-mode dontAsk` denies anything
 outside `--allowedTools`.
 
-### 5.1 Why `run_skill_setup` takes a `command_id`, not a command string
+### 5.1 Transport: loopback HTTP in-process, not stdio (D14, verified)
+
+A stdio MCP server is spawned by `claude` as its own child, **twice per invocation** (13 process
+starts across 7 spike runs), exiting with the turn. That is fatal for two reasons: it cannot hold
+walkthrough state, and it is not the process that owns the GUI, so `request_secret` could not
+suspend on a Vue field without a second IPC hop back into the app. It also means `initialize` must
+be side-effect free.
+
+The app therefore serves MCP over streamable HTTP from inside the Tauri process:
+
+```json
+{ "mcpServers": { "library": {
+    "type": "http",
+    "url": "http://127.0.0.1:<ephemeral-port>/mcp",
+    "headers": { "Authorization": "Bearer <per-walkthrough token>" } } } }
+```
+
+Bound to `127.0.0.1` only, with a token minted per walkthrough and rejected otherwise (401).
+Verified in the spike: `status: "connected"`, tool results carried the host process's own pid across
+every turn, and a tool that blocked for 5s (standing in for the secure-input round trip) resolved
+normally rather than timing out.
+
+### 5.2 Why `run_skill_setup` takes a `command_id`, not a command string
 
 If the agent could pass a shell string, the whitelist would be decorative — `run_skill_setup`
 would be `Bash` with extra steps. Instead the skill declares its setup commands, and the agent
@@ -277,7 +349,7 @@ agent ──tool_use: request_secret{key, guidance}──▶ mcp.rs
                                                      ▼
                                         secrets.rs holds value in memory
                                                      │
-                            mcp.rs resolves tool_result = "received" ──▶ agent
+                    mcp.rs resolves tool_result = SECRET_RECEIVED ack ──▶ agent
                                                      │
         agent ──tool_use: run_skill_setup{skill, command_id}──▶ mcp.rs
                                                      │ injects value as env var
@@ -288,7 +360,11 @@ agent ──tool_use: request_secret{key, guidance}──▶ mcp.rs
 Consequences that fall out of this and must hold:
 
 - `request_secret`'s `tool_result` is a fixed acknowledgement string. It never echoes the value,
-  its length, or a prefix.
+  its length, or a prefix. It does have to read as an unambiguous success: the spike's bare
+  `"received"` was reported by the agent as *"an empty/no result"* and it offered to retry, so the
+  ack names the key and the next step, e.g. `SECRET_RECEIVED: the user submitted
+  ATLASSIAN_API_TOKEN via the app's secure field. Do not ask for it. Continue with
+  run_skill_setup.`
 - The value lives in backend memory for the walkthrough and is zeroized after
   `run_skill_setup` completes.
 - Persistence follows the skill's declared `delivery` mode (`config-file` by default, or `env` /
@@ -335,8 +411,9 @@ reintroduce a TTY that could let a child prompt and hang the GUI.
 | Layer | Approach |
 | --- | --- |
 | `cli.rs` | Point `LIBRARY_HOME` at a fixture repo; assert argv construction, JSON parsing, exit-2 → `Ambiguous`, non-zero → `Cli{stderr}`. |
-| `agent.rs` | Feed recorded stream-json fixtures through the parser. No network, no live `claude`. Cover: normal run, `api_retry`, subagent `parent_tool_use_id`, `mcp_server_errors` non-empty. |
-| `mcp.rs` | Assert `library_cmd` rejects non-allowlisted subcommands; `read_skill_doc` rejects `..` and symlink escape; `run_skill_setup` rejects unknown `command_id`. |
+| `agent.rs` | Feed recorded stream-json fixtures through the parser. No network, no live `claude`. Cover: normal run, `rate_limit_event`, subagent `parent_tool_use_id`, unknown `type`/`subtype` ignored, and both preflight failures (server `status: "failed"`, expected tool missing from `init.tools`). |
+| `mcp.rs` | Assert `library_cmd` rejects non-allowlisted subcommands; `read_skill_doc` rejects `..` and symlink escape; `run_skill_setup` rejects unknown `command_id`; the HTTP endpoint rejects a wrong or missing bearer token. |
+| hook gate | Assert the generated `PreToolUse` settings deny a tool name outside `mcp__library__*` and allow one inside it. The whitelist's enforcement is the one thing a Claude Code upgrade could silently change. |
 | `secrets.rs` | Assert the value never appears in any emitted event, tool_result, or command-log entry. This is the D7 regression test and is non-negotiable. |
 | Frontend | Vitest on the filter logic and event→state reducers. |
 | Gate | `vue-tsc --noEmit`, `cargo check`, `cargo test`, `vite build` (R8.2). |
