@@ -320,7 +320,7 @@ change in this repo, alongside `unresolved_requires[]` which T2.5 added the same
     flips it to `installed`. Gate passes.
   - **Commit:** `feat(desktop): install an entry globally and show its receipt-backed state`
 
-- [ ] **T3.3 — Project install with a per-install directory picker**
+- [x] **T3.3 — Project install with a per-install directory picker**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/`
   - **Requirements:** R3.1, design.md §3.3
   - **Do:** Add the project scope, gated behind a native directory picker with a recents list. The

@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { describeDestState, installPlan, summarizeChanges } from "../catalog";
+import { recentProjects, rememberProject } from "../recentProjects";
 import { describeAppError, type UsePreview, type UseReport } from "../types";
 
 const props = defineProps<{ name: string }>();
@@ -15,6 +17,31 @@ const error = ref("");
 /** Ticked by hand when the plan would discard local edits. */
 const acknowledged = ref(false);
 
+const scope = ref<"global" | "project">("global");
+/** The directory this install goes into, chosen for this install alone. */
+const projectDir = ref<string | null>(null);
+const recents = ref(recentProjects());
+
+/** What the backend sends as `project`: absent for a global install. */
+const project = computed(() => (scope.value === "project" ? projectDir.value : null));
+const needsDirectory = computed(() => scope.value === "project" && !projectDir.value);
+
+async function pickDirectory() {
+  const picked = await open({ directory: true, title: "Install into which project?" });
+  if (typeof picked !== "string") return;
+
+  chooseDirectory(picked);
+  recents.value = rememberProject(picked);
+}
+
+function chooseDirectory(dir: string) {
+  projectDir.value = dir;
+  // The plan named a destination in a different directory, so it no longer describes
+  // what would happen.
+  preview.value = null;
+  acknowledged.value = false;
+}
+
 const plan = computed(() => {
   if (!preview.value) return null;
   return installPlan(preview.value, props.name);
@@ -26,7 +53,7 @@ const winningCatalog = computed(
 );
 
 const canInstall = computed(() => {
-  if (!plan.value || installing.value) return false;
+  if (!plan.value || installing.value || needsDirectory.value) return false;
   return !plan.value.blocked || acknowledged.value;
 });
 
@@ -38,7 +65,10 @@ async function runPreview() {
   error.value = "";
   report.value = null;
   try {
-    preview.value = await invoke<UsePreview>("entry_use_preview", { name: props.name });
+    preview.value = await invoke<UsePreview>("entry_use_preview", {
+      name: props.name,
+      project: project.value,
+    });
   } catch (e) {
     error.value = describeAppError(e);
     preview.value = null;
@@ -51,7 +81,10 @@ async function install() {
   installing.value = true;
   error.value = "";
   try {
-    report.value = await invoke<UseReport>("entry_use", { name: props.name });
+    report.value = await invoke<UseReport>("entry_use", {
+      name: props.name,
+      project: project.value,
+    });
     // The plan described the disk as it was before the write, so it is now a lie.
     preview.value = null;
     acknowledged.value = false;
@@ -63,23 +96,50 @@ async function install() {
   }
 }
 
-// A plan resolved for one entry says nothing about the next one.
-watch(
-  () => props.name,
-  () => {
-    preview.value = null;
-    report.value = null;
-    error.value = "";
-    acknowledged.value = false;
-  },
-);
+// A plan resolved for one entry, or one scope, says nothing about another.
+watch([() => props.name, scope], () => {
+  preview.value = null;
+  report.value = null;
+  error.value = "";
+  acknowledged.value = false;
+});
 </script>
 
 <template>
   <section class="install-preview">
     <h3 class="install-preview__heading">Install</h3>
 
-    <button type="button" class="ghost" :disabled="loading" @click="runPreview()">
+    <div class="install-preview__scopes">
+      <label><input v-model="scope" type="radio" value="global" /> Globally</label>
+      <label><input v-model="scope" type="radio" value="project" /> Into a project</label>
+    </div>
+
+    <div v-if="scope === 'project'" class="install-preview__project">
+      <button type="button" class="ghost" @click="pickDirectory()">
+        {{ projectDir ? "Choose another…" : "Choose a directory…" }}
+      </button>
+      <code v-if="projectDir" class="install-preview__dir">{{ projectDir }}</code>
+
+      <ul v-if="recents.length" class="install-preview__recents">
+        <li v-for="dir in recents" :key="dir">
+          <button
+            type="button"
+            class="install-preview__recent"
+            :class="{ 'install-preview__recent--current': dir === projectDir }"
+            @click="chooseDirectory(dir)"
+          >
+            {{ dir }}
+          </button>
+        </li>
+      </ul>
+    </div>
+
+    <button
+      type="button"
+      class="ghost"
+      :disabled="loading || needsDirectory"
+      @click="runPreview()"
+    >
       {{ loading ? "Resolving…" : plan ? "Re-check" : "Preview install" }}
     </button>
 
@@ -131,7 +191,7 @@ watch(
         :disabled="!canInstall"
         @click="install()"
       >
-        {{ installing ? "Installing…" : "Install globally" }}
+        {{ installing ? "Installing…" : scope === "project" ? "Install into project" : "Install globally" }}
       </button>
     </template>
 
@@ -200,6 +260,54 @@ watch(
   margin: 0.75rem 0 0.5rem;
   font-size: 0.75rem;
   opacity: 0.6;
+}
+.install-preview__scopes {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.85rem;
+}
+.install-preview__scopes label {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.install-preview__project {
+  margin-bottom: 0.75rem;
+}
+.install-preview__dir {
+  display: block;
+  margin-top: 0.4rem;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+.install-preview__recents {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.install-preview__recent {
+  padding: 0.15rem 0.35rem;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.75rem;
+  font-weight: normal;
+  opacity: 0.6;
+  cursor: pointer;
+}
+.install-preview__recent:hover {
+  background: rgba(128, 128, 128, 0.15);
+  opacity: 1;
+}
+.install-preview__recent--current {
+  opacity: 1;
+  font-weight: 600;
 }
 .install-preview__plan {
   list-style: none;

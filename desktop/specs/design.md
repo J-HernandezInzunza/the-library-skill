@@ -97,7 +97,8 @@ A GUI app's `$PWD` is meaningless — it is wherever the app was launched from, 
 
 **Therefore:** the backend always sets `LIBRARY_CWD` explicitly to the project directory the user
 selected in the UI, and the UI has no "project" scope option until a project directory has been
-chosen. R3.1's requirement to confirm the resolved destination is satisfied by running
+chosen. The directory is not a flag alongside `--project`; it *is* the anchor, so `entry_use` and
+`entry_use_preview` take an optional `project` path and spawn the child with that as its cwd. R3.1's requirement to confirm the resolved destination is satisfied by running
 `use --dry-run --json` first and showing `would_install[].dest` (verified present in the
 `--dry-run` payload on this base branch).
 

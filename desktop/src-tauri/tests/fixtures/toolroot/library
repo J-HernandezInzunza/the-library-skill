@@ -36,9 +36,22 @@ case "$sub" in
     name=$1
     case " $* " in
       *" --dry-run "*)
-        case "$name" in
-          grilling) cat "$here/payloads/use-dry-run-drifted.json" ;;
-          *)        cat "$here/payloads/use-dry-run.json" ;;
+        case " $* " in
+          # A project install resolves against LIBRARY_CWD, so the dest is echoed from
+          # it: a preview anchored at the wrong directory shows up as the wrong path
+          # rather than as a passing test.
+          *" --project "*)
+            printf '{"status":"OK","dry_run":true,"scope":"project","overrides":[],'
+            printf '"overridden_by":null,"would_install":[{"type":"skill","name":"%s",' "$name"
+            printf '"catalog":"personal","dest":"%s/.claude/skills/%s",' "${LIBRARY_CWD:-UNSET}" "$name"
+            printf '"state":"not_installed"}]}\n'
+            ;;
+          *)
+            case "$name" in
+              grilling) cat "$here/payloads/use-dry-run-drifted.json" ;;
+              *)        cat "$here/payloads/use-dry-run.json" ;;
+            esac
+            ;;
         esac
         ;;
       *)

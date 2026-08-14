@@ -199,7 +199,7 @@ fn a_preview_reports_every_destination_and_what_is_already_there() {
     let _guard = with_fixture_home();
     let log = Recorder::default();
 
-    let preview = cli::use_preview(&log, "triage-bug").expect("fixture preview should parse");
+    let preview = cli::use_preview(&log, "triage-bug", None).expect("fixture preview should parse");
 
     // --dry-run is the whole contract, so the argv is asserted rather than the result.
     assert_eq!(
@@ -227,7 +227,7 @@ fn a_preview_of_a_locally_edited_copy_reports_the_drift() {
     // The state the second confirmation exists for: installing overwrites edits the
     // tool did not make, and this payload is the only warning the user gets.
     let _guard = with_fixture_home();
-    let preview = cli::use_preview(&Recorder::default(), "grilling").expect("a preview");
+    let preview = cli::use_preview(&Recorder::default(), "grilling", None).expect("a preview");
 
     assert_eq!(preview.would_install[0].state, "drifted");
     // Not drift: a hand-installed copy the tool never wrote, which is normal.
@@ -250,7 +250,7 @@ fn an_install_reports_every_destination_and_what_changed_at_it() {
     let _guard = with_fixture_home();
     let log = Recorder::default();
 
-    let report = cli::use_entry(&log, "triage-bug").expect("fixture install should parse");
+    let report = cli::use_entry(&log, "triage-bug", None).expect("fixture install should parse");
 
     assert_eq!(
         &log.started.lock().unwrap()[0].argv[1..],
@@ -272,7 +272,7 @@ fn an_install_whose_main_file_is_missing_is_still_an_install() {
     // main file is absent. Treating that as a failure would deny an install that
     // demonstrably happened, and hide the warning that explains why.
     let _guard = with_fixture_home();
-    let report = cli::use_entry(&Recorder::default(), "grilling").expect("exit 1 is still a report");
+    let report = cli::use_entry(&Recorder::default(), "grilling", None).expect("exit 1 is still a report");
 
     assert_eq!(report.status, "OK");
     assert!(!report.installed[0].verified);
@@ -285,12 +285,46 @@ fn an_install_that_actually_failed_stays_a_failure() {
     // The other exit 1: a parseable body carrying `status`, which the tolerant path
     // would otherwise hand back as a successful report.
     let _guard = with_fixture_home();
-    let err = cli::use_entry(&Recorder::default(), "broken").unwrap_err();
+    let err = cli::use_entry(&Recorder::default(), "broken", None).unwrap_err();
 
     match err {
         AppError::Cli { stderr, .. } => assert!(stderr.contains("repository not found"), "{stderr}"),
         other => panic!("expected a CLI failure, got {other:?}"),
     }
+}
+
+#[test]
+fn a_project_install_is_anchored_at_the_picked_directory_not_the_tool_repo() {
+    // The whole point of design §3.3: a GUI's $PWD is meaningless, so the picked
+    // directory has to reach the child as LIBRARY_CWD or --project lands anywhere.
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let preview =
+        cli::use_preview(&log, "grilling", Some("/tmp/some-project")).expect("a project preview");
+
+    let started = log.started.lock().unwrap();
+    assert_eq!(&started[0].argv[1..], ["use", "grilling", "--project", "--dry-run", "--json"]);
+    assert_eq!(started[0].cwd, "/tmp/some-project");
+    assert_eq!(preview.scope, "project");
+    // The fixture echoes LIBRARY_CWD into the dest, so a mis-anchored run reads as
+    // the wrong path rather than as a pass.
+    assert_eq!(
+        preview.would_install[0].dest,
+        "/tmp/some-project/.claude/skills/grilling"
+    );
+}
+
+#[test]
+fn a_global_install_stays_anchored_at_the_tool_repo() {
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    cli::use_preview(&log, "grilling", None).expect("a global preview");
+
+    let started = log.started.lock().unwrap();
+    assert!(!started[0].argv.contains(&"--project".to_string()));
+    assert_eq!(started[0].cwd, cli::library_home().display().to_string());
 }
 
 #[test]

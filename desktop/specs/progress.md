@@ -556,3 +556,51 @@ Same class as T2.5's declared/transitive split.
 **Still not visually verified.** `InstallPreview` has now been driven by fixtures and by the real
 CLI underneath it, but the panel itself has not been seen rendered — as with `FirstRun`, `Doctor`,
 and the command log.
+
+---
+
+## T3.3 — project installs, anchored per install
+
+The install panel gained a scope choice and, for `project`, a native directory picker with a
+recents list. `entry_use` and `entry_use_preview` take an optional `project` path.
+
+**The picked directory is not a flag — it is the cwd.** `library.py` resolves `--project` against
+`LIBRARY_CWD`, so the backend spawns the child anchored at the picked directory and adds
+`--project` alongside. That forced the one structural change: `run_capture` had `library_home()`
+hardcoded as the cwd, which was correct while everything was anchored at the tool repo. It now
+takes the anchor as a parameter, `run_json` keeps its old signature by passing `library_home()`,
+and `run_json_at` is the form `use` needs.
+
+**The fixture echoes `LIBRARY_CWD` into the dest** for a `--project` dry run, rather than replaying
+a recorded payload. A path baked into a fixture would pass whether or not the anchor reached the
+child, which is the entire risk in this task; echoing it means a mis-anchored run reads as the
+wrong path. Paired with a test asserting a global install stays on the tool repo, so the two
+anchors are pinned against each other rather than one being asserted alone.
+
+**Per install, not an app mode.** Design §3.3's resolved open question, and the recents list is
+where it could quietly have been undone. Recents are a shortcut that still requires a click, not a
+remembered selection: nothing preselects a directory, so `scope: project` with no directory
+disables both preview and install rather than falling back to a previous choice. A stale entry
+costs a click; a stale *setting* would put files in the wrong repo.
+
+Recents live in `localStorage` behind `src/recentProjects.ts`, and a corrupt or foreign value
+returns an empty list rather than throwing — a broken convenience list must not take the install
+panel down with it. `withMostRecent` (dedupe, move-to-front, cap at 5) is covered by Vitest.
+
+**Changing scope or directory discards the plan.** It described a destination that is no longer
+the one being installed to, and a stale plan is worse than none: it is the artifact the drift
+acknowledgement is read from.
+
+**Verified end to end against the real CLI:**
+
+- Preview into `/tmp/proj-probe` reported `scope: project` and
+  `/private/tmp/proj-probe/.claude/skills/review-accessibility`.
+- The install landed at that exact path — the confirmed destination matched the preview, symlink
+  resolution included.
+- `list` then reported the entry in **both** scopes (`["global", "project"]`), so the two installs
+  are independent rather than one moving.
+- Cleaned up afterwards; the entry is back to `["global"]`.
+
+**New dependency:** `tauri-plugin-dialog`, with `dialog:allow-open` added to the default
+capability rather than `dialog:default` — the app opens a directory picker and never saves or
+prompts, so the narrower permission is the accurate one.

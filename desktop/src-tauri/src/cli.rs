@@ -320,8 +320,8 @@ pub fn library_config() -> PathBuf {
 /// `LIBRARY_CWD` is set explicitly rather than inherited (design §3.3). The
 /// wrapper defaults it to `$PWD`, and a GUI's `$PWD` is wherever Finder launched
 /// the app from — often `/` — so inheriting it would scatter `--project` installs
-/// into arbitrary directories. Until the user picks a project directory (T3.3)
-/// the anchor is the tool repo itself, and the UI exposes no project scope.
+/// into arbitrary directories. A project install passes the directory the user
+/// picked for that install; everything else is anchored at the tool repo.
 pub fn command(args: &[&str], cwd: &Path) -> Command {
     let mut cmd = Command::new(library_wrapper());
     cmd.args(args).arg("--json").env("LIBRARY_CWD", cwd);
@@ -333,7 +333,19 @@ pub fn command(args: &[&str], cwd: &Path) -> Command {
 /// `args` is the subcommand plus its own flags (e.g. `["search", "jira"]`).
 /// `--json` is appended here so the caller can't forget it and get human text.
 pub fn run_json(sink: &dyn CommandSink, args: &[&str]) -> Result<serde_json::Value, AppError> {
-    let output = run_capture(sink, args)?;
+    run_json_at(sink, args, &library_home())
+}
+
+/// `run_json`, anchored somewhere other than the tool repo.
+///
+/// Only `use` needs this, and only for a project install: `library.py` resolves
+/// `--project` against `LIBRARY_CWD`, so the picked directory *is* the argument.
+fn run_json_at(
+    sink: &dyn CommandSink,
+    args: &[&str],
+    cwd: &Path,
+) -> Result<serde_json::Value, AppError> {
+    let output = run_capture(sink, args, cwd)?;
     let home = library_home();
     settle(interpret(
         &home,
@@ -349,8 +361,12 @@ pub fn run_json(sink: &dyn CommandSink, args: &[&str]) -> Result<serde_json::Val
 /// the strict mapping would hide exactly the output the caller asked for. Any other
 /// failure — a missing wrapper, exit 2, exit 3, unparseable output — still surfaces
 /// as an error, so this widens one case rather than disabling the contract.
-fn run_report(sink: &dyn CommandSink, args: &[&str]) -> Result<serde_json::Value, AppError> {
-    let output = run_capture(sink, args)?;
+fn run_report(
+    sink: &dyn CommandSink,
+    args: &[&str],
+    cwd: &Path,
+) -> Result<serde_json::Value, AppError> {
+    let output = run_capture(sink, args, cwd)?;
     let reported = matches!(output.status.code(), Some(0 | 1));
     if reported {
         if let Ok(body) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
@@ -370,7 +386,7 @@ fn run_report(sink: &dyn CommandSink, args: &[&str]) -> Result<serde_json::Value
 }
 
 /// Resolve the wrapper and run it, or explain why that was impossible.
-fn run_capture(sink: &dyn CommandSink, args: &[&str]) -> Result<Output, AppError> {
+fn run_capture(sink: &dyn CommandSink, args: &[&str], cwd: &Path) -> Result<Output, AppError> {
     let wrapper = library_wrapper();
     if !wrapper.exists() {
         return Err(AppError::WrapperMissing {
@@ -378,8 +394,7 @@ fn run_capture(sink: &dyn CommandSink, args: &[&str]) -> Result<Output, AppError
         });
     }
 
-    let home = library_home();
-    spawn(sink, command(args, &home), &home).map_err(|e| AppError::Cli {
+    spawn(sink, command(args, cwd), cwd).map_err(|e| AppError::Cli {
         // The wrapper is on disk but would not execute (not executable, missing
         // interpreter). There is no exit status to report, so -1 stands in and the
         // io error becomes the stderr the UI shows.
@@ -416,12 +431,33 @@ pub fn show(sink: &dyn CommandSink, name: &str) -> Result<EntryDetail, AppError>
     parse(run_json(sink, &["show", name])?)
 }
 
-/// Where `use <name>` would write, without writing it (R3.2).
+/// Where an install would land: the tool repo for a global one, the picked project
+/// directory for a project one.
 ///
-/// Scope is left at the CLI's default of `global`: a project install resolves against
-/// `LIBRARY_CWD`, and no project directory can be picked yet (design §3.3, T3.3).
-pub fn use_preview(sink: &dyn CommandSink, name: &str) -> Result<UsePreview, AppError> {
-    parse(run_json(sink, &["use", name, "--dry-run"])?)
+/// `library.py` resolves `--project` against `LIBRARY_CWD`, so the picked directory is
+/// not a flag — it *is* the anchor. Passed per call rather than held as an app-level
+/// "current project", so a stale setting cannot silently install into the wrong repo.
+fn anchor(project: Option<&str>) -> PathBuf {
+    project.map(PathBuf::from).unwrap_or_else(library_home)
+}
+
+fn use_args<'a>(name: &'a str, project: Option<&str>) -> Vec<&'a str> {
+    let mut args = vec!["use", name];
+    if project.is_some() {
+        args.push("--project");
+    }
+    args
+}
+
+/// Where `use <name>` would write, without writing it (R3.2).
+pub fn use_preview(
+    sink: &dyn CommandSink,
+    name: &str,
+    project: Option<&str>,
+) -> Result<UsePreview, AppError> {
+    let mut args = use_args(name, project);
+    args.push("--dry-run");
+    parse(run_json_at(sink, &args, &anchor(project))?)
 }
 
 /// Install an entry and its dependencies into the global scope (R3.1).
@@ -431,8 +467,12 @@ pub fn use_preview(sink: &dyn CommandSink, name: &str) -> Result<UsePreview, App
 /// mapping that would read as "library exited 1" for an install that demonstrably
 /// happened. `status` is then checked here, because an actual failure also exits 1 with
 /// a parseable body — `ERROR` and its `reason` — and must not be returned as a report.
-pub fn use_entry(sink: &dyn CommandSink, name: &str) -> Result<UseReport, AppError> {
-    let body = run_report(sink, &["use", name])?;
+pub fn use_entry(
+    sink: &dyn CommandSink,
+    name: &str,
+    project: Option<&str>,
+) -> Result<UseReport, AppError> {
+    let body = run_report(sink, &use_args(name, project), &anchor(project))?;
     if body.get("status").and_then(|s| s.as_str()) != Some("OK") {
         let reason = body
             .get("reason")
@@ -450,7 +490,7 @@ pub fn doctor(sink: &dyn CommandSink, deep: bool) -> Result<DoctorReport, AppErr
     if deep {
         args.push("--deep");
     }
-    parse(run_report(sink, &args)?)
+    parse(run_report(sink, &args, &library_home())?)
 }
 
 /// Register the shared catalog and clone it (R4.6).
@@ -464,8 +504,8 @@ pub fn doctor(sink: &dyn CommandSink, deep: bool) -> Result<DoctorReport, AppErr
 /// `LIBRARY_YAML_PATH` migration that hardcoding the name here would override. A catalog
 /// stored under another name is registered from a terminal.
 pub fn init(sink: &dyn CommandSink, repo: &str, branch: &str) -> Result<InitReport, AppError> {
-    let output = run_capture(sink, &["init", "--repo", repo, "--branch", branch])?;
     let home = library_home();
+    let output = run_capture(sink, &["init", "--repo", repo, "--branch", branch], &home)?;
     parse(interpret(
         &home,
         output.status.code(),

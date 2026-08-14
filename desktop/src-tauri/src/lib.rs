@@ -31,15 +31,25 @@ fn entry_show(app: tauri::AppHandle, name: String) -> Result<EntryDetail, AppErr
 }
 
 /// Where installing this entry would write, without writing anything (R3.2).
+///
+/// `project` is the directory picked for *this* install, absent for a global one.
 #[tauri::command]
-fn entry_use_preview(app: tauri::AppHandle, name: String) -> Result<UsePreview, AppError> {
-    cli::use_preview(&app, &name)
+fn entry_use_preview(
+    app: tauri::AppHandle,
+    name: String,
+    project: Option<String>,
+) -> Result<UsePreview, AppError> {
+    cli::use_preview(&app, &name, project.as_deref())
 }
 
-/// Install an entry and its dependencies globally (R3.1).
+/// Install an entry and its dependencies, globally or into a picked project (R3.1).
 #[tauri::command]
-fn entry_use(app: tauri::AppHandle, name: String) -> Result<UseReport, AppError> {
-    cli::use_entry(&app, &name)
+fn entry_use(
+    app: tauri::AppHandle,
+    name: String,
+    project: Option<String>,
+) -> Result<UseReport, AppError> {
+    cli::use_entry(&app, &name, project.as_deref())
 }
 
 /// Catalog health, including the checks that reach the network when `deep`.
@@ -74,6 +84,7 @@ fn bootstrap_tool(app: tauri::AppHandle) -> Result<BootstrapReport, AppError> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             library_list,
             entry_show,
