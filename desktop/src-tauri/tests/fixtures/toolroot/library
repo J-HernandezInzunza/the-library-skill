@@ -30,16 +30,27 @@ case "$sub" in
     esac
     ;;
   use)
-    # A preview must never be able to install: this fixture refuses any `use` that
-    # is not a dry run, so a lost --dry-run fails the suite instead of the machine.
+    # The two branches return disjoint shapes — `would_install` vs `installed` — so a
+    # preview that lost its --dry-run fails to deserialize rather than silently
+    # reporting a plan for an install that already happened.
     name=$1
     case " $* " in
-      *" --dry-run "*) ;;
-      *) echo 'fixture refuses a use that is not a dry run' >&2; exit 1 ;;
-    esac
-    case "$name" in
-      grilling) cat "$here/payloads/use-dry-run-drifted.json" ;;
-      *)        cat "$here/payloads/use-dry-run.json" ;;
+      *" --dry-run "*)
+        case "$name" in
+          grilling) cat "$here/payloads/use-dry-run-drifted.json" ;;
+          *)        cat "$here/payloads/use-dry-run.json" ;;
+        esac
+        ;;
+      *)
+        case "$name" in
+          # Installed, but the type's main file is not where it should be: the CLI
+          # prints the whole report and *then* exits 1.
+          grilling) cat "$here/payloads/use-unverified.json"; exit 1 ;;
+          # A real failure, which also exits 1 with a parseable body.
+          broken)   cat "$here/payloads/use-error.json"; exit 1 ;;
+          *)        cat "$here/payloads/use.json" ;;
+        esac
+        ;;
     esac
     ;;
   catalog)

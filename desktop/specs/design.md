@@ -110,7 +110,7 @@ One Tauri command per operation (R1.2) — never a generic passthrough:
 | `library_list` | `list --json` | R2.1 |
 | `catalog_doctor` | `doctor --json` (+`--deep`) — tolerates exit 1 (§3.7) | R7.3 |
 | `entry_use_preview` | `use <name> --dry-run --json` (+scope/`--catalog`) | R3.2 |
-| `entry_use` | `use <name> --json` (+`--project`/`--dir`/`--catalog`) | R3.1 |
+| `entry_use` | `use <name> --json` (+`--project`/`--dir`/`--catalog`) — tolerates exit 1 (§3.7) | R3.1 |
 | `catalog_sync` | `sync --json` | R3.3 |
 | `entry_add` | `add --name … --type … --description … --source … [--requires]… [--catalog]` | R4.1 |
 | `entry_update` | `update <name> [--add-requires …] [--catalog]` | R4.4 |
@@ -187,8 +187,19 @@ tolerant path: exit 0 **or** 1 with a parseable body carrying `status` is a repo
 else — a missing wrapper, exit 2, exit 3, unparseable stdout — still errors, so this widens one
 case rather than weakening §3.6.
 
-Nothing else in the CLI has this shape today. A new command that does needs the same explicit
-opt-in; the strict path stays the default so a silent failure can't be mistaken for a report.
+`use` turned out to have the same shape, and a sharper edge. It writes every copy and records
+every receipt, then returns 1 if any installed item's main file is missing — so the strict mapping
+would report `library exited 1` for an install that demonstrably happened, with the copy on disk
+and the receipt written. It therefore takes the tolerant path too.
+
+But `use` also *fails* with exit 1 and a parseable body: `status: "ERROR"` with a `reason`. The
+tolerant path keys only on `status` being present, so it would hand that back as a successful
+report. `use_entry` therefore checks `status == "OK"` itself and turns anything else into
+`AppError::Cli` carrying the `reason`. **Tolerating the exit code is not the same as trusting the
+body**; a command that opts in has to say which bodies mean success.
+
+A new command with this shape needs the same explicit opt-in; the strict path stays the default so
+a silent failure can't be mistaken for a report.
 
 ### 3.8 Detecting an unconfigured tool
 

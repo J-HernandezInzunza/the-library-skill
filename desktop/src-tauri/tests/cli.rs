@@ -201,8 +201,7 @@ fn a_preview_reports_every_destination_and_what_is_already_there() {
 
     let preview = cli::use_preview(&log, "triage-bug").expect("fixture preview should parse");
 
-    // --dry-run is the whole contract: the fixture wrapper exits 1 without it, so this
-    // asserting at all means nothing could have been written.
+    // --dry-run is the whole contract, so the argv is asserted rather than the result.
     assert_eq!(
         &log.started.lock().unwrap()[0].argv[1..],
         ["use", "triage-bug", "--dry-run", "--json"]
@@ -233,6 +232,65 @@ fn a_preview_of_a_locally_edited_copy_reports_the_drift() {
     assert_eq!(preview.would_install[0].state, "drifted");
     // Not drift: a hand-installed copy the tool never wrote, which is normal.
     assert_eq!(preview.would_install[1].state, "untracked");
+}
+
+#[test]
+fn a_preview_that_lost_its_dry_run_fails_to_parse_rather_than_reporting_an_install() {
+    // The shapes are disjoint on purpose: `use` returns `installed`, `--dry-run` returns
+    // `would_install`. So the one bug that would write to a real machine cannot present
+    // itself as a successful preview.
+    let _guard = with_fixture_home();
+    let installed = cli::run_json(&Recorder::default(), &["use", "triage-bug"]).expect("a report");
+
+    assert!(serde_json::from_value::<cli::UsePreview>(installed).is_err());
+}
+
+#[test]
+fn an_install_reports_every_destination_and_what_changed_at_it() {
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let report = cli::use_entry(&log, "triage-bug").expect("fixture install should parse");
+
+    assert_eq!(
+        &log.started.lock().unwrap()[0].argv[1..],
+        ["use", "triage-bug", "--json"]
+    );
+    assert_eq!(report.installed.len(), 2);
+    // A first install has no per-file diff at all, only the flag.
+    assert!(report.installed[0].changes.new_install);
+    assert!(report.installed[0].changes.modified.is_empty());
+    // A refresh does, and it is what the change summary is built from.
+    assert_eq!(report.installed[1].changes.modified, ["triage-bug.md"]);
+    assert!(!report.installed[1].changes.new_install);
+    assert_eq!(report.overrides, ["shared"]);
+}
+
+#[test]
+fn an_install_whose_main_file_is_missing_is_still_an_install() {
+    // `use` writes every copy and records every receipt, then exits 1 if any item's
+    // main file is absent. Treating that as a failure would deny an install that
+    // demonstrably happened, and hide the warning that explains why.
+    let _guard = with_fixture_home();
+    let report = cli::use_entry(&Recorder::default(), "grilling").expect("exit 1 is still a report");
+
+    assert_eq!(report.status, "OK");
+    assert!(!report.installed[0].verified);
+    assert_eq!(report.installed[0].changes.added, ["references/observations.md"]);
+    assert_eq!(report.installed[0].changes.removed, ["OLD.md"]);
+}
+
+#[test]
+fn an_install_that_actually_failed_stays_a_failure() {
+    // The other exit 1: a parseable body carrying `status`, which the tolerant path
+    // would otherwise hand back as a successful report.
+    let _guard = with_fixture_home();
+    let err = cli::use_entry(&Recorder::default(), "broken").unwrap_err();
+
+    match err {
+        AppError::Cli { stderr, .. } => assert!(stderr.contains("repository not found"), "{stderr}"),
+        other => panic!("expected a CLI failure, got {other:?}"),
+    }
 }
 
 #[test]

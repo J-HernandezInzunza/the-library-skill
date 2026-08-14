@@ -305,7 +305,7 @@ change in this repo, alongside `unresolved_requires[]` which T2.5 added the same
     click. Gate passes.
   - **Commit:** `feat(desktop): preview an install destination and warn about local edits`
 
-- [ ] **T3.2 — Global install with receipt-backed status**
+- [x] **T3.2 — Global install with receipt-backed status**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/`
   - **Requirements:** R3.1, R2.1
   - **Do:** `entry_use` for global scope, with the change summary from the CLI's payload. Add the

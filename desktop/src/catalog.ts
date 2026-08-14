@@ -1,10 +1,17 @@
-import type { Entry, EntryDetail, PlannedInstall, RequiredEntry, UsePreview } from "./types";
+import type {
+  Changes,
+  Entry,
+  EntryDetail,
+  PlannedInstall,
+  RequiredEntry,
+  UsePreview,
+} from "./types";
 
 /** An entry as one rendered row, with the single status the CLI would print for it. */
 export interface Row {
   entry: Entry;
   status: string;
-  tone: "installed" | "absent" | "overridden";
+  tone: "installed" | "absent" | "overridden" | "attention";
   /** Catalogs whose copy of this name this row beats. Empty outside the winners view. */
   overrides: string[];
 }
@@ -103,11 +110,37 @@ function toRow(entry: Entry, overrides: string[] = []): Row {
   return { entry, ...installStatus(entry), overrides };
 }
 
+/**
+ * The badge for a copy the tool would install, driven by `state` rather than
+ * `installed`.
+ *
+ * `installed`, `drifted`, and `untracked` are three different things to say about a
+ * copy that is on disk, and a boolean can only say one of them. `untracked` reads as
+ * normal on purpose: it means the tool has no receipt for a copy that is there, which
+ * is where every install predating receipts starts.
+ */
 function installStatus(entry: Entry): Pick<Row, "status" | "tone"> {
-  if (!entry.installed) return { status: "not installed", tone: "absent" };
-
   const scopes = entry.scopes.join(", ");
-  return { status: scopes ? `installed · ${scopes}` : "installed", tone: "installed" };
+  const where = scopes ? ` · ${scopes}` : "";
+
+  switch (entry.state) {
+    case "installed":
+      return { status: `installed${where}`, tone: "installed" };
+    case "untracked":
+      return { status: `installed by hand${where}`, tone: "installed" };
+    case "drifted":
+      return { status: `edited locally${where}`, tone: "attention" };
+    case "stale":
+      return { status: `update available${where}`, tone: "attention" };
+    case "missing":
+      return { status: "installed, but gone from disk", tone: "attention" };
+    case "not_installed":
+      return { status: "not installed", tone: "absent" };
+    default:
+      // A state this build has never heard of. Rendered rather than hidden, and
+      // toned by the one fact the CLI still agrees on.
+      return { status: entry.state, tone: entry.installed ? "installed" : "absent" };
+  }
 }
 
 /** A dependency as the detail view shows it. */
@@ -184,6 +217,26 @@ export function installPlan(preview: UsePreview, name: string): InstallPlan {
   const drifted = items.filter((item) => item.drifted);
 
   return { items, drifted, blocked: drifted.length > 0 };
+}
+
+/**
+ * A one-line summary of what an install changed, mirroring the CLI's own wording.
+ *
+ * The CLI builds this for its terminal output only; the JSON carries the raw diff, so
+ * the app renders the same sentence from the same numbers rather than the payload
+ * growing a display string.
+ */
+export function summarizeChanges(changes: Changes): string {
+  if (changes.new_install) return "new install";
+
+  const counts = [
+    [changes.modified.length, "modified"],
+    [changes.added.length, "added"],
+    [changes.removed.length, "removed"],
+  ] as const;
+  const parts = counts.filter(([n]) => n > 0).map(([n, label]) => `${n} ${label}`);
+
+  return parts.length ? parts.join(", ") : "no changes";
 }
 
 /** A destination's current state in words. Anything unrecognised renders as-is. */

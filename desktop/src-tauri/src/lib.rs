@@ -9,7 +9,9 @@ pub mod cli;
 pub mod error;
 pub mod events;
 
-use cli::{BootstrapReport, Catalog, DoctorReport, Entry, EntryDetail, InitReport, UsePreview};
+use cli::{
+    BootstrapReport, Catalog, DoctorReport, Entry, EntryDetail, InitReport, UsePreview, UseReport,
+};
 use error::AppError;
 
 /// The full catalog with install status — backs the list view.
@@ -32,6 +34,12 @@ fn entry_show(app: tauri::AppHandle, name: String) -> Result<EntryDetail, AppErr
 #[tauri::command]
 fn entry_use_preview(app: tauri::AppHandle, name: String) -> Result<UsePreview, AppError> {
     cli::use_preview(&app, &name)
+}
+
+/// Install an entry and its dependencies globally (R3.1).
+#[tauri::command]
+fn entry_use(app: tauri::AppHandle, name: String) -> Result<UseReport, AppError> {
+    cli::use_entry(&app, &name)
 }
 
 /// Catalog health, including the checks that reach the network when `deep`.
@@ -70,6 +78,7 @@ pub fn run() {
             library_list,
             entry_show,
             entry_use_preview,
+            entry_use,
             catalog_doctor,
             catalog_init,
             registry_list,

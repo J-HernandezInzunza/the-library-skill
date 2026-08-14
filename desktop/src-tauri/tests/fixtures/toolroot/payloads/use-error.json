@@ -1,0 +1,5 @@
+{
+  "status": "ERROR",
+  "name": "broken",
+  "reason": "could not clone https://example.test/nope.git: repository not found"
+}

@@ -5,9 +5,10 @@ import {
   catalogRows,
   dependencies,
   installPlan,
+  summarizeChanges,
   winningRows,
 } from "./catalog";
-import type { Entry, PlannedInstall, UsePreview } from "./types";
+import type { Changes, Entry, PlannedInstall, UsePreview } from "./types";
 
 function entry(overrides: Partial<Entry> = {}): Entry {
   return {
@@ -59,7 +60,9 @@ describe("winningRows", () => {
   });
 
   it("names every scope an entry is installed in", () => {
-    const rows = winningRows([entry({ installed: true, scopes: ["global", "project"] })]);
+    const rows = winningRows([
+      entry({ installed: true, scopes: ["global", "project"], state: "installed" }),
+    ]);
 
     expect(rows[0].status).toBe("installed · global, project");
   });
@@ -83,7 +86,13 @@ describe("allRows", () => {
     // `shared` at the very end, far from the copy it loses to.
     const catalog = [
       heldByBoth[0],
-      entry({ name: "zebra", catalog: "personal", installed: true, scopes: ["global"] }),
+      entry({
+        name: "zebra",
+        catalog: "personal",
+        installed: true,
+        scopes: ["global"],
+        state: "installed",
+      }),
       heldByBoth[1],
     ];
     const rows = allRows(catalog);
@@ -267,5 +276,60 @@ describe("installPlan", () => {
     );
 
     expect(plan.blocked).toBe(false);
+  });
+});
+
+describe("the install badge", () => {
+  function badge(state: string, rest: Partial<Entry> = {}) {
+    const [row] = winningRows([entry({ state, ...rest })]);
+    return [row.status, row.tone];
+  }
+
+  it("says which of the three on-disk states a copy is in", () => {
+    // A boolean can only say one of these, which is why the badge follows `state`.
+    expect(badge("installed", { installed: true, scopes: ["global"] })).toEqual([
+      "installed · global",
+      "installed",
+    ]);
+    expect(badge("untracked", { installed: true, scopes: ["global"] })).toEqual([
+      "installed by hand · global",
+      "installed",
+    ]);
+    expect(badge("drifted", { installed: true, scopes: ["global"] })).toEqual([
+      "edited locally · global",
+      "attention",
+    ]);
+  });
+
+  it("treats a hand-installed copy as normal, not as a problem", () => {
+    // Every install predating receipts is untracked; toning it as an error would make
+    // the app report a fault on a machine where nothing is wrong.
+    const [, tone] = badge("untracked", { installed: true, scopes: ["global"] });
+    expect(tone).toBe("installed");
+  });
+
+  it("renders a state it has never heard of rather than hiding the row", () => {
+    expect(badge("quarantined", { installed: true })).toEqual(["quarantined", "installed"]);
+  });
+});
+
+describe("summarizeChanges", () => {
+  function changes(overrides: Partial<Changes> = {}): Changes {
+    return { new_install: false, added: [], removed: [], modified: [], ...overrides };
+  }
+
+  it("says new install rather than counting files that had nothing to diff against", () => {
+    expect(summarizeChanges(changes({ new_install: true, added: ["a"] }))).toBe("new install");
+  });
+
+  it("counts each kind of change, in the CLI's own order", () => {
+    const summary = summarizeChanges(
+      changes({ modified: ["a"], added: ["b", "c"], removed: ["d"] }),
+    );
+    expect(summary).toBe("1 modified, 2 added, 1 removed");
+  });
+
+  it("says so when a refresh changed nothing", () => {
+    expect(summarizeChanges(changes())).toBe("no changes");
   });
 });

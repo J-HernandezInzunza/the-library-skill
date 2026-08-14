@@ -12,7 +12,13 @@ const props = defineProps<{
   catalogs: Catalog[];
   entries: Entry[];
 }>();
-defineEmits<{ close: []; open: [name: string] }>();
+const emit = defineEmits<{ close: []; open: [name: string]; installed: [] }>();
+
+/** Both views hold state the install just invalidated, so both re-read it. */
+async function afterInstall() {
+  emit("installed");
+  await load(props.name);
+}
 
 const detail = ref<EntryDetail | null>(null);
 const loading = ref(false);
@@ -86,7 +92,7 @@ watch(() => props.name, load, { immediate: true });
       </header>
       <p class="entry-detail__desc">{{ detail.entry.description }}</p>
 
-      <InstallPreview :name="detail.name" />
+      <InstallPreview :name="detail.name" @installed="afterInstall()" />
 
       <h3 class="entry-detail__section">Source</h3>
       <p class="entry-detail__origin">{{ origin }}</p>

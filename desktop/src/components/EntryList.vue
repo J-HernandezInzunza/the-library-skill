@@ -123,6 +123,11 @@ const hueByCatalog = computed(
   background: rgba(234, 179, 8, 0.18);
   color: #b45309;
 }
+.entry-list__status--attention {
+  background: rgba(245, 158, 11, 0.2);
+  color: #b45309;
+  font-weight: 600;
+}
 .entry-list__overrides {
   font-size: 0.7rem;
   opacity: 0.55;

@@ -176,6 +176,47 @@ pub struct PlannedInstall {
     pub state: String,
 }
 
+/// What `use <name> --json` reports after writing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UseReport {
+    pub status: String,
+    /// Dependencies first, in install order, with the requested entry last.
+    pub installed: Vec<InstalledItem>,
+    #[serde(default)]
+    pub overrides: Vec<String>,
+    #[serde(default)]
+    pub overridden_by: Option<String>,
+}
+
+/// One destination `use` wrote, and what changed at it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InstalledItem {
+    pub r#type: String,
+    pub name: String,
+    pub catalog: String,
+    pub dest: String,
+    /// False means the copy landed but its main file is not where the type expects
+    /// it — a warning about the catalog entry, not a failed install.
+    pub verified: bool,
+    pub changes: Changes,
+}
+
+/// The per-file diff between what was installed and what is now there.
+///
+/// A first install reports only `new_install`, so every list is defaulted rather than
+/// required.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Changes {
+    #[serde(default)]
+    pub new_install: bool,
+    #[serde(default)]
+    pub added: Vec<String>,
+    #[serde(default)]
+    pub removed: Vec<String>,
+    #[serde(default)]
+    pub modified: Vec<String>,
+}
+
 /// What `init --json` reports once a catalog is registered and cloned.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InitReport {
@@ -381,6 +422,26 @@ pub fn show(sink: &dyn CommandSink, name: &str) -> Result<EntryDetail, AppError>
 /// `LIBRARY_CWD`, and no project directory can be picked yet (design §3.3, T3.3).
 pub fn use_preview(sink: &dyn CommandSink, name: &str) -> Result<UsePreview, AppError> {
     parse(run_json(sink, &["use", name, "--dry-run"])?)
+}
+
+/// Install an entry and its dependencies into the global scope (R3.1).
+///
+/// Goes through `run_report` because `use` exits 1 when any installed item's main file
+/// is missing, *after* writing every copy and recording every receipt. Under the strict
+/// mapping that would read as "library exited 1" for an install that demonstrably
+/// happened. `status` is then checked here, because an actual failure also exits 1 with
+/// a parseable body — `ERROR` and its `reason` — and must not be returned as a report.
+pub fn use_entry(sink: &dyn CommandSink, name: &str) -> Result<UseReport, AppError> {
+    let body = run_report(sink, &["use", name])?;
+    if body.get("status").and_then(|s| s.as_str()) != Some("OK") {
+        let reason = body
+            .get("reason")
+            .and_then(|r| r.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| body.to_string());
+        return Err(AppError::Cli { code: 1, stderr: reason });
+    }
+    parse(body)
 }
 
 /// Catalog health (R7.3). `deep` adds the checks that touch the network.

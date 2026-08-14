@@ -1,0 +1,24 @@
+{
+  "status": "OK",
+  "installed": [
+    {
+      "type": "skill",
+      "name": "grilling",
+      "catalog": "personal",
+      "dest": "/Users/dev/.claude/skills/grilling",
+      "verified": false,
+      "changes": {
+        "new_install": false,
+        "added": [
+          "references/observations.md"
+        ],
+        "removed": [
+          "OLD.md"
+        ],
+        "modified": []
+      }
+    }
+  ],
+  "overrides": [],
+  "overridden_by": null
+}

@@ -142,6 +142,7 @@ onMounted(load);
       :entries="entries"
       @close="trail.pop()"
       @open="trail.push($event)"
+      @installed="load()"
     />
 
     <template v-else>

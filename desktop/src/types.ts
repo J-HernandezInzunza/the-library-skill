@@ -91,6 +91,42 @@ export interface UsePreview {
   would_install: PlannedInstall[];
 }
 
+/**
+ * The per-file diff between what was installed and what is now there.
+ *
+ * A first install reports only `new_install`, so the lists are absent rather than
+ * empty; the backend defaults them.
+ */
+export interface Changes {
+  new_install: boolean;
+  added: string[];
+  removed: string[];
+  modified: string[];
+}
+
+/** One destination `library use` wrote, and what changed at it. */
+export interface InstalledItem {
+  type: string;
+  name: string;
+  catalog: string;
+  dest: string;
+  /**
+   * False means the copy landed but its main file is not where the type expects it.
+   * A warning about the catalog entry, not a failed install.
+   */
+  verified: boolean;
+  changes: Changes;
+}
+
+/** What `library use <name> --json` reports after writing. */
+export interface UseReport {
+  status: string;
+  /** Dependencies first, in install order, with the requested entry last. */
+  installed: InstalledItem[];
+  overrides: string[];
+  overridden_by: string | null;
+}
+
 /** The exact argv about to run, from `command://started`. */
 export interface CommandStarted {
   id: number;

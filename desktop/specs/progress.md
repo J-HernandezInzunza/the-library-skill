@@ -468,11 +468,11 @@ first and the requested entry last (`results[-1]`), so positional would work tod
 silently mislabels which entry is being installed is worse than one that labels none, and the name
 is right there in the payload.
 
-**The fixture wrapper refuses a `use` that is not a dry run** — `exit 1` with
-`fixture refuses a use that is not a dry run`. A dropped `--dry-run` is the one bug in this task
-that damages the developer's machine rather than failing a test, so the fixture is where it gets
-caught. The argv assertion and that refusal together mean "nothing lands on disk" is enforced, not
-asserted in prose.
+**A dropped `--dry-run` cannot present itself as a preview.** It is the one bug in this task that
+damages the developer's machine rather than failing a test, so it is guarded structurally: the two
+payloads are disjoint — `use` returns `installed`, `use --dry-run` returns `would_install` — so a
+preview that lost its flag fails to deserialize. Pinned by a test that feeds the install payload to
+`UsePreview` and asserts the parse fails, alongside the argv assertion.
 
 **Verified against the live catalog, all three states, nothing written:**
 
@@ -492,3 +492,67 @@ has no caller. T3.3 adds it alongside the picker that makes it meaningful.
 
 **Still not visually verified.** `InstallPreview` is type-checked and driven by recorded payloads;
 it joins `FirstRun`, `Doctor`, and the command log in the set that has never been seen rendered.
+
+---
+
+## T3.2 — install, and a second command whose exit 1 is a report
+
+`entry_use` installs globally and the preview panel grows the confirm control T3.1's gate was
+waiting for: a plan that would discard local edits needs an acknowledgement tick naming how many
+copies before the button goes live.
+
+**`use` has `doctor`'s exit-code shape, with a sharper edge.** It writes every copy and records
+every receipt, *then* returns 1 if any installed item's main file is missing
+(`return 0 if all(r["verified"] ...) else 1`). Under the strict mapping the app would have said
+"library exited 1" for an install that had demonstrably happened, with the files on disk and the
+receipt written — and it would have swallowed the `verified: false` warning that explains why the
+exit code was 1 in the first place.
+
+So `use` goes through the same tolerant path `doctor` uses. **But tolerating the exit code is not
+the same as trusting the body:** `use` also *fails* with exit 1 and a parseable body,
+`status: "ERROR"` with a `reason`. The tolerant path keys only on `status` being present, so it
+would have returned a clone failure as a successful install. `use_entry` therefore checks
+`status == "OK"` itself. Both halves are pinned by tests, from fixtures that exit 1 for each
+reason. Recorded in design.md §3.7, and the design's command table now flags `entry_use` the way
+it flags `catalog_doctor`.
+
+**The badge now renders `state`, and `installed` is no longer load-bearing.** A boolean can only
+say one of three things about a copy that is on disk. The mapping:
+
+| `state` | badge | tone |
+| --- | --- | --- |
+| `installed` | `installed · global` | normal |
+| `untracked` | `installed by hand · global` | **normal** |
+| `drifted` | `edited locally · global` | attention |
+| `stale` | `update available · global` | attention |
+| `missing` | `installed, but gone from disk` | attention |
+| `not_installed` | `not installed` | absent |
+| anything else | the raw state | from `installed` |
+
+`untracked` reading as normal is the deliberate one. It means the tool has no receipt for a copy
+that is there — which is where *every* install predating receipts starts. Toning it as a fault
+would make the app report a problem on a machine where nothing is wrong, and train people to
+ignore the colour.
+
+**Two existing test fixtures were internally inconsistent and only the change exposed them.** They
+set `installed: true, scopes: ["global"]` while leaving `state: "not_installed"`, a combination the
+CLI never emits. Under the old boolean badge they passed; under the state-driven one they failed.
+Fixed in the fixtures, not the code.
+
+**`summarizeChanges` is app-side, and it is presentation, not catalog logic.** The CLI builds
+`"2 modified, 1 added"` for its terminal output only; the JSON carries the raw diff. So the app
+renders the same sentence from the same numbers rather than the payload growing a display string.
+Same class as T2.5's declared/transitive split.
+
+**Verified end to end on the real machine**, walking a skill through every state the badge claims:
+
+1. `uninstall review-accessibility --scope global` → `not_installed`.
+2. A hand-created `~/.claude/skills/review-accessibility/SKILL.md` → `untracked`, `installed: true`.
+3. Preview over it → `untracked` at the right dest, nothing written.
+4. `use` → exit 0, `verified: true`, `changes.modified: ["SKILL.md"]`, and the state flips to
+   `installed · global`.
+5. `diff -rq` against a copy of the original install: identical. The machine is where it started.
+
+**Still not visually verified.** `InstallPreview` has now been driven by fixtures and by the real
+CLI underneath it, but the panel itself has not been seen rendered — as with `FirstRun`, `Doctor`,
+and the command log.

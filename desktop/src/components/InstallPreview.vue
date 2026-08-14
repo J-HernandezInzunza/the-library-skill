@@ -1,14 +1,19 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { describeDestState, installPlan } from "../catalog";
-import { describeAppError, type UsePreview } from "../types";
+import { describeDestState, installPlan, summarizeChanges } from "../catalog";
+import { describeAppError, type UsePreview, type UseReport } from "../types";
 
 const props = defineProps<{ name: string }>();
+const emit = defineEmits<{ installed: [] }>();
 
 const preview = ref<UsePreview | null>(null);
+const report = ref<UseReport | null>(null);
 const loading = ref(false);
+const installing = ref(false);
 const error = ref("");
+/** Ticked by hand when the plan would discard local edits. */
+const acknowledged = ref(false);
 
 const plan = computed(() => {
   if (!preview.value) return null;
@@ -20,9 +25,18 @@ const winningCatalog = computed(
   () => plan.value?.items.find((item) => item.target)?.install.catalog ?? "",
 );
 
-async function run() {
+const canInstall = computed(() => {
+  if (!plan.value || installing.value) return false;
+  return !plan.value.blocked || acknowledged.value;
+});
+
+/** Installed, but the main file the type expects is not there. */
+const unverified = computed(() => report.value?.installed.filter((item) => !item.verified) ?? []);
+
+async function runPreview() {
   loading.value = true;
   error.value = "";
+  report.value = null;
   try {
     preview.value = await invoke<UsePreview>("entry_use_preview", { name: props.name });
   } catch (e) {
@@ -33,12 +47,30 @@ async function run() {
   }
 }
 
+async function install() {
+  installing.value = true;
+  error.value = "";
+  try {
+    report.value = await invoke<UseReport>("entry_use", { name: props.name });
+    // The plan described the disk as it was before the write, so it is now a lie.
+    preview.value = null;
+    acknowledged.value = false;
+    emit("installed");
+  } catch (e) {
+    error.value = describeAppError(e);
+  } finally {
+    installing.value = false;
+  }
+}
+
 // A plan resolved for one entry says nothing about the next one.
 watch(
   () => props.name,
   () => {
     preview.value = null;
+    report.value = null;
     error.value = "";
+    acknowledged.value = false;
   },
 );
 </script>
@@ -47,7 +79,7 @@ watch(
   <section class="install-preview">
     <h3 class="install-preview__heading">Install</h3>
 
-    <button type="button" class="ghost" :disabled="loading" @click="run()">
+    <button type="button" class="ghost" :disabled="loading" @click="runPreview()">
       {{ loading ? "Resolving…" : plan ? "Re-check" : "Preview install" }}
     </button>
 
@@ -84,6 +116,52 @@ watch(
             </span>
           </span>
           <code class="install-preview__dest">{{ item.install.dest }}</code>
+        </li>
+      </ul>
+
+      <label v-if="plan.blocked" class="install-preview__ack">
+        <input v-model="acknowledged" type="checkbox" />
+        Overwrite {{ plan.drifted.length }} locally edited
+        {{ plan.drifted.length === 1 ? "copy" : "copies" }}, discarding those edits.
+      </label>
+
+      <button
+        type="button"
+        class="install-preview__go"
+        :disabled="!canInstall"
+        @click="install()"
+      >
+        {{ installing ? "Installing…" : "Install globally" }}
+      </button>
+    </template>
+
+    <template v-if="report">
+      <p class="install-preview__done">
+        Installed {{ report.installed.length }}
+        {{ report.installed.length === 1 ? "item" : "items" }}.
+      </p>
+
+      <p v-if="unverified.length" class="install-preview__warning">
+        {{ unverified.map((item) => item.name).join(", ") }} landed, but the main file the
+        catalog expects is not there. The copy is on disk; the catalog entry needs fixing.
+      </p>
+
+      <ul class="install-preview__plan">
+        <li
+          v-for="item in report.installed"
+          :key="item.dest"
+          class="install-preview__item"
+        >
+          <span class="install-preview__item-head">
+            <strong>{{ item.name }}</strong>
+            <span class="install-preview__state">{{ summarizeChanges(item.changes) }}</span>
+          </span>
+          <code class="install-preview__dest">{{ item.dest }}</code>
+          <ul v-if="!item.changes.new_install" class="install-preview__files">
+            <li v-for="file in item.changes.modified" :key="`~${file}`">~ {{ file }}</li>
+            <li v-for="file in item.changes.added" :key="`+${file}`">+ {{ file }}</li>
+            <li v-for="file in item.changes.removed" :key="`-${file}`">- {{ file }}</li>
+          </ul>
         </li>
       </ul>
     </template>
@@ -169,5 +247,34 @@ watch(
   font-size: 0.78rem;
   opacity: 0.65;
   overflow-wrap: anywhere;
+}
+.install-preview__files {
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.75rem;
+  opacity: 0.6;
+}
+.install-preview__ack {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin: 0.75rem 0 0;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+.install-preview__go {
+  margin-top: 0.75rem;
+}
+.install-preview__go:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.install-preview__done {
+  margin: 0.75rem 0 0.5rem;
+  font-size: 0.85rem;
+  color: #16a34a;
+  font-weight: 600;
 }
 </style>
