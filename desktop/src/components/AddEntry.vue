@@ -123,7 +123,7 @@ async function submit() {
 
       <label class="add-entry__field">
         <span>Description</span>
-        <input v-model="description" type="text" placeholder="What it does, in one line." />
+        <input v-model="description" type="text" placeholder="What it does, in one line, this is what will show in the catalog entry" />
       </label>
 
       <label class="add-entry__field">
@@ -150,10 +150,12 @@ async function submit() {
 
       <fieldset v-if="available.length" class="add-entry__requires">
         <legend>Requires</legend>
-        <label v-for="ref in available" :key="ref" class="add-entry__check">
-          <input v-model="requires" type="checkbox" :value="ref" />
-          <span>{{ ref }}</span>
-        </label>
+        <div class="add-entry__requires-list">
+          <label v-for="ref in available" :key="ref" class="add-entry__check">
+            <input v-model="requires" type="checkbox" :value="ref" />
+            <span>{{ ref }}</span>
+          </label>
+        </div>
       </fieldset>
 
       <button type="submit" :disabled="!canSubmit">Add to {{ catalogId }}</button>
@@ -212,7 +214,6 @@ async function submit() {
   display: flex;
   flex-direction: column;
   gap: 0.9rem;
-  max-width: 34rem;
 }
 .add-entry__field {
   display: flex;
@@ -250,7 +251,6 @@ async function submit() {
   display: flex;
   flex-direction: column;
   gap: 0.2rem;
-  max-width: 34rem;
   margin: 1.5rem 0 0;
   padding: 0.75rem 0.9rem;
   border-radius: 8px;
@@ -273,21 +273,26 @@ async function submit() {
   line-height: 1.4;
   opacity: 0.85;
 }
+/* Deliberately not a flex container: WKWebView drops a <legend> entirely when its
+   fieldset is `display: flex`, so the group label silently disappears. The list inside
+   carries the layout, which also keeps the label still while the list scrolls. */
 .add-entry__requires {
+  margin: 0;
+  padding: 0.5rem 0.75rem 0.6rem;
+  border: 1px solid rgba(128, 128, 128, 0.3);
+  border-radius: 8px;
+}
+.add-entry__requires legend {
+  padding: 0 0.3rem;
+  font-size: 0.78rem;
+  opacity: 0.7;
+}
+.add-entry__requires-list {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
   max-height: 12rem;
   overflow-y: auto;
-  margin: 0;
-  padding: 0.6rem 0.75rem;
-  border: 1px solid rgba(128, 128, 128, 0.3);
-  border-radius: 8px;
-}
-.add-entry__requires legend {
-  font-size: 0.78rem;
-  opacity: 0.7;
-  padding: 0 0.3rem;
 }
 .add-entry__check code,
 .add-entry__result code {
