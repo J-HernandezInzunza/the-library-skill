@@ -105,15 +105,22 @@ onMounted(load);
 :root {
   color-scheme: light dark;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, sans-serif;
+  --app-bg: #f6f6f7;
+  /* The sticky header composites over scrolling content, so it needs a surface of
+     its own; a bare backdrop-filter leaves the text to overlap the list. */
+  --app-bg-sticky: rgba(246, 246, 247, 0.88);
 }
 body {
   margin: 0;
-  background: #f6f6f7;
+  background: var(--app-bg);
   color: #1a1a1a;
 }
 @media (prefers-color-scheme: dark) {
+  :root {
+    --app-bg: #1e1e20;
+    --app-bg-sticky: rgba(30, 30, 32, 0.88);
+  }
   body {
-    background: #1e1e20;
     color: #e6e6e6;
   }
 }
@@ -123,12 +130,16 @@ body {
 .app {
   max-width: 860px;
   margin: 0 auto;
-  padding: 1.5rem 1.25rem 3rem;
+  /* No top padding: the sticky header carries its own, so the gap above the title
+     stays part of the opaque surface instead of scrolling away from under it. */
+  padding: 0 1.25rem 3rem;
 }
 .topbar {
   position: sticky;
   top: 0;
-  padding-bottom: 0.75rem;
+  z-index: 10;
+  padding: 1.5rem 0 0.75rem;
+  background: var(--app-bg-sticky);
   backdrop-filter: blur(8px);
 }
 h1 {
