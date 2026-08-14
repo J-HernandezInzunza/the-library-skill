@@ -11,6 +11,9 @@ case "$sub" in
   list)
     cat "$here/payloads/list.json"
     ;;
+  show)
+    cat "$here/payloads/show.json"
+    ;;
   catalog)
     # `catalog list` — the subcommand arrives as "$1" after the shift.
     cat "$here/payloads/catalogs.json"

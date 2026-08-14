@@ -9,7 +9,7 @@ pub mod cli;
 pub mod error;
 pub mod events;
 
-use cli::{BootstrapReport, Catalog, Entry};
+use cli::{BootstrapReport, Catalog, Entry, EntryDetail};
 use error::AppError;
 
 /// The full catalog with install status — backs the list view.
@@ -20,6 +20,12 @@ use error::AppError;
 #[tauri::command]
 fn library_list(app: tauri::AppHandle) -> Result<Vec<Entry>, AppError> {
     cli::list(&app)
+}
+
+/// Everything known about one name: copies, override chain, requires, installs.
+#[tauri::command]
+fn entry_show(app: tauri::AppHandle, name: String) -> Result<EntryDetail, AppError> {
+    cli::show(&app, &name)
 }
 
 /// The registered catalogs, for per-catalog browsing and origin display.
@@ -40,6 +46,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             library_list,
+            entry_show,
             registry_list,
             bootstrap_tool
         ])

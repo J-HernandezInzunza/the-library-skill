@@ -46,6 +46,69 @@ pub struct Entry {
     pub has_setup: bool,
 }
 
+/// Everything `show <name> --json` knows about one name.
+///
+/// Deliberately not reassembled from the `list` array: that cannot express the override
+/// chain in both directions, and knows nothing about install provenance.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EntryDetail {
+    pub name: String,
+    /// The copy that resolves — what `use` would install.
+    pub entry: Entry,
+    pub copies: Vec<CatalogCopy>,
+    pub requires: Vec<RequiredEntry>,
+    /// Every install of this name, across scopes and custom directories.
+    pub installs: Vec<Receipt>,
+    pub has_setup: bool,
+    pub source: Source,
+}
+
+/// One catalog's copy of a name, with its place in the override order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CatalogCopy {
+    pub catalog: String,
+    pub r#type: String,
+    pub description: String,
+    pub source: String,
+    #[serde(default)]
+    pub requires: Vec<String>,
+    pub wins: bool,
+    /// Both directions are reported, because "what does this beat" and "what beats
+    /// this" are different questions and the answer to one does not imply the other.
+    #[serde(default)]
+    pub overrides: Vec<String>,
+    #[serde(default)]
+    pub overridden_by: Vec<String>,
+}
+
+/// A dependency, resolved to the catalog entry it names.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RequiredEntry {
+    pub r#type: String,
+    pub name: String,
+    pub catalog: String,
+    pub description: String,
+}
+
+/// The entry's `source` string, parsed by the CLI rather than by the app (R1.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Source {
+    pub raw: String,
+    /// `github`, `bitbucket`, `local`, … — an open set, like `state`.
+    pub kind: String,
+    // Absent for a local path, which has no host, org, or branch.
+    #[serde(default)]
+    pub org: Option<String>,
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub file_path: Option<String>,
+    #[serde(default)]
+    pub clone_urls: Vec<String>,
+}
+
 /// What `bootstrap.py --json` reports once the tool directory can run its CLI.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BootstrapReport {
@@ -196,6 +259,11 @@ pub fn run_json(sink: &dyn CommandSink, args: &[&str]) -> Result<serde_json::Val
 /// The full catalog with install state (R2.1).
 pub fn list(sink: &dyn CommandSink) -> Result<Vec<Entry>, AppError> {
     parse(run_json(sink, &["list"])?)
+}
+
+/// Everything known about one name (R2.1).
+pub fn show(sink: &dyn CommandSink, name: &str) -> Result<EntryDetail, AppError> {
+    parse(run_json(sink, &["show", name])?)
 }
 
 /// The registered catalogs, highest precedence first.

@@ -99,6 +99,33 @@ fn list_parses_the_recorded_catalog() {
 }
 
 #[test]
+fn show_reports_the_override_chain_in_both_directions() {
+    let _guard = with_fixture_home();
+    let detail = cli::show(&Recorder::default(), "grilling").expect("fixture show should parse");
+
+    assert_eq!(detail.name, "grilling");
+    // The winner is the copy `use` would install, and it is identified as such.
+    assert_eq!(detail.entry.catalog, "personal");
+    assert_eq!(detail.copies.len(), 2);
+
+    let winner = detail.copies.iter().find(|c| c.wins).expect("a winning copy");
+    assert_eq!(winner.catalog, "personal");
+    assert_eq!(winner.overrides, ["shared"]);
+    assert!(winner.overridden_by.is_empty());
+
+    let loser = detail.copies.iter().find(|c| !c.wins).expect("a losing copy");
+    assert_eq!(loser.overridden_by, ["personal"]);
+    assert!(loser.overrides.is_empty());
+
+    // Provenance the `list` array cannot express at all.
+    assert_eq!(detail.installs.len(), 1);
+    assert_eq!(detail.installs[0].scope, "global");
+    // The CLI parses the source; the app never picks the string apart itself.
+    assert_eq!(detail.source.kind, "github");
+    assert_eq!(detail.source.branch.as_deref(), Some("master"));
+}
+
+#[test]
 fn a_skipped_catalog_is_still_listed_with_its_reason() {
     let _guard = with_fixture_home();
     let catalogs: Vec<Catalog> = cli::registry(&Recorder::default()).expect("fixture registry should parse");

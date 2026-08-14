@@ -212,7 +212,7 @@ command in Phase 2 fails on that machine until this exists.
     display stays as-is. Gate passes.
   - **Commit:** `feat(desktop): surface the catalog registry and per-entry origin`
 
-- [ ] **T2.3 — Entry detail view from `library show`**
+- [x] **T2.3 — Entry detail view from `library show`**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/components/EntryDetail.vue`
   - **Requirements:** R2.1, R1.1
   - **Do:** Add `entry_show` running `show <name> --json` and render it: the resolved winner, every

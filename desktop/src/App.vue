@@ -12,11 +12,16 @@ import EntryList from "./components/EntryList.vue";
 // initial bundle everyone else loads.
 const FirstRun = defineAsyncComponent(() => import("./components/FirstRun.vue"));
 
+// Only reached by clicking into an entry, so it stays out of the initial bundle.
+const EntryDetail = defineAsyncComponent(() => import("./components/EntryDetail.vue"));
+
 const entries = ref<Entry[]>([]);
 const catalogs = ref<Catalog[]>([]);
 /** The catalog being browsed; `null` browses every catalog's winning entries. */
 const activeCatalog = ref<string | null>(null);
 const query = ref("");
+/** The entry whose detail view is open, if any. */
+const openEntry = ref<string | null>(null);
 const loading = ref(false);
 /** Kept typed rather than stringified: a first-run state is recoverable, not an error. */
 const failure = ref<unknown>(null);
@@ -108,6 +113,13 @@ onMounted(load);
       @ready="load()"
     />
 
+    <EntryDetail
+      v-else-if="openEntry"
+      :name="openEntry"
+      :catalogs="catalogs"
+      @close="openEntry = null"
+    />
+
     <template v-else>
     <header class="topbar">
       <h1>The Library</h1>
@@ -134,6 +146,7 @@ onMounted(load);
       :rows="filtered"
       :catalogs="catalogs"
       :show-origin="multiCatalog"
+      @select="openEntry = $event"
     />
     </template>
 

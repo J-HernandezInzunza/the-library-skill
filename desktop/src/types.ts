@@ -1,3 +1,48 @@
+/** One catalog's copy of a name, with its place in the override order. */
+export interface CatalogCopy {
+  catalog: string;
+  type: string;
+  description: string;
+  source: string;
+  requires: string[];
+  wins: boolean;
+  /** Catalogs this copy beats, and the ones that beat it: different questions. */
+  overrides: string[];
+  overridden_by: string[];
+}
+
+/** A dependency, resolved to the catalog entry it names. */
+export interface RequiredEntry {
+  type: string;
+  name: string;
+  catalog: string;
+  description: string;
+}
+
+/** The entry's `source`, parsed by the CLI rather than by the app. */
+export interface Source {
+  raw: string;
+  kind: string;
+  org: string | null;
+  repo: string | null;
+  branch: string | null;
+  file_path: string | null;
+  clone_urls: string[];
+}
+
+/** Everything `library show <name> --json` knows about one name. */
+export interface EntryDetail {
+  name: string;
+  /** The copy that resolves — what `use` would install. */
+  entry: Entry;
+  copies: CatalogCopy[];
+  requires: RequiredEntry[];
+  /** Every install of this name, across scopes and custom directories. */
+  installs: Receipt[];
+  has_setup: boolean;
+  source: Source;
+}
+
 /** The exact argv about to run, from `command://started`. */
 export interface CommandStarted {
   id: number;

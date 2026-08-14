@@ -10,6 +10,8 @@ const props = defineProps<{
   showOrigin: boolean;
 }>();
 
+defineEmits<{ select: [name: string] }>();
+
 const hueByCatalog = computed(
   () => new Map(props.catalogs.map((catalog) => [catalog.id, catalogHue(catalog.precedence)])),
 );
@@ -17,7 +19,12 @@ const hueByCatalog = computed(
 
 <template>
   <ul class="entry-list">
-    <li v-for="row in rows" :key="`${row.entry.catalog}:${row.entry.name}`" class="entry-list__item">
+    <li v-for="row in rows" :key="`${row.entry.catalog}:${row.entry.name}`">
+      <button
+        type="button"
+        class="entry-list__item"
+        @click="$emit('select', row.entry.name)"
+      >
       <div class="entry-list__head">
         <span class="entry-list__name">{{ row.entry.name }}</span>
         <span class="entry-list__type">{{ row.entry.type }}</span>
@@ -43,6 +50,7 @@ const hueByCatalog = computed(
       <p v-if="row.entry.requires.length" class="entry-list__requires">
         requires: {{ row.entry.requires.join(", ") }}
       </p>
+      </button>
     </li>
   </ul>
 </template>
@@ -57,10 +65,21 @@ const hueByCatalog = computed(
   gap: 0.6rem;
 }
 .entry-list__item {
+  display: block;
+  width: 100%;
   padding: 0.85rem 1rem;
   border-radius: 10px;
   background: rgba(128, 128, 128, 0.08);
   border: 1px solid rgba(128, 128, 128, 0.15);
+  color: inherit;
+  font: inherit;
+  font-weight: normal;
+  text-align: left;
+  cursor: pointer;
+}
+.entry-list__item:hover {
+  border-color: rgba(128, 128, 128, 0.4);
+  background: rgba(128, 128, 128, 0.14);
 }
 .entry-list__head {
   display: flex;

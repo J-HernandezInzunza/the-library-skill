@@ -1,0 +1,83 @@
+{
+  "status": "OK",
+  "name": "grilling",
+  "entry": {
+    "type": "skill",
+    "name": "grilling",
+    "description": "A questioning layer that surfaces load-bearing design decisions only the user's brain can answer. Enhances planning workflows (spec-driven development, plan mode, ticket drafting, free-form design conversations) by injecting harder questions with genuine recommendations, and gates implementation behind user confirmation.",
+    "source": "https://github.com/example/my-engineering-library/blob/master/skills/grilling/SKILL.md",
+    "requires": [],
+    "installed": true,
+    "scopes": [
+      "global"
+    ],
+    "catalog": "personal",
+    "overridden_by": null,
+    "state": "installed",
+    "receipt": {
+      "dest": "/Users/tester/.claude/skills/grilling",
+      "name": "grilling",
+      "type": "skill",
+      "catalog": "personal",
+      "scope": "global",
+      "source": "https://github.com/example/my-engineering-library/blob/master/skills/grilling/SKILL.md",
+      "commit": "ca1763b510db08a4da77076595d4732bb69f0b3d",
+      "content_hash": "sha256:018e538949335a540a8a10d219672deb155568342adc1c3207cd796857e5d78a",
+      "installed_at": "2026-08-13T19:10:57Z"
+    },
+    "has_setup": false
+  },
+  "copies": [
+    {
+      "catalog": "personal",
+      "type": "skill",
+      "description": "A questioning layer that surfaces load-bearing design decisions only the user's brain can answer. Enhances planning workflows (spec-driven development, plan mode, ticket drafting, free-form design conversations) by injecting harder questions with genuine recommendations, and gates implementation behind user confirmation.",
+      "source": "https://github.com/example/my-engineering-library/blob/master/skills/grilling/SKILL.md",
+      "requires": [],
+      "wins": true,
+      "overrides": [
+        "shared"
+      ],
+      "overridden_by": []
+    },
+    {
+      "catalog": "shared",
+      "type": "skill",
+      "description": "A questioning layer that surfaces load-bearing design decisions only the user's brain can answer. Enhances planning workflows (spec-driven development, plan mode, ticket drafting, free-form design conversations) by injecting harder questions with genuine recommendations, and gates implementation behind user confirmation.",
+      "source": "https://bitbucket.org/example/agent-library/src/develop/skills/grilling/SKILL.md",
+      "requires": [],
+      "wins": false,
+      "overrides": [],
+      "overridden_by": [
+        "personal"
+      ]
+    }
+  ],
+  "requires": [],
+  "installs": [
+    {
+      "dest": "/Users/tester/.claude/skills/grilling",
+      "name": "grilling",
+      "type": "skill",
+      "catalog": "personal",
+      "scope": "global",
+      "source": "https://github.com/example/my-engineering-library/blob/master/skills/grilling/SKILL.md",
+      "commit": "ca1763b510db08a4da77076595d4732bb69f0b3d",
+      "content_hash": "sha256:018e538949335a540a8a10d219672deb155568342adc1c3207cd796857e5d78a",
+      "installed_at": "2026-08-13T19:10:57Z"
+    }
+  ],
+  "has_setup": false,
+  "source": {
+    "raw": "https://github.com/example/my-engineering-library/blob/master/skills/grilling/SKILL.md",
+    "kind": "github",
+    "org": "example",
+    "repo": "my-engineering-library",
+    "branch": "master",
+    "file_path": "skills/grilling/SKILL.md",
+    "clone_urls": [
+      "git@github.com:example/my-engineering-library.git",
+      "https://github.com/example/my-engineering-library.git"
+    ]
+  }
+}
