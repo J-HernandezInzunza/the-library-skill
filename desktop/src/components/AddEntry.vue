@@ -20,6 +20,7 @@ import {
 import { RAW_TEXT } from "../rawText";
 import Busy from "./Busy.vue";
 import StatusBanner from "./StatusBanner.vue";
+import PageHeader from "./PageHeader.vue";
 
 const props = defineProps<{
   /** The registry, for the destination dropdown. */
@@ -198,11 +199,8 @@ async function reveal(path: string) {
 </script>
 
 <template>
-  <section class="add-entry">
-    <header class="add-entry__head">
-      <button type="button" class="ghost" @click="emit('close')">← Catalog</button>
-      <h2 class="add-entry__title">Add an entry</h2>
-    </header>
+  <section class="view">
+    <PageHeader title="Add an entry" back="Back to catalog" @back="emit('close')" />
 
     <StatusBanner v-if="failure" kind="error" :detail="failure" />
 
@@ -336,19 +334,6 @@ async function reveal(path: string) {
 </template>
 
 <style scoped>
-.add-entry {
-  padding: 1.5rem 0 3rem;
-}
-.add-entry__head {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 1.25rem;
-}
-.add-entry__title {
-  margin: 0;
-  font-size: 1.15rem;
-}
 .add-entry__empty {
   opacity: 0.7;
   line-height: 1.5;

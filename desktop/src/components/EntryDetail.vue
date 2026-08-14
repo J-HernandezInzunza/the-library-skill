@@ -7,6 +7,7 @@ import { describeAppError, type Catalog, type Entry, type EntryDetail } from "..
 import Busy from "./Busy.vue";
 import StatusBanner from "./StatusBanner.vue";
 import InstallPreview from "./InstallPreview.vue";
+import PageHeader from "./PageHeader.vue";
 import UninstallControl from "./UninstallControl.vue";
 
 const props = defineProps<{
@@ -109,20 +110,18 @@ watch(() => props.name, load, { immediate: true });
 </script>
 
 <template>
-  <section class="entry-detail">
-    <button type="button" class="entry-detail__back ghost" @click="$emit('close')">
-      ← Back to {{ backTo ?? "catalog" }}
-    </button>
+  <section class="view">
+    <!-- Titled from the prop, not from the payload: the header must be in place before
+         the command returns, or it lands late and shifts everything under it. -->
+    <PageHeader :title="name" :back="`Back to ${backTo ?? 'catalog'}`" @back="$emit('close')">
+      <span v-if="detail" class="entry-detail__type">{{ detail.entry.type }}</span>
+      <span v-if="detail?.has_setup" class="entry-detail__setup">guided setup available</span>
+    </PageHeader>
 
     <Busy v-if="loading" :label="`Reading ${name}…`" />
     <StatusBanner v-else-if="error" kind="error" :detail="error" />
 
     <template v-else-if="detail">
-      <header class="entry-detail__head fade-in">
-        <h2 class="entry-detail__name">{{ detail.name }}</h2>
-        <span class="entry-detail__type">{{ detail.entry.type }}</span>
-        <span v-if="detail.has_setup" class="entry-detail__setup">guided setup available</span>
-      </header>
       <p class="entry-detail__desc">{{ detail.entry.description }}</p>
 
       <InstallPreview :name="detail.name" @installed="afterWrite()" />
@@ -279,27 +278,10 @@ watch(() => props.name, load, { immediate: true });
 </template>
 
 <style scoped>
-.entry-detail {
-  /* The topbar is not rendered in this view, and it owns the app's top padding. */
-  padding: 1.5rem 0 2rem;
-}
-.entry-detail__back {
-  margin-bottom: 1rem;
-}
 .entry-detail__state,
 .entry-detail__none {
   opacity: 0.7;
   font-size: 0.88rem;
-}
-.entry-detail__head {
-  display: flex;
-  align-items: baseline;
-  gap: 0.6rem;
-  flex-wrap: wrap;
-}
-.entry-detail__name {
-  margin: 0;
-  font-size: 1.3rem;
 }
 .entry-detail__type {
   font-size: 0.7rem;
@@ -315,7 +297,7 @@ watch(() => props.name, load, { immediate: true });
   color: #2563eb;
 }
 .entry-detail__desc {
-  margin: 0.5rem 0 0;
+  margin: 0;
   line-height: 1.5;
   opacity: 0.85;
 }

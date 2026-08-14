@@ -513,12 +513,30 @@ and edit/remove belong there rather than on a page about installing. The tell th
 misplaced was structural: `add` was one click from the catalog while `update` on the same entry was
 three clicks deep inside the detail view.
 
+Within the manager, **at most one form is open across the whole view**, held as a single
+`{ name, mode }` rather than a flag per row and per mode. Edit and remove are alternatives, not
+layers, and being unable to *represent* both open at once is a stronger guarantee than closing the
+other one on every click.
+
 The detail page keeps one **hand-off button** per editable copy — it navigates to the manager
 focused on that entry, and hosts no form. That covers the one real cost of the split (noticing a
 wrong description while reading an entry) without giving the same write two homes, which §6.4 has
 already shown is how a convention drifts.
 
-### 6.6 Machine-readable fields are not prose
+### 6.6 One page header, and no raw field values on screen (D19, R4.6b)
+
+`<PageHeader>` is the only component that draws a back button, and `.view` (global, in `App.vue`)
+is the only root padding. Both are guarded by `src/pageChrome.spec.ts` reading the sources, because
+a header that lands 0.5rem lower on one screen is invisible to the type checker, to the build, and
+to any test that renders one view at a time.
+
+Separately: a catalog rendered as `local · local` and `remote · pr` — the CLI's `kind` and
+`write_mode` verbatim. Those are internal field values, and worse, the pair *looks* like a category
+and a subcategory when it is actually "where it lives" and "what a change to it costs". They are
+now one sentence each, from `describeCatalog`, which also supplies the reason a shared catalog
+cannot be managed in the app — for a `pr` catalog those are the same fact.
+
+### 6.7 Machine-readable fields are not prose
 
 Text inputs holding an entry name, a branch, a repo URL, or a file path bind `RAW_TEXT`
 (`autocapitalize`/`autocorrect` off, `spellcheck="false"`). macOS capitalises the first letter of a

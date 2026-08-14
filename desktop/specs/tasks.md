@@ -511,6 +511,24 @@ leaves the entry reinstallable, `remove` does not, so the same dependent list me
     broken. Gate passes.
   - **Commit:** `feat(desktop): manage catalog entries in their own view`
 
+- [x] **T4.4b — Per-row actions, one page header, and plain language (from using T4.4a)**
+  - **Files:** `desktop/src/components/{PageHeader,Catalogs,EntryEditor,EntryRemove}.vue`,
+    `desktop/src/{catalog.ts,pageChrome.spec.ts}`, `App.vue`
+  - **Requirements:** R4.6a, R4.6b, D19
+  - **Do:** Three things, all reported from the running app.
+    **Per-row Edit/Remove** in the catalog's entry list, expanding in place, replacing the
+    third level that made you click into an entry to reach either. At most one form is open
+    across the whole view, held as one `{name, mode}` — edit and remove are alternatives, so
+    the state that shows both is not representable.
+    **One `<PageHeader>` and one global `.view` padding** for every full-screen view. Five had
+    each written their own and the back button jumped as you navigated. Guarded by
+    `pageChrome.spec.ts` against the sources, because the defect exists only between screens.
+    **`describeCatalog`** replaces `local · local` / `remote · pr` — the CLI's internal field
+    values — with what the catalog is and what a change to it costs.
+  - **Verify:** Reintroducing a view's own back button and root padding fails the guard by
+    name. Gate passes.
+  - **Commit:** `feat(desktop): act on entries in place, behind one page header`
+
 - [ ] **T4.5 — Push, and surfacing the PR**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/`
   - **Requirements:** R4.5

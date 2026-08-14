@@ -14,6 +14,7 @@ import {
   winningRows,
   editableCatalogs,
   editableCopies,
+  describeCatalog,
   entryEdits,
   purgeable,
 } from "./catalog";
@@ -738,5 +739,48 @@ describe("purgeable", () => {
     );
 
     expect(found.paths).toEqual(["/Users/dev/.claude/skills/a-skill"]);
+  });
+});
+
+describe("describeCatalog", () => {
+  it("says what a local catalog is and that edits are immediate", () => {
+    // "local · local" was the first version: two of library.py's field values, which mean
+    // nothing to someone who has not read it, and which read as a category pair.
+    const said = describeCatalog(catalog({ kind: "local", write_mode: "local" }));
+
+    expect(said.what).toBe("a file on this machine");
+    expect(said.note).toContain("saved straight to the file");
+  });
+
+  it("says a pr-mode remote catalog opens a pull request", () => {
+    const said = describeCatalog(
+      catalog({ id: "shared", kind: "remote", write_mode: "pr", precedence: 2 }),
+    );
+
+    expect(said.what).toBe("a shared git repository");
+    expect(said.note).toContain("pull request");
+  });
+
+  it("distinguishes a direct-push remote from a pr one", () => {
+    // The two cost very different things, and both used to render as "remote".
+    const said = describeCatalog(catalog({ kind: "remote", write_mode: "direct" }));
+
+    expect(said.note).toContain("committed and pushed");
+    expect(said.note).not.toContain("pull request");
+  });
+
+  it("leads with read-only, which outranks how it would otherwise be written", () => {
+    const said = describeCatalog(catalog({ writable: false }));
+
+    expect(said.note).toContain("read-only");
+  });
+
+  it("leads with the skip reason, which outranks everything else", () => {
+    // A skipped catalog was not read at all, so describing how a write to it behaves
+    // would be describing something that cannot happen.
+    const said = describeCatalog(catalog({ skipped: "not cloned", writable: false }));
+
+    expect(said.note).toContain("not cloned");
+    expect(said.note).not.toContain("read-only");
   });
 });

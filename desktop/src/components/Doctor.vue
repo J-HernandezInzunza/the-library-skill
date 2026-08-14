@@ -5,6 +5,7 @@ import { withActivity } from "../commandActivity";
 import { describeAppError, type DoctorItem, type DoctorReport } from "../types";
 import Busy from "./Busy.vue";
 import StatusBanner from "./StatusBanner.vue";
+import PageHeader from "./PageHeader.vue";
 
 defineEmits<{ close: [] }>();
 
@@ -37,13 +38,8 @@ run();
 </script>
 
 <template>
-  <section class="doctor">
-    <button type="button" class="ghost doctor__back" @click="$emit('close')">
-      ← Back to catalog
-    </button>
-
-    <header class="doctor__head">
-      <h2 class="doctor__title">Catalog health</h2>
+  <section class="view">
+    <PageHeader title="Catalog health" back="Back to catalog" @back="$emit('close')">
       <label class="doctor__deep">
         <input v-model="deep" type="checkbox" @change="run()" />
         Deep checks (reaches the network)
@@ -51,7 +47,7 @@ run();
       <button type="button" class="ghost" :disabled="loading" @click="run()">
         {{ loading ? "Checking…" : "Re-run" }}
       </button>
-    </header>
+    </PageHeader>
 
     <Busy v-if="loading" :label="deep ? 'Checking every source…' : 'Checking the catalog…'" />
     <StatusBanner v-else-if="error" kind="error" :detail="error" />
@@ -90,24 +86,6 @@ run();
 </template>
 
 <style scoped>
-.doctor {
-  /* The topbar is not rendered in this view, and it owns the app's top padding. */
-  padding: 1.5rem 0 2rem;
-}
-.doctor__back {
-  margin-bottom: 1rem;
-}
-.doctor__head {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-}
-.doctor__title {
-  margin: 0;
-  font-size: 1.3rem;
-  flex: 1;
-}
 .doctor__deep {
   display: flex;
   align-items: center;

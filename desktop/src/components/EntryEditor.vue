@@ -14,9 +14,8 @@ const props = defineProps<{
   /** The loaded catalog, for the requires picker. */
   entries: Entry[];
 }>();
-const emit = defineEmits<{ saved: [] }>();
+const emit = defineEmits<{ saved: []; close: [] }>();
 
-const open = ref(false);
 const description = ref("");
 const source = ref("");
 const requires = ref<string[]>([]);
@@ -25,14 +24,14 @@ const failure = ref("");
 const report = ref<UpdateReport | null>(null);
 
 /**
- * Refill from the copy whenever it changes, and whenever the form is reopened.
+ * Refill from the copy whenever it changes.
  *
- * The panel edits whichever copy is selected, so switching catalogs while it is open has
- * to reload the fields — otherwise the next save would write one catalog's text into
- * another's entry.
+ * The panel is mounted by the row that owns it, so it starts from the right entry — but a
+ * reload after a save hands back a new object for the same entry, and the form has to
+ * follow it rather than keep showing what was typed against the previous read.
  */
 watch(
-  () => [props.entry, open.value] as const,
+  () => props.entry,
   () => {
     description.value = props.entry.description;
     source.value = props.entry.source;
@@ -91,68 +90,54 @@ async function save() {
 
 <template>
   <section class="editor">
-    <button v-if="!open" type="button" class="ghost" @click="open = true">
-      Edit this entry
-    </button>
-
-    <template v-else>
-      <StatusBanner v-if="failure" kind="error" :detail="failure" />
-      <StatusBanner v-else-if="report" kind="success">
-        <p v-if="report.changed" class="editor__saved">
-          Updated <strong>{{ report.name }}</strong> in <strong>{{ report.catalog }}</strong
-          >.
-        </p>
-        <p v-else class="editor__saved">
-          No changes — {{ report.name }} already matched what you asked for.
-        </p>
-      </StatusBanner>
-
-      <h3 class="editor__title">Editing the copy in {{ entry.catalog }}</h3>
-      <p class="editor__note">
-        The name and type cannot be changed here: both decide where the entry lives in the
-        file. Remove it and add it again to change either.
+    <StatusBanner v-if="failure" kind="error" :detail="failure" />
+    <StatusBanner v-else-if="report" kind="success">
+      <p v-if="report.changed" class="editor__saved">
+        Updated <strong>{{ report.name }}</strong> in <strong>{{ report.catalog }}</strong
+        >.
       </p>
+      <p v-else class="editor__saved">
+        No changes — {{ report.name }} already matched what you asked for.
+      </p>
+    </StatusBanner>
 
-      <form class="editor__form" @submit.prevent="save">
-        <label class="editor__field">
-          <span>Description</span>
-          <input v-model="description" type="text" v-bind="RAW_TEXT" />
-        </label>
+    <p class="editor__note">
+      The name and type cannot be changed here: both decide where the entry lives in the
+      file. Remove it and add it again to change either.
+    </p>
 
-        <label class="editor__field">
-          <span>Source</span>
-          <input v-model="source" type="text" v-bind="RAW_TEXT" />
-        </label>
+    <form class="editor__form" @submit.prevent="save">
+      <label class="editor__field">
+        <span>Description</span>
+        <input v-model="description" type="text" v-bind="RAW_TEXT" />
+      </label>
 
-        <fieldset v-if="available.length" class="editor__requires">
-          <legend>Requires</legend>
-          <div class="editor__requires-list">
-            <label v-for="ref in available" :key="ref" class="editor__check">
-              <input v-model="requires" type="checkbox" :value="ref" />
-              <span>{{ ref }}</span>
-            </label>
-          </div>
-        </fieldset>
+      <label class="editor__field">
+        <span>Source</span>
+        <input v-model="source" type="text" v-bind="RAW_TEXT" />
+      </label>
 
-        <p v-if="blockedBecause" class="editor__blocked">{{ blockedBecause }}</p>
-        <div class="editor__actions">
-          <button type="submit" :disabled="!edits || emptyField || saving">Save changes</button>
-          <button type="button" class="ghost" @click="open = false">Cancel</button>
+      <fieldset v-if="available.length" class="editor__requires">
+        <legend>Requires</legend>
+        <div class="editor__requires-list">
+          <label v-for="ref in available" :key="ref" class="editor__check">
+            <input v-model="requires" type="checkbox" :value="ref" />
+            <span>{{ ref }}</span>
+          </label>
         </div>
-        <Busy v-if="saving" inline label="Writing the catalog…" />
-      </form>
-    </template>
+      </fieldset>
+
+      <p v-if="blockedBecause" class="editor__blocked">{{ blockedBecause }}</p>
+      <div class="editor__actions">
+        <button type="submit" :disabled="!edits || emptyField || saving">Save changes</button>
+        <button type="button" class="ghost" @click="emit('close')">Done</button>
+      </div>
+      <Busy v-if="saving" inline label="Writing the catalog…" />
+    </form>
   </section>
 </template>
 
 <style scoped>
-.editor {
-  margin-top: 1.25rem;
-}
-.editor__title {
-  margin: 0 0 0.35rem;
-  font-size: 0.95rem;
-}
 .editor__note {
   margin: 0 0 0.9rem;
   font-size: 0.75rem;

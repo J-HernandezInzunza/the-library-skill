@@ -1478,3 +1478,72 @@ enough here and not a compromise: the purge checkbox appears only when the entry
 The narrower payload cannot under-report a control that has already refused to appear.
 
 **Still not visually verified**, as with T4.4.
+
+---
+
+## T4.4b — three things found by using T4.4a
+
+### `local · local` meant nothing, and the pair was actively misleading
+
+The catalog cards rendered `kind` and `write_mode` verbatim. Those are `library.py`'s internal
+field values, so `local · local` and `remote · pr` are only readable by someone who has read the
+CLI. Worse, a dot-separated pair *looks* like a category and a subcategory, when the two are
+answering completely different questions: where the catalog lives, and what a change to it costs.
+
+`describeCatalog` returns those as two sentences — "a file on this machine", "Edits are saved
+straight to the file" — and the note doubles as the reason a shared catalog cannot be managed here,
+because for a `pr` catalog those are the same fact: you contribute there *because* the change opens
+a pull request. That removed a duplicated sentence rather than adding one.
+
+`direct` and `pr` are now distinguished, which the old label could not do at all: both rendered as
+`remote`, and one commits straight to a shared branch while the other opens a review. Five Vitest
+cases, including that `skipped` outranks read-only — a catalog that was never read has no write
+behaviour worth describing.
+
+### The third level was a click that bought nothing
+
+T4.4a put each entry's forms on their own page, reached by clicking the row. Reported immediately:
+the row should carry Edit and Remove itself. Correct — the intermediate page displayed the entry's
+name and two buttons, which the row already had room for.
+
+**One form is open across the whole view, and that is enforced by the shape of the state.** It is a
+single `{ name, mode } | null`, not a flag per row and per mode, so "edit and remove both open" is
+not representable rather than merely prevented. This was raised as a separate piece of feedback and
+it is the same fix: with a boolean per panel, the rule has to be re-applied at every call site that
+opens one.
+
+**Both panels lost their own toggle button**, since the row now owns open/closed. `EntryRemove`
+previously needed a click to start its dry run; it now runs on mount, because the panel only exists
+because Remove was just clicked — a second Remove button would be asking the same question twice
+before asking the one that matters.
+
+**The hand-off from the detail page opens the row's editor and scrolls it into view.** Landing at
+the top of a 35-row list to find the row again would make "Edit this entry" a navigation hint
+rather than an action. Smooth unless `prefers-reduced-motion`, matching the stance everything else
+in the app takes on motion.
+
+### The back button was jumping, and it was five implementations
+
+Reported as padding, and the padding was real, but the cause was bigger: **five views had each
+written their own header.** `Doctor`, `Sync`, and `EntryDetail` put the back button above the title;
+`AddEntry` and `Catalogs` put it beside. Root padding was `1.5rem 0 2rem` in three and
+`1.5rem 0 3rem` in two. So the control moved on almost every navigation.
+
+Now `<PageHeader>` is the only component that draws a back button, and `.view` — global, in
+`App.vue`, next to the `button` and `.fade-in` rules that are global for the same reason — is the
+only root padding. `EntryDetail` gained something from the move: its header is now titled from the
+`name` **prop** rather than from the loaded payload, so it is in place before `show` returns
+instead of appearing late and pushing everything under it down.
+
+**Guarded by `src/pageChrome.spec.ts`, reading the sources**, exactly as `statusFeedback.spec.ts`
+does. This class of defect is invisible to every other check: each view type-checked, built, and
+looked right in isolation. It only existed *between* screens, which no test that renders one view
+can see. **Verified by mutation:** giving `Sync` back its own back button and root class fails two
+checks by name.
+
+Recorded as **D19**, R4.6a/R4.6b, and design.md §6.6.
+
+**`FirstRun` is deliberately not migrated.** It has no back button and is never navigated to or
+from — the app reloads out of it — so there is no second screen for its header to disagree with.
+The guard keys on `<PageHeader>` rather than on a hardcoded list, so this is an absence by
+construction rather than an omission to remember.

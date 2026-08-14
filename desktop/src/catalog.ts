@@ -241,6 +241,46 @@ export function editableCatalogs(catalogs: Catalog[]): Catalog[] {
   );
 }
 
+/** A catalog described in words rather than in the CLI's field values. */
+export interface CatalogDescription {
+  /** What this catalog *is*, in one phrase. */
+  what: string;
+  /** What writing to it would do, or why it cannot be written to from here. */
+  note: string;
+}
+
+/**
+ * `kind` and `write_mode` turned into something a reader can act on.
+ *
+ * The first version rendered the raw pair — "local · local", "remote · pr" — which are
+ * `library.py`'s internal field values and mean nothing to someone who has not read it.
+ * They also happen to look like a category and a subcategory, which is the wrong mental
+ * model: `kind` is where the catalog lives and `write_mode` is what a change to it costs.
+ *
+ * The note doubles as the reason a catalog cannot be managed in the app, because for a
+ * shared catalog those are the same sentence — you contribute there *because* a change is
+ * a pull request.
+ */
+export function describeCatalog(catalog: Catalog): CatalogDescription {
+  const what = catalog.kind === "local" ? "a file on this machine" : "a shared git repository";
+
+  if (catalog.skipped) {
+    return { what, note: `Not loaded — ${catalog.skipped}` };
+  }
+  if (!catalog.writable) {
+    return { what, note: "Registered as read-only, so nothing can be written to it." };
+  }
+  if (catalog.kind !== "local") {
+    const how =
+      catalog.write_mode === "pr"
+        ? "opens a pull request there, so it gets the same review as any other change"
+        : "is committed and pushed to that repository";
+    return { what, note: `Entries here are changed in the repository itself, where the change ${how}.` };
+  }
+
+  return { what, note: "Edits are saved straight to the file." };
+}
+
 /**
  * The catalogs the app deliberately will not write to.
  *

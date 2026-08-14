@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { purgeable } from "../catalog";
 import { withActivity } from "../commandActivity";
@@ -16,7 +16,7 @@ const props = defineProps<{
   /** The copy being removed. Only this one catalog's entry goes away. */
   entry: Entry;
 }>();
-const emit = defineEmits<{ removed: [] }>();
+const emit = defineEmits<{ removed: []; close: [] }>();
 
 const preview = ref<RemovePreview | null>(null);
 const report = ref<RemoveReport | null>(null);
@@ -47,6 +47,10 @@ const purge_ = computed(() =>
  * `dependents[]` is the reason this is a two-step action: the CLI reports it as a stderr
  * warning, which `--json` sends nowhere a GUI can read, so without the dry run a removal
  * that breaks six entries looks identical to one that breaks none.
+ *
+ * Run on mount rather than behind a button: this panel only exists because the user just
+ * clicked Remove, so a second "Remove" button would be asking the same question twice
+ * before asking the one that matters.
  */
 async function startPreview() {
   running.value = true;
@@ -89,19 +93,7 @@ async function confirm() {
   }
 }
 
-function cancel() {
-  preview.value = null;
-  purge.value = false;
-}
-
-watch(
-  () => [props.entry.name, props.entry.catalog],
-  () => {
-    cancel();
-    report.value = null;
-    failure.value = "";
-  },
-);
+onMounted(startPreview);
 </script>
 
 <template>
@@ -117,16 +109,6 @@ watch(
         Deleted {{ report.deleted.join(", ") }}.
       </p>
     </StatusBanner>
-
-    <button
-      v-if="!preview"
-      type="button"
-      class="ghost remove__start"
-      :disabled="running"
-      @click="startPreview()"
-    >
-      Remove from {{ entry.catalog }}
-    </button>
 
     <Busy v-if="running && !preview" inline label="Checking what would change…" />
 
@@ -173,7 +155,7 @@ watch(
       </p>
 
       <div class="remove__actions">
-        <button type="button" class="ghost" @click="cancel()">Cancel</button>
+        <button type="button" class="ghost" @click="emit('close')">Cancel</button>
         <button type="button" :disabled="running" @click="confirm()">
           {{ purge ? "Remove and delete the copies" : "Remove the entry" }}
         </button>

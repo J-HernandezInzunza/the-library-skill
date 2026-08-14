@@ -70,6 +70,7 @@ implementation; changing one is a spec change, not an implementation choice.
 | D16 | The GUI registers catalogs by invoking `library init` and `library catalog add`, never by writing `config.local.yaml`. First run runs `init` only; further catalogs are added later from settings. | Running a CLI command from a form is the same thin-client pattern as `use` (D6), so R1.1 holds — what stays out of scope is the app authoring YAML. The order is forced by the CLI, not chosen: `init` requires `--repo` and is the only command that can create the config, while `catalog add` exits 1 until one exists. Splitting them also avoids a partial-success state (`init` wrote the config, `catalog add` failed) that the CLI has no transaction around. |
 | D17 | Every Tauri command is `async` and runs its blocking work through `spawn_blocking`; no subprocess is ever awaited on the main thread. | Tauri runs a synchronous command on the thread that paints the window, so every command froze the whole UI for its duration — measured, not theorised. A bare `async fn` is not enough: these bodies block with no await points, so they would stall an async-runtime worker instead. Enforced by a source-level test because the defect passes every other check and only shows up as an unresponsive window. |
 | D18 | Catalog **management** (editing and removing entries, and later registering catalogs) lives in its own top-level **Catalogs** view, not on an entry's detail page. The detail page keeps a hand-off button, never a form. | The app already splits "what can I use?" from "what's in this catalog?" (D15); management is the second question's action surface. Leaving it on the detail page put *adding* an entry one click from the catalog and *editing* the same entry three clicks deep inside a view about installing it. The one real cost is discoverability — noticing a wrong description while reading an entry — which the hand-off covers without duplicating the form. |
+| D19 | Every full-screen view roots in a global `.view` class and renders its title through one `<PageHeader>`. No view draws its own back button or root padding. | Five views had each written their own: two put the back button above the title and three beside it, with three different paddings, so the control visibly jumped as you navigated. Each one type-checked and looked right alone — the defect existed only *between* screens. Guarded by a source-level test for the same reason D5 and R7.6 are: nothing else can see it. |
 | D13 | A collected secret is delivered per the skill's declared `delivery` mode: `config-file` (default), `env`, or `manual`. The app writes only to the skill's declared `config.path`. | `atlassian-toolkit`'s durable store is a config file, so env injection alone would not persist. Skills that want the human to type the credential themselves declare `manual`. |
 
 ## Requirements
@@ -141,10 +142,13 @@ implementation; changing one is a spec change, not an implementation choice.
 - R4.6 First run collects the shared catalog's repo URL and branch in a form and runs
   `library init`. Directing a teammate to a terminal here contradicts the app's reason to exist:
   it is the first screen a new user sees, and they have no catalog until it is done.
-- R4.6a Editing and removing catalog entries happen in the **Catalogs** view, which has three
-  levels: the registered catalogs, one catalog's entries, and one entry's forms (D18). The entry
-  detail view offers a hand-off to that view for each copy it could edit, and hosts no write form
-  of its own.
+- R4.6a Editing and removing catalog entries happen in the **Catalogs** view, which has two
+  levels: the registered catalogs, and one catalog's entries with per-row Edit and Remove actions
+  that expand in place (D18). At most one form is open in the whole view, so edit and remove can
+  never be on screen together. The entry detail view offers a hand-off for each copy it could
+  edit, and hosts no write form of its own.
+- R4.6b A catalog is described in plain language — what it is, and what a change to it costs —
+  never as the CLI's raw `kind` and `write_mode` values.
 - R4.7 Registered catalogs can be added and removed after first run, from the first level of that
   same view.
   Adding a local catalog uses a native directory picker; the CLI defines a local catalog as a
@@ -215,7 +219,7 @@ implementation; changing one is a spec change, not an implementation choice.
   to learn two locations for it (design.md §6.4).
 - R7.7 Fields holding machine-readable values — entry names, branches, URLs, paths — disable
   auto-capitalisation, auto-correction, and spellcheck. The CLI matches entry names exactly, so an
-  auto-capitalised name silently becomes a different entry (design.md §6.6).
+  auto-capitalised name silently becomes a different entry (design.md §6.7).
 
 ### R8 — Build and run from source
 

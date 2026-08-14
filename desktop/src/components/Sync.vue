@@ -6,6 +6,7 @@ import { withActivity } from "../commandActivity";
 import { describeAppError, type SyncedItem, type SyncReport } from "../types";
 import Busy from "./Busy.vue";
 import StatusBanner from "./StatusBanner.vue";
+import PageHeader from "./PageHeader.vue";
 
 const emit = defineEmits<{ close: []; synced: [] }>();
 
@@ -46,20 +47,15 @@ run(false);
 </script>
 
 <template>
-  <section class="sync">
-    <button type="button" class="ghost sync__back" @click="$emit('close')">
-      ← Back to catalog
-    </button>
-
-    <header class="sync__head">
-      <h2 class="sync__title">Sync</h2>
+  <section class="view">
+    <PageHeader title="Sync" back="Back to catalog" @back="$emit('close')">
       <button type="button" class="ghost" :disabled="loading" @click="run(false)">
         {{ loading ? "Syncing…" : "Sync again" }}
       </button>
       <button type="button" class="ghost" :disabled="loading" @click="run(true)">
         Force re-fetch
       </button>
-    </header>
+    </PageHeader>
 
     <Busy v-if="loading" label="Checking every installed entry against its source…" />
     <StatusBanner v-else-if="error" kind="error" :detail="error" />
@@ -119,24 +115,6 @@ run(false);
 </template>
 
 <style scoped>
-.sync {
-  /* The topbar is not rendered in this view, and it owns the app's top padding. */
-  padding: 1.5rem 0 2rem;
-}
-.sync__back {
-  margin-bottom: 1rem;
-}
-.sync__head {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-}
-.sync__title {
-  margin: 0;
-  font-size: 1.3rem;
-  flex: 1;
-}
 .sync__summary {
   margin: 0.75rem 0 0;
   font-size: 0.85rem;

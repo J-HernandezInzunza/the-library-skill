@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
-import { catalogHue, editableCatalogs } from "../catalog";
+import { computed, nextTick, ref, watch } from "vue";
+import { catalogHue, describeCatalog, editableCatalogs } from "../catalog";
 import type { Catalog, Entry } from "../types";
 import EntryEditor from "./EntryEditor.vue";
 import EntryRemove from "./EntryRemove.vue";
+import PageHeader from "./PageHeader.vue";
 
 const props = defineProps<{
   /** The registry, which decides what can be managed and in what order. */
@@ -18,23 +19,26 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ close: []; changed: [] }>();
 
-/**
- * Three levels in one view: the registry, one catalog's entries, one entry's forms.
- *
- * Held as two ids rather than a route because the whole view is reached from a button and
- * left with Back; a `null` at either level is the level above.
- */
+/** Which form a row is showing. One row, one form, app-wide. */
+type Panel = { name: string; mode: "edit" | "remove" };
+
 const openCatalog = ref<string | null>(props.atCatalog ?? null);
-const openEntry = ref<string | null>(props.atEntry ?? null);
+/**
+ * The single open panel.
+ *
+ * Deliberately one value rather than a flag per row and per mode: edit and remove are
+ * alternatives, not layers, and two destructive-adjacent forms open at once is a way to
+ * confirm the wrong one. Being unable to represent that state is a stronger guarantee
+ * than closing the other one on every click.
+ */
+const panel = ref<Panel | null>(null);
 
 /** Catalogs whose entries this app will edit, which is the ones on this machine. */
 const editableIds = computed(
   () => new Set(editableCatalogs(props.catalogs).map((catalog) => catalog.id)),
 );
 
-const catalog = computed(
-  () => props.catalogs.find((c) => c.id === openCatalog.value) ?? null,
-);
+const catalog = computed(() => props.catalogs.find((c) => c.id === openCatalog.value) ?? null);
 
 /**
  * The catalog's own inventory, overridden copies included.
@@ -49,21 +53,19 @@ const held = computed(() =>
     .sort((a, b) => a.name.localeCompare(b.name)),
 );
 
-const entry = computed(() => held.value.find((e) => e.name === openEntry.value) ?? null);
+/** Toggle a row's form, closing whatever was open — including the same button again. */
+function show(name: string, mode: Panel["mode"]) {
+  const open = panel.value;
+  panel.value = open && open.name === name && open.mode === mode ? null : { name, mode };
+}
 
-/**
- * Why a catalog cannot be managed here, or "" when it can.
- *
- * Stated per catalog rather than by hiding the row: a missing catalog reads as a bug,
- * and the three reasons have three different answers.
- */
-function unmanageable(candidate: Catalog): string {
-  if (candidate.skipped) return `not loaded — ${candidate.skipped}`;
-  if (!candidate.writable) return "registered as read-only";
-  if (candidate.kind !== "local") {
-    return "a shared catalog — entries are changed in the repository itself, so the change gets the same review as any other";
-  }
-  return "";
+function isOpen(name: string, mode: Panel["mode"]): boolean {
+  return panel.value?.name === name && panel.value.mode === mode;
+}
+
+function openEntries(id: string) {
+  openCatalog.value = id;
+  panel.value = null;
 }
 
 // A catalog that stops being available under us must not leave the view pointing at it.
@@ -72,49 +74,47 @@ watch(
   () => {
     if (openCatalog.value && !props.catalogs.some((c) => c.id === openCatalog.value)) {
       openCatalog.value = null;
-      openEntry.value = null;
+      panel.value = null;
     }
   },
 );
 
 /**
- * A removal takes the entry with it, so the view steps back to the list.
+ * A removal takes the entry with it, so its row closes.
  *
- * Staying would leave the forms bound to a record the next reload deletes.
+ * Leaving the panel open would bind the forms to a record the next reload deletes.
  */
 function afterRemove() {
-  openEntry.value = null;
+  panel.value = null;
   emit("changed");
 }
+
+/**
+ * Arriving from an entry's detail page lands on that entry's edit form, opened.
+ *
+ * The hand-off exists so "edit this" reaches the form; dropping the user at the top of a
+ * 35-row list to find the row again would make the button a navigation hint rather than
+ * an action. Scrolled into view because the row is usually below the fold.
+ */
+watch(
+  () => props.atEntry,
+  async (name) => {
+    if (!name) return;
+    panel.value = { name, mode: "edit" };
+    await nextTick();
+    const row = document.getElementById(`entry-${name}`);
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    row?.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "center" });
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
-  <section class="catalogs">
-    <header class="catalogs__head">
-      <button v-if="!openCatalog" type="button" class="ghost" @click="emit('close')">
-        ← Back to {{ backTo }}
-      </button>
-      <button
-        v-else-if="!openEntry"
-        type="button"
-        class="ghost"
-        @click="openCatalog = null"
-      >
-        ← All catalogs
-      </button>
-      <button v-else type="button" class="ghost" @click="openEntry = null">
-        ← {{ openCatalog }}
-      </button>
-
-      <h2 class="catalogs__title">
-        <template v-if="openEntry">{{ openEntry }}</template>
-        <template v-else-if="openCatalog">{{ openCatalog }}</template>
-        <template v-else>Catalogs</template>
-      </h2>
-    </header>
-
+  <section class="view">
     <!-- Level 1: the registry. -->
     <template v-if="!openCatalog">
+      <PageHeader title="Catalogs" :back="`Back to ${backTo}`" @back="emit('close')" />
       <p class="catalogs__lead">
         Where your entries come from, in precedence order: when two catalogs define the same
         name, the one nearer the top is the copy that installs.
@@ -129,75 +129,86 @@ function afterRemove() {
           <div class="catalogs__row-head">
             <span class="catalogs__chip">{{ option.id }}</span>
             <span class="catalogs__meta">
-              {{ option.kind }} · {{ option.write_mode }} ·
-              {{ option.entries === null ? "—" : `${option.entries} entries` }}
+              {{ describeCatalog(option).what }} ·
+              {{ option.entries === null ? "entry count unknown" : `${option.entries} entries` }}
             </span>
             <button
               v-if="editableIds.has(option.id)"
               type="button"
               class="ghost catalogs__manage"
-              @click="openCatalog = option.id"
+              @click="openEntries(option.id)"
             >
               Manage entries
             </button>
           </div>
           <p class="catalogs__where">{{ option.location }}</p>
-          <p v-if="unmanageable(option)" class="catalogs__why">
-            {{ unmanageable(option) }}
-          </p>
+          <p class="catalogs__why">{{ describeCatalog(option).note }}</p>
         </li>
       </ul>
     </template>
 
-    <!-- Level 2: one catalog's entries, one line each. -->
-    <template v-else-if="!entry">
+    <!-- Level 2: one catalog's entries, each row carrying its own actions. -->
+    <template v-else>
+      <PageHeader :title="openCatalog" back="All catalogs" @back="openCatalog = null" />
       <p class="catalogs__lead">{{ catalog?.location }}</p>
-      <p v-if="!held.length" class="catalogs__empty">
+      <p v-if="!held.length" class="catalogs__lead">
         This catalog has no entries yet. Add one from the catalog view.
       </p>
       <ul v-else class="catalogs__entries">
-        <li v-for="held_ in held" :key="held_.name">
-          <button type="button" class="catalogs__entry" @click="openEntry = held_.name">
-            <span class="catalogs__entry-name">{{ held_.name }}</span>
-            <span class="catalogs__entry-type">{{ held_.type }}</span>
-            <span class="catalogs__entry-desc">{{ held_.description }}</span>
-          </button>
+        <li
+          v-for="entry in held"
+          :id="`entry-${entry.name}`"
+          :key="entry.name"
+          class="catalogs__entry"
+          :class="{ 'catalogs__entry--open': panel?.name === entry.name }"
+        >
+          <div class="catalogs__entry-line">
+            <span class="catalogs__entry-name">{{ entry.name }}</span>
+            <span class="catalogs__entry-type">{{ entry.type }}</span>
+            <span class="catalogs__entry-desc">{{ entry.description }}</span>
+            <span class="catalogs__entry-actions">
+              <button
+                type="button"
+                class="ghost"
+                :aria-pressed="isOpen(entry.name, 'edit')"
+                @click="show(entry.name, 'edit')"
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                class="ghost catalogs__danger"
+                :aria-pressed="isOpen(entry.name, 'remove')"
+                @click="show(entry.name, 'remove')"
+              >
+                Remove
+              </button>
+            </span>
+          </div>
+
+          <div v-if="panel?.name === entry.name" class="catalogs__panel fade-in">
+            <EntryEditor
+              v-if="panel.mode === 'edit'"
+              :entry="entry"
+              :entries="entries"
+              @saved="emit('changed')"
+              @close="panel = null"
+            />
+            <EntryRemove v-else :entry="entry" @removed="afterRemove()" @close="panel = null" />
+          </div>
         </li>
       </ul>
-    </template>
-
-    <!-- Level 3: the forms for one entry. -->
-    <template v-else>
-      <p class="catalogs__lead">
-        Editing {{ entry.catalog }}'s copy. This changes the catalog entry, not the files
-        installed from it.
-      </p>
-      <EntryEditor :entry="entry" :entries="entries" @saved="emit('changed')" />
-      <EntryRemove :entry="entry" @removed="afterRemove()" />
     </template>
   </section>
 </template>
 
 <style scoped>
-.catalogs {
-  padding: 1.5rem 0 3rem;
-}
-.catalogs__head {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 1rem;
-}
-.catalogs__title {
-  margin: 0;
-  font-size: 1.15rem;
-}
-.catalogs__lead,
-.catalogs__empty {
+.catalogs__lead {
   margin: 0 0 1.1rem;
   font-size: 0.82rem;
   line-height: 1.5;
   opacity: 0.7;
+  overflow-wrap: anywhere;
 }
 .catalogs__list,
 .catalogs__entries {
@@ -251,22 +262,18 @@ function afterRemove() {
   opacity: 0.65;
 }
 .catalogs__entry {
-  display: grid;
-  grid-template-columns: minmax(8rem, auto) auto 1fr;
-  align-items: baseline;
-  gap: 0.6rem;
-  width: 100%;
-  padding: 0.5rem 0.85rem;
-  border: none;
   border-radius: 8px;
   background: rgba(128, 128, 128, 0.08);
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
 }
-.catalogs__entry:hover {
-  background: rgba(128, 128, 128, 0.16);
+.catalogs__entry--open {
+  background: rgba(128, 128, 128, 0.14);
+}
+.catalogs__entry-line {
+  display: grid;
+  grid-template-columns: minmax(8rem, auto) auto 1fr auto;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.6rem 0.4rem 0.85rem;
 }
 .catalogs__entry-name {
   font-size: 0.88rem;
@@ -284,5 +291,24 @@ function afterRemove() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.catalogs__entry-actions {
+  display: flex;
+  gap: 0.35rem;
+}
+.catalogs__entry-actions button {
+  padding: 0.25rem 0.6rem;
+  font-size: 0.75rem;
+}
+/* Pressed state, so an open form's own button reads as the thing that opened it. */
+.catalogs__entry-actions button[aria-pressed="true"] {
+  background: rgba(128, 128, 128, 0.25);
+}
+.catalogs__danger {
+  color: #dc2626;
+  border-color: rgba(220, 38, 38, 0.4);
+}
+.catalogs__panel {
+  padding: 0.2rem 0.85rem 0.85rem;
 }
 </style>

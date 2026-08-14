@@ -315,6 +315,13 @@ button:disabled {
   cursor: not-allowed;
 }
 
+/* Every full-screen view's root. Global rather than repeated per component because the
+   whole point is that the views agree: five of them had drifted to three different
+   paddings, so the header visibly shifted as you navigated between them. */
+.view {
+  padding: 1.5rem 0 3rem;
+}
+
 /* Global so every view can ease its results in with one class, instead of each
    inventing its own keyframes. Content arriving after a subprocess is the whole
    app, so this is the default motion, not a flourish. */
