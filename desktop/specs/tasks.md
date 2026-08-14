@@ -361,10 +361,73 @@ change in this repo, alongside `unresolved_requires[]` which T2.5 added the same
 
 ---
 
+## Phase 3a — Responsiveness (unplanned, found by running the app)
+
+Not in the original plan. Added because reviewing Phase 3 in the running app surfaced a defect that
+no task would have caught: the window froze for the duration of every command. Recorded here rather
+than only in [progress.md](progress.md) so the ledger matches the commit history.
+
+- [x] **T3a.1 — Show what is running, everywhere**
+  - **Files:** `desktop/src/commandActivity.ts`, `desktop/src/components/{ActivityBar,Busy}.vue`,
+    all views
+  - **Requirements:** R3.4, D5
+  - **Do:** Drive one activity indicator from `command://started` / `command://finished` rather
+    than from per-view flags, so it covers every command including ones later phases add. Add a
+    shared `<Busy>` block and a global `.fade-in`. `Doctor` and `Sync` rendered *nothing* while
+    running, which is the worst version of the problem: the window looked finished mid-command.
+    Consolidate `CommandLog` onto the same stream — two subscriptions maintaining two copies of one
+    event stream drift.
+  - **Verify:** Every command shows the bar with the operation named; motion degrades rather than
+    disappears under `prefers-reduced-motion`. Gate passes.
+  - **Commit:** `feat(desktop): show what is running instead of snapping into place`
+
+- [x] **T3a.2 — Feedback on the click, not on the command**
+  - **Files:** `desktop/src/commandActivity.ts`, all views, `desktop/src/App.vue`
+  - **Requirements:** R7.5
+  - **Do:** `beginIntent` registers pending work synchronously in the click handler, so `busy` is
+    `intents || running`; `withActivity` guarantees the dispose, because an intent that outlives
+    its work leaves the bar spinning forever. The real argv still wins the label once known — the
+    verbatim command is the transparency the app owes for having no approval gate (D5). Press
+    feedback is CSS, so the browser paints it on pointer-down and it cannot be late.
+  - **Verify:** Vitest covers `activityLabel`, including that the argv beats the intent and that
+    the newest intent wins. Gate passes.
+  - **Commit:** `feat(desktop): acknowledge the click, not the command`
+
+- [x] **T3a.3 — Run every command off the UI thread**
+  - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src-tauri/tests/commands.rs`
+  - **Requirements:** R7.4, D17, design.md §2.1
+  - **Do:** Every `#[tauri::command]` becomes `async fn` passing its body to `off_thread`
+    (`spawn_blocking`). Tauri runs a synchronous command on the thread that paints the window, so
+    every command was freezing the WebView for its whole duration — which is also why T3a.1 and
+    T3a.2 appeared not to work: they were correct and never got a frame.
+    **This is a precondition for Phase 6 and 7**, whose subprocess and server are long-lived and
+    would hang the window indefinitely rather than for a second.
+  - **Verify:** `tests/commands.rs` asserts every command is `async`, that the command count equals
+    the `off_thread` call-site count, and that every command is registered. Proven by mutation:
+    reverting one command to `fn` fails two of the three. Gate passes.
+  - **Commit:** `fix(desktop): run every command off the UI thread`
+
+---
+
 ## Phase 4 — Catalog writes
 
 No agent involvement anywhere in this phase (D6). The form fields are what remove the ambiguity
 an agent used to resolve from prose.
+
+**What Phase 3 established that this phase inherits.** Read [progress.md](progress.md) before
+starting; these are the five that will bite otherwise.
+
+| Established | Consequence for Phase 4 |
+| --- | --- |
+| Every command is `async fn` + `off_thread` (D17, design §2.1) | A new command written as a plain `fn` freezes the window. `tests/commands.rs` fails the gate if you forget, including the "async but still blocking" variant |
+| Non-zero exit is often a full report, and each command names the statuses that mean success (§3.7) | Check `add` / `update` / `remove` / `push` exit codes **before** assuming non-zero is failure. `use` accepts `OK`, `sync` accepts `OK`/`PARTIAL`, `uninstall` reports on exit 2 |
+| Every frontend command call goes through `withActivity(label, work)` | A new call site that skips it gets no click-time feedback and reintroduces the lag of T3a.2 |
+| Fixtures are recorded payloads, and the fake wrapper branches on argv | Add a case to `tests/fixtures/toolroot/library` rather than hand-writing a payload. Where a flag changes the meaning of the call, make the fixture *echo* the input (as `--project` does) so a mis-built argv fails rather than passes |
+| `installs[]` is receipt-driven, `entry.scopes` is disk-driven, and neither is a superset | T4.4's remove and any "what is installed" question must pick the right one deliberately. This already shaped T3.5 |
+
+**Reverse dependencies still do not exist.** T4.4's remove wants them and `show --json` has no
+`dependents[]`. Adding it is a `library.py` change in this repo, alongside `unresolved_requires[]`
+which T2.5 added the same way. Do that rather than deriving it app-side.
 
 - [ ] **T4.1 — Add form**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/components/AddEntry.vue`

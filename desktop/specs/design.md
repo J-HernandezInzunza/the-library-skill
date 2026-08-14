@@ -62,6 +62,43 @@ src-tauri/src/
 The prototype's single `lib.rs` splits along these lines at T1.1. Nothing else about the
 prototype's mechanism changes.
 
+### 2.1 Every command runs off the UI thread (load-bearing, measured)
+
+Tauri runs a **synchronous** command on the main thread, which is also the thread that paints the
+window. Every command in this app waits on a child process, so a plain `fn` freezes the WebView for
+the command's entire duration: no repaint, no pointer events, and no delivery of the
+`command://started` event that the activity indicator depends on.
+
+This was shipped and measured, not theorised. The symptom was a button that stayed visibly
+depressed for the whole command with no loading state ever appearing — and a button stuck in
+`:active` cannot be a frontend bug, because the browser releases it on pointer-up. Two rounds of
+frontend work went into what was a backend threading defect.
+
+**Therefore, every `#[tauri::command]` is `async fn` and passes its body to `off_thread`**, a
+wrapper over `tauri::async_runtime::spawn_blocking`:
+
+```rust
+#[tauri::command]
+async fn library_list(app: tauri::AppHandle) -> Result<Vec<Entry>, AppError> {
+    off_thread(move || cli::list(&app)).await
+}
+```
+
+`spawn_blocking` rather than a bare `async fn`: these bodies block with no await points, so an
+`async fn` alone would only move the stall from the main thread onto an async-runtime worker that
+other commands need. Off the main thread but still wrong.
+
+**This binds §4 and §5 especially.** The agent subprocess is long-lived and the MCP server hosts a
+listener; as synchronous commands either would hang the window indefinitely rather than for the
+second or two a CLI call takes.
+
+**Enforced by `tests/commands.rs`, not by review.** A synchronous command passes `cargo check`,
+passes every unit and integration test, and the app still launches — its only symptom is an
+unresponsive window. The suite therefore asserts against the source of `lib.rs`: every
+`#[tauri::command]` is followed by `async fn`, the command count equals the `off_thread` call-site
+count (which catches the subtler "async but still blocking" variant), and every command is
+registered with the builder.
+
 ## 3. Deterministic CLI layer (`cli.rs`)
 
 ### 3.1 Locating the wrapper

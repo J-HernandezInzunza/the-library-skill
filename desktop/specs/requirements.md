@@ -68,6 +68,7 @@ implementation; changing one is a spec change, not an implementation choice.
 | D12 | Skills declare setup in a `setup.yaml` file in the skill's own directory, per [skill-setup-schema.md](skill-setup-schema.md). Discovery is file presence; absence means no walkthrough. | Keeps install-time data out of `SKILL.md`'s runtime frontmatter, avoids teaching the tooling to parse frontmatter at all (`library.py` doesn't today), and lets a ~45-line block be validated and reviewed as its own file. Declaring commands by id is what makes `run_skill_setup` enforceable. |
 | D15 | The catalog view lists **one row per catalog copy**, with each name's copies kept adjacent, and offers a "hide overridden" toggle that collapses to just the copies that would install. Selecting a single catalog shows that catalog's inventory. In every mode a row carries exactly **one** mutually-exclusive status, so an overridden copy reports the override in place of an install state. | Showing every copy is what makes a shadowed catalog visible at all — with winners only, a catalog whose entries are all overridden never appears in the main view, and divergence from the team's copy is invisible. The single-status rule, not hiding rows, is what fixes the original defect: independent badges once rendered `not installed` beside `overridden by personal` for a skill that was installed. Copies are grouped at the position of the name's first copy rather than sorted, because entries arrive in catalog-precedence order and sorting would either clump every overridden copy at the end or discard the catalog's own ordering. |
 | D16 | The GUI registers catalogs by invoking `library init` and `library catalog add`, never by writing `config.local.yaml`. First run runs `init` only; further catalogs are added later from settings. | Running a CLI command from a form is the same thin-client pattern as `use` (D6), so R1.1 holds — what stays out of scope is the app authoring YAML. The order is forced by the CLI, not chosen: `init` requires `--repo` and is the only command that can create the config, while `catalog add` exits 1 until one exists. Splitting them also avoids a partial-success state (`init` wrote the config, `catalog add` failed) that the CLI has no transaction around. |
+| D17 | Every Tauri command is `async` and runs its blocking work through `spawn_blocking`; no subprocess is ever awaited on the main thread. | Tauri runs a synchronous command on the thread that paints the window, so every command froze the whole UI for its duration — measured, not theorised. A bare `async fn` is not enough: these bodies block with no await points, so they would stall an async-runtime worker instead. Enforced by a source-level test because the defect passes every other check and only shows up as an unresponsive window. |
 | D13 | A collected secret is delivered per the skill's declared `delivery` mode: `config-file` (default), `env`, or `manual`. The app writes only to the skill's declared `config.path`. | `atlassian-toolkit`'s durable store is a config file, so env injection alone would not persist. Skills that want the human to type the credential themselves declare `manual`. |
 
 ## Requirements
@@ -192,13 +193,21 @@ implementation; changing one is a spec change, not an implementation choice.
   advertised tool list. With the server down, the agent answered from invention rather than
   failing (T0.2/F2), which is precisely the D7 leak path: no `request_secret` means asking in chat.
 - R7.3 A stale-catalog condition reported by the CLI (behind origin) is surfaced, not hidden.
+- R7.4 The window stays responsive while any command runs. No subprocess is waited on from the
+  thread that paints the UI (design.md §2.1). A frozen window is indistinguishable from a hung
+  app, and it also suppresses the D5 command log the app relies on for transparency.
+- R7.5 Feedback begins on the click that caused the work, not on the backend event confirming it.
+  `command://started` is an IPC round trip away, so an indicator keyed to it alone always lags the
+  interaction; the UI registers its intent synchronously and the real command takes over when it
+  arrives. The verbatim command still wins the label once known, so R3.4 is unaffected.
 
 ### R8 — Build and run from source
 
 - R8.1 The app builds and runs via `npm install` + `npm run tauri dev`, with Rust and Node as
   documented prerequisites (D9).
-- R8.2 `vue-tsc` type-check, `cargo check`, and `vite build` all pass clean in CI or a documented
-  local check.
+- R8.2 One command (`npm run check`) runs `vue-tsc --noEmit`, `vitest run`, `cargo check`,
+  `cargo test`, and `vite build`, and all pass clean. Every task verifies through it, so no task
+  invents its own check.
 - R8.3 The prototype's build-time wrapper resolution keeps working when the app runs from within
   the repo; `LIBRARY_HOME` documented for running the app from a moved copy.
 

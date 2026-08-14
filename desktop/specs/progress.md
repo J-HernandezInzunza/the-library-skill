@@ -859,3 +859,65 @@ than from `async fn`.
 **Consequence for every later phase:** Phase 6's agent spawn and Phase 7's MCP server are
 both long-lived, and would have been catastrophic as synchronous commands. The guard is in
 place before either exists.
+
+---
+
+## State of play at the end of Phase 3
+
+**Done:** T0.1–T0.2, T1.1–T1.6, T1a.1–T1a.4, T2.1–T2.5, T3.1–T3.5, and the unplanned
+T3a.1–T3a.3. Twenty-two commits on `feat/desktop-app-prototype`, each leaving `npm run
+check` green.
+
+**The gate now runs:** `vue-tsc --noEmit`, 32 Vitest cases, `cargo check`, 21 Rust unit
+tests + 34 CLI integration tests + 3 command-surface tests, and `vite build`.
+
+**Visual verification, corrected.** Earlier entries in this log repeatedly said "still not
+visually verified" and then carried that claim forward. It is now partly stale and worth
+stating accurately rather than leaving four contradicting notes above:
+
+| View | Seen running |
+| --- | --- |
+| Catalog list, tabs, search, refresh | Yes |
+| `Doctor` | Yes |
+| `Sync` | Yes |
+| `EntryDetail`, `InstallPreview` | Yes |
+| `CommandLog`, `ActivityBar` | Yes |
+| `UninstallControl` | Partially — rendered, not driven through a real refusal in the GUI |
+| `FirstRun` | **No** — needs a machine with no `.venv` or no config, so it has only been driven against fixture tool roots |
+
+Running it is also what found the threading defect, which no test could have. That is the
+lesson to carry: the gate proves the contracts, not that the app works.
+
+**Specs reconciled with what shipped**, so Phase 4 starts from an accurate baseline:
+
+- **design.md §2.1 added** — every command off the UI thread, with the measurement, the
+  reason `spawn_blocking` beats a bare `async fn`, and the note that §4 and §5 are bound
+  by it most.
+- **design.md §3.7 rewritten** — from "`doctor` is the one exception" to a stated pattern
+  across four commands, with the rule that tolerating an exit code and trusting a body are
+  separate decisions.
+- **design.md §3.3 extended** — the picked project directory is the cwd, not a flag.
+- **design.md §3.4** — `entry_use`, `catalog_sync`, `entry_uninstall` added, each flagged
+  for its exit-code tolerance.
+- **R7.4 and R7.5 added** — responsiveness during a command, and feedback beginning on the
+  click rather than on the backend event.
+- **R8.2 corrected** — it described three of the five things the gate actually runs.
+- **D17 added** — the threading rule as a settled decision.
+- **tasks.md gained Phase 3a** — three commits previously had no task, so the ledger
+  disagreed with the history.
+- **tasks.md gained a Phase 4 preamble** — the five things Phase 3 established that will
+  bite otherwise, in the same form Phase 3 inherited from Phase 2.
+
+**Known gaps carried into Phase 4:**
+
+- **`FirstRun` has never been seen rendered.** It needs a deliberately broken machine
+  state; the fixture clones cover the logic but not the layout.
+- **A receipt whose destination no longer resolves from any scope is unreachable from the
+  app** — entry reads `missing` with `scopes: []`, so no control renders. Narrow; the fix
+  belongs in `library.py`.
+- **No reverse dependencies.** T4.4 wants them; `show --json` has no `dependents[]`.
+- **`cargo` is not on a non-login shell's `PATH`**, so `npm run check` fails there.
+  Belongs in T8.1. Still true, still not addressed.
+- **`bootstrap()` resolves `python3` from `PATH`**, which is the shell's under `tauri dev`
+  and a minimal one for a Finder-launched bundle. Holds today because macOS ships
+  `/usr/bin/python3`, and D9 keeps the app running from source.
