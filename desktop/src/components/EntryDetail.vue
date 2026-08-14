@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { catalogHue, dependencies } from "../catalog";
 import { describeAppError, type Catalog, type Entry, type EntryDetail } from "../types";
+import Busy from "./Busy.vue";
 import InstallPreview from "./InstallPreview.vue";
 import UninstallControl from "./UninstallControl.vue";
 
@@ -82,11 +83,11 @@ watch(() => props.name, load, { immediate: true });
       ← Back to {{ backTo ?? "catalog" }}
     </button>
 
-    <p v-if="loading" class="entry-detail__state">Loading…</p>
+    <Busy v-if="loading" :label="`Reading ${name}…`" />
     <pre v-else-if="error" class="entry-detail__error">{{ error }}</pre>
 
     <template v-else-if="detail">
-      <header class="entry-detail__head">
+      <header class="entry-detail__head fade-in">
         <h2 class="entry-detail__name">{{ detail.name }}</h2>
         <span class="entry-detail__type">{{ detail.entry.type }}</span>
         <span v-if="detail.has_setup" class="entry-detail__setup">guided setup available</span>

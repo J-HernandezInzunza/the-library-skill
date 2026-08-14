@@ -709,3 +709,63 @@ its starting state after every live verification, confirmed by `list` (35 winner
 **Carried into Phase 4:** `InstallPreview`, `UninstallControl`, and `Sync` have been driven by
 fixtures and by the real CLI underneath them, but none has been seen rendered. That backlog now
 covers `FirstRun`, `Doctor`, `EntryDetail`, `CommandLog`, and all three of these.
+
+---
+
+## Loading feedback, after seeing it run
+
+Two problems reported from the running app: clicking **Preview install** with project scope
+selected did nothing and said nothing, and the app generally "snaps into place" with no sign that a
+subprocess is running.
+
+**The dead button was a disabled control with no stated reason.** It was correctly disabled — a
+project install resolves against `LIBRARY_CWD`, so with no directory there is no destination to
+preview — but a disabled control that doesn't say why reads as a broken one. It now renders the
+reason, and the directory picker becomes the *primary* button while one is needed so the eye lands
+on the control that actually moves things forward. `button:disabled` also got a global style; it
+previously had none outside `InstallPreview`, so disabled buttons elsewhere looked clickable.
+
+**The activity indicator is driven by the command events, not by per-view flags.** `command://started`
+and `command://finished` already bracket every spawn (T2.1), so one bar at the window top covers
+every command — including ones added in later phases — with nothing to remember at the call site.
+Same reasoning that made the log structural: an indicator you have to opt into is one a future
+caller forgets.
+
+**That forced a consolidation.** `CommandLog` had its own pair of `listen` calls and its own copy of
+the state; the bar needs exactly the same data. Two subscriptions maintaining two copies of one
+event stream is the kind of duplication that drifts, so both now read `src/commandActivity.ts`. It
+is module-level rather than per-component, which also means the log keeps recording while views
+swap — it previously survived only because the component happened never to unmount.
+
+**A real D5 gap surfaced while doing it.** `listen` is an IPC round trip, so a command fired in the
+same tick as the first render could complete before the subscription existed — the app's *first*
+command, the one that runs on mount, was the one most likely to be missed from the log. The
+composable now exposes `listening`, and `App.vue` awaits it before the first `load()`. Pre-existing,
+not introduced here, but the bar made it visible.
+
+**Awaiting it then produced a new instance of the reported jank**, which is worth recording because
+it is the same mistake in a different place: `loading` defaulted to `false`, so between mount and
+the first command the catalog rendered as **"No matching entries."** — an empty-state claim about
+data no one had asked for yet. It now starts `true`. `Doctor`, `Sync`, and `EntryDetail` were
+already correct here: each kicks off its command synchronously in setup, so the flag is set before
+the first render.
+
+**Three loading treatments, one per shape of wait:**
+
+| Where | Treatment |
+| --- | --- |
+| Any command, anywhere | Indeterminate bar at the window top, with the operation named (`library use grilling`) |
+| A view with nothing to show yet | `<Busy>` — spinner plus a label saying what is being waited on |
+| A result arriving into an existing view | `.fade-in`, a global 220ms ease |
+
+`Doctor` and `Sync` previously rendered **nothing at all** while running, which is the worst version
+of the complaint: the window looked finished and idle mid-command.
+
+**Labels say what is happening, not "Loading…".** "Checking every installed entry against its
+source" and "Cloning the catalog over the network" set an expectation about *duration*, which is the
+actual question behind "is this stuck?". `describeArgv` shortens the argv for the bar — the full
+command already has a home in the log — and is covered by Vitest.
+
+**Motion is reduced, not removed, under `prefers-reduced-motion`.** The indeterminate bar becomes a
+static fill and the spinner a solid dot rather than disappearing: the signal is still needed by
+someone who cannot tolerate the animation.

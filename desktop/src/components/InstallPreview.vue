@@ -5,6 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { describeDestState, installPlan, summarizeChanges } from "../catalog";
 import { recentProjects, rememberProject } from "../recentProjects";
 import { describeAppError, type UsePreview, type UseReport } from "../types";
+import Busy from "./Busy.vue";
 
 const props = defineProps<{ name: string }>();
 const emit = defineEmits<{ installed: [] }>();
@@ -115,7 +116,11 @@ watch([() => props.name, scope], () => {
     </div>
 
     <div v-if="scope === 'project'" class="install-preview__project">
-      <button type="button" class="ghost" @click="pickDirectory()">
+      <button
+        type="button"
+        :class="{ ghost: !needsDirectory }"
+        @click="pickDirectory()"
+      >
         {{ projectDir ? "Choose another…" : "Choose a directory…" }}
       </button>
       <code v-if="projectDir" class="install-preview__dir">{{ projectDir }}</code>
@@ -140,9 +145,15 @@ watch([() => props.name, scope], () => {
       :disabled="loading || needsDirectory"
       @click="runPreview()"
     >
-      {{ loading ? "Resolving…" : plan ? "Re-check" : "Preview install" }}
+      {{ plan ? "Re-check" : "Preview install" }}
     </button>
+    <!-- A disabled control with no stated reason reads as a broken one. -->
+    <p v-if="needsDirectory" class="install-preview__blocked">
+      Choose a directory first — a project install resolves against it, so there is no
+      destination to preview yet.
+    </p>
 
+    <Busy v-if="loading" inline label="Resolving the destination…" />
     <pre v-if="error" class="install-preview__error">{{ error }}</pre>
 
     <template v-if="plan">
@@ -158,7 +169,7 @@ watch([() => props.name, scope], () => {
         </span>
       </p>
 
-      <ul class="install-preview__plan">
+      <ul class="install-preview__plan fade-in">
         <li
           v-for="item in plan.items"
           :key="item.install.dest"
@@ -191,12 +202,13 @@ watch([() => props.name, scope], () => {
         :disabled="!canInstall"
         @click="install()"
       >
-        {{ installing ? "Installing…" : scope === "project" ? "Install into project" : "Install globally" }}
+        {{ scope === "project" ? "Install into project" : "Install globally" }}
       </button>
+      <Busy v-if="installing" inline label="Fetching and writing files…" />
     </template>
 
     <template v-if="report">
-      <p class="install-preview__done">
+      <p class="install-preview__done fade-in">
         Installed {{ report.installed.length }}
         {{ report.installed.length === 1 ? "item" : "items" }}.
       </p>
@@ -206,7 +218,7 @@ watch([() => props.name, scope], () => {
         catalog expects is not there. The copy is on disk; the catalog entry needs fixing.
       </p>
 
-      <ul class="install-preview__plan">
+      <ul class="install-preview__plan fade-in">
         <li
           v-for="item in report.installed"
           :key="item.dest"
@@ -375,9 +387,11 @@ watch([() => props.name, scope], () => {
 .install-preview__go {
   margin-top: 0.75rem;
 }
-.install-preview__go:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
+.install-preview__blocked {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  opacity: 0.7;
 }
 .install-preview__done {
   margin: 0.75rem 0 0.5rem;

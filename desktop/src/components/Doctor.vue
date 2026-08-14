@@ -2,6 +2,7 @@
 import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { describeAppError, type DoctorItem, type DoctorReport } from "../types";
+import Busy from "./Busy.vue";
 
 defineEmits<{ close: [] }>();
 
@@ -48,10 +49,11 @@ run();
       </button>
     </header>
 
-    <pre v-if="error" class="doctor__error">{{ error }}</pre>
+    <Busy v-if="loading" :label="deep ? 'Checking every source…' : 'Checking the catalog…'" />
+    <pre v-else-if="error" class="doctor__error">{{ error }}</pre>
 
     <template v-else-if="report">
-      <p class="doctor__summary">
+      <p class="doctor__summary fade-in">
         {{ report.entries }} entries · {{ report.errors.length }} errors ·
         {{ report.warnings.length }} warnings
       </p>
@@ -62,7 +64,7 @@ run();
 
       <template v-if="report.errors.length">
         <h3 class="doctor__section doctor__section--error">Errors</h3>
-        <ul class="doctor__list">
+        <ul class="doctor__list fade-in">
           <li v-for="(item, i) in report.errors" :key="`e${i}`" class="doctor__item doctor__item--error">
             <span v-if="subject(item)" class="doctor__subject">{{ subject(item) }}</span>
             <span class="doctor__message">{{ item.message }}</span>
@@ -72,7 +74,7 @@ run();
 
       <template v-if="report.warnings.length">
         <h3 class="doctor__section">Warnings</h3>
-        <ul class="doctor__list">
+        <ul class="doctor__list fade-in">
           <li v-for="(item, i) in report.warnings" :key="`w${i}`" class="doctor__item">
             <span v-if="subject(item)" class="doctor__subject">{{ subject(item) }}</span>
             <span class="doctor__message">{{ item.message }}</span>

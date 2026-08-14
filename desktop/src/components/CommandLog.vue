@@ -1,33 +1,11 @@
 <script setup lang="ts">
-import { onUnmounted, ref } from "vue";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { CommandFinished, CommandStarted } from "../types";
+import { ref } from "vue";
+import { useCommandActivity, type LoggedCommand } from "../commandActivity";
 
-interface LoggedCommand extends CommandStarted {
-  code: number | null;
-  durationMs: number | null;
-}
-
-const commands = ref<LoggedCommand[]>([]);
+// The stream lives outside this component, so the log keeps recording while the panel
+// is collapsed — which is most of the time, and the log is the only safeguard there is.
+const { commands } = useCommandActivity();
 const open = ref(false);
-
-// The component stays mounted and only its body collapses. Mounting it with the
-// panel would miss every command run while the panel was closed, which is most of
-// them, and the log is the only safeguard there is.
-const unlisteners: UnlistenFn[] = [];
-
-listen<CommandStarted>("command://started", ({ payload }) => {
-  commands.value.unshift({ ...payload, code: null, durationMs: null });
-}).then((off) => unlisteners.push(off));
-
-listen<CommandFinished>("command://finished", ({ payload }) => {
-  const run = commands.value.find((c) => c.id === payload.id);
-  if (!run) return;
-  run.code = payload.code;
-  run.durationMs = payload.duration_ms;
-}).then((off) => unlisteners.push(off));
-
-onUnmounted(() => unlisteners.forEach((off) => off()));
 
 function label(run: LoggedCommand): string {
   return run.argv.join(" ");

@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { describeAppError, type BootstrapReport, type InitReport } from "../types";
+import Busy from "./Busy.vue";
 
 const props = defineProps<{
   /** Which half of setup is missing. */
@@ -84,8 +85,9 @@ async function setUp() {
       </p>
 
       <button type="button" class="first-run__action" :disabled="running" @click="setUp">
-        {{ running ? "Setting up…" : "Set up the library" }}
+        Set up the library
       </button>
+      <Busy v-if="running" inline label="Creating the environment and installing PyYAML…" />
     </template>
 
     <template v-else>
@@ -114,8 +116,9 @@ async function setUp() {
         <p class="first-run__preview">{{ initCommand }}</p>
 
         <button type="submit" class="first-run__action" :disabled="!canRegister || registering">
-          {{ registering ? "Cloning catalog…" : "Connect catalog" }}
+          Connect catalog
         </button>
+        <Busy v-if="registering" inline label="Cloning the catalog over the network…" />
       </form>
 
       <p class="first-run__note">

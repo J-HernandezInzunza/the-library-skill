@@ -2,7 +2,10 @@
 import { ref, computed, defineAsyncComponent, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { allRows, catalogRows, winningRows, type Row } from "./catalog";
+import { useCommandActivity } from "./commandActivity";
 import { describeAppError, isAppError, type Catalog, type Entry } from "./types";
+import ActivityBar from "./components/ActivityBar.vue";
+import Busy from "./components/Busy.vue";
 import CatalogSummary from "./components/CatalogSummary.vue";
 import CatalogTabs from "./components/CatalogTabs.vue";
 import CommandLog from "./components/CommandLog.vue";
@@ -16,6 +19,10 @@ const FirstRun = defineAsyncComponent(() => import("./components/FirstRun.vue"))
 const EntryDetail = defineAsyncComponent(() => import("./components/EntryDetail.vue"));
 const Doctor = defineAsyncComponent(() => import("./components/Doctor.vue"));
 const Sync = defineAsyncComponent(() => import("./components/Sync.vue"));
+
+// Attached here, at the earliest point in the app, so the command log and the activity
+// bar are subscribed before anything can run.
+const { listening } = useCommandActivity();
 
 const entries = ref<Entry[]>([]);
 const catalogs = ref<Catalog[]>([]);
@@ -37,7 +44,9 @@ const showDoctor = ref(false);
 const showSync = ref(false);
 /** Collapse the catalog to just the copies that would actually install. */
 const hideOverridden = ref(false);
-const loading = ref(false);
+// True from the start: the app always loads on mount, and defaulting to false shows an
+// empty catalog for a frame before the first command has even been sent.
+const loading = ref(true);
 /** Kept typed rather than stringified: a first-run state is recoverable, not an error. */
 const failure = ref<unknown>(null);
 
@@ -122,7 +131,12 @@ const summary = computed(() => {
   return parts.join(" · ");
 });
 
-onMounted(load);
+onMounted(async () => {
+  // The first command must appear in the log like every other one, so it waits for the
+  // subscription rather than racing it.
+  await listening;
+  await load();
+});
 </script>
 
 <template>
@@ -175,11 +189,12 @@ onMounted(load);
       </label>
     </p>
 
-    <p v-if="loading" class="state">Loading…</p>
+    <Busy v-if="loading" label="Reading the catalog…" />
     <pre v-else-if="errorMessage" class="state error">{{ errorMessage }}</pre>
     <p v-else-if="!filtered.length" class="state">No matching entries.</p>
     <EntryList
       v-else
+      class="fade-in"
       :rows="filtered"
       :catalogs="catalogs"
       :show-origin="multiCatalog"
@@ -187,6 +202,7 @@ onMounted(load);
     />
     </template>
 
+    <ActivityBar />
     <CommandLog />
   </main>
 </template>
@@ -198,7 +214,7 @@ onMounted(load);
   --app-bg: #f6f6f7;
   /* The sticky header composites over scrolling content, so it needs a surface of
      its own; a bare backdrop-filter leaves the text to overlap the list. */
-  --app-bg-sticky: rgba(246, 246, 247, 0.88);
+  --app-bg-sticky: rgba(246, 246, 247, 0.95);
 }
 body {
   margin: 0;
@@ -234,6 +250,32 @@ button.ghost {
   color: inherit;
   border-color: rgba(128, 128, 128, 0.4);
 }
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Global so every view can ease its results in with one class, instead of each
+   inventing its own keyframes. Content arriving after a subprocess is the whole
+   app, so this is the default motion, not a flourish. */
+.fade-in {
+  animation: fade-in 0.22s ease-out;
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fade-in {
+    animation: none;
+  }
+}
 </style>
 
 <style scoped>
@@ -248,7 +290,7 @@ button.ghost {
   position: sticky;
   top: 0;
   z-index: 10;
-  padding: 1.5rem 0 0.75rem;
+  padding: 0.75rem 0;
   background: var(--app-bg-sticky);
   backdrop-filter: blur(8px);
 }

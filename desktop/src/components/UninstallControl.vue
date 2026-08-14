@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { describeAppError, type Receipt, type UninstallReport } from "../types";
+import Busy from "./Busy.vue";
 
 const props = defineProps<{
   name: string;
@@ -83,7 +84,9 @@ watch(() => props.name, () => {
       </li>
     </ul>
 
-    <div v-if="confirming" class="uninstall__confirm">
+    <Busy v-if="running" inline label="Removing files…" />
+
+    <div v-if="confirming" class="uninstall__confirm fade-in">
       <p class="uninstall__question">
         Delete the {{ confirming }} copy of {{ name }}?
       </p>
@@ -96,12 +99,12 @@ watch(() => props.name, () => {
       <div class="uninstall__actions">
         <button type="button" class="ghost" @click="cancel()">Cancel</button>
         <button type="button" :disabled="running" @click="remove(confirming, false)">
-          {{ running ? "Removing…" : "Delete" }}
+          Delete
         </button>
       </div>
     </div>
 
-    <div v-if="escalating && report" class="uninstall__refused">
+    <div v-if="escalating && report" class="uninstall__refused fade-in">
       <p class="uninstall__question">
         The tool has no install receipt for
         {{ report.refused.length === 1 ? "this path" : "these paths" }}, so it cannot
@@ -122,7 +125,7 @@ watch(() => props.name, () => {
       </div>
     </div>
 
-    <p v-if="report?.deleted.length" class="uninstall__done">
+    <p v-if="report?.deleted.length" class="uninstall__done fade-in">
       Removed {{ report.deleted.join(", ") }}. The catalog entry is still listed.
     </p>
 

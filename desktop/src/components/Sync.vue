@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { summarizeChanges } from "../catalog";
 import { describeAppError, type SyncedItem, type SyncReport } from "../types";
+import Busy from "./Busy.vue";
 
 const emit = defineEmits<{ close: []; synced: [] }>();
 
@@ -56,10 +57,11 @@ run(false);
       </button>
     </header>
 
-    <pre v-if="error" class="sync__error">{{ error }}</pre>
+    <Busy v-if="loading" label="Checking every installed entry against its source…" />
+    <pre v-else-if="error" class="sync__error">{{ error }}</pre>
 
     <template v-else-if="report">
-      <p class="sync__summary">
+      <p class="sync__summary fade-in">
         {{ refreshed.length }} refreshed · {{ unchanged.length }} already up to date
         <span v-if="report.failed.length"> · {{ report.failed.length }} failed</span>
       </p>
@@ -71,7 +73,7 @@ run(false);
 
       <template v-if="report.failed.length">
         <h3 class="sync__section sync__section--error">Failed</h3>
-        <ul class="sync__list">
+        <ul class="sync__list fade-in">
           <li v-for="item in report.failed" :key="item.name" class="sync__item sync__item--error">
             <span class="sync__name">{{ item.name }}</span>
             <span class="sync__detail">{{ item.reason }}</span>
@@ -81,7 +83,7 @@ run(false);
 
       <template v-if="refreshed.length">
         <h3 class="sync__section">Refreshed</h3>
-        <ul class="sync__list">
+        <ul class="sync__list fade-in">
           <li
             v-for="item in refreshed"
             :key="item.name"
@@ -101,7 +103,7 @@ run(false);
 
       <template v-if="unchanged.length">
         <h3 class="sync__section">Already up to date</h3>
-        <ul class="sync__list">
+        <ul class="sync__list fade-in">
           <li v-for="item in unchanged" :key="item.name" class="sync__item sync__item--quiet">
             <span class="sync__name">{{ item.name }}</span>
             <span class="sync__detail">{{ item.scope }} · nothing to fetch</span>
