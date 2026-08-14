@@ -912,14 +912,28 @@ lesson to carry: the gate proves the contracts, not that the app works.
 - **tasks.md gained a Phase 4 preamble** — the five things Phase 3 established that will
   bite otherwise, in the same form Phase 3 inherited from Phase 2.
 
-**Known gaps carried into Phase 4:**
+**Known gaps now live in the plan, not only here.** Reviewing this log against
+[tasks.md](tasks.md) found that *none* of the gaps recorded across Phases 1–3 had ever
+reached it: not the two `PATH` assumptions that this log twice said "belong in T8.1", not
+either `library.py` defect, not the missing `dependents[]`. They were all findings in a log
+nobody reads while planning, which is how a known gap becomes folklore.
 
-- **A receipt whose destination no longer resolves from any scope is unreachable from the
-  app** — entry reads `missing` with `scopes: []`, so no control renders. Narrow; the fix
-  belongs in `library.py`.
-- **No reverse dependencies.** T4.4 wants them; `show --json` has no `dependents[]`.
-- **`cargo` is not on a non-login shell's `PATH`**, so `npm run check` fails there.
-  Belongs in T8.1. Still true, still not addressed.
-- **`bootstrap()` resolves `python3` from `PATH`**, which is the shell's under `tauri dev`
-  and a minimal one for a Finder-launched bundle. Holds today because macOS ships
-  `/usr/bin/python3`, and D9 keeps the app running from source.
+`tasks.md` now carries a **Known gaps** register (G1–G7), deliberately separate from
+Deferred — Deferred is a decision not to do something, a gap is something that should
+happen and has no home. Each row names an owner and what would make it urgent. The three
+`library.py` ones are also raised in
+[specs/cli-app-support/tasks.md](../../specs/cli-app-support/tasks.md), where CLI work is
+actually planned, per this plan's own rule that a CLI gap gets fixed where the terminal and
+the agent benefit too.
+
+Two things changed status in the process:
+
+- **`dependents[]` (G5) is not a gap, it is a decision**, and it is due now: it changes
+  what T4.4 ships. Either `library.py` grows it first, or T4.4's remove says plainly that
+  it cannot name the blast radius. Deriving it app-side is ruled out — it needs the
+  transitive closure of every entry, which is the catalog logic R1.1 exists to keep out.
+  Recorded in the Phase 4 preamble as an open decision rather than a note.
+- **"Two manual checks outside the gate"**, carried since Phase 1a, was really one gap with
+  a name: there are **no component tests**. `vite.config.ts` has loaded the Vue plugin for
+  them since Phase 1 and nothing was ever built on it. G1, and T6.4's walkthrough view is
+  where it stops being cheap to skip.

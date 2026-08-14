@@ -425,9 +425,17 @@ starting; these are the five that will bite otherwise.
 | Fixtures are recorded payloads, and the fake wrapper branches on argv | Add a case to `tests/fixtures/toolroot/library` rather than hand-writing a payload. Where a flag changes the meaning of the call, make the fixture *echo* the input (as `--project` does) so a mis-built argv fails rather than passes |
 | `installs[]` is receipt-driven, `entry.scopes` is disk-driven, and neither is a superset | T4.4's remove and any "what is installed" question must pick the right one deliberately. This already shaped T3.5 |
 
-**Reverse dependencies still do not exist.** T4.4's remove wants them and `show --json` has no
-`dependents[]`. Adding it is a `library.py` change in this repo, alongside `unresolved_requires[]`
-which T2.5 added the same way. Do that rather than deriving it app-side.
+**Decision needed before T4.4: reverse dependencies.** T4.4's remove wants "removing this breaks 3
+entries" and `show --json` has no `dependents[]`. This is not a gap to park — it changes what T4.4
+ships. Two options:
+
+1. **Add `dependents[]` to `library.py`** first, alongside `unresolved_requires[]` which T2.5 added
+   the same way. The terminal and the agent get the warning too, and the app stays a renderer.
+2. **Ship T4.4 without the warning**, and say so in the confirmation rather than implying the blast
+   radius is known.
+
+Deriving it app-side is the one option that is ruled out: it needs the transitive closure of every
+entry, which is exactly the catalog logic R1.1 keeps out of the app. Tracked as G5.
 
 - [ ] **T4.1 — Add form**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/components/AddEntry.vue`
@@ -667,7 +675,12 @@ The security-critical phase. Every task here is a place where a mistake leaks a 
   - **Do:** Replace the prototype framing: prerequisites (Rust, Node, an authed `claude`), the
     base-branch note, `LIBRARY_HOME`, what walkthroughs need, and the fact that no app-side
     credentials exist.
-  - **Verify:** A teammate can follow it from a clean clone to a running app.
+    Two `PATH` assumptions surfaced during Phases 1–3 and land here (G6, G7): `npm run check`
+    fails in a non-login shell because `cargo` is not on its `PATH`, and `bootstrap()` resolves
+    `python3` from `PATH`, which is the shell's under `tauri dev` but a minimal one for a
+    Finder-launched bundle. Document both; the second only becomes a defect if D9 is revisited.
+  - **Verify:** A teammate can follow it from a clean clone to a running app, and `npm run check`
+    is documented as needing `cargo` on `PATH`.
   - **Commit:** `docs(desktop): document prerequisites and setup for the app`
 
 - [ ] **T8.2 — Author the first real `setup.yaml`**
@@ -677,6 +690,25 @@ The security-critical phase. Every task here is a place where a mistake leaks a 
     exists, the entire walkthrough feature ships for zero skills.
   - **Verify:** A clean-machine walkthrough configures the toolkit and its own verify command passes.
   - **Commit:** (in the other repo) `feat(atlassian-toolkit): declare setup for guided installation`
+
+---
+
+## Known gaps
+
+Found while building, not yet scheduled. Distinct from **Deferred** below: those are decisions not
+to do something, these are things that should happen and currently have no home. Each names who
+owns it and what would make it urgent, so a gap cannot quietly become folklore in
+[progress.md](progress.md).
+
+| id | Gap | Owner | What makes it urgent |
+| --- | --- | --- | --- |
+| G1 | **No component tests.** Every empty state, every error state, and the `WrapperMissing` message are verified by eye. The backend contract is covered; the rendering is not. `vite.config.ts` already loads the Vue plugin for exactly this, so the cost is `@vue/test-utils` and nothing else | Desktop | T6.4's walkthrough view has more conditional rendering than anything currently in the app. Adding it untested is where this stops being cheap |
+| G2 | **`UninstallControl`'s `REFUSED` branch has never been clicked through in the GUI.** The path is proven against the real CLI and the panel renders; the two have not been joined | Desktop, manual | Next time a hand-installed copy exists on a dev machine |
+| G3 | **`entry_record` short-circuits to `("not_installed", None)` when `overridden_by` is set**, before `entry_install_state` runs. A losing copy installed under `--dir` — a destination the winner never occupies — is therefore invisible in `list` | `library.py` | Nobody has hit it. Real only once `--dir` installs are common |
+| G4 | **`uninstall_entry` considers only destinations the *current* scopes resolve to** (deliberately, so `uninstall alpha` cannot take out an unrelated `--dir` install). So a receipt whose dest no longer resolves is unreachable: the entry reads `missing` with `scopes: []` and the app renders no control | `library.py` | Hit once already, cleaning up a moved project directory. Recurs whenever a project install's directory is deleted |
+| G5 | **No `dependents[]` in `show --json`**, so nothing can say what breaks if an entry is removed | `library.py` | **Now** — it changes what T4.4 ships. See the Phase 4 preamble |
+| G6 | **`npm run check` fails in a non-login shell** because `cargo` is not on its `PATH` | T8.1 | Any CI attempt, or the first teammate who runs the gate from a non-login shell |
+| G7 | **`bootstrap()` resolves `python3` from `PATH`**, which is the shell's under `tauri dev` and a minimal one for a Finder-launched bundle. Holds today because macOS ships `/usr/bin/python3` | T8.1 | Only if D9 is revisited and the app ships as a bundle |
 
 ---
 
