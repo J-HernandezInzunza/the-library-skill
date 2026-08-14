@@ -809,3 +809,53 @@ pointer-down, before any handler runs. The three-layer sequence is now:
 synchronously as the handler's first statement, so the `<Busy>` blocks were already
 instant. Only the event-driven bar lagged, which is why the fix is in one module rather
 than at eight call sites.
+
+---
+
+## The real cause: every command was freezing the window
+
+Reported next: the button stays visibly depressed for the whole command, nothing renders
+until it finishes, and the added animation made it feel *worse*. That last part is the
+diagnostic — a button stuck in `:active` cannot be a CSS problem, because `:active` is
+released by the browser on pointer-up. It means **no frames were being painted at all**.
+
+**Tauri runs a synchronous command on the main thread, which is the thread that paints the
+window.** Every command in `lib.rs` was a plain `fn` calling `Command::output()`, i.e. a
+blocking wait on a child process. So the WebView was frozen for the entire duration of
+every command: no repaint, no pointer events, no `command://started` delivery. Confirmed
+against the v2 docs ("Asynchronous commands are preferred in Tauri to perform heavy work
+in a manner that doesn't result in UI freezes or slowdowns") and a maintainer's answer
+naming the exact symptom.
+
+**Every command is now `async fn` running its body through `off_thread`**, a wrapper over
+`tauri::async_runtime::spawn_blocking`. `spawn_blocking` rather than a bare `async fn`
+because these bodies block with no await points: an `async fn` alone would move the stall
+off the main thread onto an async-runtime worker that other commands need. Better, still
+wrong.
+
+**Everything built in the two previous passes was correct and simply never got a frame.**
+The intent-based bar, the `<Busy>` blocks, the fade-ins, the CSS press feedback — all of
+it was executing into a renderer that could not paint. The added animations made it feel
+choppier because a freeze is more obvious once something is mid-motion when it stops.
+Worth recording as a diagnostic lesson: two rounds of frontend work went into a backend
+threading bug, and the tell was there from the first report ("buttons respond to the
+command having been started") — the UI was not late, it was stopped.
+
+**Guarded structurally, because nothing else can see it.** `cargo check` passes, every
+unit and integration test passes, and the app runs — a sync command's only symptom is a
+window that stops responding. `tests/commands.rs` therefore asserts against the source of
+`lib.rs`: every `#[tauri::command]` is followed by `async fn`, the number of commands
+equals the number of `off_thread` call sites, and every command is registered with the
+builder. **Verified by mutation:** reverting `catalog_doctor` to a sync `fn` fails two of
+the three with the actionable message, and the count assertion catches the subtler variant
+where a command is `async` but does its own blocking work.
+
+The third test is unrelated to threading but the same class of invisible defect: a command
+defined and never listed in `generate_handler!` fails only at runtime, as "command not
+found" from the frontend. It also caught a bug in its own first draft, which counted the
+`off_thread` helper as a command — hence commands being derived from the attribute rather
+than from `async fn`.
+
+**Consequence for every later phase:** Phase 6's agent spawn and Phase 7's MCP server are
+both long-lived, and would have been catastrophic as synchronous commands. The guard is in
+place before either exists.
