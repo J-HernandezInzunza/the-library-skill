@@ -994,3 +994,69 @@ got wrong in one place.
 **Fixtures stay recorded, not invented:** `show.json`'s `dependents` is the real
 `atlassian-toolkit` payload trimmed to two direct and one indirect so the split is
 visible, and `show-deps.json` keeps the empty list a leaf actually returns.
+
+---
+
+## T4.1 — the add form, and the two dropdowns that decide what it can build
+
+**One `WriteResult` for all four writes, not one per command.** `add`, `update`, `remove`, and
+`push` all report the same write-result keys at the top level: `mode` and `catalog` always, then
+mode-specific `path` / `branch` / `committed` / `pushed` for `local` and `direct`, and
+`method` / `pr_url` / `compare_url` for `pr`. Typed once and `#[serde(flatten)]`-ed into
+`AddReport`, so T4.4 and T4.5 mirror it rather than each repeating eight optional fields — and so
+the UI branches on `mode` first, which is the CLI's own documented rule.
+
+**`add` is strict about exit codes, unlike everything in Phase 3.** The preamble's warning applies
+in the other direction here: `add` exits 0 only when the entry is in the file, so `run_json` is
+correct and `run_report` would be wrong. Exit 2 (`AMBIGUOUS_CATALOG`, from `write_target`) already
+comes back as a choice through `interpret`, which is T4.4's picker, not a failure.
+
+**The requires picker offers only the destination catalog's entries.** This is the load-bearing
+decision in the task. `requires` resolves within one catalog (D9), so a ref naming another
+catalog's entry dangles — and `add` reports that as a `warn()` on stderr, which with `--json` goes
+nowhere the app can see. A picker built from the merged catalog would therefore let the form write a
+permanently broken entry and report success. Filtering the picker removes the failure instead of
+surfacing it, which is the better fix: there is no legitimate cross-catalog ref to lose.
+`requirableRefs` is in `src/catalog.ts` with Vitest, and deliberately keeps an overridden copy —
+losing to a higher-precedence catalog does not stop it being this catalog's entry to depend on.
+
+**The destination dropdown offers only writable, non-skipped catalogs.** A read-only catalog is
+refused by the CLI and a skipped one could not even be read, so listing either is a dead end
+dressed up as a choice. `writableCatalogs`, also pure and covered.
+
+**Type is an explicit select with no "infer from source" option.** The CLI infers from the source
+filename (`skill.md` → skill, `agent.md` → agent, else prompt), which is a guess the form exists to
+remove — the whole reason Phase 4 has no agent in it is that the fields are what remove the
+ambiguity prose used to resolve. Offering inference as a dropdown option would put the guess back.
+
+**`--allow-local` is a checkbox that only exists when the destination is remote.** Without it the
+GUI has a dead end: a local-path source into a remote catalog is refused by the CLI with a message
+naming a flag the app can't pass, which is the same "go use a terminal" failure T1a.4 removed from
+first run. It is gated on `catalog.kind === "remote"` — registry data the app already has — rather
+than on classifying the source string, which would be catalog logic (R1.1). When the source is not
+local the flag is a no-op, so the CLI still decides what "local" means.
+
+**Verified live against a real CLI, in isolation.** A scratch tool dir (copied wrapper and
+`library.py`, symlinked `.venv`, its own `config.local.yaml`) pointed at a scratch local catalog, so
+the run touched neither the developer's config nor either real catalog. `cli::add` wrote the entry,
+`cli::list` returned it with its `requires`, and the file on disk carried the spliced YAML. Worth
+recording as a technique: `SKILL_DIR` resolves symlinks, so `library.py` has to be *copied* into the
+scratch dir — symlinking it makes the CLI read the developer's real config, which is what happened
+on the first attempt and looked like the fixture working.
+
+**The fixture payload is recorded, not written.** `payloads/add.json` came out of a real `add` run
+against a scratch local catalog; only the `path` was normalised to the fixture's own `personal`
+location so the fixture is internally consistent. The fixture wrapper does not echo its argv,
+unlike `use --project`: the argv is already asserted from the command-log recorder, and `add`'s
+result does not depend on any flag the way a project install's destination does.
+
+**Found a `library.py` defect the app makes reachable (G8).** `add --type agent` into a catalog whose
+YAML has no `agents:` section raises an unhandled `LibraryError` out of `_locate_section`, so the
+caller gets a Python traceback on stderr and exit 1. Not worked around app-side — the app surfaces
+the stderr verbatim, which is honest but ugly, and the fix belongs where the terminal and the agent
+get it too. It has gone unnoticed because `catalog init` scaffolds all three sections; the form
+makes it one dropdown away instead of a typo.
+
+**Not visually verified.** `AddEntry.vue` has been driven by the fixture and by the real CLI
+underneath it, but has not been seen rendered — the same backlog Phase 3 carried, and the same
+lesson: the gate proves the contracts, not that the app works.

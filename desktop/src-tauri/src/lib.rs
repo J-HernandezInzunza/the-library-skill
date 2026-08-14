@@ -16,8 +16,8 @@ pub mod error;
 pub mod events;
 
 use cli::{
-    BootstrapReport, Catalog, DoctorReport, Entry, EntryDetail, InitReport, SyncReport,
-    UninstallReport, UsePreview, UseReport,
+    AddReport, AddRequest, BootstrapReport, Catalog, DoctorReport, Entry, EntryDetail, InitReport,
+    SyncReport, UninstallReport, UsePreview, UseReport,
 };
 use error::AppError;
 
@@ -100,6 +100,15 @@ async fn catalog_sync(app: tauri::AppHandle, force: bool) -> Result<SyncReport, 
     off_thread(move || cli::sync(&app, force)).await
 }
 
+/// Register a new entry in a catalog from the add form (R4.1).
+///
+/// Takes the whole request as one value: seven positional arguments across the Tauri
+/// boundary is where a name and a description quietly swap places.
+#[tauri::command]
+async fn entry_add(app: tauri::AppHandle, request: AddRequest) -> Result<AddReport, AppError> {
+    off_thread(move || cli::add(&app, &request)).await
+}
+
 /// Catalog health, including the checks that reach the network when `deep`.
 #[tauri::command]
 async fn catalog_doctor(app: tauri::AppHandle, deep: bool) -> Result<DoctorReport, AppError> {
@@ -140,6 +149,7 @@ pub fn run() {
             entry_use,
             entry_uninstall,
             catalog_sync,
+            entry_add,
             catalog_doctor,
             catalog_init,
             registry_list,

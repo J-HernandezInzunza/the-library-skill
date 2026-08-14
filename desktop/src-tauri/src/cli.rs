@@ -292,6 +292,78 @@ pub struct UninstallReport {
     pub refused: Vec<String>,
 }
 
+/// What every catalog write reports, whatever mode the destination catalog uses.
+///
+/// `mode` and `catalog` are the two keys every write carries; the rest is mode-specific,
+/// and the CLI documents branching on `mode` first. Optional rather than split into
+/// three types because the caller's question — "where did this land, and is there a PR
+/// to open?" — is one question with one answer per field.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WriteResult {
+    /// `local` (a file on disk), `direct` (committed to a clone), or `pr`.
+    pub mode: String,
+    pub catalog: String,
+    /// The catalog file written, for `local` and `direct`.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// The branch written to, or the branch pushed for a `pr`. Null for a local
+    /// catalog with no git involvement.
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub committed: bool,
+    #[serde(default)]
+    pub pushed: bool,
+    /// `gh` or `manual`, and only for `pr` mode: whether the PR was opened for you.
+    #[serde(default)]
+    pub method: Option<String>,
+    #[serde(default)]
+    pub pr_url: Option<String>,
+    /// Where to open the PR by hand, when the CLI could only push the branch.
+    #[serde(default)]
+    pub compare_url: Option<String>,
+}
+
+/// The entry `add --json` wrote, and the catalog section it landed in.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AddedEntry {
+    pub r#type: String,
+    pub name: String,
+    pub section: String,
+}
+
+/// What `add --json` reports. `status` is `OK`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AddReport {
+    pub status: String,
+    pub added: AddedEntry,
+    /// Flattened because the CLI reports the write keys at the top level; keeping them
+    /// in one struct means `update`, `remove`, and `push` reuse it rather than each
+    /// repeating eight optional fields.
+    #[serde(flatten)]
+    pub write: WriteResult,
+}
+
+/// The fields the add form collects, as one value rather than seven arguments.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AddRequest {
+    pub name: String,
+    pub r#type: String,
+    pub description: String,
+    pub source: String,
+    /// Typed `type:name` refs, as the CLI spells them.
+    #[serde(default)]
+    pub requires: Vec<String>,
+    /// The destination catalog. `None` lets the CLI pick, which is only unambiguous
+    /// with one writable catalog registered.
+    #[serde(default)]
+    pub catalog: Option<String>,
+    /// Permit a local-path source, which resolves on this machine only. Passed only
+    /// after the form said so explicitly; never as a retry.
+    #[serde(default)]
+    pub allow_local: bool,
+}
+
 /// What `init --json` reports once a catalog is registered and cloned.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InitReport {
@@ -658,6 +730,38 @@ pub fn init(sink: &dyn CommandSink, repo: &str, branch: &str) -> Result<InitRepo
         &output.stdout,
         &output.stderr,
     )?)
+}
+
+/// Register a new entry in a catalog (R4.1).
+///
+/// Every field is a flag, so nothing is inferred from prose. Strict about the exit code
+/// on purpose: `add` exits 0 only when the entry is in the file, and exits 2 with
+/// `AMBIGUOUS_CATALOG` when more than one catalog could take the write — which
+/// `interpret` already turns into a choice rather than a failure.
+pub fn add(sink: &dyn CommandSink, request: &AddRequest) -> Result<AddReport, AppError> {
+    let requires = request.requires.join(",");
+    let mut args = vec![
+        "add",
+        "--name",
+        &request.name,
+        "--type",
+        &request.r#type,
+        "--description",
+        &request.description,
+        "--source",
+        &request.source,
+    ];
+    if !requires.is_empty() {
+        args.extend(["--requires", &requires]);
+    }
+    if let Some(catalog) = &request.catalog {
+        args.extend(["--catalog", catalog]);
+    }
+    if request.allow_local {
+        args.push("--allow-local");
+    }
+
+    parse(run_json(sink, &args)?)
 }
 
 /// The registered catalogs, highest precedence first.

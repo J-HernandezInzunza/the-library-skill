@@ -1,4 +1,5 @@
 import type {
+  Catalog,
   Changes,
   Dependent,
   Entry,
@@ -220,6 +221,30 @@ function installStateByName(catalog: Entry[]): Map<string, string> {
   return new Map(
     catalog.filter((entry) => !entry.overridden_by).map((entry) => [entry.name, entry.state]),
   );
+}
+
+/**
+ * The catalogs a write can actually target.
+ *
+ * A read-only catalog is refused by the CLI, and a skipped one could not even be read,
+ * so offering either as a destination is a dead end dressed up as a choice.
+ */
+export function writableCatalogs(catalogs: Catalog[]): Catalog[] {
+  return catalogs.filter((catalog) => catalog.writable && catalog.skipped === null);
+}
+
+/**
+ * The dependency refs that would resolve for an entry stored in `catalogId`.
+ *
+ * Dependencies resolve within one catalog, so a ref naming another catalog's entry
+ * dangles — the CLI warns about it on stderr, which no GUI can see. Offering only this
+ * catalog's own entries means the form cannot build that entry in the first place.
+ */
+export function requirableRefs(entries: Entry[], catalogId: string): string[] {
+  return entries
+    .filter((entry) => entry.catalog === catalogId)
+    .map((entry) => `${entry.type}:${entry.name}`)
+    .sort();
 }
 
 /** One destination in a preview, with its place in the plan. */

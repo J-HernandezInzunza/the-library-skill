@@ -101,6 +101,12 @@ case "$sub" in
       *)             cat "$here/payloads/sync-clean.json" ;;
     esac
     ;;
+  add)
+    # A real recorded payload from a `local`-mode catalog. The argv this was called with
+    # is asserted from the command log rather than echoed here: every flag `add` takes
+    # is already visible there, and a wrong one has to fail the argv test, not the parse.
+    cat "$here/payloads/add.json"
+    ;;
   catalog)
     # `catalog list` — the subcommand arrives as "$1" after the shift.
     cat "$here/payloads/catalogs.json"

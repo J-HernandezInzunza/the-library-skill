@@ -436,11 +436,14 @@ the detail view, and a line in the uninstall confirmation naming the installed e
 left incomplete. **T4.4's remove must use the same field**, and say the harder thing: `uninstall`
 leaves the entry reinstallable, `remove` does not, so the same dependent list means something worse.
 
-- [ ] **T4.1 — Add form**
+- [x] **T4.1 — Add form**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/components/AddEntry.vue`
   - **Requirements:** R4.1
   - **Do:** Explicit fields: name, type, description, source, requires (multiselect from the
     catalog), destination catalog (dropdown from `registry_list`). Invokes `add` with flags.
+    The destination dropdown offers only writable, readable catalogs, and the requires picker
+    only the destination catalog's own entries — a ref across catalogs dangles, and the CLI
+    warns about it on stderr where no GUI can see it. See [progress.md](progress.md).
   - **Verify:** Adding to a local catalog writes immediately; the entry appears in `list`. Gate passes.
   - **Commit:** `feat(desktop): add catalog entries through an explicit form`
 
@@ -708,6 +711,7 @@ owns it and what would make it urgent, so a gap cannot quietly become folklore i
 | ~~G5~~ | ~~No `dependents[]` in `show --json`~~ | — | **Closed.** `resolve_dependents` added to `library.py`; `show --json` reports `dependents[] {type, name, catalog, description, direct}`. The app types it, renders a "Required by" section, and the uninstall confirmation names the installed entries it will leave incomplete. |
 | G6 | **`npm run check` fails in a non-login shell** because `cargo` is not on its `PATH` | T8.1 | Any CI attempt, or the first teammate who runs the gate from a non-login shell |
 | G7 | **`bootstrap()` resolves `python3` from `PATH`**, which is the shell's under `tauri dev` and a minimal one for a Finder-launched bundle. Holds today because macOS ships `/usr/bin/python3` | T8.1 | Only if D9 is revisited and the app ships as a bundle |
+| G8 | **`add` raises an unhandled `LibraryError` when the destination catalog's YAML has no section for the chosen type**, so the caller gets a Python traceback on stderr instead of a message. Found by adding an `agent` to a hand-written catalog with only a `skills:` section | `library.py` | The add form lets any type target any catalog, so this is now one dropdown away rather than a typo. `catalog init` scaffolds all three sections, which is why it has not been hit before |
 
 ---
 

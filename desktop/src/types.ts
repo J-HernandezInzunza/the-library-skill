@@ -203,6 +203,56 @@ export interface CommandFinished {
   duration_ms: number;
 }
 
+/**
+ * What every catalog write reports, whatever mode the destination catalog uses.
+ *
+ * `mode` and `catalog` are the only two keys always present; the rest is mode-specific,
+ * so the UI branches on `mode` before reading anything else.
+ */
+export interface WriteResult {
+  /** `local` (a file on disk), `direct` (committed to a clone), or `pr`. */
+  mode: string;
+  catalog: string;
+  /** The catalog file written, for `local` and `direct`. */
+  path: string | null;
+  /** The branch written to, or pushed for a `pr`. Null for a local catalog without git. */
+  branch: string | null;
+  committed: boolean;
+  pushed: boolean;
+  /** `gh` or `manual`, and only for `pr` mode. */
+  method: string | null;
+  pr_url: string | null;
+  /** Where to open the PR by hand, when the CLI could only push the branch. */
+  compare_url: string | null;
+}
+
+/** The entry `library add --json` wrote, and the catalog section it landed in. */
+export interface AddedEntry {
+  type: string;
+  name: string;
+  section: string;
+}
+
+/** What `library add --json` reports. `status` is `OK`. */
+export interface AddReport extends WriteResult {
+  status: string;
+  added: AddedEntry;
+}
+
+/** The fields the add form collects, sent as one value rather than seven arguments. */
+export interface AddRequest {
+  name: string;
+  type: string;
+  description: string;
+  source: string;
+  /** Typed `type:name` refs, as the CLI spells them. */
+  requires: string[];
+  /** The destination catalog; null lets the CLI pick, which needs one writable catalog. */
+  catalog: string | null;
+  /** Permit a local-path source, which only resolves on this machine. */
+  allow_local: boolean;
+}
+
 /** What `library init --json` reports once a catalog is registered and cloned. */
 export interface InitReport {
   config: string;

@@ -478,6 +478,86 @@ fn a_skipped_catalog_is_still_listed_with_its_reason() {
 }
 
 #[test]
+fn add_passes_every_form_field_as_an_explicit_flag() {
+    // The point of the form (R4.1): nothing is inferred from prose, so every field has
+    // to reach the CLI as its own flag. An argv assertion is the only place that holds.
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let report = cli::add(
+        &log,
+        &cli::AddRequest {
+            name: "new-skill".into(),
+            r#type: "skill".into(),
+            description: "A skill added from the app.".into(),
+            source: "https://github.com/acme/repo/blob/main/new-skill/SKILL.md".into(),
+            requires: vec!["skill:existing-skill".into(), "agent:reviewer".into()],
+            catalog: Some("personal".into()),
+            allow_local: false,
+        },
+    )
+    .expect("the fixture add should parse");
+
+    assert_eq!(
+        &log.started.lock().unwrap()[0].argv[1..],
+        [
+            "add",
+            "--name",
+            "new-skill",
+            "--type",
+            "skill",
+            "--description",
+            "A skill added from the app.",
+            "--source",
+            "https://github.com/acme/repo/blob/main/new-skill/SKILL.md",
+            // One comma-separated flag, which is the spelling the CLI parses.
+            "--requires",
+            "skill:existing-skill,agent:reviewer",
+            "--catalog",
+            "personal",
+            "--json"
+        ]
+    );
+
+    assert_eq!(report.status, "OK");
+    assert_eq!(report.added.section, "skills");
+    // Where it landed, which is the only thing the form can report back truthfully.
+    assert_eq!(report.write.mode, "local");
+    assert_eq!(report.write.catalog, "personal");
+    assert!(report.write.path.is_some());
+    assert!(!report.write.committed);
+}
+
+#[test]
+fn add_omits_the_flags_the_form_left_empty() {
+    // An empty `--requires` is not the same as `--requires ""`, which the CLI would read
+    // as a ref it cannot parse. Same for a catalog the user never chose.
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    cli::add(
+        &log,
+        &cli::AddRequest {
+            name: "solo".into(),
+            r#type: "prompt".into(),
+            description: "No dependencies.".into(),
+            source: "/Users/dev/notes/solo.md".into(),
+            requires: vec![],
+            catalog: None,
+            allow_local: true,
+        },
+    )
+    .expect("the fixture add should parse");
+
+    let argv = &log.started.lock().unwrap()[0].argv[1..].to_vec();
+    assert!(!argv.iter().any(|a| a == "--requires"), "argv: {argv:?}");
+    assert!(!argv.iter().any(|a| a == "--catalog"), "argv: {argv:?}");
+    // The local-source escape hatch is passed only when the form asked for it.
+    assert_eq!(argv.last().map(String::as_str), Some("--json"));
+    assert!(argv.iter().any(|a| a == "--allow-local"), "argv: {argv:?}");
+}
+
+#[test]
 fn the_child_receives_json_and_an_anchored_cwd() {
     let _guard = with_fixture_home();
     let probe = cli::run_json(&Recorder::default(), &["probe"]).expect("probe should run");

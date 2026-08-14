@@ -7,10 +7,19 @@ import {
   dependents,
   installPlan,
   isOnDisk,
+  requirableRefs,
   summarizeChanges,
   winningRows,
+  writableCatalogs,
 } from "./catalog";
-import type { Changes, Entry, EntryDetail, PlannedInstall, UsePreview } from "./types";
+import type {
+  Catalog,
+  Changes,
+  Entry,
+  EntryDetail,
+  PlannedInstall,
+  UsePreview,
+} from "./types";
 
 function entry(overrides: Partial<Entry> = {}): Entry {
   return {
@@ -409,5 +418,60 @@ describe("isOnDisk", () => {
   it("does not count a receipt with nothing at its destination", () => {
     // `missing` is already broken, so removing this entry is not what broke it.
     expect(["missing", "not_installed", "unknown"].map(isOnDisk)).toEqual([false, false, false]);
+  });
+});
+
+function catalog(overrides: Partial<Catalog> = {}): Catalog {
+  return {
+    id: "personal",
+    precedence: 1,
+    kind: "local",
+    location: "/Users/dev/catalog/library.yaml",
+    write_mode: "local",
+    writable: true,
+    entries: 12,
+    skipped: null,
+    ...overrides,
+  };
+}
+
+describe("writableCatalogs", () => {
+  it("drops a read-only catalog, which the CLI refuses every write to", () => {
+    const offered = writableCatalogs([
+      catalog({ id: "personal" }),
+      catalog({ id: "vendor", writable: false }),
+    ]);
+
+    expect(offered.map((c) => c.id)).toEqual(["personal"]);
+  });
+
+  it("drops a catalog that could not even be read", () => {
+    // A skipped catalog is registered but unreadable, so it has no file to write to.
+    const offered = writableCatalogs([
+      catalog({ id: "archived", skipped: "not cloned" }),
+      catalog({ id: "personal" }),
+    ]);
+
+    expect(offered.map((c) => c.id)).toEqual(["personal"]);
+  });
+});
+
+describe("requirableRefs", () => {
+  it("offers only the destination catalog's own entries", () => {
+    // A ref across catalogs dangles: the CLI resolves requires within one catalog and
+    // warns on stderr, which the app never sees.
+    const entries = [
+      entry({ type: "skill", name: "bug-triager", catalog: "personal" }),
+      entry({ type: "agent", name: "reviewer", catalog: "personal" }),
+      entry({ type: "skill", name: "elsewhere", catalog: "shared" }),
+    ];
+
+    expect(requirableRefs(entries, "personal")).toEqual(["agent:reviewer", "skill:bug-triager"]);
+  });
+
+  it("keeps an overridden copy, because it is still this catalog's entry to depend on", () => {
+    const entries = [entry({ name: "grilling", catalog: "shared", overridden_by: "personal" })];
+
+    expect(requirableRefs(entries, "shared")).toEqual(["skill:grilling"]);
   });
 });

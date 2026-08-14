@@ -19,6 +19,7 @@ const FirstRun = defineAsyncComponent(() => import("./components/FirstRun.vue"))
 const EntryDetail = defineAsyncComponent(() => import("./components/EntryDetail.vue"));
 const Doctor = defineAsyncComponent(() => import("./components/Doctor.vue"));
 const Sync = defineAsyncComponent(() => import("./components/Sync.vue"));
+const AddEntry = defineAsyncComponent(() => import("./components/AddEntry.vue"));
 
 // Attached here, at the earliest point in the app, so the command log and the activity
 // bar are subscribed before anything can run.
@@ -42,6 +43,7 @@ const openEntry = computed(() => trail.value.at(-1) ?? null);
 const previousEntry = computed(() => trail.value.at(-2) ?? null);
 const showDoctor = ref(false);
 const showSync = ref(false);
+const showAdd = ref(false);
 /** Collapse the catalog to just the copies that would actually install. */
 const hideOverridden = ref(false);
 // True from the start: the app always loads on mount, and defaulting to false shows an
@@ -151,6 +153,14 @@ onMounted(async () => {
 
     <Sync v-else-if="showSync" @close="showSync = false" @synced="load()" />
 
+    <AddEntry
+      v-else-if="showAdd"
+      :catalogs="catalogs"
+      :entries="entries"
+      @close="showAdd = false"
+      @added="load()"
+    />
+
     <EntryDetail
       v-else-if="openEntry"
       :name="openEntry"
@@ -171,6 +181,7 @@ onMounted(async () => {
           type="search"
           placeholder="Search skills, agents, prompts…"
         />
+        <button type="button" class="ghost" @click="showAdd = true">Add</button>
         <button type="button" class="ghost" @click="load()">Refresh</button>
         <button type="button" class="ghost" @click="showSync = true">Sync</button>
         <button type="button" class="ghost" @click="showDoctor = true">Doctor</button>
