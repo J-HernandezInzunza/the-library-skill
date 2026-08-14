@@ -4722,6 +4722,46 @@ class TestVersionSatisfies(unittest.TestCase):
                 self.assertIsNone(library._version_satisfies("v22.0.0", want))
 
 
+class TestInitIsAtomic(unittest.TestCase):
+    """A failed `init` must leave no config behind (R4.6 / desktop design §3.8a)."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+
+    def working_repo(self) -> str:
+        repo = TempGitRepo(self.tool.root, name="upstream")
+        repo.commit("library.yaml", GOLDEN_CATALOG_NO_DIRS)
+        repo.push()
+        return str(repo.remote)
+
+    def test_a_clone_failure_leaves_no_config_so_a_retry_is_possible(self) -> None:
+        # The config is written before the clone is attempted, so without a rollback a
+        # typo'd URL strands the caller: every later init refuses with "already exists".
+        code, _, err = run_cli("init", "--repo", str(self.tool.root / "nope.git"),
+                               "--branch", "main")
+        self.assertEqual(code, 1, err)
+        self.assertFalse(self.tool.config_path.exists(),
+                         "a failed init must not leave a config pointing at a bad repo")
+
+    def test_a_retry_after_a_failure_needs_no_force(self) -> None:
+        run_cli("init", "--repo", str(self.tool.root / "nope.git"), "--branch", "main")
+        code, _, err = run_cli("init", "--repo", self.working_repo(), "--branch", "main")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(self.tool.config_path.exists())
+
+    def test_a_failed_reinit_restores_the_config_it_was_replacing(self) -> None:
+        run_cli("init", "--repo", self.working_repo(), "--branch", "main")
+        before = self.tool.config_path.read_text()
+
+        code, _, _ = run_cli("init", "--repo", str(self.tool.root / "nope.git"),
+                             "--branch", "main", "--force")
+
+        self.assertEqual(code, 1)
+        self.assertEqual(self.tool.config_path.read_text(), before,
+                         "a failed --force init must not destroy the working config")
+
+
 class TestShow(unittest.TestCase):
     """One entry in full: winner, every copy, deps, installs, source (design §4.2)."""
 

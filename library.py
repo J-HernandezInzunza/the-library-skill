@@ -4543,53 +4543,70 @@ def cmd_init(args: argparse.Namespace) -> int:
     if LOCAL_CONFIG_PATH.exists() and not args.force:
         die(f"{LOCAL_CONFIG_PATH} already exists; pass --force to overwrite")
 
+    # Phase 2 below clones over the network and can fail. Remember what was here first,
+    # so a failure leaves the tool exactly as it found it: a half-written config points
+    # at a repo that was never cloned, and every later `init` refuses with "already
+    # exists; pass --force" — a dead end for the caller who just made a typo.
+    had_config = LOCAL_CONFIG_PATH.exists()
+    previous_config = LOCAL_CONFIG_PATH.read_bytes() if had_config else None
+    initialized = False
+
     old = _migrate_old_variables()
     default_yaml = "library.yaml"
     if "LIBRARY_YAML_PATH" in old:
         default_yaml = Path(old["LIBRARY_YAML_PATH"]).name or "library.yaml"
     yaml_path = args.yaml_path or default_yaml
 
-    merged, dropped = _reinit_preserving(
-        {"id": SHARED_ID, "repo": args.repo, "yaml_path": yaml_path,
-         "branch": args.branch, "protected": True},
-        bool(args.autopush),
-    )
-    if merged is None:
-        write_machine_file(LOCAL_CONFIG_PATH, _LOCAL_CONFIG_TEMPLATE.format(
-            repo=args.repo,
-            yaml_path=yaml_path,
-            branch=args.branch,
-            autopush="true" if args.autopush else "false",
-        ))
-    else:
-        write_config(merged)
-    for cid in dropped:
-        warn(f"catalog '{cid}' could not be carried over and is no longer registered; "
-             f"re-add it with `library catalog add --id {cid} …`")
-    kept = [c["id"] for c in (merged or {}).get("catalogs", []) if c["id"] != SHARED_ID]
-
-    cfg = load_config()  # validate what we just wrote
-
-    # Phase 2: perform initial catalog clone. Re-clone on --force, or when an
-    # existing clone points at a different repo than the (new) config.
-    if CATALOG_CLONE_DIR.exists():
-        origin = subprocess.run(
-            ["git", "-C", str(CATALOG_CLONE_DIR), "remote", "get-url", "origin"],
-            capture_output=True, text=True,
-        ).stdout.strip()
-        if args.force or origin != cfg.catalog_repo:
-            shutil.rmtree(CATALOG_CLONE_DIR)
-    if not CATALOG_CLONE_DIR.exists():
-        sys.stderr.write(f"Cloning catalog repo → {CATALOG_CLONE_DIR} ...\n")
-        pull_catalog(cfg._first_remote)  # clones if absent; dies on failure with auth hint
-
-    # Verify the catalog YAML exists inside the clone.
-    cp = catalog_yaml(cfg._first_remote)
-    if not cp.exists():
-        die(
-            f"catalog file not found at {cp}\n"
-            f"  check --yaml-path (got: {cfg.catalog_yaml_path})"
+    try:
+        merged, dropped = _reinit_preserving(
+            {"id": SHARED_ID, "repo": args.repo, "yaml_path": yaml_path,
+             "branch": args.branch, "protected": True},
+            bool(args.autopush),
         )
+        if merged is None:
+            write_machine_file(LOCAL_CONFIG_PATH, _LOCAL_CONFIG_TEMPLATE.format(
+                repo=args.repo,
+                yaml_path=yaml_path,
+                branch=args.branch,
+                autopush="true" if args.autopush else "false",
+            ))
+        else:
+            write_config(merged)
+        for cid in dropped:
+            warn(f"catalog '{cid}' could not be carried over and is no longer registered; "
+                 f"re-add it with `library catalog add --id {cid} …`")
+        kept = [c["id"] for c in (merged or {}).get("catalogs", []) if c["id"] != SHARED_ID]
+
+        cfg = load_config()  # validate what we just wrote
+
+        # Phase 2: perform initial catalog clone. Re-clone on --force, or when an
+        # existing clone points at a different repo than the (new) config.
+        if CATALOG_CLONE_DIR.exists():
+            origin = subprocess.run(
+                ["git", "-C", str(CATALOG_CLONE_DIR), "remote", "get-url", "origin"],
+                capture_output=True, text=True,
+            ).stdout.strip()
+            if args.force or origin != cfg.catalog_repo:
+                shutil.rmtree(CATALOG_CLONE_DIR)
+        if not CATALOG_CLONE_DIR.exists():
+            sys.stderr.write(f"Cloning catalog repo → {CATALOG_CLONE_DIR} ...\n")
+            pull_catalog(cfg._first_remote)  # clones if absent; dies on failure with auth hint
+
+        # Verify the catalog YAML exists inside the clone.
+        cp = catalog_yaml(cfg._first_remote)
+        if not cp.exists():
+            die(
+                f"catalog file not found at {cp}\n"
+                f"  check --yaml-path (got: {cfg.catalog_yaml_path})"
+            )
+
+        initialized = True
+    finally:
+        if not initialized:
+            if previous_config is not None:
+                LOCAL_CONFIG_PATH.write_bytes(previous_config)
+            else:
+                LOCAL_CONFIG_PATH.unlink(missing_ok=True)
 
     if args.json:
         print(json.dumps({
