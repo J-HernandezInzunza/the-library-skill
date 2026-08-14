@@ -1,13 +1,22 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { catalogHue, dependencies, dependents, isOnDisk } from "../catalog";
+import {
+  catalogHue,
+  contributedCatalogs,
+  dependencies,
+  dependents,
+  editableCopies,
+  isOnDisk,
+} from "../catalog";
 import { withActivity } from "../commandActivity";
 import { describeAppError, type Catalog, type Entry, type EntryDetail } from "../types";
 import Busy from "./Busy.vue";
 import StatusBanner from "./StatusBanner.vue";
 import InstallPreview from "./InstallPreview.vue";
 import UninstallControl from "./UninstallControl.vue";
+import EntryEditor from "./EntryEditor.vue";
+import EntryRemove from "./EntryRemove.vue";
 
 const props = defineProps<{
   name: string;
@@ -22,6 +31,17 @@ const emit = defineEmits<{ close: []; open: [name: string]; installed: [] }>();
 async function afterWrite() {
   emit("installed");
   await load(props.name);
+}
+
+/**
+ * After a removal there is no entry left to show.
+ *
+ * Re-reading would run `show` against a name the catalog no longer has, turning a
+ * successful removal into a failed command.
+ */
+function afterRemove() {
+  emit("installed");
+  emit("close");
 }
 
 const detail = ref<EntryDetail | null>(null);
@@ -86,7 +106,40 @@ async function load(name: string) {
   }
 }
 
+/**
+ * The copies this app will edit: those in a catalog on this machine (R4.4).
+ *
+ * Same restriction as the add form, for the same reason — editing a remote catalog's
+ * copy pushes a branch to a shared repository, which belongs in that repository's own
+ * review workflow.
+ */
+const editable = computed(() => editableCopies(detail.value?.copies ?? [], props.catalogs));
+
+/**
+ * Which copy the edit and remove controls act on.
+ *
+ * Named explicitly on every call rather than left to precedence: `update` and `remove`
+ * resolve through it otherwise and hand back exit 2 for a name two catalogs hold, which
+ * is a question the user has already answered by choosing here.
+ */
+const editing = ref<string | null>(null);
+const editingCopy = computed(
+  () => editable.value.find((copy) => copy.catalog === editing.value) ?? editable.value[0] ?? null,
+);
+
+/** The catalogs holding this name that the app deliberately will not write to. */
+const contributedHolders = computed(() => {
+  const shared = new Set(contributedCatalogs(props.catalogs).map((catalog) => catalog.id));
+  return (detail.value?.copies ?? [])
+    .map((copy) => copy.catalog)
+    .filter((catalog) => shared.has(catalog));
+});
+
 watch(() => props.name, load, { immediate: true });
+// A catalog selected for the previous entry says nothing about this one.
+watch(detail, () => {
+  editing.value = null;
+});
 </script>
 
 <template>
@@ -146,6 +199,42 @@ watch(() => props.name, load, { immediate: true });
           <p class="entry-detail__copy-source">{{ copy.source }}</p>
         </li>
       </ul>
+
+      <h3 class="entry-detail__section">Edit the catalog entry</h3>
+      <template v-if="editingCopy">
+        <label v-if="editable.length > 1" class="entry-detail__pick">
+          <span>Which copy</span>
+          <select v-model="editing">
+            <option v-for="copy in editable" :key="copy.catalog" :value="copy.catalog">
+              {{ copy.catalog }}
+            </option>
+          </select>
+        </label>
+
+        <EntryEditor
+          :name="detail.name"
+          :copy="editingCopy"
+          :entries="entries"
+          @saved="afterWrite()"
+        />
+        <EntryRemove
+          :name="detail.name"
+          :copy="editingCopy"
+          :scopes="detail.entry.scopes"
+          :installs="detail.installs"
+          @removed="afterRemove()"
+        />
+      </template>
+
+      <p v-else-if="contributedHolders.length" class="entry-detail__contributed">
+        {{ contributedHolders.join(", ") }}
+        {{ contributedHolders.length > 1 ? "are shared catalogs" : "is a shared catalog" }}, so
+        this entry is changed in the repository itself rather than from here — that way the
+        change goes through the same review as any other.
+      </p>
+      <p v-else class="entry-detail__contributed">
+        No catalog on this machine holds this entry, so there is nothing here to edit.
+      </p>
 
       <template v-if="declared.length">
         <h3 class="entry-detail__section">Requires ({{ declared.length }})</h3>
@@ -393,6 +482,27 @@ watch(() => props.name, load, { immediate: true });
 .entry-detail__dep-state--missing {
   background: rgba(128, 128, 128, 0.2);
   color: inherit;
+  opacity: 0.7;
+}
+.entry-detail__pick {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  opacity: 0.85;
+}
+.entry-detail__pick select {
+  padding: 0.35rem 0.5rem;
+  border-radius: 8px;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  background: transparent;
+  color: inherit;
+  font-size: 0.85rem;
+}
+.entry-detail__contributed {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
   opacity: 0.7;
 }
 .entry-detail__indirect {

@@ -123,6 +123,24 @@ case "$sub" in
     # is already visible there, and a wrong one has to fail the argv test, not the parse.
     cat "$here/payloads/add.json"
     ;;
+  update)
+    # Two shapes, and the difference is load-bearing: a no-op short-circuits before the
+    # catalog is touched, so the write keys are absent entirely rather than empty.
+    case "$1" in
+      unchanged) cat "$here/payloads/update-unchanged.json" ;;
+      *)         cat "$here/payloads/update.json" ;;
+    esac
+    ;;
+  remove)
+    # The dry run and the real removal return disjoint shapes — `diff` vs `deleted` — so
+    # a confirmation that lost its --dry-run fails to parse rather than silently
+    # reporting a completed removal as a plan.
+    case " $* " in
+      *" --dry-run "*) cat "$here/payloads/remove-dry-run.json" ;;
+      *" --purge "*)   cat "$here/payloads/remove-purged.json" ;;
+      *)               cat "$here/payloads/remove.json" ;;
+    esac
+    ;;
   catalog)
     # `catalog list` — the subcommand arrives as "$1" after the shift.
     cat "$here/payloads/catalogs.json"

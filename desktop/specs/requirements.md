@@ -128,9 +128,12 @@ implementation; changing one is a spec change, not an implementation choice.
   git repo with a GitHub/Bitbucket origin, reusing the CLI's existing suggestion logic.
 - R4.3 Override and conflict consequences are shown before submit, computed from the catalog
   (the CLI already derives these deterministically).
-- R4.4 Update and remove operate on an explicit selected entry via `library update` / `library
-  remove`. When a name exists in more than one catalog, the app requires an explicit catalog
-  choice rather than guessing (the CLI's `AMBIGUOUS_CATALOG` contract).
+- R4.4 Update and remove operate on an explicitly selected *copy* via `library update` / `library
+  remove`, and only in a catalog on this machine — the same restriction R4.1 puts on adding, for
+  the same reason. When a name exists in more than one editable catalog, the app requires an
+  explicit catalog choice rather than guessing, and passes `--catalog` on every call so the CLI's
+  `AMBIGUOUS_CATALOG` path is never entered. A removal is confirmed against `remove --dry-run`,
+  which reports the diff and the dependents the CLI otherwise warns about only on stderr.
 - R4.5 A write that targets a protected remote catalog surfaces the resulting PR URL (or compare
   URL) to the user.
 

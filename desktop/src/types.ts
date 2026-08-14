@@ -239,6 +239,68 @@ export interface AddReport extends WriteResult {
   added: AddedEntry;
 }
 
+/** The entry `library remove --json` took out, and the section it came from. */
+export interface RemovedEntry {
+  type: string;
+  name: string;
+  section: string;
+}
+
+/**
+ * What `library remove <name> --dry-run --json` reports, having written nothing.
+ *
+ * Disjoint from `RemoveReport`: the preview carries a `diff` and the real removal a
+ * `deleted`, so a confirmation that lost its `--dry-run` fails to parse.
+ */
+export interface RemovePreview extends WriteResult {
+  status: string;
+  would_change: boolean;
+  removed: RemovedEntry;
+  /**
+   * Entries in the same catalog that still require this one. The CLI reports these as a
+   * stderr warning, which `--json` sends nowhere a GUI can read.
+   */
+  dependents: string[];
+  diff: string;
+}
+
+/** What `library remove <name> --json` reports. `status` is `OK`. */
+export interface RemoveReport extends WriteResult {
+  status: string;
+  removed: RemovedEntry;
+  /** Local copies deleted by `--purge`; empty without it. */
+  deleted: string[];
+  dependents: string[];
+}
+
+/**
+ * What `library update <name> --json` reports. `status` is `OK`.
+ *
+ * The write keys are absent when `changed` is false: the CLI short-circuits before
+ * touching the catalog, so there is no mode and no path to report.
+ */
+export interface UpdateReport extends Partial<WriteResult> {
+  status: string;
+  name: string;
+  changed: boolean;
+}
+
+/**
+ * The fields the edit form can change, sent as one value.
+ *
+ * `null` means "leave this alone": `update` refuses a call with nothing to do, so an
+ * unchanged field is omitted rather than written back with the value it already has.
+ */
+export interface UpdateRequest {
+  name: string;
+  /** Always set. The copy was chosen in the UI, so precedence has no say. */
+  catalog: string;
+  description: string | null;
+  source: string | null;
+  /** The whole list, replacing what is there; an empty array clears it. */
+  requires: string[] | null;
+}
+
 /**
  * What `library suggest-source <path> --json` reports.
  *

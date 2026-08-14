@@ -554,6 +554,139 @@ fn add_omits_the_flags_the_form_left_empty() {
 }
 
 #[test]
+fn update_sends_only_the_fields_that_changed() {
+    // The whole point of an optional field: `update` refuses a call with nothing to do,
+    // so an unset field has to mean "leave it alone" rather than "write it back". An
+    // argv assertion is the only place that distinction is visible.
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let report = cli::update(
+        &log,
+        &cli::UpdateRequest {
+            name: "deploy".into(),
+            catalog: "personal".into(),
+            description: Some("Deploys things, carefully.".into()),
+            source: None,
+            requires: None,
+        },
+    )
+    .expect("the fixture update should parse");
+
+    let argv = log.started.lock().unwrap()[0].argv[1..].to_vec();
+    assert_eq!(
+        argv,
+        [
+            "update",
+            "deploy",
+            // Always sent: the copy was chosen in the UI, so precedence has no say.
+            "--catalog",
+            "personal",
+            "--set-description",
+            "Deploys things, carefully.",
+            "--json"
+        ]
+    );
+    assert!(report.changed);
+    assert_eq!(report.write.expect("a changed update wrote").catalog, "personal");
+}
+
+#[test]
+fn clearing_the_requires_list_still_sends_the_flag() {
+    // An empty list and an untouched list are different intents, and omitting the flag
+    // for both would silently keep the refs the user just unticked. `--set-requires ""`
+    // is how the CLI spells "clear it".
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    cli::update(
+        &log,
+        &cli::UpdateRequest {
+            name: "deploy".into(),
+            catalog: "personal".into(),
+            description: None,
+            source: None,
+            requires: Some(vec![]),
+        },
+    )
+    .expect("the fixture update should parse");
+
+    let argv = log.started.lock().unwrap()[0].argv[1..].to_vec();
+    assert_eq!(argv, ["update", "deploy", "--catalog", "personal", "--set-requires", "", "--json"]);
+}
+
+#[test]
+fn an_update_that_changed_nothing_is_still_a_successful_call() {
+    // The ordinary outcome of re-saving a form nobody edited. It has no write keys at
+    // all, so a report that required them would fail here rather than say "no changes".
+    let _guard = with_fixture_home();
+
+    let report = cli::update(
+        &Recorder::default(),
+        &cli::UpdateRequest {
+            name: "unchanged".into(),
+            catalog: "personal".into(),
+            description: Some("the description it already had".into()),
+            source: None,
+            requires: None,
+        },
+    )
+    .expect("a no-op update is not a failure");
+
+    assert!(!report.changed);
+    assert!(report.write.is_none());
+}
+
+#[test]
+fn a_removal_is_previewed_as_a_diff_and_the_dependents_it_leaves_behind() {
+    // `dependents` reaches a terminal as a stderr warning and nothing else, so without
+    // this payload the app would remove a dependency of six entries in silence.
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let preview = cli::remove_preview(&log, "other", "personal").expect("preview should parse");
+
+    assert_eq!(
+        &log.started.lock().unwrap()[0].argv[1..],
+        ["remove", "other", "--catalog", "personal", "--dry-run", "--json"]
+    );
+    assert_eq!(preview.status, "DRY_RUN");
+    assert_eq!(preview.removed.section, "prompts");
+    assert_eq!(preview.dependents, ["skill:deploy"]);
+    assert!(preview.diff.contains("-    - name: other"));
+}
+
+#[test]
+fn removing_an_entry_leaves_the_installed_copies_alone() {
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let report = cli::remove(&log, "other", "personal", false).expect("remove should parse");
+
+    let argv = log.started.lock().unwrap()[0].argv[1..].to_vec();
+    assert_eq!(argv, ["remove", "other", "--catalog", "personal", "--json"]);
+    assert!(!argv.iter().any(|a| a == "--purge"), "argv: {argv:?}");
+    assert_eq!(report.status, "OK");
+    assert!(report.deleted.is_empty());
+}
+
+#[test]
+fn purging_deletes_the_installed_copies_and_says_which() {
+    // The confirmation names these paths before the call, so the report has to carry
+    // them back for the success message to be about what actually happened.
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let report = cli::remove(&log, "other", "personal", true).expect("remove should parse");
+
+    assert_eq!(
+        &log.started.lock().unwrap()[0].argv[1..],
+        ["remove", "other", "--catalog", "personal", "--purge", "--json"]
+    );
+    assert_eq!(report.deleted, ["/Users/tester/.claude/prompts/other.md"]);
+}
+
+#[test]
 fn a_source_suggestion_comes_back_with_the_path_it_was_asked_about() {
     let _guard = with_fixture_home();
     let log = Recorder::default();

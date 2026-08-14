@@ -476,14 +476,23 @@ leaves the entry reinstallable, `remove` does not, so the same dependent list me
     reverse warns it will be overridden. Gate passes.
   - **Commit:** `feat(desktop): show override consequences before adding an entry`
 
-- [ ] **T4.4 — Update, remove, and the ambiguity picker**
-  - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/`
+- [x] **T4.4 — Update, remove, and the catalog picker**
+  - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/components/EntryEditor.vue`,
+    `desktop/src/components/EntryRemove.vue`
   - **Requirements:** R4.4
-  - **Do:** `entry_update` / `entry_remove` on an explicitly selected entry. When `AppError::Ambiguous`
-    comes back (T1.3), render the catalog picker and re-run with `--catalog`.
-  - **Verify:** With a name in two catalogs, the picker appears and the write lands in the chosen
-    one. Gate passes.
-  - **Commit:** `feat(desktop): update and remove entries, with a catalog picker on ambiguity`
+  - **Do:** `entry_update` / `entry_remove` on an explicitly selected copy, reached from the
+    entry detail view. **Both write only to a catalog on this machine**, the same restriction
+    and the same wording T4.1 established. The picker runs *before* the command rather than in
+    response to `AppError::Ambiguous`: the detail view already lists every copy with its
+    catalog, so `--catalog` is always passed and the app shows its own choice only when more
+    than one editable copy exists. Letting the CLI raise the ambiguity would have meant offering
+    candidates the app then refuses to write to. `AppError::Ambiguous` stays handled as a
+    backstop. Removal is confirmed against `remove --dry-run`, which carries the diff *and*
+    `dependents[]` — a warning the CLI otherwise puts on stderr where no GUI can read it.
+  - **Verify:** A no-op update reports `changed: false` rather than failing; clearing the
+    requires list sends `--set-requires ""`; a removal preview writes nothing; `--purge` is
+    offered only when every installed copy is global. Gate passes.
+  - **Commit:** `feat(desktop): update and remove entries in the catalogs you own`
 
 - [ ] **T4.5 — Push, and surfacing the PR**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/`
@@ -722,6 +731,7 @@ owns it and what would make it urgent, so a gap cannot quietly become folklore i
 | ~~G5~~ | ~~No `dependents[]` in `show --json`~~ | — | **Closed.** `resolve_dependents` added to `library.py`; `show --json` reports `dependents[] {type, name, catalog, description, direct}`. The app types it, renders a "Required by" section, and the uninstall confirmation names the installed entries it will leave incomplete. |
 | G6 | **`npm run check` fails in a non-login shell** because `cargo` is not on its `PATH` | T8.1 | Any CI attempt, or the first teammate who runs the gate from a non-login shell |
 | G7 | **`bootstrap()` resolves `python3` from `PATH`**, which is the shell's under `tauri dev` and a minimal one for a Finder-launched bundle. Holds today because macOS ships `/usr/bin/python3` | T8.1 | Only if D9 is revisited and the app ships as a bundle |
+| G9 | **`remove --purge` cannot reach a project install from the app.** `--purge` resolves project destinations against `LIBRARY_CWD`, and `remove` is anchored at the tool repo, so a purge deletes the global copy and silently leaves project ones behind. The app works around it by offering the checkbox only when every copy is global. Same root as G4: there is no single anchor for an entry installed in several projects | `library.py` | The workaround holds, but it means a project-installed entry can still be stranded — removed from the catalog with files nothing can now uninstall |
 | G8 | **`add` raises an unhandled `LibraryError` when the destination catalog's YAML has no section for the chosen type**, so the caller gets a Python traceback on stderr instead of a message. Found by adding an `agent` to a hand-written catalog with only a `skills:` section | `library.py` | The add form lets any type target any catalog, so this is now one dropdown away rather than a typo. `catalog init` scaffolds all three sections, which is why it has not been hit before |
 
 ---

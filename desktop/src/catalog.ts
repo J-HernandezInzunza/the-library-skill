@@ -1,11 +1,14 @@
 import type {
   Catalog,
+  CatalogCopy,
   Changes,
   Dependent,
   Entry,
   EntryDetail,
   PlannedInstall,
+  Receipt,
   RequiredEntry,
+  UpdateRequest,
   UsePreview,
 } from "./types";
 
@@ -319,6 +322,95 @@ export function addConsequences(
     blocked: holders.some((holder) => holder.catalog === catalogId),
     overrides,
     overriddenBy,
+  };
+}
+
+/**
+ * The copies of a name the app will edit: those held by a catalog on this machine.
+ *
+ * The same restriction `editableCatalogs` puts on `add`, and for the same reason —
+ * editing a remote catalog's copy pushes a branch to a shared repository. A name held
+ * only by remote catalogs therefore has no editable copy, which is a decision the UI has
+ * to state rather than an absence it can leave unexplained.
+ */
+export function editableCopies(copies: CatalogCopy[], catalogs: Catalog[]): CatalogCopy[] {
+  const editable = new Set(editableCatalogs(catalogs).map((catalog) => catalog.id));
+  return copies.filter((copy) => editable.has(copy.catalog));
+}
+
+/** The fields an edit form holds, before any comparison with what is stored. */
+export interface EntryDraft {
+  description: string;
+  source: string;
+  requires: string[];
+}
+
+/**
+ * The fields of `draft` that differ from `copy`, or `null` when none do.
+ *
+ * `update` refuses a call with nothing to change, so "nothing changed" has to be answered
+ * before the command runs rather than by reading its refusal. Sending only the changed
+ * fields also keeps the CLI's own determinism guarantee useful: an untouched field is
+ * left to whatever the catalog holds now, rather than overwritten with what this view
+ * loaded some time ago.
+ *
+ * `requires` is compared as a set: the picker renders it sorted, so a copy whose refs are
+ * stored in another order would otherwise read as an edit that changes nothing but the
+ * line order.
+ */
+export function entryEdits(
+  copy: CatalogCopy,
+  draft: EntryDraft,
+): Omit<UpdateRequest, "name" | "catalog"> | null {
+  const description = draft.description.trim();
+  const source = draft.source.trim();
+  const requires = [...draft.requires].sort();
+
+  const edits = {
+    description: description === copy.description ? null : description,
+    source: source === copy.source ? null : source,
+    requires: sameRefs(copy.requires, requires) ? null : requires,
+  };
+
+  const changed = edits.description !== null || edits.source !== null || edits.requires !== null;
+  return changed ? edits : null;
+}
+
+/** Two `requires` lists naming the same refs, whatever their order or spacing. */
+function sameRefs(a: string[], b: string[]): boolean {
+  const left = new Set(a.map(normalizeRef));
+  const right = new Set(b.map(normalizeRef));
+  return left.size === right.size && [...left].every((ref) => right.has(ref));
+}
+
+/** Whether a removal may also delete the installed copies, and which ones. */
+export interface Purgeable {
+  /** True when every installed copy is one `remove --purge` would actually reach. */
+  offered: boolean;
+  /** The destinations it would delete, for the confirmation to name. */
+  paths: string[];
+  /** Scopes it would silently leave behind, which is why it is not offered. */
+  blockedBy: string[];
+}
+
+/**
+ * What `remove --purge` can honestly promise to delete.
+ *
+ * `--purge` resolves a project install against `LIBRARY_CWD`, and the app anchors
+ * `remove` at the tool repo — so a purge from here deletes the global copy and leaves
+ * every project one exactly where it was. Measured against the real CLI, not assumed.
+ *
+ * Rather than pass an anchor (there is no single right one: an entry can be installed in
+ * several projects, which is gap G4 in the same shape), the checkbox is offered only when
+ * every installed copy is global. Anything else goes through the per-scope uninstall
+ * control, which is anchored per install and checks receipts.
+ */
+export function purgeable(scopes: string[], installs: Receipt[]): Purgeable {
+  const blockedBy = scopes.filter((scope) => scope !== "global");
+  return {
+    offered: scopes.length > 0 && blockedBy.length === 0,
+    paths: installs.filter((install) => install.scope === "global").map((install) => install.dest),
+    blockedBy,
   };
 }
 

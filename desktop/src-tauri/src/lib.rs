@@ -17,7 +17,8 @@ pub mod events;
 
 use cli::{
     AddReport, AddRequest, BootstrapReport, Catalog, DoctorReport, Entry, EntryDetail, InitReport,
-    SourceSuggestion, SyncReport, UninstallReport, UsePreview, UseReport,
+    RemovePreview, RemoveReport, SourceSuggestion, SyncReport, UninstallReport, UpdateReport,
+    UpdateRequest, UsePreview, UseReport,
 };
 use error::AppError;
 
@@ -109,6 +110,43 @@ async fn entry_add(app: tauri::AppHandle, request: AddRequest) -> Result<AddRepo
     off_thread(move || cli::add(&app, &request)).await
 }
 
+/// Edit an existing entry's fields in one catalog (R4.4).
+///
+/// `catalog` is part of the request rather than resolved by the CLI: the user picked the
+/// copy before the form opened, so there is no ambiguity left to hand back.
+#[tauri::command]
+async fn entry_update(
+    app: tauri::AppHandle,
+    request: UpdateRequest,
+) -> Result<UpdateReport, AppError> {
+    off_thread(move || cli::update(&app, &request)).await
+}
+
+/// What removing an entry would change, without changing it (R4.4).
+#[tauri::command]
+async fn entry_remove_preview(
+    app: tauri::AppHandle,
+    name: String,
+    catalog: String,
+) -> Result<RemovePreview, AppError> {
+    off_thread(move || cli::remove_preview(&app, &name, &catalog)).await
+}
+
+/// Remove an entry from a catalog (R4.4).
+///
+/// `purge` also deletes the installed copies, and is only passed after a confirmation
+/// that names them: the CLI purges unconditionally, without the receipt check
+/// `uninstall` makes.
+#[tauri::command]
+async fn entry_remove(
+    app: tauri::AppHandle,
+    name: String,
+    catalog: String,
+    purge: bool,
+) -> Result<RemoveReport, AppError> {
+    off_thread(move || cli::remove(&app, &name, &catalog, purge)).await
+}
+
 /// The source URL teammates could use for a local path (R4.2).
 #[tauri::command]
 async fn source_suggestion(
@@ -159,6 +197,9 @@ pub fn run() {
             entry_uninstall,
             catalog_sync,
             entry_add,
+            entry_update,
+            entry_remove_preview,
+            entry_remove,
             source_suggestion,
             catalog_doctor,
             catalog_init,

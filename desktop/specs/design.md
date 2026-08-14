@@ -151,8 +151,9 @@ One Tauri command per operation (R1.2) — never a generic passthrough:
 | `entry_use` | `use <name> --json` (+`--project`/`--dir`/`--catalog`) — tolerates exit 1 (§3.7) | R3.1 |
 | `catalog_sync` | `sync --json` (+`--force`) — tolerates exit 1 (§3.7) | R3.3 |
 | `entry_add` | `add --name … --type … --description … --source … [--requires]… [--catalog]` | R4.1 |
-| `entry_update` | `update <name> [--add-requires …] [--catalog]` | R4.4 |
-| `entry_remove` | `remove <name> [--catalog]` | R4.4 |
+| `entry_update` | `update <name> --catalog … [--set-description] [--set-source] [--set-requires]` | R4.4 |
+| `entry_remove_preview` | `remove <name> --catalog … --dry-run --json` | R4.4 |
+| `entry_remove` | `remove <name> --catalog … [--purge]` | R4.4 |
 | `entry_push` | `push <name> [--catalog]` | R4.5 |
 | `entry_uninstall` | `uninstall <name> --scope … --json` (+`--force`) — tolerates exit 2 (§3.7) | R3.1 |
 | `entry_show` | `show <name> --json` | R2.1 |

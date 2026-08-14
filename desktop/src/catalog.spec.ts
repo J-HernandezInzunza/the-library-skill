@@ -13,10 +13,15 @@ import {
   summarizeChanges,
   winningRows,
   editableCatalogs,
+  editableCopies,
+  entryEdits,
+  purgeable,
 } from "./catalog";
 import type {
   Catalog,
+  CatalogCopy,
   Changes,
+  Receipt,
   Entry,
   EntryDetail,
   PlannedInstall,
@@ -557,5 +562,181 @@ describe("addConsequences", () => {
 
     expect(found.overrides).toEqual([]);
     expect(found.overriddenBy).toEqual([]);
+  });
+});
+
+function copy(overrides: Partial<CatalogCopy> = {}): CatalogCopy {
+  return {
+    catalog: "personal",
+    type: "skill",
+    description: "does a thing",
+    source: "/Users/dev/skills/a-skill/SKILL.md",
+    requires: [],
+    wins: true,
+    overrides: [],
+    overridden_by: [],
+    ...overrides,
+  };
+}
+
+describe("editableCopies", () => {
+  const registry = [
+    catalog({ id: "personal", precedence: 1 }),
+    catalog({ id: "shared", precedence: 2, kind: "remote" }),
+  ];
+
+  it("offers the copy held by a catalog on this machine", () => {
+    const editable = editableCopies([copy({ catalog: "personal" })], registry);
+
+    expect(editable.map((c) => c.catalog)).toEqual(["personal"]);
+  });
+
+  it("leaves a remote catalog's copy alone, as the add form does", () => {
+    // Editing it would push a branch to a shared repository, which is a review event.
+    const editable = editableCopies([copy({ catalog: "shared" })], registry);
+
+    expect(editable).toEqual([]);
+  });
+
+  it("keeps an overridden copy, which is still this catalog's entry to edit", () => {
+    // Losing to a higher-precedence catalog says nothing about who owns the file.
+    const inverted = [
+      catalog({ id: "shared", precedence: 1, kind: "remote" }),
+      catalog({ id: "personal", precedence: 2 }),
+    ];
+    const editable = editableCopies(
+      [copy({ catalog: "shared", wins: true }), copy({ catalog: "personal", wins: false })],
+      inverted,
+    );
+
+    expect(editable.map((c) => c.catalog)).toEqual(["personal"]);
+  });
+});
+
+describe("entryEdits", () => {
+  const stored = copy({
+    description: "Deploys things.",
+    source: "/Users/dev/skills/deploy/SKILL.md",
+    requires: ["prompt:other"],
+  });
+
+  it("reports nothing when the draft matches what is stored", () => {
+    // `update` refuses a call with nothing to change, so this has to be answered here
+    // rather than by reading the CLI's refusal.
+    const edits = entryEdits(stored, {
+      description: "Deploys things.",
+      source: "/Users/dev/skills/deploy/SKILL.md",
+      requires: ["prompt:other"],
+    });
+
+    expect(edits).toBeNull();
+  });
+
+  it("sends only the field that changed", () => {
+    const edits = entryEdits(stored, {
+      description: "Deploys things, carefully.",
+      source: "/Users/dev/skills/deploy/SKILL.md",
+      requires: ["prompt:other"],
+    });
+
+    expect(edits).toEqual({
+      description: "Deploys things, carefully.",
+      source: null,
+      requires: null,
+    });
+  });
+
+  it("treats a cleared requires list as a change, not as an untouched field", () => {
+    // The difference between `--set-requires ""` and omitting the flag: one clears the
+    // list, the other keeps every ref the user just unticked.
+    const edits = entryEdits(stored, {
+      description: "Deploys things.",
+      source: "/Users/dev/skills/deploy/SKILL.md",
+      requires: [],
+    });
+
+    expect(edits).toEqual({ description: null, source: null, requires: [] });
+  });
+
+  it("does not call a reordered requires list an edit", () => {
+    // The picker renders refs sorted, so a catalog storing them in another order would
+    // otherwise produce a commit that changes only the line order.
+    const two = copy({ ...stored, requires: ["skill:zeta", "prompt:other"] });
+    const edits = entryEdits(two, {
+      description: two.description,
+      source: two.source,
+      requires: ["prompt:other", "skill:zeta"],
+    });
+
+    expect(edits).toBeNull();
+  });
+
+  it("ignores the spacing the CLI tolerates in a ref", () => {
+    const spaced = copy({ ...stored, requires: ["prompt: other"] });
+    const edits = entryEdits(spaced, {
+      description: spaced.description,
+      source: spaced.source,
+      requires: ["prompt:other"],
+    });
+
+    expect(edits).toBeNull();
+  });
+
+  it("trims the typed fields, so trailing whitespace is not an edit", () => {
+    const edits = entryEdits(stored, {
+      description: "  Deploys things.  ",
+      source: " /Users/dev/skills/deploy/SKILL.md ",
+      requires: ["prompt:other"],
+    });
+
+    expect(edits).toBeNull();
+  });
+});
+
+function receipt(overrides: Partial<Receipt> = {}): Receipt {
+  return {
+    dest: "/Users/dev/.claude/skills/a-skill",
+    scope: "global",
+    catalog: "personal",
+    source: "https://example.test/a-skill/SKILL.md",
+    commit: "abc1234",
+    content_hash: "deadbeef",
+    installed_at: "2025-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+describe("purgeable", () => {
+  it("offers nothing when the entry is not installed", () => {
+    expect(purgeable([], []).offered).toBe(false);
+  });
+
+  it("offers the global copy and names the path it would delete", () => {
+    const found = purgeable(["global"], [receipt()]);
+
+    expect(found.offered).toBe(true);
+    expect(found.paths).toEqual(["/Users/dev/.claude/skills/a-skill"]);
+  });
+
+  it("refuses to offer a purge that would leave a project copy behind", () => {
+    // `--purge` resolves a project install against LIBRARY_CWD, and this command is
+    // anchored at the tool repo, so the checkbox would delete the global copy while
+    // claiming to delete both. Measured against the real CLI.
+    const found = purgeable(
+      ["global", "project"],
+      [receipt(), receipt({ scope: "project", dest: "/proj/.claude/skills/a-skill" })],
+    );
+
+    expect(found.offered).toBe(false);
+    expect(found.blockedBy).toEqual(["project"]);
+  });
+
+  it("never names a project destination among the paths it would delete", () => {
+    const found = purgeable(
+      ["global"],
+      [receipt(), receipt({ scope: "project", dest: "/proj/.claude/skills/a-skill" })],
+    );
+
+    expect(found.paths).toEqual(["/Users/dev/.claude/skills/a-skill"]);
   });
 });

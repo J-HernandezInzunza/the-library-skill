@@ -1,0 +1,11 @@
+{
+  "status": "OK",
+  "name": "deploy",
+  "changed": true,
+  "mode": "local",
+  "catalog": "personal",
+  "path": "/Users/tester/my-engineering-library/library.yaml",
+  "committed": false,
+  "pushed": false,
+  "branch": null
+}

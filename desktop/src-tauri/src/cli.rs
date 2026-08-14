@@ -344,6 +344,88 @@ pub struct AddReport {
     pub write: WriteResult,
 }
 
+/// The entry `remove --json` took out, and the catalog section it came from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RemovedEntry {
+    pub r#type: String,
+    pub name: String,
+    pub section: String,
+}
+
+/// What `remove <name> --dry-run --json` reports, having written nothing.
+///
+/// Disjoint from `RemoveReport` on purpose, the same guard `use` has: a preview that
+/// lost its `--dry-run` returns a body with no `diff`, so it fails to deserialize
+/// instead of quietly reporting a completed removal as a plan.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RemovePreview {
+    /// `DRY_RUN`.
+    pub status: String,
+    pub would_change: bool,
+    pub removed: RemovedEntry,
+    /// Entries in the same catalog that still require this one. The CLI reports these
+    /// as a `warn()` on stderr, which `--json` sends nowhere a GUI can read.
+    #[serde(default)]
+    pub dependents: Vec<String>,
+    /// The exact edit, as a unified diff of the catalog file.
+    pub diff: String,
+    #[serde(flatten)]
+    pub write: WriteResult,
+}
+
+/// What `remove <name> --json` reports. `status` is `OK`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RemoveReport {
+    pub status: String,
+    pub removed: RemovedEntry,
+    /// Local copies deleted by `--purge`; empty without it. Removing the catalog entry
+    /// does not touch what is installed.
+    #[serde(default)]
+    pub deleted: Vec<String>,
+    #[serde(default)]
+    pub dependents: Vec<String>,
+    #[serde(flatten)]
+    pub write: WriteResult,
+}
+
+/// What `update <name> --json` reports. `status` is `OK`.
+///
+/// `write` is absent when `changed` is false: the CLI short-circuits before touching the
+/// catalog, so there is no mode, no path, and nothing to report about a write that did
+/// not happen. Optional rather than defaulted, so "nothing was written" cannot render as
+/// a write to an empty catalog.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UpdateReport {
+    pub status: String,
+    pub name: String,
+    pub changed: bool,
+    #[serde(flatten)]
+    pub write: Option<WriteResult>,
+}
+
+/// The fields the edit form can change, as one value rather than five arguments.
+///
+/// Every field is optional and only a changed one is sent: `update` refuses a call with
+/// nothing to do, so leaving a field unset is how the app says "leave this alone" instead
+/// of rewriting it with the value it already has.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UpdateRequest {
+    pub name: String,
+    /// Always sent, never inferred. Without it `update` resolves through precedence and
+    /// a name two catalogs hold comes back as exit 2 — a question the app has already
+    /// answered, because the user picked the copy before opening the form.
+    pub catalog: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    /// The whole list, replacing what is there. A checkbox picker produces the complete
+    /// set, so `--set-requires` is the honest spelling; an empty list clears it, which
+    /// the CLI reads as `--set-requires ""`.
+    #[serde(default)]
+    pub requires: Option<Vec<String>>,
+}
+
 /// What `suggest-source <path> --json` reports.
 ///
 /// `status` is `OK` or `NONE`, and both exit 0: "this file is not in a GitHub repo" is an
@@ -776,6 +858,79 @@ pub fn add(sink: &dyn CommandSink, request: &AddRequest) -> Result<AddReport, Ap
     parse(run_json(sink, &args)?)
 }
 
+/// Edit an existing entry's description, source, or requires (R4.4).
+///
+/// Strict about the exit code, like `add` and unlike everything in Phase 3: `update`
+/// exits 0 only when the catalog reflects the change, and its exit 2 is
+/// `AMBIGUOUS_CATALOG`, which `interpret` already turns into a choice.
+///
+/// `--set-requires` rather than `--add-requires`/`--remove-requires`: the form shows the
+/// whole list as checkboxes, so it always knows the complete set. Sending a delta would
+/// mean computing one from a copy that may be stale, which is the drift `cmd_update`'s
+/// own determinism note exists to avoid.
+pub fn update(sink: &dyn CommandSink, request: &UpdateRequest) -> Result<UpdateReport, AppError> {
+    let requires = request.requires.as_ref().map(|refs| refs.join(","));
+    let mut args = vec!["update", &request.name, "--catalog", &request.catalog];
+    if let Some(description) = &request.description {
+        args.extend(["--set-description", description]);
+    }
+    if let Some(source) = &request.source {
+        args.extend(["--set-source", source]);
+    }
+    // Passed even when empty: `--set-requires ""` is how the CLI spells "clear the list",
+    // and omitting the flag would silently keep the refs the user just unticked.
+    if let Some(requires) = &requires {
+        args.extend(["--set-requires", requires]);
+    }
+
+    parse(run_json(sink, &args)?)
+}
+
+/// What removing a catalog entry would change, without changing it (R4.4).
+///
+/// The confirmation is built from this rather than from the app's own reading: the diff
+/// is the exact edit, and `dependents[]` is the CLI's stderr warning about entries that
+/// still require this one — invisible under `--json` and the whole reason a removal needs
+/// a second look.
+pub fn remove_preview(
+    sink: &dyn CommandSink,
+    name: &str,
+    catalog: &str,
+) -> Result<RemovePreview, AppError> {
+    parse(run_json(sink, &["remove", name, "--catalog", catalog, "--dry-run"])?)
+}
+
+/// Remove an entry from a catalog (R4.4).
+///
+/// `purge` also deletes the installed copies, and is only ever passed from a
+/// confirmation that says so: the CLI purges with `force=True`, so it deletes a
+/// destination it has no receipt for — the exact case T3.5's refusal exists to catch.
+/// It is offered because removing the entry first would otherwise strand those copies:
+/// `uninstall` resolves its target through the catalog, so a copy whose entry is gone
+/// can no longer be uninstalled from anywhere.
+///
+/// `status` is checked rather than assumed: a `--dry-run` body also parses as a report
+/// (its extra keys are ignored), so a lost flag would read as a completed removal.
+pub fn remove(
+    sink: &dyn CommandSink,
+    name: &str,
+    catalog: &str,
+    purge: bool,
+) -> Result<RemoveReport, AppError> {
+    let mut args = vec!["remove", name, "--catalog", catalog];
+    if purge {
+        args.push("--purge");
+    }
+
+    let body = run_json(sink, &args)?;
+    if body.get("status").and_then(|s| s.as_str()) != Some("OK") {
+        return Err(AppError::Json {
+            detail: format!("remove reported {} rather than OK", body["status"]),
+        });
+    }
+    parse(body)
+}
+
 /// The source URL a teammate could resolve for a path on this machine (R4.2).
 ///
 /// The derivation lives in `library.py`, where the terminal and the agent get it too — it
@@ -1051,6 +1206,38 @@ mod tests {
         let raw = entry_json("").replace(",\"receipt\":null", receipt);
         let entry: Entry = serde_json::from_str(&raw).expect("parse");
         assert_eq!(entry.receipt.expect("receipt").commit, "abc");
+    }
+
+    #[test]
+    fn an_update_that_changed_nothing_reports_no_write() {
+        // The CLI short-circuits before touching the catalog, so the write keys are
+        // absent entirely. A required `mode` would fail the parse on the most ordinary
+        // outcome there is: re-saving a form nobody edited.
+        let body = r#"{"status":"OK","name":"deploy","changed":false}"#;
+        let report: UpdateReport = serde_json::from_str(body).expect("parse");
+        assert!(!report.changed);
+        assert!(report.write.is_none());
+    }
+
+    #[test]
+    fn an_update_that_changed_something_reports_where_it_landed() {
+        let body = r#"{"status":"OK","name":"deploy","changed":true,"mode":"local",
+                      "catalog":"personal","path":"/c/library.yaml","committed":false,
+                      "pushed":false,"branch":null}"#;
+        let report: UpdateReport = serde_json::from_str(body).expect("parse");
+        let write = report.write.expect("a changed update wrote somewhere");
+        assert_eq!(write.mode, "local");
+        assert_eq!(write.path.as_deref(), Some("/c/library.yaml"));
+    }
+
+    #[test]
+    fn a_remove_report_cannot_be_read_as_a_preview() {
+        // The structural half of "a dropped --dry-run must not present itself as a plan",
+        // as `use` has: the real report carries no diff, so it fails to deserialize.
+        let body = r#"{"status":"OK","removed":{"type":"prompt","name":"other",
+                      "section":"prompts"},"deleted":[],"dependents":[],"mode":"local",
+                      "catalog":"personal","path":"/c/library.yaml"}"#;
+        assert!(serde_json::from_str::<RemovePreview>(body).is_err());
     }
 
     #[test]

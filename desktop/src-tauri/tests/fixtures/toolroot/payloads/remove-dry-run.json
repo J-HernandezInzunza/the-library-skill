@@ -1,0 +1,17 @@
+{
+  "status": "DRY_RUN",
+  "would_change": true,
+  "removed": {
+    "type": "prompt",
+    "name": "other",
+    "section": "prompts"
+  },
+  "dependents": [
+    "skill:deploy"
+  ],
+  "branch": null,
+  "diff": "--- a/library.yaml\n+++ b/library.yaml\n@@ -5,7 +5,4 @@\n       source: /Users/tester/skills/deploy/SKILL.md\n       requires: [\"prompt:other\"]\n   agents: []\n-  prompts:\n-    - name: other\n-      description: A prompt.\n-      source: /Users/tester/prompts/other.md\n+  prompts: []",
+  "mode": "local",
+  "catalog": "personal",
+  "path": "/Users/tester/my-engineering-library/library.yaml"
+}

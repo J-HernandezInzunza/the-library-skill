@@ -1315,3 +1315,105 @@ every field holding a machine-readable value: entry name, description, source, r
 object rather than three repeated attributes, so a new field cannot opt out of it by being written
 without them. R7.7 and design.md §6.5. The search box is deliberately left alone — filtering
 lowercases both sides, so a capital there changes nothing.
+
+---
+
+## T4.4 — update and remove, restricted to the catalogs you own
+
+`entry_update`, `entry_remove_preview`, and `entry_remove` land in the entry detail view, under
+"Edit the catalog entry". Both write only to a catalog on this machine, matching T4.1: the
+restriction is the same product decision, so it reads the same way and uses the same words.
+
+**The catalog is always named, so the ambiguity picker moved in front of the command.** `update`
+and `remove` resolve through precedence when `--catalog` is omitted, and hand back
+`AMBIGUOUS_CATALOG` at exit 2 for a name two catalogs hold — verified live against a scratch config
+with two local catalogs. But the detail view already lists every copy with its catalog, so the
+user has answered that question before the form opens. The app therefore passes `--catalog` on
+every call and shows its own picker only when more than one *editable* copy exists.
+
+That is deliberately not the shape T4.4's task text described ("when `AppError::Ambiguous` comes
+back, render the picker"). Letting the CLI raise it would have meant offering candidates the app
+then refuses to write to — a remote catalog is a valid answer to "which copy?" and an invalid one
+to "which copy will this app edit?". `AppError::Ambiguous` stays handled generically, as the
+backstop it now is; it is no longer reachable from these two commands.
+
+**A removal is previewed; an edit is not.** `remove --dry-run --json` returns the unified diff
+*and* `dependents[]` — the entries in the same catalog that still require this one. The CLI reports
+that as a `warn()` on stderr, which `--json` sends nowhere a GUI can read, so without the dry run a
+removal that breaks six entries looks exactly like one that breaks none. That is the same argument
+T4.3 made for the override consequences, and it is why `remove` gets a confirmation while `update`
+does not: an edit shows fields the user just typed, a removal shows a consequence only the CLI
+knows.
+
+Guarded structurally, as `use` is: `RemovePreview` requires `diff` and `RemoveReport` requires
+`deleted`, so a confirmation that lost its `--dry-run` fails to deserialize rather than reporting a
+completed removal as a plan. `remove()` also checks `status == "OK"` itself, because a `DRY_RUN`
+body would otherwise parse as a report with its extra keys ignored.
+
+**Only the changed fields are sent, and that had to be decided app-side.** `update` refuses a call
+with nothing to do, so "nothing changed" is a question that must be answered before the command
+runs rather than by reading its refusal — which would surface as a red error box for the most
+ordinary outcome there is, re-saving a form nobody edited. `entryEdits` is pure and covered:
+it trims, compares `requires` as a *set* (the picker renders sorted, so a catalog storing refs in
+another order is not an edit), and normalises the `skill: foo` spacing the CLI tolerates.
+
+`--set-requires` rather than `--add-requires`/`--remove-requires`: the form shows the whole list as
+checkboxes, so it always knows the complete set. A delta would have to be computed against a copy
+that may be stale, which is the drift `cmd_update`'s own determinism note exists to avoid. An empty
+list still sends the flag — `--set-requires ""` is how the CLI spells "clear it", and omitting it
+would silently keep every ref the user just unticked. Pinned by an argv test.
+
+**`changed: false` has no write keys at all**, so `UpdateReport.write` is `Option<WriteResult>`
+rather than a defaulted struct: "nothing was written" must not render as a write to an empty
+catalog. Recorded from a real run, and pinned both as a unit test on the payload and as an
+integration test through the fixture.
+
+### The purge checkbox was wrong, and only running the CLI showed it
+
+`remove --purge` deletes the installed copies, which the panel offers because removing the entry
+first strands them: `uninstall` resolves its target *through the catalog*, so a copy whose entry is
+gone can no longer be uninstalled from anywhere — not from the app, and not from a terminal.
+
+But `--purge` runs `uninstall_entry` against `cfg.dirs`, and a project dir resolves against
+`LIBRARY_CWD`. `remove` is anchored at the tool repo, so **a purge from the app deletes the global
+copy and leaves every project copy exactly where it was.** Measured: a prompt installed into
+`/tmp/…/proj` survived `remove --purge` untouched.
+
+The first version of the checkbox said "also delete the installed copies" and listed every receipt
+path, project ones included. It would have lied. The fix is `purgeable(scopes, installs)`, pure and
+covered: the checkbox appears only when every installed copy is global, it names only global
+destinations, and a project install replaces it with a pointer at the per-scope uninstall control
+above — which *is* anchored per install. Passing an anchor instead was considered and rejected:
+there is no single right one, since an entry can be installed in several projects. That is gap G4
+in a new shape.
+
+The checkbox is also the one place `--purge`'s force is acknowledged: the CLI purges with
+`force=True`, skipping the receipt check that makes T3.5's refusal possible, so the label says
+plainly that it deletes whatever is there including anything you put there yourself.
+
+**Verified end to end against the real CLI**, in a scratch tool dir with its own config and catalog
+(the T4.1 technique: `library.py` **copied**, not symlinked, or `SKILL_DIR` resolves back to the
+developer's real config):
+
+1. `update --catalog personal --set-description <the value it already had>` → `changed: false`, no
+   write keys, catalog byte-identical.
+2. `update --catalog personal --set-requires ""` → `changed: true`, the `requires:` line gone.
+3. `remove --dry-run` → the diff and `dependents: ["skill:deploy"]`, with the entry still in the
+   file afterwards.
+4. `remove --purge` anchored at a project → deleted the project copy and reported its path.
+5. The same command anchored at the tool repo → the project copy still on disk. This is the
+   finding above.
+6. Two local catalogs holding one name, `update` without `--catalog` → exit 2,
+   `AMBIGUOUS_CATALOG`, both ids.
+
+The developer's own machine was never touched: `list` still reports 42 records and `doctor` returns
+`OK`.
+
+**Verified by mutation, four ways.** Comparing `requires` by joined string fails the reordering and
+the spacing cases; dropping the `kind === "local"` filter from `editableCopies` fails two; omitting
+`--set-requires` when the list is empty fails the argv test; hardcoding `--purge` off fails the
+purge argv test.
+
+**Not visually verified.** `EntryEditor` and `EntryRemove` have been driven by fixtures and by the
+real CLI underneath them, but neither has been seen rendered — the same backlog every phase has
+carried, and G1 is still why it is verified by eye rather than by test.
