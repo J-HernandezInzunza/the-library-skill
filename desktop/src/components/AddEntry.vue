@@ -4,7 +4,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { contributedCatalogs, editableCatalogs, requirableRefs } from "../catalog";
 import { withActivity } from "../commandActivity";
-import { describeAppError, type AddReport, type Catalog, type Entry } from "../types";
+import {
+  describeAppError,
+  type AddReport,
+  type Catalog,
+  type Entry,
+  type SourceSuggestion,
+} from "../types";
 import Busy from "./Busy.vue";
 
 const props = defineProps<{
@@ -23,6 +29,7 @@ const description = ref("");
 const source = ref("");
 const requires = ref<string[]>([]);
 const submitting = ref(false);
+const suggestion = ref<SourceSuggestion | null>(null);
 const failure = ref("");
 const report = ref<AddReport | null>(null);
 
@@ -54,14 +61,42 @@ const sourceHint = computed(() => {
 });
 
 /**
- * Pick the source file natively.
+ * Pick the source file natively, then ask what URL it would have.
  *
  * A picked file is absolute and real, which is the shape the CLI requires and the shape a
  * typed path most often gets wrong. The field stays editable for a URL.
  */
 async function pickSource() {
   const picked = await open({ directory: false, title: "Which file is this entry?" });
-  if (typeof picked === "string") source.value = picked;
+  if (typeof picked !== "string") return;
+  source.value = picked;
+  await suggestFor(picked);
+}
+
+/**
+ * The URL a teammate could resolve for a local path, derived by the CLI.
+ *
+ * Offered rather than applied: the URL comes from the checked-out branch and the `origin`
+ * remote, either of which can be wrong for the intent (a feature branch, a fork). A miss
+ * is a successful call with a reason, so it is shown rather than swallowed — "not in a git
+ * repo" and "origin is not GitHub or Bitbucket" have different fixes.
+ */
+async function suggestFor(path: string) {
+  suggestion.value = null;
+  try {
+    suggestion.value = await withActivity("looking up the source URL…", () =>
+      invoke<SourceSuggestion>("source_suggestion", { path }),
+    );
+  } catch {
+    // A suggestion is an optional convenience, so a failure here must not look like a
+    // failure of the form. The typed path stays exactly as the user left it.
+    suggestion.value = null;
+  }
+}
+
+function applySuggestion() {
+  if (suggestion.value?.suggestion) source.value = suggestion.value.suggestion;
+  suggestion.value = null;
 }
 
 const filled = computed(
@@ -137,6 +172,19 @@ async function submit() {
           <button type="button" class="ghost" @click="pickSource">Choose file…</button>
         </span>
         <span class="add-entry__hint">{{ sourceHint }}</span>
+
+        <span v-if="suggestion?.suggestion" class="add-entry__suggestion">
+          <span>This file is in a git repo. Teammates would need this URL instead:</span>
+          <code>{{ suggestion.suggestion }}</code>
+          <span class="add-entry__suggestion-actions">
+            <button type="button" @click="applySuggestion">Use this URL</button>
+            <button type="button" class="ghost" @click="suggestion = null">Keep the path</button>
+          </span>
+        </span>
+        <span v-else-if="suggestion" class="add-entry__hint">
+          No shareable URL for this file: {{ suggestion.reason }}. That is fine for a catalog
+          only you use.
+        </span>
       </label>
 
       <label class="add-entry__field">
@@ -246,6 +294,32 @@ async function submit() {
   font-size: 0.72rem;
   opacity: 0.6;
   line-height: 1.4;
+}
+.add-entry__suggestion {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+  padding: 0.6rem 0.7rem;
+  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.1);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  opacity: 1;
+}
+.add-entry__suggestion code {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.add-entry__suggestion-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+.add-entry__suggestion-actions button {
+  padding: 0.3rem 0.6rem;
+  font-size: 0.75rem;
 }
 .add-entry__deferred {
   display: flex;

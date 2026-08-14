@@ -554,6 +554,40 @@ fn add_omits_the_flags_the_form_left_empty() {
 }
 
 #[test]
+fn a_source_suggestion_comes_back_with_the_path_it_was_asked_about() {
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let found = cli::suggest_source(&log, "/Users/dev/infra/skills/deploy/SKILL.md")
+        .expect("the fixture suggestion should parse");
+
+    assert_eq!(
+        &log.started.lock().unwrap()[0].argv[1..],
+        ["suggest-source", "/Users/dev/infra/skills/deploy/SKILL.md", "--json"]
+    );
+    assert_eq!(found.status, "OK");
+    assert_eq!(
+        found.suggestion.as_deref(),
+        Some("https://github.com/acme/tools/blob/main/skills/deploy/SKILL.md")
+    );
+    assert!(found.reason.is_none());
+}
+
+#[test]
+fn no_derivable_url_is_an_answer_rather_than_an_error() {
+    // The CLI exits 0 for this on purpose, so the app must render the reason rather than
+    // treat it as a failed command.
+    let _guard = with_fixture_home();
+
+    let found = cli::suggest_source(&Recorder::default(), "/Users/dev/no-repo/loose.md")
+        .expect("a miss is still a successful call");
+
+    assert_eq!(found.status, "NONE");
+    assert!(found.suggestion.is_none());
+    assert_eq!(found.reason.as_deref(), Some("not inside a git repository"));
+}
+
+#[test]
 fn the_child_receives_json_and_an_anchored_cwd() {
     let _guard = with_fixture_home();
     let probe = cli::run_json(&Recorder::default(), &["probe"]).expect("probe should run");

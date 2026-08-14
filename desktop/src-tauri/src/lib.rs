@@ -17,7 +17,7 @@ pub mod events;
 
 use cli::{
     AddReport, AddRequest, BootstrapReport, Catalog, DoctorReport, Entry, EntryDetail, InitReport,
-    SyncReport, UninstallReport, UsePreview, UseReport,
+    SourceSuggestion, SyncReport, UninstallReport, UsePreview, UseReport,
 };
 use error::AppError;
 
@@ -109,6 +109,15 @@ async fn entry_add(app: tauri::AppHandle, request: AddRequest) -> Result<AddRepo
     off_thread(move || cli::add(&app, &request)).await
 }
 
+/// The source URL teammates could use for a local path (R4.2).
+#[tauri::command]
+async fn source_suggestion(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<SourceSuggestion, AppError> {
+    off_thread(move || cli::suggest_source(&app, &path)).await
+}
+
 /// Catalog health, including the checks that reach the network when `deep`.
 #[tauri::command]
 async fn catalog_doctor(app: tauri::AppHandle, deep: bool) -> Result<DoctorReport, AppError> {
@@ -150,6 +159,7 @@ pub fn run() {
             entry_uninstall,
             catalog_sync,
             entry_add,
+            source_suggestion,
             catalog_doctor,
             catalog_init,
             registry_list,

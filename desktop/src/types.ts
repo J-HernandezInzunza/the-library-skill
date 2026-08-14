@@ -239,6 +239,19 @@ export interface AddReport extends WriteResult {
   added: AddedEntry;
 }
 
+/**
+ * What `library suggest-source <path> --json` reports.
+ *
+ * `status` is `OK` or `NONE`, and both are a successful call: "this file is not in a
+ * GitHub repo" is an answer, not a failure. `reason` is populated only for `NONE`.
+ */
+export interface SourceSuggestion {
+  status: string;
+  path: string;
+  suggestion: string | null;
+  reason: string | null;
+}
+
 /** The fields the add form collects, sent as one value rather than seven arguments. */
 export interface AddRequest {
   name: string;

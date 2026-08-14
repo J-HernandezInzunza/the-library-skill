@@ -344,6 +344,21 @@ pub struct AddReport {
     pub write: WriteResult,
 }
 
+/// What `suggest-source <path> --json` reports.
+///
+/// `status` is `OK` or `NONE`, and both exit 0: "this file is not in a GitHub repo" is an
+/// answer, not a failure. `reason` is populated only for `NONE`, and distinguishes four
+/// different problems with four different fixes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SourceSuggestion {
+    pub status: String,
+    pub path: String,
+    #[serde(default)]
+    pub suggestion: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
 /// The fields the add form collects, as one value rather than seven arguments.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AddRequest {
@@ -759,6 +774,15 @@ pub fn add(sink: &dyn CommandSink, request: &AddRequest) -> Result<AddReport, Ap
     }
 
     parse(run_json(sink, &args)?)
+}
+
+/// The source URL a teammate could resolve for a path on this machine (R4.2).
+///
+/// The derivation lives in `library.py`, where the terminal and the agent get it too — it
+/// was previously reachable only inside the error that refuses a local source, which is
+/// invisible to a GUI. Rebuilding the remote-URL logic here would be the R1.1 failure.
+pub fn suggest_source(sink: &dyn CommandSink, path: &str) -> Result<SourceSuggestion, AppError> {
+    parse(run_json(sink, &["suggest-source", path])?)
 }
 
 /// The registered catalogs, highest precedence first.

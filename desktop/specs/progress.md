@@ -1131,3 +1131,52 @@ inside the `die()` that refuses a local source, so there is no CLI surface to ca
 added to `library.py` first. More valuable: with the form writing local-only, suggest-source is the
 on-ramp from "a file on my disk" to "a URL a teammate can resolve" — which is now the *only* path
 from a personal entry to a shared one, and the step people most often get wrong by hand.
+
+---
+
+## T4.2 — the suggestion existed; nothing could call it
+
+`_suggest_remote_for_local` had been in `library.py` all along, reachable only as a line
+appended to the error that refuses a local-path source. That is the wrong shape for two of the
+three front doors: a GUI never sees stderr, and the agent should be able to *ask* before proposing
+an `add` rather than learn the answer by being refused. `cookbook/add.md` proved the point — it
+instructed the agent to run three raw `git` commands and assemble the browser URL by hand, which is
+the duplication R1.1 exists to prevent, just in a markdown file instead of in Rust.
+
+**So the CLI grew `library suggest-source <path> [--json]`**, and the app calls it. Four decisions
+in it worth keeping:
+
+- **A miss reports *why*.** `_remote_suggestion` returns `(url, reason)`; the old function is now a
+  one-line wrapper over it, so the hint path is unchanged. There are four different misses — not in
+  a repo, no `origin`, an unsupported host, the file is outside the repo — with four different
+  fixes, and a bare `None` makes them all read as "not in a repo".
+- **`NONE` exits 0.** "This file is not in a GitHub repo" is an answer, not a failure. Exiting
+  non-zero would have forced the app through `run_report` and made every caller branch on an exit
+  code to read a straight answer. `status` carries it instead.
+- **A directory resolves to the `SKILL.md` inside it.** This fixed a latent bug: the old function
+  built `/blob/<dir>`, a URL naming a directory, which is a `/tree/` link and not a valid source.
+  It is also the same directory-vs-file mistake T4.1 found in `add`, so both front doors now steer
+  at the file.
+- **It reads no catalog and no config**, and there is a test pinning that. The question is
+  answerable before `library init` has ever run, which matters for a first-run user who has a skill
+  but no catalog yet.
+
+Verified by mutation: dropping the directory resolution fails 2 tests, hardcoding `main` instead of
+the checked-out branch fails 1. 641 CLI tests pass (was 628), `check_docs` in sync.
+
+**App-side, the suggestion is offered, never applied.** The URL is derived from the checked-out
+branch and the `origin` remote, and both can be wrong for the intent — a feature branch, a fork. So
+it renders as "teammates would need this URL instead", with *Use this URL* and *Keep the path* as
+two explicit choices. The same reasoning as the drifted-install confirmation: the app knows enough
+to warn and not enough to decide.
+
+**A failed suggestion is swallowed on purpose.** It is an optional convenience attached to a form
+that works without it, so a backend error must not render as a failure of the form. This is the one
+place in the app that discards an error rather than surfacing it, which is why it is written down.
+
+**Its value changed shape with T4.1's restriction.** Originally it was a convenience. Now that the
+form writes only to catalogs on this machine, it is the single path from "a file on my disk" to "a
+URL a teammate could resolve" — the on-ramp from a personal entry to a shareable one, without the
+app itself ever writing to a shared catalog.
+
+**Still not visually verified**, along with the rest of `AddEntry.vue`.

@@ -451,7 +451,7 @@ leaves the entry reinstallable, `remove` does not, so the same dependent list me
   - **Verify:** Adding to a local catalog writes immediately; the entry appears in `list`. Gate passes.
   - **Commit:** `feat(desktop): add catalog entries through an explicit form`
 
-- [ ] **T4.2 — Source auto-suggest**
+- [x] **T4.2 — Source auto-suggest**
   - **Files:** `library.py`, `desktop/src/components/AddEntry.vue`, `desktop/src-tauri/src/cli.rs`
   - **Requirements:** R4.2
   - **Do:** When the chosen local path sits in a git repo with a GitHub/Bitbucket origin, offer the

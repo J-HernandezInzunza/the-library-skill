@@ -101,6 +101,22 @@ case "$sub" in
       *)             cat "$here/payloads/sync-clean.json" ;;
     esac
     ;;
+  suggest-source)
+    # Echoes the path back, so a call that lost or mangled its argument fails rather than
+    # matching a canned payload. Two answers, both exit 0: a derivable URL, and the miss
+    # that is an answer rather than a failure.
+    case "$1" in
+      *"/no-repo/"*)
+        printf '{"status":"NONE","path":"%s","suggestion":null,' "$1"
+        printf '"reason":"not inside a git repository"}\n'
+        ;;
+      *)
+        printf '{"status":"OK","path":"%s",' "$1"
+        printf '"suggestion":"https://github.com/acme/tools/blob/main/skills/deploy/SKILL.md",'
+        printf '"reason":null}\n'
+        ;;
+    esac
+    ;;
   add)
     # A real recorded payload from a `local`-mode catalog. The argv this was called with
     # is asserted from the command log rather than echoed here: every flag `add` takes
