@@ -139,12 +139,26 @@ async function submit() {
       }),
     );
     resetForm();
+    scrollToBanner();
     emit("added");
   } catch (e) {
     failure.value = describeAppError(e);
   } finally {
     submitting.value = false;
   }
+}
+
+/**
+ * Bring the confirmation into view.
+ *
+ * The banner sits above a form tall enough to scroll, so on a long requires list the
+ * success message lands off-screen and the add reads as though nothing happened. Only on
+ * success: a failure renders beside the submit button, where the eye already is, and
+ * scrolling away from it would be the opposite of helpful.
+ */
+function scrollToBanner() {
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  window.scrollTo({ top: 0, behavior: reduced ? "auto" : "smooth" });
 }
 
 /**
@@ -355,7 +369,6 @@ async function reveal(path: string) {
   font-size: 0.75rem;
 }
 .add-entry__added {
-  max-width: 34rem;
   margin: 0 0 1.5rem;
   padding: 0.9rem 1rem;
   border: 1px solid rgba(34, 197, 94, 0.35);
