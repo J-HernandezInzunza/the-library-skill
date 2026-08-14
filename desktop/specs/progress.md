@@ -104,3 +104,44 @@ out), while OAuth/subscription auth keeps working. Their hooks and `CLAUDE.md` s
 Phase 1 is unblocked. Design.md needs edits to §4.1, §4.3, §5, §7 and requirements D11 before
 Phase 6/7 are implemented; F1 and F2 are the two that make the current text unsafe if followed
 literally.
+
+---
+
+## Phase 1 — one row per name, not one per catalog copy
+
+Found while reviewing the list view after Phase 1: a name held by both catalogs showed
+twice, and the losing row read `not installed` next to `overridden by personal` for a
+skill that was demonstrably installed.
+
+**The CLI is right.** `list --json` returns a record per catalog copy, and `entry_record`
+deliberately gives install status to the resolved winner only ("an overridden entry is not
+the copy `use` would install, so it never claims to be installed"). The terminal renderer
+hides the contradiction by making status one mutually-exclusive column: an overridden row
+prints `overridden by personal` *instead of* an install status, never both.
+
+The prototype emitted the two badges independently, so both fired at once. Fixed app-side;
+no change to `library.py`.
+
+**The app now collapses copies into one row per name** rather than mirroring the CLI's
+row-per-copy layout. The winner (`overridden_by: null`) supplies the status, description,
+and requires; the copies it overrides become an `overrides shared` badge. Grouping is by
+name alone, matching `winning_catalogs`, which keys by name regardless of section.
+Verified against the live catalog: 42 records → 35 rows, every group with exactly one
+unambiguous winner and no name shared across types.
+
+**Consequences for later tasks:**
+
+- **T2.2** said "matching the CLI's display contract". The app now deliberately diverges on
+  layout. Catalog origin still shows on every row, but as the winner's catalog plus the
+  overridden ones, not as one row per copy.
+- **T2.3** inherits the job of showing the full override chain in both directions. The
+  collapsed row carries only the shallow version (which catalogs are overridden), because
+  until the detail view exists there is nowhere else for it to live.
+- A future `state` of `stale` needs the badge to become three-way; the CLI's renderer
+  already treats it as a distinct status. T3.2 covers this.
+
+**Unfixed CLI gap, noted not actioned:** `entry_record` short-circuits to
+`("not_installed", None)` when `overridden_by` is set, *before* calling
+`entry_install_state`. A losing copy installed under `--dir` — a destination the winner
+never occupies — is therefore invisible in `list`. Narrow, no one has hit it, and the fix
+belongs in `library.py` if it is ever worth making.

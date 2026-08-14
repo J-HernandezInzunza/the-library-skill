@@ -3,6 +3,12 @@ import { ref, computed, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { describeAppError, type Entry } from "./types";
 
+/** A catalog name, the copy that wins it, and the copies it overrides. */
+interface Listing {
+  winner: Entry;
+  overrides: Entry[];
+}
+
 const entries = ref<Entry[]>([]);
 const query = ref("");
 const loading = ref(false);
@@ -22,19 +28,46 @@ async function load() {
   }
 }
 
+/**
+ * One row per name, not one per catalog copy.
+ *
+ * `list` returns a record per copy, so a name held by two catalogs appears twice.
+ * The losing copy reports `not_installed` — correct, since it is not what `use`
+ * would install, but misleading in a browsing view where the question is "do I
+ * have this?". The winner answers that; the copies it overrides are kept so the
+ * override is still visible without a detail view.
+ */
+const listings = computed<Listing[]>(() => {
+  const byName = new Map<string, Entry[]>();
+  for (const e of entries.value) {
+    // Grouped by name alone, matching how the CLI resolves a winner: a name is
+    // resolved the same way regardless of which section it sits in.
+    const copies = byName.get(e.name);
+    if (copies) copies.push(e);
+    else byName.set(e.name, [e]);
+  }
+
+  return [...byName.values()].map((copies) => {
+    // `overridden_by: null` marks the copy `use` resolves to. Falling back to the
+    // first copy keeps a row on screen if a future CLI ever stops marking one.
+    const winner = copies.find((c) => !c.overridden_by) ?? copies[0];
+    return { winner, overrides: copies.filter((c) => c !== winner) };
+  });
+});
+
 /** Case-insensitive filter over name + description, computed client-side. */
 const filtered = computed(() => {
   const q = query.value.trim().toLowerCase();
-  if (!q) return entries.value;
-  return entries.value.filter(
-    (e) =>
-      e.name.toLowerCase().includes(q) ||
-      e.description.toLowerCase().includes(q),
+  if (!q) return listings.value;
+  return listings.value.filter(
+    ({ winner }) =>
+      winner.name.toLowerCase().includes(q) ||
+      winner.description.toLowerCase().includes(q),
   );
 });
 
 const installedCount = computed(
-  () => filtered.value.filter((e) => e.installed).length,
+  () => filtered.value.filter(({ winner }) => winner.installed).length,
 );
 
 onMounted(load);
@@ -55,7 +88,7 @@ onMounted(load);
     </header>
 
     <p v-if="!loading && !error" class="summary">
-      {{ filtered.length }} of {{ entries.length }} entries ·
+      {{ filtered.length }} of {{ listings.length }} entries ·
       {{ installedCount }} installed
     </p>
 
@@ -64,22 +97,22 @@ onMounted(load);
     <p v-else-if="!filtered.length" class="state">No matching entries.</p>
 
     <ul v-else class="entries">
-      <li v-for="e in filtered" :key="`${e.catalog}:${e.type}:${e.name}`" class="entry">
+      <li v-for="{ winner, overrides } in filtered" :key="winner.name" class="entry">
         <div class="entry-head">
-          <span class="name">{{ e.name }}</span>
-          <span class="type">{{ e.type }}</span>
-          <span class="catalog">{{ e.catalog }}</span>
-          <span v-if="e.installed" class="badge installed">
-            installed{{ e.scopes.length ? ` · ${e.scopes.join(", ")}` : "" }}
+          <span class="name">{{ winner.name }}</span>
+          <span class="type">{{ winner.type }}</span>
+          <span class="catalog">{{ winner.catalog }}</span>
+          <span v-if="winner.installed" class="badge installed">
+            installed{{ winner.scopes.length ? ` · ${winner.scopes.join(", ")}` : "" }}
           </span>
           <span v-else class="badge missing">not installed</span>
-          <span v-if="e.overridden_by" class="badge overridden">
-            overridden by {{ e.overridden_by }}
+          <span v-if="overrides.length" class="badge overridden">
+            overrides {{ overrides.map((o) => o.catalog).join(", ") }}
           </span>
         </div>
-        <p class="desc">{{ e.description }}</p>
-        <p v-if="e.requires.length" class="requires">
-          requires: {{ e.requires.join(", ") }}
+        <p class="desc">{{ winner.description }}</p>
+        <p v-if="winner.requires.length" class="requires">
+          requires: {{ winner.requires.join(", ") }}
         </p>
       </li>
     </ul>
