@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { summarizeChanges } from "../catalog";
+import { withActivity } from "../commandActivity";
 import { describeAppError, type SyncedItem, type SyncReport } from "../types";
 import Busy from "./Busy.vue";
 
@@ -24,7 +25,9 @@ async function run(force: boolean) {
   loading.value = true;
   error.value = "";
   try {
-    report.value = await invoke<SyncReport>("catalog_sync", { force });
+    report.value = await withActivity("syncing installed entries…", () =>
+      invoke<SyncReport>("catalog_sync", { force }),
+    );
     emit("synced");
   } catch (e) {
     error.value = describeAppError(e);

@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { describeDestState, installPlan, summarizeChanges } from "../catalog";
+import { withActivity } from "../commandActivity";
 import { recentProjects, rememberProject } from "../recentProjects";
 import { describeAppError, type UsePreview, type UseReport } from "../types";
 import Busy from "./Busy.vue";
@@ -66,10 +67,9 @@ async function runPreview() {
   error.value = "";
   report.value = null;
   try {
-    preview.value = await invoke<UsePreview>("entry_use_preview", {
-      name: props.name,
-      project: project.value,
-    });
+    preview.value = await withActivity("resolving the destination…", () =>
+      invoke<UsePreview>("entry_use_preview", { name: props.name, project: project.value }),
+    );
   } catch (e) {
     error.value = describeAppError(e);
     preview.value = null;
@@ -82,10 +82,9 @@ async function install() {
   installing.value = true;
   error.value = "";
   try {
-    report.value = await invoke<UseReport>("entry_use", {
-      name: props.name,
-      project: project.value,
-    });
+    report.value = await withActivity(`installing ${props.name}…`, () =>
+      invoke<UseReport>("entry_use", { name: props.name, project: project.value }),
+    );
     // The plan described the disk as it was before the write, so it is now a lie.
     preview.value = null;
     acknowledged.value = false;

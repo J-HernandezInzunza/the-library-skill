@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { catalogHue, dependencies } from "../catalog";
+import { withActivity } from "../commandActivity";
 import { describeAppError, type Catalog, type Entry, type EntryDetail } from "../types";
 import Busy from "./Busy.vue";
 import InstallPreview from "./InstallPreview.vue";
@@ -66,7 +67,9 @@ async function load(name: string) {
   error.value = "";
   detail.value = null;
   try {
-    detail.value = await invoke<EntryDetail>("entry_show", { name });
+    detail.value = await withActivity(`reading ${name}…`, () =>
+      invoke<EntryDetail>("entry_show", { name }),
+    );
   } catch (e) {
     error.value = describeAppError(e);
   } finally {

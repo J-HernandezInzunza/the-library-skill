@@ -19,6 +19,40 @@ const commands = ref<LoggedCommand[]>([]);
 let listening: Promise<unknown> | null = null;
 
 /**
+ * Work the UI has committed to but the backend has not confirmed yet.
+ *
+ * `command://started` is a round trip away, so a bar driven by it alone appears some
+ * milliseconds *after* the click that caused it — which reads as the button not having
+ * worked. An intent is registered synchronously in the click handler, so the app commits
+ * to the operation in the same frame and the real command event takes over when it lands.
+ */
+const intents = ref(new Map<number, string>());
+let nextIntentId = 1;
+
+/**
+ * Declare that an operation is starting, before anything is sent.
+ *
+ * Returns the function that ends it, which reports whether the intent was still
+ * pending. Call it in a `finally`: an intent that outlives its work leaves the bar
+ * running forever, which is worse than the lag it fixes. Disposing twice is harmless.
+ */
+export function beginIntent(label: string): () => boolean {
+  const id = nextIntentId++;
+  intents.value.set(id, label);
+  return () => intents.value.delete(id);
+}
+
+/** `beginIntent` around one awaited call, which is every real use of it. */
+export async function withActivity<T>(label: string, work: () => Promise<T>): Promise<T> {
+  const done = beginIntent(label);
+  try {
+    return await work();
+  } finally {
+    done();
+  }
+}
+
+/**
  * The shared command stream. Subscribes on first use and never unsubscribes: the
  * listener has to outlive every view, since commands run while views are swapping.
  */
@@ -39,12 +73,18 @@ export function useCommandActivity() {
     listening: listening as Promise<unknown>,
     commands: commands as Readonly<Ref<LoggedCommand[]>>,
     running,
-    busy: computed(() => running.value.length > 0),
-    /** What to show while something is in flight, or `""` when nothing is. */
-    label: computed(() => {
-      const current = running.value[0];
-      return current ? describeArgv(current.argv) : "";
-    }),
+    /** Intents included, so the bar is up before the backend has been reached. */
+    busy: computed(() => intents.value.size > 0 || running.value.length > 0),
+    /**
+     * What to show while something is in flight, or `""` when nothing is.
+     *
+     * The real argv wins once it exists — it is precise, and naming the command is the
+     * transparency the app trades for having no approval gate. The intent label only
+     * covers the gap before it arrives.
+     */
+    label: computed(() =>
+      activityLabel(running.value[0]?.argv, [...intents.value.values()]),
+    ),
   };
 }
 
@@ -61,6 +101,19 @@ function attach(): Promise<unknown> {
   });
 
   return Promise.all([started, finished]);
+}
+
+/**
+ * What the activity bar says: the running command if there is one, else the intent.
+ *
+ * The real argv wins because it is precise, and naming the command verbatim is the
+ * transparency the app trades for having no approval gate (D5). The intent label exists
+ * only to fill the round trip before that argv is known, so it loses as soon as it can.
+ */
+export function activityLabel(runningArgv: string[] | undefined, intents: string[]): string {
+  if (runningArgv) return describeArgv(runningArgv);
+  // Newest last: a nested operation is more specific than the one that triggered it.
+  return intents.at(-1) ?? "";
 }
 
 /**

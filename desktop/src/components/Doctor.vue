@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { withActivity } from "../commandActivity";
 import { describeAppError, type DoctorItem, type DoctorReport } from "../types";
 import Busy from "./Busy.vue";
 
@@ -15,7 +16,9 @@ async function run() {
   loading.value = true;
   error.value = "";
   try {
-    report.value = await invoke<DoctorReport>("catalog_doctor", { deep: deep.value });
+    report.value = await withActivity("checking the catalog…", () =>
+      invoke<DoctorReport>("catalog_doctor", { deep: deep.value }),
+    );
   } catch (e) {
     error.value = describeAppError(e);
     report.value = null;

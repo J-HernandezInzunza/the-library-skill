@@ -2,7 +2,7 @@
 import { ref, computed, defineAsyncComponent, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { allRows, catalogRows, winningRows, type Row } from "./catalog";
-import { useCommandActivity } from "./commandActivity";
+import { useCommandActivity, withActivity } from "./commandActivity";
 import { describeAppError, isAppError, type Catalog, type Entry } from "./types";
 import ActivityBar from "./components/ActivityBar.vue";
 import Busy from "./components/Busy.vue";
@@ -55,10 +55,9 @@ async function load() {
   loading.value = true;
   failure.value = null;
   try {
-    const [loadedEntries, loadedCatalogs] = await Promise.all([
-      invoke<Entry[]>("library_list"),
-      invoke<Catalog[]>("registry_list"),
-    ]);
+    const [loadedEntries, loadedCatalogs] = await withActivity("reading the catalog…", () =>
+      Promise.all([invoke<Entry[]>("library_list"), invoke<Catalog[]>("registry_list")]),
+    );
     entries.value = loadedEntries;
     catalogs.value = loadedCatalogs;
   } catch (e) {
@@ -244,6 +243,13 @@ button {
   font-family: inherit;
   font-size: 0.9rem;
   cursor: pointer;
+  /* Fast on purpose: this is the acknowledgement of the click itself, so it has to
+     land in the same frame rather than easing in over the command's latency. */
+  transition: transform 0.06s ease, opacity 0.15s ease, filter 0.15s ease;
+}
+button:active:not(:disabled) {
+  transform: scale(0.97);
+  filter: brightness(0.92);
 }
 button.ghost {
   background: transparent;

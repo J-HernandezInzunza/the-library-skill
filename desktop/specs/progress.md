@@ -769,3 +769,43 @@ command already has a home in the log — and is covered by Vitest.
 **Motion is reduced, not removed, under `prefers-reduced-motion`.** The indeterminate bar becomes a
 static fill and the spinner a solid dot rather than disappearing: the signal is still needed by
 someone who cannot tolerate the animation.
+
+---
+
+## Feedback on the click, not on the command
+
+Reported next: the bar still lagged the button. Correct, and inherent to how it was
+built — it was driven by `command://started`, which is an IPC round trip away, so the
+sequence was *click → wait → acknowledgement*. Any indicator keyed to a backend event
+lags the click by definition, no matter how fast the event is.
+
+**Intents split "what the UI has committed to" from "what the backend has confirmed."**
+`beginIntent(label)` registers pending work **synchronously in the click handler**, so the
+bar is up in the same frame; `busy` is now `intents || running`. When the real
+`command://started` lands it takes over the label, and the intent is disposed in a
+`finally`. Every call site goes through `withActivity(label, work)`, which is
+`beginIntent` plus a guaranteed dispose — the failure mode being a bar that spins forever,
+which is worse than the lag it replaced.
+
+**The real argv still wins the label.** The intent says `installing grilling…`; a moment
+later the bar says `library use grilling`. Losing the verbatim command would have traded
+away the transparency the app owes for having no approval gate (D5), so the intent label
+covers only the gap and yields as soon as the argv exists. `activityLabel` is pure and
+covered by Vitest, including that the *newest* intent wins — a nested operation is more
+specific than the one that triggered it.
+
+**Press feedback is CSS, deliberately.** `button:active` scales to 0.97 and dims slightly,
+with a 60ms transition. No JS state, so it cannot be late: the browser paints it on
+pointer-down, before any handler runs. The three-layer sequence is now:
+
+| When | What the user sees |
+| --- | --- |
+| Pointer down, same frame | The button depresses |
+| Handler runs, same tick | Activity bar appears; local `<Busy>` block appears |
+| `command://started` arrives | Bar's label becomes the verbatim command |
+| `command://finished` | Bar clears, result fades in |
+
+**Local `loading` flags were never the problem** and were left alone: each is set
+synchronously as the handler's first statement, so the `<Busy>` blocks were already
+instant. Only the event-driven bar lagged, which is why the fix is in one module rather
+than at eight call sites.

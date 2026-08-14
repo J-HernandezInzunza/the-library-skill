@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { withActivity } from "../commandActivity";
 import { describeAppError, type BootstrapReport, type InitReport } from "../types";
 import Busy from "./Busy.vue";
 
@@ -44,10 +45,12 @@ async function register() {
   registering.value = true;
   failure.value = "";
   try {
-    await invoke<InitReport>("catalog_init", {
-      repo: repo.value.trim(),
-      branch: branch.value.trim(),
-    });
+    await withActivity("cloning the catalog…", () =>
+      invoke<InitReport>("catalog_init", {
+        repo: repo.value.trim(),
+        branch: branch.value.trim(),
+      }),
+    );
     emit("ready");
   } catch (e) {
     failure.value = describeAppError(e);
@@ -60,7 +63,9 @@ async function setUp() {
   running.value = true;
   failure.value = "";
   try {
-    const result = await invoke<BootstrapReport>("bootstrap_tool");
+    const result = await withActivity("preparing the tool directory…", () =>
+      invoke<BootstrapReport>("bootstrap_tool"),
+    );
     report.value = result;
     if (result.config_exists) emit("ready");
   } catch (e) {

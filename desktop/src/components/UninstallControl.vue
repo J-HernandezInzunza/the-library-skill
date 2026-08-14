@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { withActivity } from "../commandActivity";
 import { describeAppError, type Receipt, type UninstallReport } from "../types";
 import Busy from "./Busy.vue";
 
@@ -36,11 +37,9 @@ async function remove(scope: string, force: boolean) {
   running.value = true;
   error.value = "";
   try {
-    const result = await invoke<UninstallReport>("entry_uninstall", {
-      name: props.name,
-      scope,
-      force,
-    });
+    const result = await withActivity(`removing the ${scope} copy…`, () =>
+      invoke<UninstallReport>("entry_uninstall", { name: props.name, scope, force }),
+    );
     confirming.value = null;
     // A refusal is a report, not a retry cue: it opens a second confirmation naming
     // the paths, and nothing is deleted until the user answers that one too.
