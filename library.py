@@ -1489,12 +1489,24 @@ def entry_install_state(dirs: dict[str, dict[str, str]], entry: Entry,
 # Dependency resolution
 # --------------------------------------------------------------------------- #
 
-def resolve_deps(entries: list[Entry], target: Entry) -> list[Entry]:
-    """Return entries in install order (deps first), target last. Cycle-safe."""
+def resolve_deps(entries: list[Entry], target: Entry,
+                 unresolved: "list[dict[str, str]] | None" = None) -> list[Entry]:
+    """Return entries in install order (deps first), target last. Cycle-safe.
+
+    When *unresolved* is passed, each ref that could not be followed is appended to it as
+    `{ref, required_by, reason}` as well as warned about. A warning on stderr reaches a
+    terminal and nothing else, so a caller rendering a dependency list — a GUI, an agent —
+    would otherwise show a shorter list with no sign that anything was missing, which reads
+    as "no problem here" rather than "this entry is broken".
+    """
     by_key = {(e.type, e.name): e for e in entries}
     order: list[Entry] = []
     seen: set[tuple[str, str]] = set()
     visiting: set[tuple[str, str]] = set()
+
+    def record(ref: str, required_by: Entry, reason: str) -> None:
+        if unresolved is not None:
+            unresolved.append({"ref": ref, "required_by": required_by.name, "reason": reason})
 
     def visit(e: Entry) -> None:
         key = (e.type, e.name)
@@ -1502,16 +1514,19 @@ def resolve_deps(entries: list[Entry], target: Entry) -> list[Entry]:
             return
         if key in visiting:
             warn(f"dependency cycle detected at {e.type}:{e.name}; skipping re-entry")
+            record(f"{e.type}:{e.name}", e, "cycle")
             return
         visiting.add(key)
         for ref in e.requires:
             if ":" not in ref:
                 warn(f"malformed dependency ref '{ref}' on {e.type}:{e.name}")
+                record(ref, e, "malformed")
                 continue
             dtype, dname = ref.split(":", 1)
             dep = by_key.get((dtype.strip(), dname.strip()))
             if dep is None:
                 warn(f"dependency {ref} not found in catalog (required by {e.name})")
+                record(ref, e, "not_found")
                 continue
             visit(dep)
         visiting.discard(key)
@@ -2603,7 +2618,9 @@ def cmd_show(args: argparse.Namespace) -> int:
 
     # Dependencies resolve within the winner's own catalog, as `use` resolves them (D9);
     # showing them from the merged list would promise an install that won't happen.
-    deps = [d for d in resolve_deps(cfg.entries_of(winner.catalog), winner) if d is not winner]
+    unresolved: list[dict[str, str]] = []
+    deps = [d for d in resolve_deps(cfg.entries_of(winner.catalog), winner, unresolved)
+            if d is not winner]
 
     installs = sorted((r for r in receipts.values() if r["name"] == winner.name),
                       key=lambda r: r["dest"])
@@ -2615,6 +2632,7 @@ def cmd_show(args: argparse.Namespace) -> int:
         "copies": copy_records,
         "requires": [{"type": d.type, "name": d.name, "catalog": d.catalog,
                       "description": d.description} for d in deps],
+        "unresolved_requires": unresolved,
         "installs": installs,
         "has_setup": winner_record["has_setup"],
         "source": source_record(winner),
@@ -2644,6 +2662,11 @@ def cmd_show(args: argparse.Namespace) -> int:
         print("\nRequires:")
         for d in deps:
             print(f"  [{d.type}] {d.name}  {d.description[:60]}")
+
+    if unresolved:
+        print("\nUnresolved requires:")
+        for u in unresolved:
+            print(f"  {u['ref']}  ({u['reason'].replace('_', ' ')}, required by {u['required_by']})")
 
     if multi:
         print("\nCopies (precedence order):")

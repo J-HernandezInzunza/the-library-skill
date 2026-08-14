@@ -1249,6 +1249,40 @@ class TestResolveDeps(unittest.TestCase):
         self.assertIn("skill:nope", msgs[0])
         self.assertIn("not found in catalog", msgs[0])
 
+    def test_unresolved_refs_are_collected_for_callers_that_cannot_read_stderr(self) -> None:
+        # A GUI or an agent sees only the payload, so a shorter list with no explanation
+        # would read as "nothing missing" rather than "this entry is broken".
+        dep = make_entry("dep")
+        target = make_entry("target", requires=["skill:nope", "bare-ref", "skill:dep"])
+        unresolved: list[dict[str, str]] = []
+        with captured_warnings():
+            order = library.resolve_deps([dep, target], target, unresolved)
+
+        self.assertEqual([e.name for e in order], ["dep", "target"])
+        self.assertEqual(
+            unresolved,
+            [
+                {"ref": "skill:nope", "required_by": "target", "reason": "not_found"},
+                {"ref": "bare-ref", "required_by": "target", "reason": "malformed"},
+            ],
+        )
+
+    def test_a_cycle_is_collected_as_unresolved(self) -> None:
+        left = make_entry("left", requires=["skill:right"])
+        right = make_entry("right", requires=["skill:left"])
+        unresolved: list[dict[str, str]] = []
+        with captured_warnings():
+            library.resolve_deps([left, right], left, unresolved)
+
+        self.assertEqual([u["reason"] for u in unresolved], ["cycle"])
+        self.assertEqual(unresolved[0]["ref"], "skill:left")
+
+    def test_unresolved_is_optional_so_existing_callers_are_unaffected(self) -> None:
+        target = make_entry("target", requires=["skill:nope"])
+        with captured_warnings() as msgs:
+            self.assertEqual(self.order([target], target), ["target"])
+        self.assertEqual(len(msgs), 1)
+
     def test_malformed_ref_warns_and_continues(self) -> None:
         dep = make_entry("dep")
         target = make_entry("target", requires=["dep", "skill:dep"])
@@ -4734,6 +4768,22 @@ library:
     def test_requires_resolve_within_the_winners_catalog(self) -> None:
         self.assertEqual([d["name"] for d in self.show("session-retro")["requires"]],
                          ["own-dep"])
+
+    def test_a_healthy_entry_reports_nothing_unresolved(self) -> None:
+        self.assertEqual(self.show("session-retro")["unresolved_requires"], [])
+
+    def test_a_dependency_no_catalog_defines_is_reported_not_dropped(self) -> None:
+        # Without this the payload just gets shorter, which reads as "nothing missing"
+        # to any caller that cannot see the stderr warning.
+        path = self.tool.root / "personal" / "library.yaml"
+        path.write_text(path.read_text().replace('["skill:own-dep"]',
+                                                 '["skill:own-dep", "skill:ghost"]'))
+        payload = self.show("session-retro")
+
+        self.assertEqual([d["name"] for d in payload["requires"]], ["own-dep"])
+        self.assertEqual(payload["unresolved_requires"],
+                         [{"ref": "skill:ghost", "required_by": "session-retro",
+                           "reason": "not_found"}])
 
     def test_the_entry_record_matches_lists(self) -> None:
         code, out, err = run_cli("list", "--no-pull", "--json")
