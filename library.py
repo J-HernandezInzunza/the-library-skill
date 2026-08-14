@@ -991,12 +991,26 @@ def new_entry_override_warnings(cfg: Config, cat: Catalog, name: str) -> list[st
     return out
 
 
-def push_source_warning(cfg: Config, entry: Entry) -> str:
-    """'' unless the installed copy could have come from more than one catalog (R11.2).
+def push_source_warning(cfg: Config, entry: Entry, dest: "Path | None" = None) -> str:
+    """'' unless the installed copy's provenance is genuinely unknown (R11.2).
 
-    Nothing on disk records which catalog an installed item came from, so for an overridden
-    name the source being pushed to is an inference from precedence. Both candidates are
-    named, because the cost of guessing wrong is an edit landing in someone else's repo.
+    An install **receipt** records the catalog and source a copy came from, so when one
+    covers *dest* there is nothing left to infer, and the old blanket warning was simply
+    out of date — it predates receipts and still claimed "nothing on disk records which
+    copy was installed" while the receipt beside it recorded exactly that.
+
+    Three answers now, where there used to be one:
+
+    - The receipt agrees with the catalog being pushed to → silence. This is the common
+      case, and warning through it is how a warning stops being read.
+    - The receipt names a *different* catalog → a sharper warning than ambiguity ever was,
+      because it is no longer a guess: the edit really is about to land somewhere other
+      than where the files came from. It names the flag that fixes it.
+    - No receipt → the original warning, which is correct for exactly this case: a copy
+      the tool did not place, where nothing on disk records anything.
+
+    *dest* is optional so the precedence-only answer stays reachable for callers that have
+    no particular copy in mind.
     """
     # Every *other* catalog holding the name, not `cfg.overridden()`: that slices by
     # precedence, so under `--catalog` it would report the resolved entry as its own
@@ -1005,9 +1019,20 @@ def push_source_warning(cfg: Config, entry: Entry) -> str:
               if e.name == entry.name and e.catalog != entry.catalog]
     if not others:
         return ""
+
+    receipt = load_receipts().get(str(dest)) if dest is not None else None
+    came_from = (receipt or {}).get("catalog")
+    if came_from:
+        if came_from == entry.catalog:
+            return ""
+        return (f"this copy of '{entry.name}' was installed from '{came_from}' → "
+                f"{(receipt or {}).get('source')}, but this push targets '{entry.catalog}' "
+                f"→ {entry.source}. Pass --catalog {came_from} to send it back where it "
+                f"came from.")
+
     alternatives = "; ".join(f"'{e.catalog}' → {e.source}" for e in others)
-    return (f"'{entry.name}' is defined in more than one catalog and nothing on disk "
-            f"records which copy was installed. Pushing to '{entry.catalog}' → "
+    return (f"'{entry.name}' is defined in more than one catalog and no install receipt "
+            f"records which copy is on disk. Pushing to '{entry.catalog}' → "
             f"{entry.source} (also defined by {alternatives})")
 
 
@@ -3740,7 +3765,7 @@ def cmd_push(args: argparse.Namespace) -> int:
     # Reported on stderr *and* as `note` in every --json payload below. A warning that
     # only reaches a terminal is invisible to the two front doors that cannot read one,
     # and this is the warning whose cost is an edit landing in someone else's repo.
-    note = push_source_warning(cfg, entry)
+    note = push_source_warning(cfg, entry, local_path)
     if note:
         warn(note)
 

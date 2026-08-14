@@ -6802,10 +6802,14 @@ library:
 
     # ── the ambiguity warning ───────────────────────────────────────────
     def test_a_overridden_name_warns_naming_both_candidate_sources(self) -> None:
+        # `install()` writes the files directly, so there is no receipt — which is exactly
+        # the case this warning is for, and now the only one. The wording says *why* the
+        # provenance is unknown rather than the flat "nothing on disk records" it used to,
+        # which was wrong the moment receipts existed.
         self.install("session-retro", "global", "# my edits\n")
         payload, err = self.push("session-retro")
         self.assertEqual(payload["catalog"], "personal")
-        self.assertIn("nothing on disk records which copy was installed", err)
+        self.assertIn("no install receipt records which copy is on disk", err)
         self.assertIn(str(self.mine / "SKILL.md"), err)   # where it is going
         self.assertIn(str(self.theirs / "SKILL.md"), err)  # the other candidate
         self.assertIn("'shared' →", err)
@@ -6832,6 +6836,35 @@ library:
         payload, err = self.push("only-mine")
         self.assertEqual(payload["catalog"], "personal")
         self.assertNotIn("nothing on disk records", err)
+
+    def test_a_receipt_settles_the_provenance_and_silences_the_warning(self) -> None:
+        """R11.2 — the warning predates receipts, and receipts answer its question.
+
+        `install_receipt` records the catalog and the source a copy came from, so once one
+        exists there is nothing to infer. The old text still said "nothing on disk records
+        which copy was installed" while the receipt beside it recorded exactly that, and it
+        fired on every push of an overridden name — the common case, warned through.
+        """
+        code, _, err = run_cli("use", "session-retro", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+        payload, err = self.push("session-retro")
+        self.assertEqual(payload["catalog"], "personal")
+        self.assertIsNone(payload["note"])
+        self.assertNotIn("more than one catalog", err)
+
+    def test_a_receipt_from_another_catalog_is_a_sharper_warning_than_ambiguity(self) -> None:
+        """No longer a guess: the edit really is about to land in the wrong repository."""
+        code, _, err = run_cli("use", "session-retro", "--catalog", "shared",
+                               "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+        payload, err = self.push("session-retro", "--catalog", "personal")
+        note = payload["note"]
+        self.assertIn("was installed from 'shared'", note)
+        self.assertIn("targets 'personal'", note)
+        # It names the flag that fixes it rather than only stating the problem.
+        self.assertIn("--catalog shared", note)
 
     def test_the_warning_lists_every_other_catalog_holding_the_name(self) -> None:
         cfg = library.Config(catalogs=[

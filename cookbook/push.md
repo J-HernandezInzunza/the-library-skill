@@ -18,26 +18,35 @@ copy.
 
 ## Steps
 
-### 0. Check whether the name is defined in more than one catalog
+### 0. Check whether the copy's provenance is in doubt
 
 `push` writes to the **source** an entry points at, so an overridden name means two possible
-destinations. Nothing on disk records which copy was installed, so the CLI infers it from
-precedence and says so on stderr:
+destinations. The install **receipt** records which catalog a copy came from, so most of the
+time there is nothing to decide and no warning. Two cases still warn, and they mean
+different things.
+
+**The receipt names a different catalog than the push targets.** Not a guess — the edit
+really is about to land in the wrong repository:
 
 ```
-warning: 'session-retro' is defined in more than one catalog and nothing on disk records
-which copy was installed. Pushing to 'personal' → /Users/me/src/own-thing/SKILL.md
+warning: this copy of 'session-retro' was installed from 'shared' →
+https://github.com/acme/agentics/blob/main/skills/session-retro/SKILL.md, but this push
+targets 'personal' → /Users/me/src/own-thing/SKILL.md. Pass --catalog shared to send it
+back where it came from.
+```
+
+**There is no receipt at all** — a copy the tool did not place, so nothing on disk records
+anything and precedence is the only guide:
+
+```
+warning: 'session-retro' is defined in more than one catalog and no install receipt records
+which copy is on disk. Pushing to 'personal' → /Users/me/src/own-thing/SKILL.md
 (also defined by 'shared' → https://github.com/acme/agentics/blob/main/skills/session-retro/SKILL.md)
 ```
 
-**Never swallow that warning — confirm the destination with the user before pushing.** The
+**Never swallow either warning — confirm the destination with the user before pushing.** The
 two sources are different repos with different audiences, and a push overwrites whichever
-one it picks. `--catalog <id>` settles it explicitly, and is the right follow-up once the
-user says which they meant.
-
-The warning fires **even when you pass `--catalog`**, because the flag settles the
-destination, not the provenance of the installed files. It is telling you the local copy
-might have come from the other catalog — still worth reading, not a bug.
+one it picks. `--catalog <id>` settles it explicitly.
 
 ### 1. Preview the change (optional)
 
