@@ -66,6 +66,7 @@ export type AppError =
   | { kind: "wrapper_missing"; path: string }
   | { kind: "cli"; code: number; stderr: string }
   | { kind: "ambiguous"; catalogs: string[] }
+  | { kind: "not_bootstrapped"; tool_dir: string }
   | { kind: "json"; detail: string }
   | { kind: "agent_missing" }
   | { kind: "agent_stream"; detail: string }
@@ -91,6 +92,8 @@ export function describeAppError(e: unknown): string {
       return `library exited ${e.code}.\n${e.stderr}`;
     case "ambiguous":
       return `More than one catalog can answer this: ${e.catalogs.join(", ")}. Pick one.`;
+    case "not_bootstrapped":
+      return `The library tool at ${e.tool_dir} has not been set up yet.`;
     case "json":
       return `The CLI returned output the app could not parse: ${e.detail}`;
     case "agent_missing":

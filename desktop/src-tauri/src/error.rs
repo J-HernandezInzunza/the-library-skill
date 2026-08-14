@@ -24,6 +24,11 @@ pub enum AppError {
     /// reporting a failure (design §3.6). Rendered as a picker.
     Ambiguous { catalogs: Vec<String> },
 
+    /// The tool directory has never been bootstrapped, so `library.py` cannot import
+    /// PyYAML. Exit 3 is reserved for exactly this and documented as stable, which is
+    /// what lets a front door offer the one-click fix instead of "command failed".
+    NotBootstrapped { tool_dir: String },
+
     /// The CLI succeeded but its stdout was not the JSON we expected. Never
     /// coerced to an empty list — a blank catalog and a broken parse look
     /// identical to the user otherwise.
@@ -72,6 +77,14 @@ mod tests {
         assert_eq!(
             shape(AppError::Ambiguous { catalogs: vec!["team".into(), "personal".into()] }),
             json!({ "kind": "ambiguous", "catalogs": ["team", "personal"] })
+        );
+    }
+
+    #[test]
+    fn not_bootstrapped_names_the_tool_directory_to_fix() {
+        assert_eq!(
+            shape(AppError::NotBootstrapped { tool_dir: "/tmp/clone".into() }),
+            json!({ "kind": "not_bootstrapped", "tool_dir": "/tmp/clone" })
         );
     }
 

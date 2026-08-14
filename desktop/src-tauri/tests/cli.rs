@@ -106,6 +106,20 @@ fn a_refusal_stays_a_failure_even_though_it_also_exits_two() {
 }
 
 #[test]
+fn an_unbootstrapped_clone_is_reported_as_fixable_not_broken() {
+    let root = fixtures().join("toolroot");
+    let _guard = with_home(root.clone());
+    let err = cli::run_json(&["unbootstrapped"]).unwrap_err();
+
+    assert_eq!(
+        err,
+        AppError::NotBootstrapped {
+            tool_dir: root.display().to_string()
+        }
+    );
+}
+
+#[test]
 fn a_failing_command_surfaces_its_stderr_verbatim() {
     let _guard = with_fixture_home();
     let err = cli::run_json(&["boom"]).unwrap_err();

@@ -145,7 +145,12 @@ pub fn run_json(args: &[&str]) -> Result<serde_json::Value, AppError> {
         }
     };
 
-    interpret(output.status.code(), &output.stdout, &output.stderr)
+    interpret(
+        &library_home(),
+        output.status.code(),
+        &output.stdout,
+        &output.stderr,
+    )
 }
 
 /// The full catalog with install state (R2.1).
@@ -173,11 +178,21 @@ fn parse<T: serde::de::DeserializeOwned>(payload: serde_json::Value) -> Result<T
 /// Split out from the spawn so exit-code semantics can be tested against recorded
 /// payloads rather than a live catalog.
 pub fn interpret(
+    home: &Path,
     code: Option<i32>,
     stdout: &[u8],
     stderr: &[u8],
 ) -> Result<serde_json::Value, AppError> {
     if code != Some(0) {
+        // Exit 3 means PyYAML is missing, i.e. no `.venv`. The CLI reserves it for that
+        // one condition so a fresh clone is detectable without parsing stderr, and it
+        // is the only failure here with a one-click fix.
+        if code == Some(3) {
+            return Err(AppError::NotBootstrapped {
+                tool_dir: home.display().to_string(),
+            });
+        }
+
         // Exit 2 is the CLI's "you decide", not a failure (design §3.6): it prints an
         // AMBIGUOUS_CATALOG payload on stdout and expects the caller to re-run with
         // --catalog. Folding it into the generic error path would turn a routine
@@ -248,13 +263,13 @@ mod tests {
 
     #[test]
     fn success_parses_stdout_as_json() {
-        let out = interpret(Some(0), br#"[{"name":"a"}]"#, b"").expect("should parse");
+        let out = interpret(Path::new("/tmp/tool"), Some(0), br#"[{"name":"a"}]"#, b"").expect("should parse");
         assert_eq!(out[0]["name"], "a");
     }
 
     #[test]
     fn failure_carries_the_code_and_trimmed_stderr() {
-        let err = interpret(Some(1), b"", b"no such entry: nope\n").unwrap_err();
+        let err = interpret(Path::new("/tmp/tool"), Some(1), b"", b"no such entry: nope\n").unwrap_err();
         assert_eq!(
             err,
             AppError::Cli {
@@ -265,15 +280,34 @@ mod tests {
     }
 
     #[test]
+    fn exit_three_is_an_unbootstrapped_clone_not_a_generic_failure() {
+        // The CLI writes a plain-text hint to stderr here, never JSON, so the code is
+        // the whole signal.
+        let err = interpret(
+            Path::new("/tmp/tool"),
+            Some(3),
+            b"",
+            b"PyYAML not found: this clone is not bootstrapped.",
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            AppError::NotBootstrapped {
+                tool_dir: "/tmp/tool".into()
+            }
+        );
+    }
+
+    #[test]
     fn a_signal_death_reports_minus_one_rather_than_pretending_to_succeed() {
-        let err = interpret(None, b"", b"").unwrap_err();
+        let err = interpret(Path::new("/tmp/tool"), None, b"", b"").unwrap_err();
         assert!(matches!(err, AppError::Cli { code: -1, .. }));
     }
 
     #[test]
     fn exit_two_with_an_ambiguous_body_is_a_choice_not_a_failure() {
         let body = br#"{"status": "AMBIGUOUS_CATALOG", "catalogs": ["personal", "team"]}"#;
-        let err = interpret(Some(2), body, b"").unwrap_err();
+        let err = interpret(Path::new("/tmp/tool"), Some(2), body, b"").unwrap_err();
         assert_eq!(
             err,
             AppError::Ambiguous {
@@ -286,7 +320,7 @@ mod tests {
     fn exit_two_with_some_other_body_stays_a_failure() {
         // `uninstall` also exits 2, with status REFUSED — a refusal, not a choice.
         let body = br#"{"status": "REFUSED", "dest": "/tmp/x"}"#;
-        let err = interpret(Some(2), body, b"no install receipt").unwrap_err();
+        let err = interpret(Path::new("/tmp/tool"), Some(2), body, b"no install receipt").unwrap_err();
         assert!(matches!(err, AppError::Cli { code: 2, .. }));
     }
 
@@ -325,7 +359,7 @@ mod tests {
 
     #[test]
     fn unparseable_stdout_is_a_json_error_not_an_empty_catalog() {
-        let err = interpret(Some(0), b"not json", b"").unwrap_err();
+        let err = interpret(Path::new("/tmp/tool"), Some(0), b"not json", b"").unwrap_err();
         assert!(matches!(err, AppError::Json { .. }));
     }
 }

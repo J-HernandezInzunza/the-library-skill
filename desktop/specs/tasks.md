@@ -151,7 +151,7 @@ The app is the front door for people who would not otherwise clone a repo, so it
 meeting a tool dir that has never been bootstrapped. Ahead of the read surface because every
 command in Phase 2 fails on that machine until this exists.
 
-- [ ] **T1a.1 — Exit code 3 means "not bootstrapped"**
+- [x] **T1a.1 — Exit code 3 means "not bootstrapped"**
   - **Files:** `desktop/src-tauri/src/{cli,error}.rs`, `desktop/src/types.ts`
   - **Requirements:** R1.3, R7.1
   - **Do:** Map exit 3 from any `library` invocation to `AppError::NotBootstrapped { tool_dir }`.

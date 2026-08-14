@@ -36,6 +36,11 @@ case "$sub" in
     echo 'no install receipt for /tmp/hand-made' >&2
     exit 2
     ;;
+  unbootstrapped)
+    # What library.py does when PyYAML is missing: plain text, no JSON, exit 3.
+    echo 'PyYAML not found: this clone is not bootstrapped. Run `python3 bootstrap.py`.' >&2
+    exit 3
+    ;;
   boom)
     echo 'no such entry: nope' >&2
     exit 1
