@@ -1180,3 +1180,88 @@ URL a teammate could resolve" — the on-ramp from a personal entry to a shareab
 app itself ever writing to a shared catalog.
 
 **Still not visually verified**, along with the rest of `AddEntry.vue`.
+
+---
+
+## The add form, seen running
+
+Two rounds of feedback from actually using it, both about the same thing: the form did the work
+correctly and then said so badly.
+
+**A `<legend>` disappears when its `<fieldset>` is `display: flex`.** The "Requires" group label
+rendered as nothing at all in WKWebView. The fieldset is a plain block now, with the flex column and
+the scroll on an inner wrapper — which also pins the label while the list scrolls, so it is better
+than the version that worked by accident elsewhere. Commented in place, because the obvious
+"simplification" is to put the flex back.
+
+**A success message at the bottom of a scrolling form is a success message nobody sees.** It moved
+to a banner above the form, and the page scrolls to it on success. Smooth unless
+`prefers-reduced-motion`, matching the stance the activity bar already took: motion reduced, not
+removed. **On success only** — a failure renders beside the submit button, where the eye already is,
+and scrolling away from it would be the opposite of helpful.
+
+**The form resets, but not completely.** Name, description, source, and requires clear; **type and
+destination catalog survive**. Registering several entries in a row is the normal use and they are
+almost always the same kind going to the same catalog, so re-picking both every time is the annoying
+half of a reset.
+
+**The destination path reveals in Finder rather than opening.** A `.yaml` opens in whatever the OS
+has registered for it — Xcode, TextEdit, a prompt — while "here is the file that changed" is the
+same answer on every machine. Needs `opener:allow-reveal-item-in-dir` in the capabilities file,
+which is a Rust-side change: HMR does not pick it up, so the app has to be restarted. Unlike the
+source suggestion, a failure here **is** surfaced: the user asked for this one explicitly.
+
+**A layout bug worth naming**, because it is the same mistake as the legend: the shared-catalog note
+rendered its `<code>` chip as a full-width block on its own line, because the chip was a flex item
+in a column container. Inline `<code>` inside a flex column is not inline. It is plain prose now,
+and it moved from the bottom of the page to directly under the **Destination catalog** dropdown —
+where the question "why isn't `shared` in this list?" actually occurs.
+
+### Windows: the button would work, the app would not
+
+Asked while reviewing the Finder button. `revealItemInDir` has a real Windows implementation
+(`SHOpenFolderAndSelectItems` via the Win32 shell API), so that button is not the problem. The app
+is: requirements.md already puts Windows/Linux out of scope, but the concrete blockers had never
+been written down, and "it's out of scope" is not the same as "here is what would have to change":
+
+| Blocker | Where |
+| --- | --- |
+| `Command::new(library_wrapper())` runs a **bash script with a shebang** and no `.exe`/`.cmd` extension. `CreateProcess` cannot start it | `cli.rs` |
+| `Command::new("python3")` — Windows ships `python` / `py`, not `python3` | `cli.rs` `bootstrap()` |
+| `GIT_ASKPASS` falls back to `/usr/bin/true` | `library.py` |
+| `library link` creates a symlink, which needs Developer Mode or admin on Windows | `library.py` |
+
+`bootstrap.py` is already the exception that handles it (`"Scripts" if sys.platform == "win32"`),
+which suggests the CLI was once meant to be portable. Recorded so a future port starts from a list
+rather than a discovery process.
+
+---
+
+## T4.3 — the consequences the CLI reports where nobody can read them
+
+`add` performs two checks and reports both on stderr, which is invisible under `--json`:
+`find_exact` against the *destination* catalog is a hard refusal, and `new_entry_override_warnings`
+warns — in whichever direction applies — when another catalog holds the name. So without this task
+a collision surfaced as a failed command after submitting, and an override did not surface at all.
+
+**Both are decided by precedence, which the app already has.** `addConsequences` compares
+`Catalog.precedence` — the same rank the list view renders — rather than re-deriving anything, which
+is what "derived from the catalog, not invented here" has to mean in practice. It mirrors
+`new_entry_override_warnings` exactly: a holder ranked *below* the destination is one this copy
+would beat, a holder ranked above is one that would beat it.
+
+**Blocked and overridden are different answers and are rendered differently.** Overriding across
+catalogs is allowed and is frequently the point of having a personal catalog, so it is a warning in
+amber and the form stays submittable. A name the destination already holds is refused by the CLI, so
+it is red and the submit button is disabled — with the reason stated right above it, since a
+disabled control that does not say why reads as a broken one (the lesson from `InstallPreview`).
+
+**Case-sensitive, because `find_exact` is.** To the CLI a name differing only in case is a different
+entry. Being helpfully case-insensitive here would promise a collision it will not report, and the
+add would then succeed against a warning that said it could not.
+
+**The rarer direction is still implemented and tested.** With the form writing only to local
+catalogs and `personal` usually at precedence 1, "your copy would be overridden" mostly cannot
+happen — but a local catalog registered with `--position last` sits below the shared one, and then
+the same data means the opposite thing. Both directions are covered by Vitest, driven by the same
+entries with an inverted registry.

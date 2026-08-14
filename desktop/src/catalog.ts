@@ -262,6 +262,66 @@ export function requirableRefs(entries: Entry[], catalogId: string): string[] {
     .sort();
 }
 
+/** What adding a name to a chosen catalog would mean for the copies already out there. */
+export interface AddConsequences {
+  /**
+   * The destination already holds this name, so the CLI refuses the add outright.
+   *
+   * A different question from the override ones: overriding across catalogs is allowed
+   * and often the point, while a collision *within* one catalog is a hard error.
+   */
+  blocked: boolean;
+  /** Catalogs whose copy of this name the new entry would beat. */
+  overrides: string[];
+  /** Catalogs whose copy would beat the new entry, so it would not be the one installed. */
+  overriddenBy: string[];
+}
+
+/**
+ * What adding `name` to `catalogId` would do to the copies that already exist.
+ *
+ * Mirrors the CLI's own two checks, which it reports on stderr where a GUI cannot see
+ * them: `add` refuses a name the destination already holds, and warns — in whichever
+ * direction applies — when another catalog holds it. Both are decided by catalog
+ * precedence, the same rank the list view already renders, so this compares `precedence`
+ * rather than re-deriving anything.
+ *
+ * Case-sensitive, because `find_exact` is: to the CLI, a name differing only in case is a
+ * different entry, and softening that here would promise a collision it will not report.
+ */
+export function addConsequences(
+  entries: Entry[],
+  catalogs: Catalog[],
+  name: string,
+  catalogId: string,
+): AddConsequences {
+  const wanted = name.trim();
+  const rankOf = new Map(catalogs.map((catalog) => [catalog.id, catalog.precedence]));
+  const destinationRank = rankOf.get(catalogId);
+  const empty = { blocked: false, overrides: [], overriddenBy: [] };
+  if (!wanted || destinationRank === undefined) return empty;
+
+  const holders = entries.filter((entry) => entry.name === wanted);
+  const overrides: string[] = [];
+  const overriddenBy: string[] = [];
+  for (const holder of holders) {
+    if (holder.catalog === catalogId) continue;
+    const rank = rankOf.get(holder.catalog);
+    // A holder the registry doesn't list has no rank to compare, so it is left out
+    // rather than guessed at in either direction.
+    if (rank === undefined) continue;
+    // Lower precedence number wins, so a higher-numbered holder is one this would beat.
+    if (rank > destinationRank) overrides.push(holder.catalog);
+    else overriddenBy.push(holder.catalog);
+  }
+
+  return {
+    blocked: holders.some((holder) => holder.catalog === catalogId),
+    overrides,
+    overriddenBy,
+  };
+}
+
 /** One destination in a preview, with its place in the plan. */
 export interface PlannedItem {
   install: PlannedInstall;

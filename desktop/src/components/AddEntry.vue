@@ -3,7 +3,12 @@ import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { contributedCatalogs, editableCatalogs, requirableRefs } from "../catalog";
+import {
+  addConsequences,
+  contributedCatalogs,
+  editableCatalogs,
+  requirableRefs,
+} from "../catalog";
 import { withActivity } from "../commandActivity";
 import {
   describeAppError,
@@ -101,10 +106,23 @@ function applySuggestion() {
   suggestion.value = null;
 }
 
+/**
+ * What this name would do to the copies that already exist (R4.3).
+ *
+ * Shown while typing rather than after submitting: `add` reports both of these on stderr,
+ * which is invisible under `--json`, so without this the collision surfaces as a failed
+ * command and the override does not surface at all.
+ */
+const consequences = computed(() =>
+  addConsequences(props.entries, props.catalogs, name.value, catalogId.value),
+);
+
 const filled = computed(
   () => !!name.value.trim() && !!description.value.trim() && !!source.value.trim(),
 );
-const canSubmit = computed(() => filled.value && !!catalogId.value && !submitting.value);
+const canSubmit = computed(
+  () => filled.value && !!catalogId.value && !consequences.value.blocked && !submitting.value,
+);
 
 /**
  * Clear what described the entry just added, keep what describes the next one.
@@ -211,6 +229,22 @@ async function reveal(path: string) {
       <label class="add-entry__field">
         <span>Name</span>
         <input v-model="name" type="text" placeholder="bug-investigator" autofocus />
+
+        <span v-if="consequences.blocked" class="add-entry__conflict">
+          <strong>{{ catalogId }}</strong> already has an entry called
+          <code>{{ name.trim() }}</code>. Adding it again is refused — change the existing
+          entry instead, or pick a different name.
+        </span>
+        <span v-else-if="consequences.overrides.length" class="add-entry__consequence">
+          <code>{{ name.trim() }}</code> also exists in
+          <strong>{{ consequences.overrides.join(", ") }}</strong>. Your copy in
+          {{ catalogId }} takes precedence, so it becomes the one that installs.
+        </span>
+        <span v-else-if="consequences.overriddenBy.length" class="add-entry__consequence">
+          <code>{{ name.trim() }}</code> also exists in
+          <strong>{{ consequences.overriddenBy.join(", ") }}</strong>, which takes precedence.
+          Your copy in {{ catalogId }} would be added but never installed.
+        </span>
       </label>
 
       <label class="add-entry__field">
@@ -341,6 +375,26 @@ async function reveal(path: string) {
   font-size: 0.72rem;
   opacity: 0.6;
   line-height: 1.4;
+}
+.add-entry__conflict,
+.add-entry__consequence {
+  margin-top: 0.35rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 8px;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+.add-entry__conflict {
+  color: #b91c1c;
+  background: rgba(220, 38, 38, 0.1);
+}
+.add-entry__consequence {
+  background: rgba(234, 179, 8, 0.14);
+}
+.add-entry__conflict code,
+.add-entry__consequence code {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.95em;
 }
 .add-entry__suggestion {
   display: flex;

@@ -467,7 +467,7 @@ leaves the entry reinstallable, `remove` does not, so the same dependent list me
     suggests nothing. Gate passes.
   - **Commit:** `feat(desktop): suggest a remote source URL from the local git remote`
 
-- [ ] **T4.3 — Override consequences before submit**
+- [x] **T4.3 — Override consequences before submit**
   - **Files:** `desktop/src/components/AddEntry.vue`
   - **Requirements:** R4.3
   - **Do:** Show which copy will win when the name already exists elsewhere, in both directions.

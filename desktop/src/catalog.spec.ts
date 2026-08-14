@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  addConsequences,
   allRows,
   catalogHue,
   catalogRows,
@@ -497,5 +498,64 @@ describe("requirableRefs", () => {
     const entries = [entry({ name: "grilling", catalog: "shared", overridden_by: "personal" })];
 
     expect(requirableRefs(entries, "shared")).toEqual(["skill:grilling"]);
+  });
+});
+
+describe("addConsequences", () => {
+  const registry = [
+    catalog({ id: "personal", precedence: 1 }),
+    catalog({ id: "shared", precedence: 2, kind: "remote" }),
+  ];
+
+  it("says nothing until a name has been typed", () => {
+    expect(addConsequences([], registry, "  ", "personal")).toEqual({
+      blocked: false,
+      overrides: [],
+      overriddenBy: [],
+    });
+  });
+
+  it("blocks a name the destination already holds, which the CLI refuses outright", () => {
+    const held = [entry({ name: "grilling", catalog: "personal" })];
+
+    expect(addConsequences(held, registry, "grilling", "personal").blocked).toBe(true);
+  });
+
+  it("does not block a name only another catalog holds, because overriding is allowed", () => {
+    const held = [entry({ name: "grilling", catalog: "shared" })];
+    const found = addConsequences(held, registry, "grilling", "personal");
+
+    expect(found.blocked).toBe(false);
+    expect(found.overrides).toEqual(["shared"]);
+    expect(found.overriddenBy).toEqual([]);
+  });
+
+  it("reports the other direction when the destination ranks lower", () => {
+    // A local catalog registered with `--position last` sits below the shared one, so
+    // its copy is the one that loses. Same data, opposite consequence.
+    const held = [entry({ name: "grilling", catalog: "shared" })];
+    const inverted = [
+      catalog({ id: "shared", precedence: 1, kind: "remote" }),
+      catalog({ id: "personal", precedence: 2 }),
+    ];
+    const found = addConsequences(held, inverted, "grilling", "personal");
+
+    expect(found.overrides).toEqual([]);
+    expect(found.overriddenBy).toEqual(["shared"]);
+  });
+
+  it("matches the name exactly, as find_exact does", () => {
+    // Softening this would promise a collision the CLI will not report.
+    const held = [entry({ name: "grilling", catalog: "personal" })];
+
+    expect(addConsequences(held, registry, "Grilling", "personal").blocked).toBe(false);
+  });
+
+  it("ignores a holder the registry does not list rather than guessing its rank", () => {
+    const held = [entry({ name: "grilling", catalog: "unregistered" })];
+    const found = addConsequences(held, registry, "grilling", "personal");
+
+    expect(found.overrides).toEqual([]);
+    expect(found.overriddenBy).toEqual([]);
   });
 });
