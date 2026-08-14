@@ -282,3 +282,43 @@ path.
 **Known risk, not addressed:** `bootstrap()` resolves `python3` from `PATH`. Under `tauri dev`
 that is the shell's PATH; a Finder-launched bundle gets a minimal one. macOS ships
 `/usr/bin/python3`, so this holds today, and D9 keeps the app running from source for now.
+
+---
+
+## Phase 2 — read surface complete
+
+**T2.1 — command log.** The emitter design was the real decision. Emission is enforced by
+structure: there is now exactly one `spawn()` in the backend and it brackets every child process,
+so a new caller cannot forget to log. The sink is a `CommandSink` trait passed **explicitly**
+into that path — `tauri::AppHandle` implements it in production, a `Recorder` in tests.
+
+A global sink (`OnceLock`/`RwLock`) was rejected: it must be installed before first use and
+silently drops events if it isn't, which is the one failure mode a transparency mechanism cannot
+have. Passing it also makes D5 assertable rather than aspirational — two tests now prove a
+command was logged, with its argv and exit code, instead of assuming it.
+
+`bootstrap_tool` emits too, so the very first thing the app ever runs is visible in the log.
+
+**T2.3 — entry detail.** `show --json` returns far more than `list` can express: `copies[]` with
+`wins`, `overrides[]` and `overridden_by[]` (both directions, separately), resolved `requires[]`
+with descriptions, `installs[]` with commit and timestamp per destination, and a **parsed**
+`source` (kind/org/repo/branch/file_path/clone_urls). The app renders that and parses nothing
+itself. The fixture is a real recorded payload with paths and org names rewritten, so the test
+asserts against the CLI's actual shape rather than a hand-written guess.
+
+**T2.4 — doctor, and a contract wrinkle worth knowing.** `doctor` exits **1** when it finds
+errors while still printing a complete report (`return 1 if errors else 0`). The strict exit-code
+mapping would have turned that into `library exited 1` and shown nothing — the exact opposite of
+what the view is for.
+
+So `doctor` goes through a tolerant path: exit 0 or 1 with a parseable body carrying `status` is
+a report; everything else still errors. Recorded in design.md §3.7. This widens one case rather
+than weakening §3.6, and a test pins that `run_json` stays strict for everything else. A second
+fixture tool root (`fixtures/sick/`) exists purely so the exit-1-is-a-report path is exercised
+for real rather than assumed.
+
+**Verified against the live catalog:** `list`, `catalog list`, `show grilling`, and `doctor` all
+return 0 and parse into the typed structs.
+
+**Still not visually verified:** `FirstRun`, `EntryDetail`, `Doctor`, and the command log have
+been type-checked and driven by fixtures, but only the catalog list has been seen rendered.

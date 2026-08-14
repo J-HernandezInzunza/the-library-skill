@@ -108,7 +108,7 @@ One Tauri command per operation (R1.2) — never a generic passthrough:
 | Tauri command | CLI invocation | Req |
 | --- | --- | --- |
 | `library_list` | `list --json` | R2.1 |
-| `catalog_doctor` | `doctor --json` (+`--deep`) | R7.3 |
+| `catalog_doctor` | `doctor --json` (+`--deep`) — tolerates exit 1 (§3.7) | R7.3 |
 | `entry_use_preview` | `use <name> --dry-run --json` (+scope/`--catalog`) | R3.2 |
 | `entry_use` | `use <name> --json` (+`--project`/`--dir`/`--catalog`) | R3.1 |
 | `catalog_sync` | `sync --json` | R3.3 |
@@ -116,7 +116,9 @@ One Tauri command per operation (R1.2) — never a generic passthrough:
 | `entry_update` | `update <name> [--add-requires …] [--catalog]` | R4.4 |
 | `entry_remove` | `remove <name> [--catalog]` | R4.4 |
 | `entry_push` | `push <name> [--catalog]` | R4.5 |
-| `registry_list` | `catalog list --json` | R2.4, R4.1 |
+| `entry_show` | `show <name> --json` | R2.1 |
+| `registry_list` | `catalog list --json` | R2.4, R2.5, R4.1 |
+| `bootstrap_tool` | `python3 bootstrap.py --json --dir <home>` | R7.1 |
 
 Search is deliberately absent, but no longer for the original reason. `search --json` used to
 return a leaner record than `list --json`; on this base the two are identical. R2.2 filters the
@@ -143,6 +145,26 @@ exit 1 failures. The backend maps exit 2 + a JSON body containing `status: "AMBI
 to `AppError::Ambiguous { catalogs }`, which the frontend renders as a catalog picker rather than
 an error toast (R4.4). Treating exit 2 as a generic failure would turn a routine choice into a
 dead end.
+
+### 3.7 When a non-zero exit is the answer
+
+`doctor` exits 1 when it finds errors while still printing a complete report. Mapping that to
+`AppError::Cli` would hide exactly the output the view exists to show, so `doctor` goes through a
+tolerant path: exit 0 **or** 1 with a parseable body carrying `status` is a report. Everything
+else — a missing wrapper, exit 2, exit 3, unparseable stdout — still errors, so this widens one
+case rather than weakening §3.6.
+
+Nothing else in the CLI has this shape today. A new command that does needs the same explicit
+opt-in; the strict path stays the default so a silent failure can't be mistaken for a report.
+
+### 3.8 Detecting an unconfigured tool
+
+Unlike an unbootstrapped clone (exit 3, reserved and documented), an unconfigured tool fails
+*every* command with exit 1 and no structured marker. The backend therefore checks for
+`config.local.yaml`'s **absence**, and only on a failure path, mapping it to
+`AppError::NotConfigured`. Matching the CLI's stderr wording would break the first time that
+sentence is reworded; a test pins that a genuine failure in a configured tool is never
+relabelled. If `library.py` ever reserves an exit code for this, delete the check in favour of it.
 
 ## 4. Agent layer (`agent.rs`)
 
@@ -342,9 +364,19 @@ unrepresentable.
 
 Because there is no approval gate, transparency is the only safeguard, so it is structural: every
 backend subprocess emits a `command://started` event carrying the exact argv before spawning, and
-`command://finished` with the exit code. The command log view is fed by these events and cannot
-be bypassed — a command that does not emit is a bug. This applies to CLI calls and to
-agent-initiated `library_cmd` calls alike.
+`command://finished` with the exit code and duration, correlated by id. The command log view is
+fed by these events and cannot be bypassed — a command that does not emit is a bug. This applies
+to CLI calls and to agent-initiated `library_cmd` calls alike.
+
+Emission is enforced by structure, not discipline: there is exactly one `spawn()` in the backend
+and it brackets every child process. The sink is a `CommandSink` trait **passed explicitly** into
+that path, with `tauri::AppHandle` implementing it in production and a recorder in tests. A global
+sink was rejected: it would have to be installed before first use and would silently drop events
+if it wasn't, which is the one failure mode this cannot have. Passing it also makes D5 assertable
+— tests prove a command was logged rather than assuming it.
+
+The log component stays mounted and only its body collapses. Mounting it with the panel would
+miss every command run while the panel was closed, which is most of them.
 
 ## 7. Secrets (`secrets.rs`, R6 / D7)
 
