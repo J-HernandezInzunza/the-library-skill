@@ -1,4 +1,4 @@
-import type { Entry } from "./types";
+import type { Entry, EntryDetail, RequiredEntry } from "./types";
 
 /** An entry as one rendered row, with the single status the CLI would print for it. */
 export interface Row {
@@ -77,4 +77,46 @@ function installStatus(entry: Entry): Pick<Row, "status" | "tone"> {
 
   const scopes = entry.scopes.join(", ");
   return { status: scopes ? `installed · ${scopes}` : "installed", tone: "installed" };
+}
+
+/** A dependency as the detail view shows it. */
+export interface Dependency {
+  entry: RequiredEntry;
+  /** Declared by this entry, versus inherited through another dependency. */
+  declared: boolean;
+  /** Install state of the resolved copy, or `unknown` when the catalog isn't loaded. */
+  state: string;
+}
+
+/**
+ * An entry's dependencies, split by whether it actually asks for them.
+ *
+ * `show --json` returns `requires[]` as the full transitive closure flattened in install
+ * order, so rendering it directly claims an entry declares what it merely inherits.
+ * The declared set is recoverable from the same payload: `copies[]` carries each copy's
+ * raw `type:name` refs. Install state is joined from the loaded catalog, since `show`
+ * reports it for the entry itself but not for its dependencies.
+ */
+export function dependencies(detail: EntryDetail, catalog: Entry[]): Dependency[] {
+  const winner = detail.copies.find((copy) => copy.wins);
+  const declared = new Set(winner?.requires.map(normalizeRef) ?? []);
+  // Winners only. `list` returns a row per catalog copy, and a Map keeps the last
+  // duplicate — which would be the overridden copy, reporting `not_installed` for a
+  // dependency that is installed.
+  const stateByName = new Map(
+    catalog.filter((entry) => !entry.overridden_by).map((entry) => [entry.name, entry.state]),
+  );
+
+  return detail.requires.map((entry) => ({
+    entry,
+    declared: declared.has(`${entry.type}:${entry.name}`),
+    state: stateByName.get(entry.name) ?? "unknown",
+  }));
+}
+
+/** `skill: foo` and `skill:foo` are the same ref; the CLI tolerates the spacing. */
+function normalizeRef(ref: string): string {
+  const [type, name] = ref.split(":");
+  if (name === undefined) return ref.trim();
+  return `${type.trim()}:${name.trim()}`;
 }

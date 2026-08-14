@@ -21,7 +21,13 @@ case "$sub" in
     exit 1
     ;;
   show)
-    cat "$here/payloads/show.json"
+    # $1 is the entry name; each payload is a real recorded one, kept apart because
+    # no single entry has both a two-catalog override chain and a dependency tree.
+    case "$1" in
+      triage-bug) cat "$here/payloads/show-deps.json" ;;
+      broken)     cat "$here/payloads/show-broken.json" ;;
+      *)          cat "$here/payloads/show.json" ;;
+    esac
     ;;
   catalog)
     # `catalog list` — the subcommand arrives as "$1" after the shift.

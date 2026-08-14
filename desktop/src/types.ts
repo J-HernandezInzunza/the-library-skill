@@ -26,6 +26,14 @@ export interface CatalogCopy {
   overridden_by: string[];
 }
 
+/** A dependency ref the catalog could not follow — a defect, not an absence. */
+export interface UnresolvedRequire {
+  ref: string;
+  required_by: string;
+  /** `not_found`, `malformed`, or `cycle`. An open set, like `state`. */
+  reason: string;
+}
+
 /** A dependency, resolved to the catalog entry it names. */
 export interface RequiredEntry {
   type: string;
@@ -52,6 +60,7 @@ export interface EntryDetail {
   entry: Entry;
   copies: CatalogCopy[];
   requires: RequiredEntry[];
+  unresolved_requires: UnresolvedRequire[];
   /** Every install of this name, across scopes and custom directories. */
   installs: Receipt[];
   has_setup: boolean;

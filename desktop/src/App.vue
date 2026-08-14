@@ -121,7 +121,9 @@ onMounted(load);
       v-else-if="openEntry"
       :name="openEntry"
       :catalogs="catalogs"
+      :entries="entries"
       @close="openEntry = null"
+      @open="openEntry = $event"
     />
 
     <template v-else>

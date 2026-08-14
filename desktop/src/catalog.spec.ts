@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { catalogHue, catalogRows, winningRows } from "./catalog";
+import { catalogHue, catalogRows, dependencies, winningRows } from "./catalog";
 import type { Entry } from "./types";
 
 function entry(overrides: Partial<Entry> = {}): Entry {
@@ -98,4 +98,75 @@ it("gives each catalog a stable colour, cycling rather than running out", () => 
   expect(catalogHue(1)).toBe(catalogHue(1));
   expect(catalogHue(1)).not.toBe(catalogHue(2));
   expect(catalogHue(5)).toBe(catalogHue(1));
+});
+
+describe("dependencies", () => {
+  /** triage-bug declares two dependencies and resolves three. */
+  const detail = {
+    name: "triage-bug",
+    entry: entry({ name: "triage-bug", type: "prompt" }),
+    copies: [
+      {
+        catalog: "personal",
+        type: "prompt",
+        description: "",
+        source: "",
+        requires: ["skill:bug-investigator", "skill: bug-triager"],
+        wins: true,
+        overrides: [],
+        overridden_by: [],
+      },
+    ],
+    requires: [
+      { type: "skill", name: "atlassian-toolkit", catalog: "personal", description: "" },
+      { type: "skill", name: "bug-investigator", catalog: "personal", description: "" },
+      { type: "skill", name: "bug-triager", catalog: "personal", description: "" },
+    ],
+    unresolved_requires: [],
+    installs: [],
+    has_setup: false,
+    source: {
+      raw: "",
+      kind: "github",
+      org: null,
+      repo: null,
+      branch: null,
+      file_path: null,
+      clone_urls: [],
+    },
+  };
+
+  it("marks only what the entry declares, and joins install state from the catalog", () => {
+    const catalog = [
+      entry({ name: "atlassian-toolkit", state: "installed" }),
+      entry({ name: "bug-investigator", state: "not_installed" }),
+    ];
+    const deps = dependencies(detail, catalog);
+
+    expect(deps.map((d) => [d.entry.name, d.declared, d.state])).toEqual([
+      // Inherited via bug-investigator, so not something triage-bug asks for.
+      ["atlassian-toolkit", false, "installed"],
+      ["bug-investigator", true, "not_installed"],
+      // Whitespace in `skill: bug-triager` must not make a declared dep look transitive.
+      ["bug-triager", true, "unknown"],
+    ]);
+  });
+
+  it("reads install state from the winning copy, not whichever copy came last", () => {
+    // `list` returns a row per copy; the overridden one reports not_installed and would
+    // win a naive name lookup, mislabelling an installed dependency.
+    const catalog = [
+      entry({ name: "bug-investigator", catalog: "personal", state: "installed" }),
+      entry({ name: "bug-investigator", catalog: "shared", state: "not_installed",
+              overridden_by: "personal" }),
+    ];
+    const dep = dependencies(detail, catalog).find((d) => d.entry.name === "bug-investigator");
+
+    expect(dep?.state).toBe("installed");
+  });
+
+  it("treats every dependency as transitive when no copy wins", () => {
+    const orphaned = { ...detail, copies: [{ ...detail.copies[0], wins: false }] };
+    expect(dependencies(orphaned, []).every((d) => !d.declared)).toBe(true);
+  });
 });

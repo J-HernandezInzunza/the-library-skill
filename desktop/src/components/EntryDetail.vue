@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { catalogHue } from "../catalog";
-import { describeAppError, type Catalog, type EntryDetail } from "../types";
+import { catalogHue, dependencies } from "../catalog";
+import { describeAppError, type Catalog, type Entry, type EntryDetail } from "../types";
 
-const props = defineProps<{ name: string; catalogs: Catalog[] }>();
-defineEmits<{ close: [] }>();
+const props = defineProps<{ name: string; catalogs: Catalog[]; entries: Entry[] }>();
+defineEmits<{ close: []; open: [name: string] }>();
 
 const detail = ref<EntryDetail | null>(null);
 const loading = ref(false);
@@ -14,6 +14,27 @@ const error = ref("");
 const hueByCatalog = computed(
   () => new Map(props.catalogs.map((catalog) => [catalog.id, catalogHue(catalog.precedence)])),
 );
+
+/**
+ * Dependencies split by whether the entry actually declares them.
+ *
+ * `show` flattens the transitive closure into one list, so without this the view would
+ * claim an entry asks for everything its dependencies drag in.
+ */
+const declared = computed(() => deps.value.filter((dep) => dep.declared));
+const inherited = computed(() => deps.value.filter((dep) => !dep.declared));
+const deps = computed(() => {
+  if (!detail.value) return [];
+  return dependencies(detail.value, props.entries);
+});
+
+/** How an unresolved ref failed, in words rather than an enum. */
+function brokenBecause(reason: string): string {
+  if (reason === "not_found") return "no catalog defines it";
+  if (reason === "malformed") return "not a valid type:name reference";
+  if (reason === "cycle") return "circular dependency";
+  return reason;
+}
 
 /** The source's origin, as the CLI parsed it. A local path has no host or branch. */
 const origin = computed(() => {
@@ -89,15 +110,65 @@ watch(() => props.name, load, { immediate: true });
         </li>
       </ul>
 
-      <template v-if="detail.requires.length">
-        <h3 class="entry-detail__section">Requires ({{ detail.requires.length }})</h3>
+      <template v-if="declared.length">
+        <h3 class="entry-detail__section">Requires ({{ declared.length }})</h3>
         <ul class="entry-detail__requires">
-          <li v-for="req in detail.requires" :key="req.name">
-            <strong>{{ req.name }}</strong>
-            <span class="entry-detail__origin-chip entry-detail__origin-chip--muted">
-              {{ req.catalog }}
-            </span>
-            <p class="entry-detail__req-desc">{{ req.description }}</p>
+          <li v-for="dep in declared" :key="dep.entry.name">
+            <button type="button" class="entry-detail__dep" @click="$emit('open', dep.entry.name)">
+              <span class="entry-detail__dep-head">
+                <strong>{{ dep.entry.name }}</strong>
+                <span class="entry-detail__origin-chip entry-detail__origin-chip--muted">
+                  {{ dep.entry.catalog }}
+                </span>
+                <span
+                  class="entry-detail__dep-state"
+                  :class="{ 'entry-detail__dep-state--missing': dep.state !== 'installed' }"
+                >
+                  {{ dep.state === "installed" ? "installed" : "not installed" }}
+                </span>
+              </span>
+              <span class="entry-detail__req-desc">{{ dep.entry.description }}</span>
+            </button>
+          </li>
+        </ul>
+      </template>
+
+      <template v-if="inherited.length">
+        <h3 class="entry-detail__section">
+          Also installed, via those ({{ inherited.length }})
+        </h3>
+        <ul class="entry-detail__requires">
+          <li v-for="dep in inherited" :key="dep.entry.name">
+            <button type="button" class="entry-detail__dep" @click="$emit('open', dep.entry.name)">
+              <span class="entry-detail__dep-head">
+                <strong>{{ dep.entry.name }}</strong>
+                <span
+                  class="entry-detail__dep-state"
+                  :class="{ 'entry-detail__dep-state--missing': dep.state !== 'installed' }"
+                >
+                  {{ dep.state === "installed" ? "installed" : "not installed" }}
+                </span>
+              </span>
+            </button>
+          </li>
+        </ul>
+      </template>
+
+      <template v-if="detail.unresolved_requires.length">
+        <h3 class="entry-detail__section entry-detail__section--broken">
+          Unresolved ({{ detail.unresolved_requires.length }})
+        </h3>
+        <ul class="entry-detail__requires">
+          <li
+            v-for="broken in detail.unresolved_requires"
+            :key="broken.ref"
+            class="entry-detail__broken"
+          >
+            <code>{{ broken.ref }}</code>
+            <span class="entry-detail__broken-why">{{ brokenBecause(broken.reason) }}</span>
+            <p class="entry-detail__req-desc">
+              Required by {{ broken.required_by }}. This entry will install without it.
+            </p>
           </li>
         </ul>
       </template>
@@ -236,10 +307,55 @@ watch(() => props.name, load, { immediate: true });
   opacity: 0.7;
 }
 .entry-detail__requires li {
-  padding: 0.5rem 0.85rem;
   border-radius: 8px;
   background: rgba(128, 128, 128, 0.08);
   font-size: 0.85rem;
+}
+.entry-detail__dep {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.85rem;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.entry-detail__dep:hover {
+  background: rgba(128, 128, 128, 0.12);
+}
+.entry-detail__dep-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.entry-detail__dep-state {
+  font-size: 0.7rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: rgba(34, 197, 94, 0.18);
+  color: #16a34a;
+}
+.entry-detail__dep-state--missing {
+  background: rgba(128, 128, 128, 0.2);
+  color: inherit;
+  opacity: 0.7;
+}
+.entry-detail__section--broken {
+  color: #dc2626;
+  opacity: 0.85;
+}
+.entry-detail__broken {
+  padding: 0.5rem 0.85rem;
+  border-left: 3px solid #dc2626;
+}
+.entry-detail__broken-why {
+  margin-left: 0.5rem;
+  font-size: 0.75rem;
+  color: #dc2626;
 }
 .entry-detail__req-desc {
   margin: 0.25rem 0 0;

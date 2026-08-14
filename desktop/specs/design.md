@@ -146,6 +146,27 @@ to `AppError::Ambiguous { catalogs }`, which the frontend renders as a catalog p
 an error toast (R4.4). Treating exit 2 as a generic failure would turn a routine choice into a
 dead end.
 
+### 3.6a Dependencies
+
+`show --json` returns `requires[]` as the **full transitive closure in install order**, not the
+entry's own list: `resolve_deps` walks depth-first and flattens. Rendering it directly claims an
+entry declares dependencies it merely inherits — `triage-bug` declares two and resolves three.
+
+The direct set is recoverable from the same payload: `copies[]` carries each copy's raw
+`type:name` refs, so direct-vs-transitive is a join of two fields the CLI already returns. That
+join is presentation and belongs in the app; deciding *what resolves* stays in `library.py`.
+
+Whether a dependency is installed is a join against the loaded `list` payload, for the same
+reason. Neither introduces catalog logic.
+
+**Unresolved dependencies are a CLI concern.** `resolve_deps` skips a ref it cannot follow and
+`warn()`s to stderr, which reaches a terminal and nothing else — so the payload simply got
+shorter and a broken entry looked healthy. The app cannot reconstruct this: raw refs expose only
+the first level, while breakage can be transitive. `library.py` therefore reports
+`unresolved_requires[]` as `{ref, required_by, reason}` with `reason` in `not_found` /
+`malformed` / `cycle`. Added to `show` rather than to the app so the terminal and the agent get
+it too.
+
 ### 3.7 When a non-zero exit is the answer
 
 `doctor` exits 1 when it finds errors while still printing a complete report. Mapping that to

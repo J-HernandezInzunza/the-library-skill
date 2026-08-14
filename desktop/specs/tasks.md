@@ -232,6 +232,25 @@ command in Phase 2 fails on that machine until this exists.
   - **Verify:** Against a catalog with a known-dangling `requires`, the warning appears. Gate passes.
   - **Commit:** `feat(desktop): add a doctor view for catalog health`
 
+- [x] **T2.5 — Dependencies that say what they actually are**
+  - **Files:** `desktop/src/catalog.ts`, `desktop/src/components/EntryDetail.vue`,
+    `desktop/src-tauri/src/cli.rs`
+  - **Requirements:** R2.6, R2.7
+  - **Do:** Split the detail view's dependency list into **declared** and **pulled in
+    transitively**, derived from `copies[].requires` (the winner's raw refs) against `requires[]`
+    (the resolved closure). `show --json` flattens the two, so rendering it as-is claims an entry
+    declares what it merely inherits. Show each dependency's install state by joining the loaded
+    `list` payload, and let clicking one open its detail view. Render
+    `unresolved_requires[] {ref, required_by, reason}` as a defect on the entry — these are the
+    refs `library.py` previously only warned about on stderr, which no GUI could see.
+    Type the new key with `#[serde(default)]` so the app still runs against a CLI that predates
+    it, per C-D8.
+  - **Verify:** `triage-bug` shows two declared and one transitive, not three declared. A fixture
+    entry with a dangling ref shows it as unresolved rather than omitting it. A dependency that
+    is not installed is visibly not installed. Vitest covers the split, since this is derived
+    view logic of exactly the kind that produced the override bug. Gate passes.
+  - **Commit:** `feat(desktop): separate declared from transitive dependencies`
+
 ---
 
 ## Phase 3 — Install, uninstall, and sync

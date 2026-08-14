@@ -163,6 +163,35 @@ fn show_reports_the_override_chain_in_both_directions() {
     // The CLI parses the source; the app never picks the string apart itself.
     assert_eq!(detail.source.kind, "github");
     assert_eq!(detail.source.branch.as_deref(), Some("master"));
+    assert!(detail.unresolved_requires.is_empty());
+}
+
+#[test]
+fn requires_is_the_transitive_closure_not_what_the_entry_declares() {
+    // The reason the view has to split them: triage-bug declares two dependencies and
+    // resolves three, and the payload gives no hint which is which.
+    let _guard = with_fixture_home();
+    let detail = cli::show(&Recorder::default(), "triage-bug").expect("fixture show should parse");
+
+    let winner = detail.copies.iter().find(|c| c.wins).expect("a winning copy");
+    assert_eq!(winner.requires, ["skill:bug-investigator", "skill:bug-triager"]);
+    assert_eq!(detail.requires.len(), 3);
+    assert!(detail.requires.iter().any(|r| r.name == "atlassian-toolkit"));
+}
+
+#[test]
+fn a_dependency_the_catalog_cannot_follow_is_reported_not_dropped() {
+    let _guard = with_fixture_home();
+    let detail = cli::show(&Recorder::default(), "broken").expect("fixture show should parse");
+
+    let reasons: Vec<&str> = detail
+        .unresolved_requires
+        .iter()
+        .map(|u| u.reason.as_str())
+        .collect();
+    assert_eq!(reasons, ["not_found", "malformed"]);
+    assert_eq!(detail.unresolved_requires[0].r#ref, "skill:ghost");
+    assert_eq!(detail.unresolved_requires[0].required_by, "triage-bug");
 }
 
 #[test]

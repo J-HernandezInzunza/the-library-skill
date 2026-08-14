@@ -79,6 +79,10 @@ pub struct EntryDetail {
     pub entry: Entry,
     pub copies: Vec<CatalogCopy>,
     pub requires: Vec<RequiredEntry>,
+    /// Refs the catalog could not follow. Defaulted so the app still runs against a
+    /// CLI that predates the key.
+    #[serde(default)]
+    pub unresolved_requires: Vec<UnresolvedRequire>,
     /// Every install of this name, across scopes and custom directories.
     pub installs: Vec<Receipt>,
     pub has_setup: bool,
@@ -101,6 +105,15 @@ pub struct CatalogCopy {
     pub overrides: Vec<String>,
     #[serde(default)]
     pub overridden_by: Vec<String>,
+}
+
+/// A dependency ref the catalog could not follow — a defect on the entry, not an absence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UnresolvedRequire {
+    pub r#ref: String,
+    pub required_by: String,
+    /// `not_found`, `malformed`, or `cycle`. An open set, like `state`.
+    pub reason: String,
 }
 
 /// A dependency, resolved to the catalog entry it names.

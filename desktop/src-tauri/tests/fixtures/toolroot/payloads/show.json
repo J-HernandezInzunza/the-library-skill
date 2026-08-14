@@ -54,6 +54,7 @@
     }
   ],
   "requires": [],
+  "unresolved_requires": [],
   "installs": [
     {
       "dest": "/Users/tester/.claude/skills/grilling",

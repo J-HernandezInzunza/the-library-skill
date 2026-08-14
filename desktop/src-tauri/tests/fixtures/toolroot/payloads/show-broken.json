@@ -1,0 +1,108 @@
+{
+  "status": "OK",
+  "name": "triage-bug",
+  "entry": {
+    "type": "prompt",
+    "name": "triage-bug",
+    "description": "Interactive bug-triage \u2192 investigation workflow as a pi prompt template. Invoke as `/triage-bug <TICKET-KEY>`. Asks before any Jira write. Enforces strict triage\u2192investigate handoff via triage-context.json. Headless counterpart lives at my-engineering-library/workflows/bug-triage/.",
+    "source": "https://github.com/example/my-engineering-library/blob/master/prompts/triage-bug.md",
+    "requires": [
+      "skill:bug-investigator",
+      "skill:bug-triager"
+    ],
+    "installed": true,
+    "scopes": [
+      "global"
+    ],
+    "catalog": "personal",
+    "overridden_by": null,
+    "state": "installed",
+    "receipt": {
+      "dest": "/Users/tester/.claude/commands/triage-bug.md",
+      "name": "triage-bug",
+      "type": "prompt",
+      "catalog": "personal",
+      "scope": "global",
+      "source": "https://github.com/example/my-engineering-library/blob/master/prompts/triage-bug.md",
+      "commit": "ca1763b510db08a4da77076595d4732bb69f0b3d",
+      "content_hash": "sha256:adf1b9e8691ee9f97aee18736a9b8130476db07d5dee8c7b4387431b11176300",
+      "installed_at": "2026-08-13T19:11:09Z"
+    },
+    "has_setup": false
+  },
+  "copies": [
+    {
+      "catalog": "personal",
+      "type": "prompt",
+      "description": "Interactive bug-triage \u2192 investigation workflow as a pi prompt template. Invoke as `/triage-bug <TICKET-KEY>`. Asks before any Jira write. Enforces strict triage\u2192investigate handoff via triage-context.json. Headless counterpart lives at my-engineering-library/workflows/bug-triage/.",
+      "source": "https://github.com/example/my-engineering-library/blob/master/prompts/triage-bug.md",
+      "requires": [
+        "skill:bug-investigator",
+        "skill:bug-triager",
+        "skill:ghost",
+        "bare-ref"
+      ],
+      "wins": true,
+      "overrides": [],
+      "overridden_by": []
+    }
+  ],
+  "requires": [
+    {
+      "type": "skill",
+      "name": "atlassian-toolkit",
+      "catalog": "personal",
+      "description": "Self-contained CLI toolkit for Atlassian Cloud (Jira, Bitbucket, Confluence) via API token \u2014 no MCP, no npm install (Node >= 20). Shared dependency for agentic workflows using Atlassian tools. Infrastructure, not a task the model performs directly. One-time setup via 'jira.mjs config init' (~/.config/atlassian-toolkit/config.json; env vars override) \u2014 see the skill's README; verify with bin/smoke.mjs."
+    },
+    {
+      "type": "skill",
+      "name": "bug-investigator",
+      "catalog": "personal",
+      "description": "Investigate sparse Jira bug tickets and enrich them with a grounded root-cause theory. Fetch the ticket, trace code across repos (starting from any linked PRs the triager found), form a falsifiable theory, and append to Dev Notes or return a draft. Triggers on \"investigate this\", \"look at this bug\", \"trace down this bug\", or pasting a Jira bug key/URL."
+    },
+    {
+      "type": "skill",
+      "name": "bug-triager",
+      "catalog": "personal",
+      "description": "Triage a Jira bug by searching Jira for related, duplicate, or previously-fixed tickets before code investigation. Ranks matches, captures their linked pull requests, optionally posts a related-tickets comment, and hands off to bug-investigator. Triggers on \"triage this\", \"has this been reported\", \"find related tickets\", \"check for duplicates\"."
+    }
+  ],
+  "unresolved_requires": [
+    {
+      "ref": "skill:ghost",
+      "required_by": "triage-bug",
+      "reason": "not_found"
+    },
+    {
+      "ref": "bare-ref",
+      "required_by": "triage-bug",
+      "reason": "malformed"
+    }
+  ],
+  "installs": [
+    {
+      "dest": "/Users/tester/.claude/commands/triage-bug.md",
+      "name": "triage-bug",
+      "type": "prompt",
+      "catalog": "personal",
+      "scope": "global",
+      "source": "https://github.com/example/my-engineering-library/blob/master/prompts/triage-bug.md",
+      "commit": "ca1763b510db08a4da77076595d4732bb69f0b3d",
+      "content_hash": "sha256:adf1b9e8691ee9f97aee18736a9b8130476db07d5dee8c7b4387431b11176300",
+      "installed_at": "2026-08-13T19:11:09Z"
+    }
+  ],
+  "has_setup": false,
+  "source": {
+    "raw": "https://github.com/example/my-engineering-library/blob/master/prompts/triage-bug.md",
+    "kind": "github",
+    "org": "example",
+    "repo": "my-engineering-library",
+    "branch": "master",
+    "file_path": "prompts/triage-bug.md",
+    "clone_urls": [
+      "git@github.com:example/my-engineering-library.git",
+      "https://github.com/example/my-engineering-library.git"
+    ]
+  }
+}

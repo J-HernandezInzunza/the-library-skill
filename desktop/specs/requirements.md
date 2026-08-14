@@ -98,6 +98,14 @@ implementation; changing one is a spec change, not an implementation choice.
   catalogs offered come from `catalog list --json`, not from the loaded entries, so a catalog
   that is empty or `skipped` is still listed — with its skip reason — rather than silently
   vanishing (D15).
+- R2.6 An entry's detail view distinguishes the dependencies it **declares** from those pulled in
+  **transitively**, shows whether each is installed, and lets the user open one. `show --json`
+  returns the resolved set flattened in install order, so a view that renders it as-is misstates
+  what the entry asks for.
+- R2.7 A dependency the catalog cannot resolve — missing, malformed, or cyclic — is shown as a
+  defect on the entry, never omitted. `library.py` reports these in `show --json`'s
+  `unresolved_requires[]`; the app must not infer them, because only the CLI can see breakage
+  below the first level.
 
 ### R3 — Install / sync (deterministic write)
 
