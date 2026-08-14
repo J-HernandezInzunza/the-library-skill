@@ -139,8 +139,11 @@ implementation; changing one is a spec change, not an implementation choice.
   explicit catalog choice rather than guessing, and passes `--catalog` on every call so the CLI's
   `AMBIGUOUS_CATALOG` path is never entered. A removal is confirmed against `remove --dry-run`,
   which reports the diff and the dependents the CLI otherwise warns about only on stderr.
-- R4.5 A write that targets a protected remote catalog surfaces the resulting PR URL (or compare
-  URL) to the user.
+- R4.5 `library push` sends a local copy back to the entry's **source**, previewed first and with
+  the outcome described by what actually happened: a local-path source is overwritten in place with
+  no review, a remote one opens a PR, and a branch that was pushed without a PR being opened says
+  so rather than claiming one. The PR or compare URL is offered as a link. The CLI's multi-catalog
+  provenance warning is shown **before** the push, not after — afterwards it is a post-mortem.
 
 - R4.6 First run collects the shared catalog's repo URL and branch in a form and runs
   `library init`. Directing a teammate to a terminal here contradicts the app's reason to exist:

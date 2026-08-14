@@ -557,14 +557,21 @@ leaves the entry reinstallable, `remove` does not, so the same dependent list me
   - **Verify:** Removing a view's `#actions` wrapper fails the guard by name. Gate passes.
   - **Commit:** `feat(desktop): give navigation its own row, and actions one place`
 
-- [ ] **T4.5 — Push, and surfacing the PR**
-  - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/`
+- [x] **T4.5 — Push, and surfacing the PR**
+  - **Files:** `library.py`, `desktop/src-tauri/src/{cli,lib}.rs`,
+    `desktop/src/components/PushControl.vue`, `desktop/src/catalog.ts`
   - **Requirements:** R4.5
-  - **Do:** `entry_push`, surfacing the PR or compare URL as a clickable link. Show the CLI's
-    multi-catalog push warning verbatim when it fires — nothing on disk records which catalog an
-    installed copy came from, and the cost of guessing wrong is an edit landing in someone else's repo.
-  - **Verify:** Against a protected catalog, a push prints a branch and a URL and does not touch the
-    protected branch. Gate passes.
+  - **Do:** `entry_push_preview` and `entry_push`, surfacing the PR or compare URL as a link.
+    **Two `library.py` fixes came first**, both found by running it: `push --dry-run` wrote a
+    local-path source and reported `OK`, and the remote branch reported `OK` when there was
+    nothing to push — so in both cases a preview was indistinguishable from a completed push.
+    The multi-catalog warning also moved into the `--json` payload as `note`; `warn()` reaches a
+    terminal and nothing else, and this is the warning whose cost is an edit landing in someone
+    else's repository. The app shows it **before** the push.
+    `describePush` keeps the success text honest: `_create_pr` always pushes the branch and only
+    sometimes opens the PR, so `manual` says the PR is not open yet.
+  - **Verify:** Against a real bare remote, a push opens a branch, returns a compare URL, and
+    leaves the base branch byte-identical. Gate passes.
   - **Commit:** `feat(desktop): push changes back and surface the resulting PR URL`
 
 - [ ] **T4.6 — Registering and unregistering catalogs**

@@ -154,7 +154,8 @@ One Tauri command per operation (R1.2) — never a generic passthrough:
 | `entry_update` | `update <name> --catalog … [--set-description] [--set-source] [--set-requires]` | R4.4 |
 | `entry_remove_preview` | `remove <name> --catalog … --dry-run --json` | R4.4 |
 | `entry_remove` | `remove <name> --catalog … [--purge]` | R4.4 |
-| `entry_push` | `push <name> [--catalog]` | R4.5 |
+| `entry_push_preview` | `push <name> --from … --dry-run --json` | R4.5 |
+| `entry_push` | `push <name> --from … [--message] --json` — tolerates exit 1 (§3.7) | R4.5 |
 | `entry_uninstall` | `uninstall <name> --scope … --json` (+`--force`) — tolerates exit 2 (§3.7) | R3.1 |
 | `entry_show` | `show <name> --json` | R2.1 |
 | `registry_list` | `catalog list --json` | R2.4, R2.5, R4.1 |
@@ -247,6 +248,11 @@ command names the statuses that mean success — `doctor` takes any, `use` takes
 That one is handled in `uninstall()` rather than by widening `run_report`'s tolerance: exit 2's
 other meaning is `AMBIGUOUS_CATALOG`, a routine choice (§3.6), and tolerating exit 2 wholesale
 would swallow it. The body, not the code, is what distinguishes them.
+
+`push` is the fifth and has `use`'s exact shape: exit 1 for a plain `die()` (stderr, no JSON)
+*and* exit 1 for a failure it reports as `status: "ERROR"` with a `reason` on stdout. Under the
+strict mapping the second surfaces as "library exited 1" with an **empty** message, because the
+explanation was on stdout. It accepts `OK` and `DRY_RUN`.
 
 A new command with this shape needs the same explicit opt-in; the strict path stays the default so
 a silent failure can't be mistaken for a report.

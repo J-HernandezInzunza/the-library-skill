@@ -1641,3 +1641,92 @@ The rule is now that **a back label is the title of the page it returns to**, re
 `← The Library`, `← Catalogs`, `← personal`, `← grilling`. That makes the label derivable instead
 of written, so two screens cannot describe each other differently — the same reasoning as
 `describeCatalog` replacing hand-written per-catalog prose.
+
+---
+
+## T4.5 — push, and two CLI previews that were not previews
+
+The app can now send local edits back to an entry's **source**. That is a different subject from
+Phase 4's other writes: `add`/`update`/`remove` change the catalog entry, `push` changes the thing
+the entry points at. So the local-catalogs-only restriction (D18) does not apply — a push to a
+remote source opens a *pull request*, which is the review event, not a bypass of one.
+
+### Two `library.py` bugs, both found by running it, both the same shape
+
+**`push --dry-run` overwrote a local-path source and reported `status: OK`.** The dry-run check sat
+inside the PR flow, which the local-source branch returned before ever reaching. So the preview was
+the thing it was previewing, and its payload was byte-identical to a real push's. Measured first,
+not reasoned about: the source file said `EDITED IN THE INSTALL` after a command that promised to
+write nothing.
+
+**The remote branch had it too, on its own early return.** With the local copy already matching its
+source, `--dry-run` printed `status: OK, changed: false` — which is exactly what a completed push
+prints. This one was found by the *app*: `PushPreview` requires `would_change`, so the parse failed
+and the preview errored on the most ordinary outcome there is. The type that exists to catch a
+dropped `--dry-run` caught a CLI bug instead.
+
+Both fixed in `library.py` rather than worked around: the terminal user typing `--dry-run` is the
+one most likely to be surprised, and the agent reads the same payloads.
+
+**The multi-catalog warning moved into the payload as `note`.** `push_source_warning` reached a
+terminal through `warn()` and nothing else, so under `--json` — the mode a GUI and the agent both
+use — the one warning whose cost is *an edit landing in someone else's repository* was invisible.
+Present-and-null when it does not fire, so a caller never has to guess whether an older CLI simply
+never reported it. Same class as `unresolved_requires[]` (T2.5) and `dependents[]` (G5).
+
+**The first attempt at coverage was wrong and the mutation check caught it.** The test written
+alongside the remote-branch fix exercised the *local* source path, so reverting the fix passed.
+Only a real clone reaches that early return. `TestPushToARemoteSource` now uses the suite's existing
+offline pattern — a bare repo with `clone_urls` patched at it — and is verified two ways: reverting
+the `DRY_RUN` fix fails one case, and dropping the `checkout -b` so the push lands on the base
+branch fails another. 649 CLI tests pass.
+
+### `describePush` is where the success state stops lying
+
+The objection that deferred remote *catalog* writes was that the success state would lie, and it
+applies verbatim here: `_create_pr` **always pushes the branch** and only *sometimes* opens the PR.
+With `autopush` off, `gh` missing, or a Bitbucket remote — where `gh` does not work at all — the CLI
+hands back a compare URL and nothing is in anyone's review queue.
+
+So the wording keys on `method`, and `manual` reads "Branch pushed — the pull request is not open
+yet", with the compare URL as the next step. Pure, and covered by five Vitest cases including the
+one that matters: **verified by mutation** that treating any URL as a PR URL fails "never calls a
+pushed branch an opened pull request".
+
+The other three outcomes are separated too, because they are genuinely different events: nothing to
+push, a local source overwritten in place with no review at all, and a PR actually opened.
+
+### Decisions worth keeping
+
+- **`--from` is always passed.** Without it the CLI auto-detects and *dies* when the entry is
+  installed in more than one place. The user picks the copy, so the question is already answered.
+  The fixture echoes the scope back into the payload, so a lost flag fails rather than matching a
+  canned response.
+- **A project push anchors `LIBRARY_CWD`**, exactly as a project install does (design §3.3), with
+  the same picker and the same recents. The alternative was deriving the project root from the
+  install receipt's path, which means encoding the CLI's directory layout in the app — the
+  duplication R1.1 exists to prevent. Pinned against a global push so the two anchors are asserted
+  relative to each other.
+- **`--message` is offered**, because for a remote source it becomes the PR title, which is the
+  first thing a reviewer reads. `library: updated grilling` on every PR is not a title.
+- **The panel sits between "Installed copies" and the uninstall control.** It acts on an installed
+  copy, and sending your edits back is what you want to have done *before* deleting the copy that
+  holds them.
+
+### Verified end to end against a real bare remote
+
+A bare repo stood in for the host, with `insteadOf` rewriting the GitHub URL at it and
+`GIT_CONFIG_GLOBAL` pointed at a scratch file so the developer's real git config was never touched.
+
+1. Install from the remote source, edit the installed copy.
+2. `push --dry-run` → the real diff, `would_change: true`, and **only `main` on the remote**.
+3. `push --message "…"` → `method: manual`, a compare URL, the new branch on the remote, and
+   `main` still byte-identical to its original content.
+4. A second catalog defining the same name → the note fires, naming both catalogs and both sources.
+5. Nothing to push → `DRY_RUN` with `would_change: false`, which is what the second CLI fix bought.
+
+The machine was returned to its starting state afterwards: 42 records, 35 winners, 35 installed,
+`doctor` OK with only the eight pre-existing override warnings.
+
+**Not visually verified.** `PushControl` has been driven by fixtures and by the real CLI underneath
+it, but has not been seen rendered.
