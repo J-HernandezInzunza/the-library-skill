@@ -1,22 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  catalogHue,
-  contributedCatalogs,
-  dependencies,
-  dependents,
-  editableCopies,
-  isOnDisk,
-} from "../catalog";
+import { catalogHue, dependencies, dependents, editableCopies, isOnDisk } from "../catalog";
 import { withActivity } from "../commandActivity";
 import { describeAppError, type Catalog, type Entry, type EntryDetail } from "../types";
 import Busy from "./Busy.vue";
 import StatusBanner from "./StatusBanner.vue";
 import InstallPreview from "./InstallPreview.vue";
 import UninstallControl from "./UninstallControl.vue";
-import EntryEditor from "./EntryEditor.vue";
-import EntryRemove from "./EntryRemove.vue";
 
 const props = defineProps<{
   name: string;
@@ -25,7 +16,13 @@ const props = defineProps<{
   catalogs: Catalog[];
   entries: Entry[];
 }>();
-const emit = defineEmits<{ close: []; open: [name: string]; installed: [] }>();
+const emit = defineEmits<{
+  close: [];
+  open: [name: string];
+  installed: [];
+  /** Hand off to the catalog manager, focused on this copy. */
+  manage: [payload: { catalog: string; name: string }];
+}>();
 
 /** Both views hold state the write just invalidated, so both re-read it. */
 async function afterWrite() {
@@ -33,16 +30,7 @@ async function afterWrite() {
   await load(props.name);
 }
 
-/**
- * After a removal there is no entry left to show.
- *
- * Re-reading would run `show` against a name the catalog no longer has, turning a
- * successful removal into a failed command.
- */
-function afterRemove() {
-  emit("installed");
-  emit("close");
-}
+
 
 const detail = ref<EntryDetail | null>(null);
 const loading = ref(false);
@@ -107,39 +95,17 @@ async function load(name: string) {
 }
 
 /**
- * The copies this app will edit: those in a catalog on this machine (R4.4).
+ * The catalogs whose copy of this name the app will edit (R4.4): those on this machine.
  *
- * Same restriction as the add form, for the same reason — editing a remote catalog's
- * copy pushes a branch to a shared repository, which belongs in that repository's own
- * review workflow.
+ * Only used to decide whether to offer the hand-off. The forms themselves live in the
+ * catalog manager — editing a catalog is a different job from installing an entry, and
+ * mixing them is what made this page read as two pages stapled together.
  */
-const editable = computed(() => editableCopies(detail.value?.copies ?? [], props.catalogs));
-
-/**
- * Which copy the edit and remove controls act on.
- *
- * Named explicitly on every call rather than left to precedence: `update` and `remove`
- * resolve through it otherwise and hand back exit 2 for a name two catalogs hold, which
- * is a question the user has already answered by choosing here.
- */
-const editing = ref<string | null>(null);
-const editingCopy = computed(
-  () => editable.value.find((copy) => copy.catalog === editing.value) ?? editable.value[0] ?? null,
+const editableIds = computed(
+  () => new Set(editableCopies(detail.value?.copies ?? [], props.catalogs).map((c) => c.catalog)),
 );
 
-/** The catalogs holding this name that the app deliberately will not write to. */
-const contributedHolders = computed(() => {
-  const shared = new Set(contributedCatalogs(props.catalogs).map((catalog) => catalog.id));
-  return (detail.value?.copies ?? [])
-    .map((copy) => copy.catalog)
-    .filter((catalog) => shared.has(catalog));
-});
-
 watch(() => props.name, load, { immediate: true });
-// A catalog selected for the previous entry says nothing about this one.
-watch(detail, () => {
-  editing.value = null;
-});
 </script>
 
 <template>
@@ -160,14 +126,6 @@ watch(detail, () => {
       <p class="entry-detail__desc">{{ detail.entry.description }}</p>
 
       <InstallPreview :name="detail.name" @installed="afterWrite()" />
-
-      <UninstallControl
-        :name="detail.name"
-        :scopes="detail.entry.scopes"
-        :installs="detail.installs"
-        :affected="affected.map((user) => user.entry.name)"
-        @uninstalled="afterWrite()"
-      />
 
       <h3 class="entry-detail__section">Source</h3>
       <p class="entry-detail__origin">{{ origin }}</p>
@@ -197,44 +155,18 @@ watch(detail, () => {
             overrides {{ copy.overrides.join(", ") }}
           </p>
           <p class="entry-detail__copy-source">{{ copy.source }}</p>
+          <!-- A pointer, not a form: the edit itself belongs with the other catalog
+               management, but noticing a wrong description happens here. -->
+          <button
+            v-if="editableIds.has(copy.catalog)"
+            type="button"
+            class="ghost entry-detail__manage"
+            @click="emit('manage', { catalog: copy.catalog, name: detail.name })"
+          >
+            Edit this entry in {{ copy.catalog }}
+          </button>
         </li>
       </ul>
-
-      <h3 class="entry-detail__section">Edit the catalog entry</h3>
-      <template v-if="editingCopy">
-        <label v-if="editable.length > 1" class="entry-detail__pick">
-          <span>Which copy</span>
-          <select v-model="editing">
-            <option v-for="copy in editable" :key="copy.catalog" :value="copy.catalog">
-              {{ copy.catalog }}
-            </option>
-          </select>
-        </label>
-
-        <EntryEditor
-          :name="detail.name"
-          :copy="editingCopy"
-          :entries="entries"
-          @saved="afterWrite()"
-        />
-        <EntryRemove
-          :name="detail.name"
-          :copy="editingCopy"
-          :scopes="detail.entry.scopes"
-          :installs="detail.installs"
-          @removed="afterRemove()"
-        />
-      </template>
-
-      <p v-else-if="contributedHolders.length" class="entry-detail__contributed">
-        {{ contributedHolders.join(", ") }}
-        {{ contributedHolders.length > 1 ? "are shared catalogs" : "is a shared catalog" }}, so
-        this entry is changed in the repository itself rather than from here — that way the
-        change goes through the same review as any other.
-      </p>
-      <p v-else class="entry-detail__contributed">
-        No catalog on this machine holds this entry, so there is nothing here to edit.
-      </p>
 
       <template v-if="declared.length">
         <h3 class="entry-detail__section">Requires ({{ declared.length }})</h3>
@@ -332,6 +264,16 @@ watch(detail, () => {
           </p>
         </li>
       </ul>
+
+      <!-- Last, and directly under the list of what it deletes. Destructive and rarely
+           wanted, so it does not belong above everything you came here to read. -->
+      <UninstallControl
+        :name="detail.name"
+        :scopes="detail.entry.scopes"
+        :installs="detail.installs"
+        :affected="affected.map((user) => user.entry.name)"
+        @uninstalled="afterWrite()"
+      />
     </template>
   </section>
 </template>
@@ -484,26 +426,10 @@ watch(detail, () => {
   color: inherit;
   opacity: 0.7;
 }
-.entry-detail__pick {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.78rem;
-  opacity: 0.85;
-}
-.entry-detail__pick select {
-  padding: 0.35rem 0.5rem;
-  border-radius: 8px;
-  border: 1px solid rgba(128, 128, 128, 0.4);
-  background: transparent;
-  color: inherit;
-  font-size: 0.85rem;
-}
-.entry-detail__contributed {
-  margin: 0;
-  font-size: 0.8rem;
-  line-height: 1.5;
-  opacity: 0.7;
+.entry-detail__manage {
+  margin-top: 0.5rem;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.72rem;
 }
 .entry-detail__indirect {
   font-size: 0.7rem;

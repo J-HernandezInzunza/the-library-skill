@@ -448,8 +448,9 @@ unrepresentable.
 | --- | --- | --- |
 | Catalog | list + filter + install status/override badges, in either D15 mode | R2 |
 | Catalog tabs | switch between all-winners and a single catalog's inventory; surfaces precedence, write mode, and skip reasons | R2.4, R2.5 |
-| Entry detail | source, requires, catalogs holding the name, install/sync actions | R2.1, R3 |
-| Add / Update form | explicit fields; requires-multiselect; catalog dropdown from `registry_list` | R4.1–R4.4 |
+| Entry detail | source, requires, catalogs holding the name, install/uninstall; hands off to Catalogs to edit | R2.1, R3 |
+| Add form | explicit fields; requires-multiselect; catalog dropdown from `registry_list` | R4.1–R4.3 |
+| Catalogs | three levels: the registry, one catalog's entries, one entry's edit/remove forms (D18) | R4.4, R4.6a, R4.7 |
 | Command log | every command run + exit status | D5, R3.4 |
 | Walkthrough | chat transcript, tool activity, secure-input modal | R5, R6 |
 | Doctor | errors/warnings from `doctor --json` | R7.3 |
@@ -497,7 +498,27 @@ Three consequences worth stating, because each was a decision:
 The banner is not the activity indicator (§6.3, R7.5) and does not replace it: one says what is
 happening, the other what happened.
 
-### 6.5 Machine-readable fields are not prose
+### 6.5 Reading a page before acting on it, and management as its own subject (D18)
+
+Two orderings, both learned by using the app rather than by reading the code.
+
+**A detail page reads top to bottom as: what it is → get it → where it came from → what it drags
+in → what you have → destroy it.** The uninstall control sits last, directly under the list of
+destinations it deletes. It arrived second-from-top because it was built second, which put two
+destructive controls above every section the page exists to show.
+
+**Managing a catalog is a different job from installing an entry.** D15 already separates "what can
+I use?" from "what's in this catalog?"; the Catalogs view is the second question's action surface,
+and edit/remove belong there rather than on a page about installing. The tell that they were
+misplaced was structural: `add` was one click from the catalog while `update` on the same entry was
+three clicks deep inside the detail view.
+
+The detail page keeps one **hand-off button** per editable copy — it navigates to the manager
+focused on that entry, and hosts no form. That covers the one real cost of the split (noticing a
+wrong description while reading an entry) without giving the same write two homes, which §6.4 has
+already shown is how a convention drifts.
+
+### 6.6 Machine-readable fields are not prose
 
 Text inputs holding an entry name, a branch, a repo URL, or a file path bind `RAW_TEXT`
 (`autocapitalize`/`autocorrect` off, `spellcheck="false"`). macOS capitalises the first letter of a

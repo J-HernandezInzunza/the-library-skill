@@ -338,7 +338,13 @@ export function editableCopies(copies: CatalogCopy[], catalogs: Catalog[]): Cata
   return copies.filter((copy) => editable.has(copy.catalog));
 }
 
-/** The fields an edit form holds, before any comparison with what is stored. */
+/**
+ * The fields an edit form holds, before any comparison with what is stored.
+ *
+ * Structural rather than tied to one payload: `Entry` (a copy, from `list`) and
+ * `CatalogCopy` (a copy, from `show`) carry the same three fields, so the comparison
+ * works from whichever the caller happens to have loaded.
+ */
 export interface EntryDraft {
   description: string;
   source: string;
@@ -359,7 +365,7 @@ export interface EntryDraft {
  * line order.
  */
 export function entryEdits(
-  copy: CatalogCopy,
+  copy: EntryDraft,
   draft: EntryDraft,
 ): Omit<UpdateRequest, "name" | "catalog"> | null {
   const description = draft.description.trim();

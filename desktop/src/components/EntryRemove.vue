@@ -5,8 +5,7 @@ import { purgeable } from "../catalog";
 import { withActivity } from "../commandActivity";
 import {
   describeAppError,
-  type CatalogCopy,
-  type Receipt,
+  type Entry,
   type RemovePreview,
   type RemoveReport,
 } from "../types";
@@ -14,13 +13,8 @@ import Busy from "./Busy.vue";
 import StatusBanner from "./StatusBanner.vue";
 
 const props = defineProps<{
-  name: string;
-  /** The copy being removed. Only one catalog's entry goes away. */
-  copy: CatalogCopy;
-  /** Scopes with a copy on disk, from `entry.scopes` — disk-driven, not receipt-driven. */
-  scopes: string[];
-  /** Receipts, which supply the paths to name but not whether anything is installed. */
-  installs: Receipt[];
+  /** The copy being removed. Only this one catalog's entry goes away. */
+  entry: Entry;
 }>();
 const emit = defineEmits<{ removed: [] }>();
 
@@ -37,8 +31,15 @@ const failure = ref("");
  * the tool repo, so it reaches only the global copy. Offering the checkbox regardless
  * would tick a box that says "delete the installed copies" and leave the project ones
  * untouched, which is worse than not offering it.
+ *
+ * `entry.receipt` is the only one `list` carries, and that is enough here: the checkbox is
+ * offered only when the entry's sole scope is `global`, which is one standard destination.
+ * A `--dir` install never appears in `scopes` at all, so it cannot be under-reported by a
+ * checkbox that has already refused to appear.
  */
-const purge_ = computed(() => purgeable(props.scopes, props.installs));
+const purge_ = computed(() =>
+  purgeable(props.entry.scopes, props.entry.receipt ? [props.entry.receipt] : []),
+);
 
 /**
  * Ask the CLI what the removal would change, rather than describing it from here.
@@ -53,10 +54,10 @@ async function startPreview() {
   report.value = null;
   purge.value = false;
   try {
-    preview.value = await withActivity(`checking what removing ${props.name} changes…`, () =>
+    preview.value = await withActivity(`checking what removing ${props.entry.name} changes…`, () =>
       invoke<RemovePreview>("entry_remove_preview", {
-        name: props.name,
-        catalog: props.copy.catalog,
+        name: props.entry.name,
+        catalog: props.entry.catalog,
       }),
     );
   } catch (e) {
@@ -70,12 +71,14 @@ async function confirm() {
   running.value = true;
   failure.value = "";
   try {
-    report.value = await withActivity(`removing ${props.name} from ${props.copy.catalog}…`, () =>
-      invoke<RemoveReport>("entry_remove", {
-        name: props.name,
-        catalog: props.copy.catalog,
-        purge: purge.value,
-      }),
+    report.value = await withActivity(
+      `removing ${props.entry.name} from ${props.entry.catalog}…`,
+      () =>
+        invoke<RemoveReport>("entry_remove", {
+          name: props.entry.name,
+          catalog: props.entry.catalog,
+          purge: purge.value,
+        }),
     );
     preview.value = null;
     emit("removed");
@@ -92,7 +95,7 @@ function cancel() {
 }
 
 watch(
-  () => [props.name, props.copy.catalog],
+  () => [props.entry.name, props.entry.catalog],
   () => {
     cancel();
     report.value = null;
@@ -122,29 +125,30 @@ watch(
       :disabled="running"
       @click="startPreview()"
     >
-      Remove from {{ copy.catalog }}
+      Remove from {{ entry.catalog }}
     </button>
 
     <Busy v-if="running && !preview" inline label="Checking what would change…" />
 
     <div v-if="preview" class="remove__confirm fade-in">
       <p class="remove__question">
-        Remove {{ preview.removed.name }} from {{ copy.catalog }}?
+        Remove {{ preview.removed.name }} from {{ entry.catalog }}?
       </p>
 
       <p v-if="preview.dependents.length" class="remove__dependents">
         {{ preview.dependents.length }}
-        {{ preview.dependents.length === 1 ? "entry in" : "entries in" }} {{ copy.catalog }}
+        {{ preview.dependents.length === 1 ? "entry in" : "entries in" }} {{ entry.catalog }}
         still {{ preview.dependents.length === 1 ? "requires" : "require" }} this one and will
         no longer resolve: {{ preview.dependents.join(", ") }}.
       </p>
 
       <pre class="remove__diff">{{ preview.diff }}</pre>
 
-      <template v-if="scopes.length">
+      <template v-if="entry.scopes.length">
         <p class="remove__orphan">
-          {{ name }} is installed ({{ scopes.join(", ") }}). Removing the catalog entry leaves
-          those files where they are, and there will be no entry left to uninstall them from.
+          {{ entry.name }} is installed ({{ entry.scopes.join(", ") }}). Removing the catalog
+          entry leaves those files where they are, and there will be no entry left to uninstall
+          them from.
         </p>
         <label v-if="purge_.offered" class="remove__purge">
           <input v-model="purge" type="checkbox" />
@@ -158,13 +162,13 @@ watch(
         </label>
         <p v-else class="remove__orphan">
           The {{ purge_.blockedBy.join(" and ") }} copy lives in its own directory, so it can
-          only be deleted from there. Use <strong>Remove installed copies</strong> above first,
-          then remove the entry.
+          only be deleted from there. Open {{ entry.name }} from the catalog and use
+          <strong>Remove installed copies</strong> first, then remove the entry.
         </p>
       </template>
 
       <p class="remove__note">
-        Only {{ copy.catalog }}'s copy of the entry is removed. The file the source points at
+        Only {{ entry.catalog }}'s copy of the entry is removed. The file the source points at
         is not touched.
       </p>
 

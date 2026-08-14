@@ -3,15 +3,14 @@ import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { entryEdits, requirableRefs } from "../catalog";
 import { withActivity } from "../commandActivity";
-import { describeAppError, type CatalogCopy, type Entry, type UpdateReport } from "../types";
+import { describeAppError, type Entry, type UpdateReport } from "../types";
 import { RAW_TEXT } from "../rawText";
 import Busy from "./Busy.vue";
 import StatusBanner from "./StatusBanner.vue";
 
 const props = defineProps<{
-  name: string;
-  /** The copy being edited, which is also where the form's starting values come from. */
-  copy: CatalogCopy;
+  /** The copy being edited: one catalog's record, which is where the fields start from. */
+  entry: Entry;
   /** The loaded catalog, for the requires picker. */
   entries: Entry[];
 }>();
@@ -33,11 +32,11 @@ const report = ref<UpdateReport | null>(null);
  * another's entry.
  */
 watch(
-  () => [props.copy, open.value] as const,
+  () => [props.entry, open.value] as const,
   () => {
-    description.value = props.copy.description;
-    source.value = props.copy.source;
-    requires.value = [...props.copy.requires];
+    description.value = props.entry.description;
+    source.value = props.entry.source;
+    requires.value = [...props.entry.requires];
     failure.value = "";
     report.value = null;
   },
@@ -45,7 +44,7 @@ watch(
 );
 
 /** Only this catalog's entries: a ref into another catalog dangles (D9). */
-const available = computed(() => requirableRefs(props.entries, props.copy.catalog));
+const available = computed(() => requirableRefs(props.entries, props.entry.catalog));
 
 /**
  * What would be sent, or null when nothing was touched.
@@ -54,7 +53,7 @@ const available = computed(() => requirableRefs(props.entries, props.copy.catalo
  * control that refuses without explaining reads as a broken one.
  */
 const edits = computed(() =>
-  entryEdits(props.copy, {
+  entryEdits(props.entry, {
     description: description.value,
     source: source.value,
     requires: requires.value,
@@ -76,9 +75,9 @@ async function save() {
   failure.value = "";
   report.value = null;
   try {
-    report.value = await withActivity(`updating ${props.name}…`, () =>
+    report.value = await withActivity(`updating ${props.entry.name}…`, () =>
       invoke<UpdateReport>("entry_update", {
-        request: { name: props.name, catalog: props.copy.catalog, ...changed },
+        request: { name: props.entry.name, catalog: props.entry.catalog, ...changed },
       }),
     );
     emit("saved");
@@ -93,7 +92,7 @@ async function save() {
 <template>
   <section class="editor">
     <button v-if="!open" type="button" class="ghost" @click="open = true">
-      Edit this entry in {{ copy.catalog }}
+      Edit this entry
     </button>
 
     <template v-else>
@@ -108,7 +107,7 @@ async function save() {
         </p>
       </StatusBanner>
 
-      <h3 class="editor__title">Editing the copy in {{ copy.catalog }}</h3>
+      <h3 class="editor__title">Editing the copy in {{ entry.catalog }}</h3>
       <p class="editor__note">
         The name and type cannot be changed here: both decide where the entry lives in the
         file. Remove it and add it again to change either.

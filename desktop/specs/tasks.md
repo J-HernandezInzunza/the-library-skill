@@ -494,6 +494,23 @@ leaves the entry reinstallable, `remove` does not, so the same dependent list me
     offered only when every installed copy is global. Gate passes.
   - **Commit:** `feat(desktop): update and remove entries in the catalogs you own`
 
+- [x] **T4.4a — Catalog management is its own view (unplanned, found by using the app)**
+  - **Files:** `desktop/src/components/Catalogs.vue`, `EntryDetail.vue`, `App.vue`
+  - **Requirements:** R2.6, R4.4, D15, D18
+  - **Do:** Move the edit and remove forms out of the entry detail page into a top-level
+    **Catalogs** view with three levels: the registry, one catalog's entries one line each, and
+    one entry's forms. T4.4 put them on the detail page, which left *adding* an entry one click
+    from the catalog and *editing* the same entry three clicks deep inside a view about
+    installing it — and D15 already says "what can I use?" and "what's in this catalog?" are
+    different questions. The detail page keeps a quiet **Edit this entry in …** button on each
+    editable copy that hands off to the manager focused on that entry: a pointer, not a form.
+    Reorder the detail page so the destructive control is last, directly under the list of what
+    it deletes.
+  - **Verify:** Editing from the manager and from the detail hand-off reach the same form.
+    Removing an entry from the manager leaves the detail view behind it unreachable rather than
+    broken. Gate passes.
+  - **Commit:** `feat(desktop): manage catalog entries in their own view`
+
 - [ ] **T4.5 — Push, and surfacing the PR**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/`
   - **Requirements:** R4.5
@@ -504,9 +521,13 @@ leaves the entry reinstallable, `remove` does not, so the same dependent list me
     protected branch. Gate passes.
   - **Commit:** `feat(desktop): push changes back and surface the resulting PR URL`
 
-- [ ] **T4.6 — Catalog settings**
-  - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/components/CatalogSettings.vue`
-  - **Requirements:** R4.7, D16
+- [ ] **T4.6 — Registering and unregistering catalogs**
+  - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/components/Catalogs.vue`
+  - **Requirements:** R4.7, D16, D18
+  - **Note:** No longer a separate `CatalogSettings.vue`. T4.4a built the **Catalogs** view and
+    its first level is already the registry, so this task fills that level in rather than adding
+    a second surface for the same subject. Registering a catalog and managing what is in it are
+    two levels of one thing.
   - **Do:** `registry_add` and `registry_remove` over `catalog add` / `catalog remove`, reached
     from a settings surface rather than first run. A local catalog is chosen with a native
     directory picker, labelled as the CLI defines it — a `library.yaml`, or a directory holding

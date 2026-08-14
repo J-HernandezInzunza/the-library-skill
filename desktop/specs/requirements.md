@@ -69,6 +69,7 @@ implementation; changing one is a spec change, not an implementation choice.
 | D15 | The catalog view lists **one row per catalog copy**, with each name's copies kept adjacent, and offers a "hide overridden" toggle that collapses to just the copies that would install. Selecting a single catalog shows that catalog's inventory. In every mode a row carries exactly **one** mutually-exclusive status, so an overridden copy reports the override in place of an install state. | Showing every copy is what makes a shadowed catalog visible at all — with winners only, a catalog whose entries are all overridden never appears in the main view, and divergence from the team's copy is invisible. The single-status rule, not hiding rows, is what fixes the original defect: independent badges once rendered `not installed` beside `overridden by personal` for a skill that was installed. Copies are grouped at the position of the name's first copy rather than sorted, because entries arrive in catalog-precedence order and sorting would either clump every overridden copy at the end or discard the catalog's own ordering. |
 | D16 | The GUI registers catalogs by invoking `library init` and `library catalog add`, never by writing `config.local.yaml`. First run runs `init` only; further catalogs are added later from settings. | Running a CLI command from a form is the same thin-client pattern as `use` (D6), so R1.1 holds — what stays out of scope is the app authoring YAML. The order is forced by the CLI, not chosen: `init` requires `--repo` and is the only command that can create the config, while `catalog add` exits 1 until one exists. Splitting them also avoids a partial-success state (`init` wrote the config, `catalog add` failed) that the CLI has no transaction around. |
 | D17 | Every Tauri command is `async` and runs its blocking work through `spawn_blocking`; no subprocess is ever awaited on the main thread. | Tauri runs a synchronous command on the thread that paints the window, so every command froze the whole UI for its duration — measured, not theorised. A bare `async fn` is not enough: these bodies block with no await points, so they would stall an async-runtime worker instead. Enforced by a source-level test because the defect passes every other check and only shows up as an unresponsive window. |
+| D18 | Catalog **management** (editing and removing entries, and later registering catalogs) lives in its own top-level **Catalogs** view, not on an entry's detail page. The detail page keeps a hand-off button, never a form. | The app already splits "what can I use?" from "what's in this catalog?" (D15); management is the second question's action surface. Leaving it on the detail page put *adding* an entry one click from the catalog and *editing* the same entry three clicks deep inside a view about installing it. The one real cost is discoverability — noticing a wrong description while reading an entry — which the hand-off covers without duplicating the form. |
 | D13 | A collected secret is delivered per the skill's declared `delivery` mode: `config-file` (default), `env`, or `manual`. The app writes only to the skill's declared `config.path`. | `atlassian-toolkit`'s durable store is a config file, so env injection alone would not persist. Skills that want the human to type the credential themselves declare `manual`. |
 
 ## Requirements
@@ -140,7 +141,12 @@ implementation; changing one is a spec change, not an implementation choice.
 - R4.6 First run collects the shared catalog's repo URL and branch in a form and runs
   `library init`. Directing a teammate to a terminal here contradicts the app's reason to exist:
   it is the first screen a new user sees, and they have no catalog until it is done.
-- R4.7 Registered catalogs can be added and removed after first run, from a settings surface.
+- R4.6a Editing and removing catalog entries happen in the **Catalogs** view, which has three
+  levels: the registered catalogs, one catalog's entries, and one entry's forms (D18). The entry
+  detail view offers a hand-off to that view for each copy it could edit, and hosts no write form
+  of its own.
+- R4.7 Registered catalogs can be added and removed after first run, from the first level of that
+  same view.
   Adding a local catalog uses a native directory picker; the CLI defines a local catalog as a
   `library.yaml` or a directory holding one. Precedence is presented in plain language, because
   the default (`--position first`) silently decides which copy of a name installs.
@@ -209,7 +215,7 @@ implementation; changing one is a spec change, not an implementation choice.
   to learn two locations for it (design.md §6.4).
 - R7.7 Fields holding machine-readable values — entry names, branches, URLs, paths — disable
   auto-capitalisation, auto-correction, and spellcheck. The CLI matches entry names exactly, so an
-  auto-capitalised name silently becomes a different entry (design.md §6.5).
+  auto-capitalised name silently becomes a different entry (design.md §6.6).
 
 ### R8 — Build and run from source
 

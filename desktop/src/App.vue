@@ -21,6 +21,7 @@ const EntryDetail = defineAsyncComponent(() => import("./components/EntryDetail.
 const Doctor = defineAsyncComponent(() => import("./components/Doctor.vue"));
 const Sync = defineAsyncComponent(() => import("./components/Sync.vue"));
 const AddEntry = defineAsyncComponent(() => import("./components/AddEntry.vue"));
+const Catalogs = defineAsyncComponent(() => import("./components/Catalogs.vue"));
 
 // Attached here, at the earliest point in the app, so the command log and the activity
 // bar are subscribed before anything can run.
@@ -45,6 +46,13 @@ const previousEntry = computed(() => trail.value.at(-2) ?? null);
 const showDoctor = ref(false);
 const showSync = ref(false);
 const showAdd = ref(false);
+/**
+ * The catalog manager, and where inside it to land.
+ *
+ * Held here rather than inside the view so the detail page can hand off to a specific
+ * entry: "edit this" has to arrive at the form, not at the top of a three-level view.
+ */
+const manage = ref<{ catalog: string | null; entry: string | null } | null>(null);
 /** Collapse the catalog to just the copies that would actually install. */
 const hideOverridden = ref(false);
 // True from the start: the app always loads on mount, and defaulting to false shows an
@@ -63,6 +71,9 @@ async function load() {
     );
     entries.value = loadedEntries;
     catalogs.value = loadedCatalogs;
+    // Only on a successful load: a failed one empties the list, and pruning against that
+    // would discard the trail every time the CLI hiccups.
+    pruneTrail(loadedEntries);
   } catch (e) {
     failure.value = e;
     entries.value = [];
@@ -70,6 +81,18 @@ async function load() {
   } finally {
     loading.value = false;
   }
+}
+
+/**
+ * Drop trail entries the catalog no longer has.
+ *
+ * Removing an entry from the catalog manager can delete the very name the detail view
+ * behind it is showing, and Back would then run `show` against a name that is gone —
+ * turning a successful removal into a failed command one click later.
+ */
+function pruneTrail(loaded: Entry[]) {
+  const known = new Set(loaded.map((entry) => entry.name));
+  trail.value = trail.value.filter((name) => known.has(name));
 }
 
 /**
@@ -162,6 +185,17 @@ onMounted(async () => {
       @added="load()"
     />
 
+    <Catalogs
+      v-else-if="manage"
+      :catalogs="catalogs"
+      :entries="entries"
+      :at-catalog="manage.catalog"
+      :at-entry="manage.entry"
+      :back-to="openEntry ?? 'catalog'"
+      @close="manage = null"
+      @changed="load()"
+    />
+
     <EntryDetail
       v-else-if="openEntry"
       :name="openEntry"
@@ -171,6 +205,7 @@ onMounted(async () => {
       @close="trail.pop()"
       @open="trail.push($event)"
       @installed="load()"
+      @manage="manage = { catalog: $event.catalog, entry: $event.name }"
     />
 
     <template v-else>
@@ -183,6 +218,13 @@ onMounted(async () => {
           placeholder="Search skills, agents, prompts…"
         />
         <button type="button" class="ghost" @click="showAdd = true">Add</button>
+        <button
+          type="button"
+          class="ghost"
+          @click="manage = { catalog: null, entry: null }"
+        >
+          Catalogs
+        </button>
         <button type="button" class="ghost" @click="load()">Refresh</button>
         <button type="button" class="ghost" @click="showSync = true">Sync</button>
         <button type="button" class="ghost" @click="showDoctor = true">Doctor</button>

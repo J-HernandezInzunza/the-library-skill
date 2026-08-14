@@ -1417,3 +1417,64 @@ purge argv test.
 **Not visually verified.** `EntryEditor` and `EntryRemove` have been driven by fixtures and by the
 real CLI underneath them, but neither has been seen rendered — the same backlog every phase has
 carried, and G1 is still why it is verified by eye rather than by test.
+
+---
+
+## T4.4a — the detail page was two pages stapled together
+
+Reported after using T4.4: the detail page has no clear flow, removal sits at the top for an
+operation nobody performs often, and the edit block "almost feels out of place here".
+
+Both correct, and the second one is a structural mistake rather than a placement one. **The app
+had already made this split and then contradicted it.** D15 exists because "what can I use?" and
+"what's in this catalog?" are different questions that one row layout cannot answer. Catalog
+management is the second question's action surface. Leaving it on the detail page meant *adding*
+an entry was one click from the catalog, via a top-level `AddEntry` view, while *editing the same
+entry* was three clicks deep inside a view about installing it. The tell was there in the
+navigation, not in the styling.
+
+**So management became a view of its own, with three levels:** the registered catalogs, one
+catalog's entries (one line each), and one entry's edit and remove forms. Recorded as **D18**.
+
+**T4.6 folded into it rather than becoming a second surface.** It was planned as a separate
+`CatalogSettings.vue` for `catalog add` / `catalog remove` — which is the *registry*, i.e. exactly
+level one of this view. Registering a catalog and managing what is in it are two levels of one
+subject, and two screens for it would have re-created the same split this task exists to undo.
+T4.6's task text now says so.
+
+**The detail page keeps a hand-off, never a form.** The one genuine cost of the move is
+discoverability: noticing a wrong description while reading an entry, and having to navigate away
+to fix it. Each editable copy therefore carries an **Edit this entry in <catalog>** button that
+opens the manager *focused on that entry*. A button, not a duplicated form — §6.4 already
+established what happens when one write gets two homes.
+
+**The reordering is a rule, not a nudge.** A detail page now reads: what it is → get it → where it
+came from → what it drags in → what you have → destroy it. `UninstallControl` moved from
+second-from-top to last, directly under the "Installed copies" list it deletes from. It was near
+the top only because it was built second.
+
+### Two flow bugs the move created, both found by tracing the navigation rather than the types
+
+- **Back had the wrong label.** Arriving at the manager from an entry's detail page and pressing
+  Back at level one returns to *that entry*, not to the catalog list — the trail is still behind
+  it. The button said "← Catalog". It now takes a `backTo` prop from `App`, which is the only
+  component that knows where the user actually came from.
+- **A removal could strand the view behind it.** Remove `grilling` from the manager, press Back,
+  and `EntryDetail` runs `show grilling` against a catalog that no longer has it — turning a
+  successful removal into a failed command one click later. `load()` now prunes the trail against
+  the entries it just read, and **only on a successful load**: a failed one returns an empty list,
+  and pruning against that would discard the trail every time the CLI hiccups.
+
+**`EntryEditor` and `EntryRemove` now take an `Entry` rather than a `name` plus a `CatalogCopy`.**
+The manager works from `list`, which returns one record per copy and carries every field the forms
+need; `show`'s `copies[]` carried the same three. `entryEdits` was retyped to the structural
+`EntryDraft` on both sides so it compares whichever payload the caller happens to hold, rather than
+one component owning the only shape that fits.
+
+One consequence worth naming: `EntryRemove` gets its purge path from `entry.receipt`, which is the
+single worst-state receipt `list` carries rather than the full `installs[]` `show` returns. That is
+enough here and not a compromise: the purge checkbox appears only when the entry's sole scope is
+`global`, which is one standard destination, and a `--dir` install never appears in `scopes` at all.
+The narrower payload cannot under-report a control that has already refused to appear.
+
+**Still not visually verified**, as with T4.4.
