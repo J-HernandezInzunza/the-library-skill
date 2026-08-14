@@ -127,6 +127,37 @@ export interface UseReport {
   overridden_by: string | null;
 }
 
+/** One installed entry `library sync` looked at. */
+export interface SyncedItem {
+  type: string;
+  name: string;
+  catalog: string;
+  scope: string;
+  /**
+   * The state *before* the refresh. Afterwards the copy matches its source, so this
+   * is the only record that a local edit was discarded.
+   */
+  state: string;
+  /** Source head and local copy both matched the receipt, so nothing was fetched. */
+  up_to_date: boolean;
+  changes: Changes;
+}
+
+/** An entry sync could not refresh, with the reason it gave. */
+export interface SyncFailure {
+  type: string;
+  name: string;
+  catalog: string;
+  reason: string;
+}
+
+/** What `library sync --json` reports. `status` is `OK` or `PARTIAL`. */
+export interface SyncReport {
+  status: string;
+  synced: SyncedItem[];
+  failed: SyncFailure[];
+}
+
 /** The exact argv about to run, from `command://started`. */
 export interface CommandStarted {
   id: number;

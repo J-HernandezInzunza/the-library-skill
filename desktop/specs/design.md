@@ -112,7 +112,7 @@ One Tauri command per operation (R1.2) — never a generic passthrough:
 | `catalog_doctor` | `doctor --json` (+`--deep`) — tolerates exit 1 (§3.7) | R7.3 |
 | `entry_use_preview` | `use <name> --dry-run --json` (+scope/`--catalog`) | R3.2 |
 | `entry_use` | `use <name> --json` (+`--project`/`--dir`/`--catalog`) — tolerates exit 1 (§3.7) | R3.1 |
-| `catalog_sync` | `sync --json` | R3.3 |
+| `catalog_sync` | `sync --json` (+`--force`) — tolerates exit 1 (§3.7) | R3.3 |
 | `entry_add` | `add --name … --type … --description … --source … [--requires]… [--catalog]` | R4.1 |
 | `entry_update` | `update <name> [--add-requires …] [--catalog]` | R4.4 |
 | `entry_remove` | `remove <name> [--catalog]` | R4.4 |
@@ -198,6 +198,11 @@ tolerant path keys only on `status` being present, so it would hand that back as
 report. `use_entry` therefore checks `status == "OK"` itself and turns anything else into
 `AppError::Cli` carrying the `reason`. **Tolerating the exit code is not the same as trusting the
 body**; a command that opts in has to say which bodies mean success.
+
+`sync` is the third, and it settles the pattern: exit 1 means some items failed, having already
+refreshed the rest, and the body is `status: "PARTIAL"` with both lists populated. So each opting-in
+command names the statuses that mean success — `doctor` takes any, `use` takes `OK`, `sync` takes
+`OK` or `PARTIAL` — and anything else is an error.
 
 A new command with this shape needs the same explicit opt-in; the strict path stays the default so
 a silent failure can't be mistaken for a report.

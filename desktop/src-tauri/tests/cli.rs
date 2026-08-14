@@ -328,6 +328,41 @@ fn a_global_install_stays_anchored_at_the_tool_repo() {
 }
 
 #[test]
+fn a_sync_that_changed_nothing_is_the_healthy_result_not_an_empty_one() {
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let report = cli::sync(&log, false).expect("fixture sync should parse");
+
+    // --force is opt-in: skipping unchanged items is what makes a routine sync cheap.
+    assert_eq!(&log.started.lock().unwrap()[0].argv[1..], ["sync", "--json"]);
+    assert_eq!(report.status, "OK");
+    assert!(report.synced[0].up_to_date);
+    assert!(report.failed.is_empty());
+}
+
+#[test]
+fn a_partial_sync_reports_both_what_refreshed_and_what_failed() {
+    // sync exits 1 when any item failed, having already refreshed the rest. Treating
+    // that as a failure would hide every item that did sync.
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let report = cli::sync(&log, true).expect("exit 1 with PARTIAL is a report");
+
+    assert_eq!(&log.started.lock().unwrap()[0].argv[1..], ["sync", "--force", "--json"]);
+    assert_eq!(report.status, "PARTIAL");
+    assert_eq!(report.synced.len(), 2);
+    assert_eq!(report.failed.len(), 1);
+    assert!(report.failed[0].reason.contains("repository not found"));
+    // The pre-refresh state is the only record that a local edit was discarded.
+    let refreshed = &report.synced[1];
+    assert_eq!(refreshed.state, "drifted");
+    assert!(!refreshed.up_to_date);
+    assert_eq!(refreshed.changes.modified, ["SKILL.md"]);
+}
+
+#[test]
 fn a_skipped_catalog_is_still_listed_with_its_reason() {
     let _guard = with_fixture_home();
     let catalogs: Vec<Catalog> = cli::registry(&Recorder::default()).expect("fixture registry should parse");

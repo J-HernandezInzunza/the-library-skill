@@ -15,6 +15,7 @@ const FirstRun = defineAsyncComponent(() => import("./components/FirstRun.vue"))
 // Only reached by clicking into an entry, so it stays out of the initial bundle.
 const EntryDetail = defineAsyncComponent(() => import("./components/EntryDetail.vue"));
 const Doctor = defineAsyncComponent(() => import("./components/Doctor.vue"));
+const Sync = defineAsyncComponent(() => import("./components/Sync.vue"));
 
 const entries = ref<Entry[]>([]);
 const catalogs = ref<Catalog[]>([]);
@@ -33,6 +34,7 @@ const openEntry = computed(() => trail.value.at(-1) ?? null);
 /** The entry Back returns to, or null when that is the catalog. */
 const previousEntry = computed(() => trail.value.at(-2) ?? null);
 const showDoctor = ref(false);
+const showSync = ref(false);
 /** Collapse the catalog to just the copies that would actually install. */
 const hideOverridden = ref(false);
 const loading = ref(false);
@@ -134,6 +136,8 @@ onMounted(load);
 
     <Doctor v-else-if="showDoctor" @close="showDoctor = false" />
 
+    <Sync v-else-if="showSync" @close="showSync = false" @synced="load()" />
+
     <EntryDetail
       v-else-if="openEntry"
       :name="openEntry"
@@ -155,6 +159,7 @@ onMounted(load);
           placeholder="Search skills, agents, prompts…"
         />
         <button type="button" class="ghost" @click="load()">Refresh</button>
+        <button type="button" class="ghost" @click="showSync = true">Sync</button>
         <button type="button" class="ghost" @click="showDoctor = true">Doctor</button>
       </form>
     </header>

@@ -331,7 +331,7 @@ change in this repo, alongside `unresolved_requires[]` which T2.5 added the same
     confirmed destination matches the preview. Gate passes.
   - **Commit:** `feat(desktop): install into a project directory chosen per install`
 
-- [ ] **T3.4 — Sync**
+- [x] **T3.4 — Sync**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/`
   - **Requirements:** R3.3
   - **Do:** `catalog_sync` with per-item change summaries (`~`/`+`/`-`, `no changes`, `new install`).

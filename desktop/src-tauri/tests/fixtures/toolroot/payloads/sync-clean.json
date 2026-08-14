@@ -1,0 +1,20 @@
+{
+  "status": "OK",
+  "synced": [
+    {
+      "type": "skill",
+      "name": "atlassian-toolkit",
+      "catalog": "personal",
+      "scope": "global",
+      "state": "installed",
+      "up_to_date": true,
+      "changes": {
+        "new_install": false,
+        "added": [],
+        "removed": [],
+        "modified": []
+      }
+    }
+  ],
+  "failed": []
+}

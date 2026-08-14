@@ -10,7 +10,8 @@ pub mod error;
 pub mod events;
 
 use cli::{
-    BootstrapReport, Catalog, DoctorReport, Entry, EntryDetail, InitReport, UsePreview, UseReport,
+    BootstrapReport, Catalog, DoctorReport, Entry, EntryDetail, InitReport, SyncReport, UsePreview,
+    UseReport,
 };
 use error::AppError;
 
@@ -52,6 +53,12 @@ fn entry_use(
     cli::use_entry(&app, &name, project.as_deref())
 }
 
+/// Re-pull every installed entry (R3.3). `force` re-fetches even unchanged ones.
+#[tauri::command]
+fn catalog_sync(app: tauri::AppHandle, force: bool) -> Result<SyncReport, AppError> {
+    cli::sync(&app, force)
+}
+
 /// Catalog health, including the checks that reach the network when `deep`.
 #[tauri::command]
 fn catalog_doctor(app: tauri::AppHandle, deep: bool) -> Result<DoctorReport, AppError> {
@@ -90,6 +97,7 @@ pub fn run() {
             entry_show,
             entry_use_preview,
             entry_use,
+            catalog_sync,
             catalog_doctor,
             catalog_init,
             registry_list,

@@ -217,6 +217,46 @@ pub struct Changes {
     pub modified: Vec<String>,
 }
 
+/// What `sync --json` reports. `status` is `OK` or `PARTIAL`.
+///
+/// `PARTIAL` is a complete report with some items failed, not a failed run — the items
+/// that did sync were still written.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SyncReport {
+    pub status: String,
+    #[serde(default)]
+    pub synced: Vec<SyncedItem>,
+    #[serde(default)]
+    pub failed: Vec<SyncFailure>,
+}
+
+/// One installed entry sync looked at.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SyncedItem {
+    pub r#type: String,
+    pub name: String,
+    pub catalog: String,
+    pub scope: String,
+    /// The state *before* the refresh. After it the copy matches its source, so this is
+    /// the last moment a local edit is observable — and the only place the app can say
+    /// that one was discarded.
+    pub state: String,
+    /// True when the source head and the local copy both matched the receipt, so
+    /// nothing was fetched. The common, healthy outcome.
+    #[serde(default)]
+    pub up_to_date: bool,
+    pub changes: Changes,
+}
+
+/// An entry sync could not refresh, with the reason it gave.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SyncFailure {
+    pub r#type: String,
+    pub name: String,
+    pub catalog: String,
+    pub reason: String,
+}
+
 /// What `init --json` reports once a catalog is registered and cloned.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InitReport {
@@ -480,6 +520,32 @@ pub fn use_entry(
             .map(String::from)
             .unwrap_or_else(|| body.to_string());
         return Err(AppError::Cli { code: 1, stderr: reason });
+    }
+    parse(body)
+}
+
+/// Re-pull every installed entry (R3.3).
+///
+/// Tolerant of exit 1 for the same reason `use` is: sync returns 1 when any item
+/// failed, having already refreshed the ones that did not. `PARTIAL` is that report,
+/// not a failure, so both statuses are accepted — anything else is a real error.
+///
+/// `force` re-fetches items whose source and local copy both match the receipt. Offered
+/// as an explicit action, never a default: skipping them is what makes a routine sync
+/// cheap and offline.
+pub fn sync(sink: &dyn CommandSink, force: bool) -> Result<SyncReport, AppError> {
+    let mut args = vec!["sync"];
+    if force {
+        args.push("--force");
+    }
+
+    let body = run_report(sink, &args, &library_home())?;
+    let status = body.get("status").and_then(|s| s.as_str());
+    if !matches!(status, Some("OK" | "PARTIAL")) {
+        return Err(AppError::Cli {
+            code: 1,
+            stderr: body.to_string(),
+        });
     }
     parse(body)
 }

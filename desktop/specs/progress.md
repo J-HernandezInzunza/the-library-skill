@@ -604,3 +604,48 @@ acknowledgement is read from.
 **New dependency:** `tauri-plugin-dialog`, with `dialog:allow-open` added to the default
 capability rather than `dialog:default` — the app opens a directory picker and never saves or
 prompts, so the narrower permission is the accurate one.
+
+---
+
+## T3.4 — sync, and the third command whose exit 1 is a report
+
+`catalog_sync` runs `sync --json` behind a new top-level view, split three ways: refreshed,
+already up to date, and failed.
+
+**The exit-code pattern is now settled rather than case-by-case.** Three commands opt out of the
+strict mapping, and each names the statuses that mean success:
+
+| Command | Exit 1 means | Accepted statuses |
+| --- | --- | --- |
+| `doctor` | it found problems | any |
+| `use` | an installed item's main file is missing | `OK` |
+| `sync` | some items failed, the rest refreshed | `OK`, `PARTIAL` |
+
+Tolerating the exit code and trusting the body are separate decisions, which is why `use` rejects
+`ERROR` and `sync` accepts `PARTIAL`. Recorded in design.md §3.7.
+
+**`up_to_date` is rendered as its own outcome, not as an empty diff.** The CLI now skips any item
+whose source head and local copy both match the receipt, so "nothing happened" is the common,
+healthy result — and `no changes` next to `refreshed` would read as a failed fetch. The view leads
+with the counts and files unchanged items into their own dimmed section.
+
+**Pre-refresh `state` is the only record that an edit was lost.** After a refresh the copy matches
+its source, so `drifted` is unobservable a second later. The view surfaces it twice: as a banner
+naming the entries whose local edits were replaced, and as a marker on the row. This is a report,
+not a warning — by the time sync answers, the edits are already gone. Preventing that is
+`--force`'s absence, not a confirmation.
+
+**`--force` is an explicit second button**, never the default: skipping unchanged items is what
+makes a routine sync cheap and offline, and defaulting to force would re-clone 35 repos to
+discover nothing changed.
+
+**Verified against the live catalog:**
+
+- Sync twice: 35 synced, **35 up to date**, 0 failed, no fetch.
+- Appended a line to an installed `grilling/SKILL.md`, then synced: reported `state: "drifted"`,
+  `up_to_date: false`, `changes.modified: ["SKILL.md"]`, and 34 of 35 still up to date — so the
+  skip logic isolates the one item that actually changed.
+- The local edit was gone afterwards and the file matched the original install byte for byte,
+  which is the behaviour the banner exists to report.
+
+**Still not visually verified**, along with everything else outside the catalog list.

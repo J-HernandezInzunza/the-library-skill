@@ -66,6 +66,15 @@ case "$sub" in
         ;;
     esac
     ;;
+  sync)
+    # Without --force sync skips items whose source and local copy both match the
+    # receipt, so "nothing happened" is the healthy result. With it, everything is
+    # re-fetched and one item fails — exit 1 with the whole report still printed.
+    case " $* " in
+      *" --force "*) cat "$here/payloads/sync.json"; exit 1 ;;
+      *)             cat "$here/payloads/sync-clean.json" ;;
+    esac
+    ;;
   catalog)
     # `catalog list` — the subcommand arrives as "$1" after the shift.
     cat "$here/payloads/catalogs.json"
