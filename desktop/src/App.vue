@@ -21,8 +21,17 @@ const catalogs = ref<Catalog[]>([]);
 /** The catalog being browsed; `null` browses every catalog's winning entries. */
 const activeCatalog = ref<string | null>(null);
 const query = ref("");
-/** The entry whose detail view is open, if any. */
-const openEntry = ref<string | null>(null);
+/**
+ * The entries clicked into, most recent last.
+ *
+ * A trail rather than a single name so Back returns to where you came from: opening a
+ * dependency from a detail view and landing back on the full catalog loses your place
+ * exactly when you are walking a dependency chain.
+ */
+const trail = ref<string[]>([]);
+const openEntry = computed(() => trail.value.at(-1) ?? null);
+/** The entry Back returns to, or null when that is the catalog. */
+const previousEntry = computed(() => trail.value.at(-2) ?? null);
 const showDoctor = ref(false);
 const loading = ref(false);
 /** Kept typed rather than stringified: a first-run state is recoverable, not an error. */
@@ -120,10 +129,11 @@ onMounted(load);
     <EntryDetail
       v-else-if="openEntry"
       :name="openEntry"
+      :back-to="previousEntry"
       :catalogs="catalogs"
       :entries="entries"
-      @close="openEntry = null"
-      @open="openEntry = $event"
+      @close="trail.pop()"
+      @open="trail.push($event)"
     />
 
     <template v-else>
@@ -153,7 +163,7 @@ onMounted(load);
       :rows="filtered"
       :catalogs="catalogs"
       :show-origin="multiCatalog"
-      @select="openEntry = $event"
+      @select="trail = [$event]"
     />
     </template>
 

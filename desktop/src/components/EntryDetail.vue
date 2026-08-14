@@ -4,7 +4,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { catalogHue, dependencies } from "../catalog";
 import { describeAppError, type Catalog, type Entry, type EntryDetail } from "../types";
 
-const props = defineProps<{ name: string; catalogs: Catalog[]; entries: Entry[] }>();
+const props = defineProps<{
+  name: string;
+  /** The entry Back returns to; null means the catalog. */
+  backTo: string | null;
+  catalogs: Catalog[];
+  entries: Entry[];
+}>();
 defineEmits<{ close: []; open: [name: string] }>();
 
 const detail = ref<EntryDetail | null>(null);
@@ -65,7 +71,7 @@ watch(() => props.name, load, { immediate: true });
 <template>
   <section class="entry-detail">
     <button type="button" class="entry-detail__back ghost" @click="$emit('close')">
-      ← Back to catalog
+      ← Back to {{ backTo ?? "catalog" }}
     </button>
 
     <p v-if="loading" class="entry-detail__state">Loading…</p>
@@ -117,9 +123,6 @@ watch(() => props.name, load, { immediate: true });
             <button type="button" class="entry-detail__dep" @click="$emit('open', dep.entry.name)">
               <span class="entry-detail__dep-head">
                 <strong>{{ dep.entry.name }}</strong>
-                <span class="entry-detail__origin-chip entry-detail__origin-chip--muted">
-                  {{ dep.entry.catalog }}
-                </span>
                 <span
                   class="entry-detail__dep-state"
                   :class="{ 'entry-detail__dep-state--missing': dep.state !== 'installed' }"
