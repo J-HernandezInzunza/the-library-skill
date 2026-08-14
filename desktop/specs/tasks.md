@@ -259,6 +259,20 @@ Every task here reads install state from receipts rather than inferring it from 
 The app's job is to render that state and to decide what to do about it; the CLI's job is to
 report it truthfully and then do exactly what it was told (C-D4).
 
+**What Phase 2 established that this phase inherits.** Read [progress.md](progress.md) before
+starting; these are the four that will bite otherwise.
+
+| Established | Consequence for Phase 3 |
+| --- | --- |
+| One `spawn()` in `cli.rs`, bracketed by `command://started` / `command://finished`, with the sink passed in explicitly | Every new backend call takes `&dyn CommandSink` and is logged for free. A call that bypasses `spawn()` is a D5 bug |
+| `list --json` returns **one row per catalog copy** | Any lookup by name must filter to winners (`!overridden_by`) first. A `Map` keyed on name silently keeps the overridden copy — this has now caused two bugs |
+| View-model logic lives in `src/catalog.ts` as pure functions, covered by Vitest | Install/sync state derivation belongs there, not in a component |
+| `doctor` exits 1 *with* a full report (design §3.7) | Check any new command's exit-code contract before assuming non-zero means failure. `uninstall` exits 2 for `REFUSED` (T3.5) |
+
+**Reverse dependencies do not exist yet.** T3.5's confirmation ("removing this breaks 3 entries")
+and T4.4's remove both want them. `show --json` has no `dependents[]`; adding it is a `library.py`
+change in this repo, alongside `unresolved_requires[]` which T2.5 added the same way.
+
 - [ ] **T3.1 — Install preview, including local modifications**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/`
   - **Requirements:** R3.2
