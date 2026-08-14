@@ -85,7 +85,8 @@ run();
 
 <style scoped>
 .doctor {
-  padding-bottom: 2rem;
+  /* The topbar is not rendered in this view, and it owns the app's top padding. */
+  padding: 1.5rem 0 2rem;
 }
 .doctor__back {
   margin-bottom: 1rem;

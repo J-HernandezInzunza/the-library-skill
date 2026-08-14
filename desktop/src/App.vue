@@ -184,6 +184,26 @@ body {
     color: #e6e6e6;
   }
 }
+
+/* Global, not scoped: a parent's scoped styles never reach a child component's inner
+   elements, so button chrome defined here would leave every `.ghost` in EntryDetail,
+   Doctor, and FirstRun rendering as a default browser button. */
+button {
+  padding: 0.5rem 0.9rem;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: #3b82f6;
+  color: #fff;
+  font-weight: 500;
+  font-family: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+button.ghost {
+  background: transparent;
+  color: inherit;
+  border-color: rgba(128, 128, 128, 0.4);
+}
 </style>
 
 <style scoped>
@@ -218,20 +238,6 @@ h1 {
   background: transparent;
   color: inherit;
   font-size: 0.95rem;
-}
-button {
-  padding: 0.5rem 0.9rem;
-  border-radius: 8px;
-  border: 1px solid transparent;
-  background: #3b82f6;
-  color: #fff;
-  font-weight: 500;
-  cursor: pointer;
-}
-button.ghost {
-  background: transparent;
-  color: inherit;
-  border-color: rgba(128, 128, 128, 0.4);
 }
 .summary {
   font-size: 0.85rem;

@@ -192,7 +192,8 @@ watch(() => props.name, load, { immediate: true });
 
 <style scoped>
 .entry-detail {
-  padding-bottom: 2rem;
+  /* The topbar is not rendered in this view, and it owns the app's top padding. */
+  padding: 1.5rem 0 2rem;
 }
 .entry-detail__back {
   margin-bottom: 1rem;
