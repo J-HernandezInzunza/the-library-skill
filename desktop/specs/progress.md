@@ -883,7 +883,11 @@ stating accurately rather than leaving four contradicting notes above:
 | `EntryDetail`, `InstallPreview` | Yes |
 | `CommandLog`, `ActivityBar` | Yes |
 | `UninstallControl` | Partially — rendered, not driven through a real refusal in the GUI |
-| `FirstRun` | **No** — needs a machine with no `.venv` or no config, so it has only been driven against fixture tool roots |
+| `FirstRun`, both stages | Yes — a fresh clone with no `.venv` showed the bootstrap screen, then advanced to the catalog-registration form |
+
+Every view the app currently has has now been seen running. The one remaining partial is
+`UninstallControl`'s refusal branch: the panel renders, but the `REFUSED` path was proven
+against the real CLI rather than clicked through in the GUI.
 
 Running it is also what found the threading defect, which no test could have. That is the
 lesson to carry: the gate proves the contracts, not that the app works.
@@ -910,8 +914,6 @@ lesson to carry: the gate proves the contracts, not that the app works.
 
 **Known gaps carried into Phase 4:**
 
-- **`FirstRun` has never been seen rendered.** It needs a deliberately broken machine
-  state; the fixture clones cover the logic but not the layout.
 - **A receipt whose destination no longer resolves from any scope is unreachable from the
   app** — entry reads `missing` with `scopes: []`, so no control renders. Narrow; the fix
   belongs in `library.py`.
