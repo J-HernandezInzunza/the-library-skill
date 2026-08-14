@@ -1,15 +1,22 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { catalogHue, dependencies, dependents, editableCopies, isOnDisk } from "../catalog";
+import {
+  catalogHue,
+  dependencies,
+  dependents,
+  editableCopies,
+  installStatus,
+  installedCopies,
+  isOnDisk,
+} from "../catalog";
 import { withActivity } from "../commandActivity";
 import { describeAppError, type Catalog, type Entry, type EntryDetail } from "../types";
 import Busy from "./Busy.vue";
 import StatusBanner from "./StatusBanner.vue";
 import InstallPreview from "./InstallPreview.vue";
+import InstalledCopies from "./InstalledCopies.vue";
 import PageHeader from "./PageHeader.vue";
-import PushControl from "./PushControl.vue";
-import UninstallControl from "./UninstallControl.vue";
 
 const props = defineProps<{
   name: string;
@@ -107,6 +114,25 @@ const editableIds = computed(
   () => new Set(editableCopies(detail.value?.copies ?? [], props.catalogs).map((c) => c.catalog)),
 );
 
+/**
+ * Every copy on this machine, and the one place scope is decided (D21).
+ *
+ * Built from `scopes` and `installs[]` together because neither is a superset: one is what
+ * is on disk at destinations this app resolves, the other is what the tool recorded.
+ */
+const copies = computed(() =>
+  detail.value ? installedCopies(detail.value.entry.scopes, detail.value.installs) : [],
+);
+
+/**
+ * The same badge the list shows, from the same function.
+ *
+ * The page used to show none, so an entry the list had just labelled `installed · global`
+ * opened with a panel headed "Install" and nothing contradicting it until eight sections
+ * further down.
+ */
+const status = computed(() => (detail.value ? installStatus(detail.value.entry) : null));
+
 watch(() => props.name, load, { immediate: true });
 </script>
 
@@ -116,6 +142,13 @@ watch(() => props.name, load, { immediate: true });
          the command returns, or it lands late and shifts everything under it. -->
     <PageHeader :title="name" :back="backTo ?? 'The Library'" @back="$emit('close')">
       <span v-if="detail" class="entry-detail__type">{{ detail.entry.type }}</span>
+      <span
+        v-if="status"
+        class="entry-detail__status"
+        :class="`entry-detail__status--${status.tone}`"
+      >
+        {{ status.status }}
+      </span>
       <span v-if="detail?.has_setup" class="entry-detail__setup">guided setup available</span>
     </PageHeader>
 
@@ -125,7 +158,21 @@ watch(() => props.name, load, { immediate: true });
     <template v-else-if="detail">
       <p class="entry-detail__desc">{{ detail.entry.description }}</p>
 
-      <InstallPreview :name="detail.name" @installed="afterWrite()" />
+      <!-- What you have, before what you could do: the page is most often opened about an
+           entry that is already installed, and that was the fact it never stated. -->
+      <InstalledCopies
+        :name="detail.name"
+        :copies="copies"
+        :source="detail.source"
+        :affected="affected.map((user) => user.entry.name)"
+        @changed="afterWrite()"
+      />
+
+      <InstallPreview
+        :name="detail.name"
+        :installed="copies.length > 0"
+        @installed="afterWrite()"
+      />
 
       <h3 class="entry-detail__section">Source</h3>
       <p class="entry-detail__origin">{{ origin }}</p>
@@ -251,34 +298,6 @@ watch(() => props.name, load, { immediate: true });
         </ul>
       </template>
 
-      <h3 class="entry-detail__section">Installed copies ({{ detail.installs.length }})</h3>
-      <p v-if="!detail.installs.length" class="entry-detail__none">
-        Not installed anywhere the tool knows about.
-      </p>
-      <ul v-else class="entry-detail__installs">
-        <li v-for="install in detail.installs" :key="install.dest" class="entry-detail__install">
-          <code>{{ install.dest }}</code>
-          <p class="entry-detail__install-meta">
-            {{ install.scope }} · from {{ install.catalog }} ·
-            {{ install.commit.slice(0, 8) }} · {{ install.installed_at }}
-          </p>
-        </li>
-      </ul>
-
-      <!-- After the installed copies, because it acts on one of them, and before the
-           destructive control, because sending your edits back is the thing you want to
-           have done *before* deleting the copy that holds them. -->
-      <PushControl :name="detail.name" :scopes="detail.entry.scopes" />
-
-      <!-- Last, and directly under the list of what it deletes. Destructive and rarely
-           wanted, so it does not belong above everything you came here to read. -->
-      <UninstallControl
-        :name="detail.name"
-        :scopes="detail.entry.scopes"
-        :installs="detail.installs"
-        :affected="affected.map((user) => user.entry.name)"
-        @uninstalled="afterWrite()"
-      />
     </template>
   </section>
 </template>
@@ -294,6 +313,27 @@ watch(() => props.name, load, { immediate: true });
   text-transform: uppercase;
   letter-spacing: 0.03em;
   opacity: 0.6;
+}
+.entry-detail__status {
+  font-size: 0.7rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(34, 197, 94, 0.18);
+  color: #16a34a;
+}
+.entry-detail__status--absent {
+  background: rgba(128, 128, 128, 0.2);
+  color: inherit;
+  opacity: 0.75;
+}
+.entry-detail__status--attention {
+  background: rgba(245, 158, 11, 0.2);
+  color: #b45309;
+}
+.entry-detail__status--overridden {
+  background: rgba(128, 128, 128, 0.2);
+  color: inherit;
+  opacity: 0.75;
 }
 .entry-detail__setup {
   font-size: 0.7rem;
@@ -327,8 +367,7 @@ watch(() => props.name, load, { immediate: true });
   opacity: 0.55;
 }
 .entry-detail__copies,
-.entry-detail__requires,
-.entry-detail__installs {
+.entry-detail__requires {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -442,19 +481,5 @@ watch(() => props.name, load, { immediate: true });
   margin: 0.25rem 0 0;
   font-size: 0.78rem;
   opacity: 0.7;
-}
-.entry-detail__install {
-  padding: 0.5rem 0.85rem;
-  border-radius: 8px;
-  background: rgba(128, 128, 128, 0.08);
-}
-.entry-detail__install code {
-  font-size: 0.8rem;
-  overflow-wrap: anywhere;
-}
-.entry-detail__install-meta {
-  margin: 0.25rem 0 0;
-  font-size: 0.72rem;
-  opacity: 0.6;
 }
 </style>

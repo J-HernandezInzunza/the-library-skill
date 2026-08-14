@@ -124,8 +124,12 @@ function toRow(entry: Entry, overrides: string[] = []): Row {
  * copy that is on disk, and a boolean can only say one of them. `untracked` reads as
  * normal on purpose: it means the tool has no receipt for a copy that is there, which
  * is where every install predating receipts starts.
+ *
+ * Exported so the detail view shows the **same** badge as the list rather than its own
+ * account of the same fact. It previously showed none at all, which is why a page about
+ * an installed entry could open with a panel headed "Install".
  */
-function installStatus(entry: Entry): Pick<Row, "status" | "tone"> {
+export function installStatus(entry: Entry): Pick<Row, "status" | "tone"> {
   const scopes = entry.scopes.join(", ");
   const where = scopes ? ` · ${scopes}` : "";
 
@@ -490,6 +494,79 @@ export function installPlan(preview: UsePreview, name: string): InstallPlan {
   const drifted = items.filter((item) => item.drifted);
 
   return { items, drifted, blocked: drifted.length > 0 };
+}
+
+/** One copy of an entry that is on this machine, and what can be done to it. */
+export interface InstalledCopy {
+  /** `global` / `project`, as the CLI names it. */
+  scope: string;
+  /** Where it is, from the install receipt. Null when the tool did not place it. */
+  dest: string | null;
+  /**
+   * What `--from` must be to push *this* copy: a scope name when the destination
+   * resolves from the app's own anchor, otherwise the copy's base directory.
+   */
+  pushFrom: string;
+  /**
+   * True when `uninstall --scope <scope>` would reach this exact copy.
+   *
+   * False for a receipt whose destination no longer resolves from here — a project
+   * install in a directory the app is not anchored at. That copy is real and worth
+   * showing, but offering Remove for it would delete a *different* destination or
+   * nothing at all. Known gap G4.
+   */
+  removable: boolean;
+  /** The tool has a receipt for it, so its provenance is known rather than assumed. */
+  tracked: boolean;
+}
+
+/**
+ * Every copy of an entry on this machine, from the two sources that each know half.
+ *
+ * `entry.scopes` is **disk-driven** — what is actually there, at destinations this app's
+ * anchor resolves — and `installs[]` is **receipt-driven**, what the tool believes it
+ * wrote, including into project directories the app is not anchored at. Neither is a
+ * superset, which is the finding behind T3.5 and gap G4, so the union is the only honest
+ * list and each row records which half it came from.
+ *
+ * A scope wins when both describe the same one: it is the half that proves the files are
+ * there *now*, and it makes `--from`/`--scope` resolve to the copy being shown.
+ */
+export function installedCopies(scopes: string[], installs: Receipt[]): InstalledCopy[] {
+  const byScope = new Map(installs.map((install) => [install.scope, install]));
+
+  const resolved: InstalledCopy[] = scopes.map((scope) => ({
+    scope,
+    dest: byScope.get(scope)?.dest ?? null,
+    // A scope name, because `scopes` was computed against the same anchor the app runs
+    // its commands with, so the CLI resolves it to this very copy.
+    pushFrom: scope,
+    removable: true,
+    tracked: byScope.has(scope),
+  }));
+
+  // Receipts for destinations no scope resolves: a project install somewhere the app is
+  // not anchored. Invisible until now, which is how a stale one goes unnoticed.
+  const known = new Set(scopes);
+  const unresolved: InstalledCopy[] = installs
+    .filter((install) => !known.has(install.scope) && !!install.dest)
+    .map((install) => ({
+      scope: install.scope,
+      dest: install.dest,
+      // The receipt's own directory. `--from <path>` takes the *base* the copy sits in,
+      // which is its parent whatever the layout — no knowledge of `.claude/skills` here.
+      pushFrom: parentDir(install.dest),
+      removable: false,
+      tracked: true,
+    }));
+
+  return [...resolved, ...unresolved];
+}
+
+/** The directory holding `path`, with no trailing slash. */
+function parentDir(path: string): string {
+  const cut = path.replace(/\/+$/, "").lastIndexOf("/");
+  return cut > 0 ? path.slice(0, cut) : "/";
 }
 
 /** How a push actually ended, said in words that match what happened. */

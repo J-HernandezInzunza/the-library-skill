@@ -1730,3 +1730,69 @@ The machine was returned to its starting state afterwards: 42 records, 35 winner
 
 **Not visually verified.** `PushControl` has been driven by fixtures and by the real CLI underneath
 it, but has not been seen rendered.
+
+---
+
+## T4.5a — the page asked "which copy" three times and never said it was installed
+
+Reported after using the push panel: *"What does it mean when I select global? The global copy
+gets pushed? Meaning, what's in my global claude directory?"* — and separately, that the detail
+page reads as though the entry is not installed when the list has just said it is.
+
+Both are the same defect from two angles.
+
+**The push panel named neither end.** "Which copy to push" is about the *source* of the push, and
+`global` is `~/.claude/skills/<name>`; the destination is the entry's `source`, which the panel
+never mentioned until after a preview. The app had both facts loaded the whole time — the
+receipt's `dest` and the CLI-parsed `source` — and displayed neither. It now renders them as one
+line before anything runs: `~/.claude/skills/grilling → acme/skills (main)`.
+
+**The detail page never stated install status.** The list renders a badge; the detail page dropped
+it, so the first thing under the title was a panel headed **Install**, and the only contradiction
+was "Installed copies (N)" eight sections further down. The header now shows the same badge, from
+the same `installStatus` function the list calls — not a second account of the same fact — and the
+install panel is titled by state.
+
+**And three sections each re-asked which copy, in three vocabularies:** radio buttons (install), a
+dropdown (push), and a list (remove). That is the root cause of "hard to follow top to bottom".
+One section owns it now — **On this machine** — with each copy row carrying its own *Send edits
+back* and *Remove*. Attaching the action to the thing it acts on removes the question rather than
+harmonising three phrasings of it. Recorded as **D21**.
+
+### `installedCopies` merges two halves that each know something the other doesn't
+
+`entry.scopes` is disk-driven, at destinations this app's anchor resolves. `installs[]` is
+receipt-driven, and includes project directories the app is *not* anchored at. Neither is a
+superset — the finding behind T3.5 and gap G4 — so the union is the only honest list, and each row
+records which half produced it:
+
+- **A scope wins** where both describe the same copy: it is the half that proves the files are
+  there *now*, and it makes `--scope`/`--from` resolve to the copy on screen.
+- **A scope with no receipt** is the hand-made copy. Still listed, because dropping it would hide
+  the exact case `uninstall`'s refusal exists for.
+- **A receipt no scope resolves** — a project install elsewhere — is now *visible for the first
+  time*, and deliberately offers no Remove: `uninstall --scope project` would reach a different
+  destination or none at all. The row says so instead of pretending.
+
+### A control deleted rather than relabelled
+
+That row's `dest` made the push scope dropdown **and** its project-directory picker unnecessary.
+`--from` accepts a **base directory** as well as a scope name, so a copy outside the anchor is
+pushed with `--from <parent of dest>` — the receipt already knows where the copy is. The
+`LIBRARY_CWD` anchoring in `push` went with it.
+
+Worth recording because T4.5 argued the opposite: deriving the location from the receipt was
+rejected then as "encoding the CLI's directory layout in the app". That was wrong about which
+knowledge is involved. `parentDir(dest)` says *the copy sits inside a directory*, which the CLI's
+own `resolve_target_base(...) / entry.name` states in reverse; it does not know `.claude/skills`
+exists. Verified against the real CLI: `push --from <base> --dry-run` wrote nothing and named the
+right destination, and the real push landed exactly there.
+
+**Verified against the live catalog too**, by executing `installedCopies` and `installStatus`
+against a real `show grilling` payload: one row, `pushFrom: "global"`, `removable: true`, the true
+path, and the badge string `installed · global` — byte-identical to what the list renders, which
+is the point of sharing the function.
+
+**Also fixed:** `.danger` is now a global button style beside `.ghost`. The catalog manager had
+styled its Remove red from a component-local rule while the entry page left the identical action
+looking like every other button — the same drift `.ghost` was made global to stop.

@@ -334,6 +334,17 @@ button.ghost {
   color: inherit;
   border-color: rgba(128, 128, 128, 0.4);
 }
+/* Global for the same reason `.ghost` is, and because it had already drifted: the catalog
+   manager styled its Remove red from a component-local rule while the entry page left the
+   identical action looking like every other button. One destructive style, one place. */
+button.danger {
+  background: transparent;
+  color: #dc2626;
+  border-color: rgba(220, 38, 38, 0.45);
+}
+button.danger:hover:not(:disabled) {
+  background: rgba(220, 38, 38, 0.1);
+}
 button:disabled {
   opacity: 0.45;
   cursor: not-allowed;

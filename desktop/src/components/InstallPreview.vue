@@ -9,7 +9,11 @@ import { describeAppError, type UsePreview, type UseReport } from "../types";
 import Busy from "./Busy.vue";
 import StatusBanner from "./StatusBanner.vue";
 
-const props = defineProps<{ name: string }>();
+const props = defineProps<{
+  name: string;
+  /** Already on this machine somewhere, so this panel is about adding or refreshing. */
+  installed: boolean;
+}>();
 const emit = defineEmits<{ installed: [] }>();
 
 const preview = ref<UsePreview | null>(null);
@@ -108,7 +112,11 @@ watch([() => props.name, scope], () => {
 
 <template>
   <section class="install-preview">
-    <h3 class="install-preview__heading">Install</h3>
+    <!-- Titled by state. "Install" above an entry the list had just badged
+         `installed · global` was the page contradicting itself in its first two lines. -->
+    <h3 class="install-preview__heading">
+      {{ installed ? "Install elsewhere, or refresh a copy" : "Install" }}
+    </h3>
 
     <StatusBanner v-if="error" kind="error" :detail="error" />
 

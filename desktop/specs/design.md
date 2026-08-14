@@ -555,6 +555,31 @@ and a subcategory when it is actually "where it lives" and "what a change to it 
 now one sentence each, from `describeCatalog`, which also supplies the reason a shared catalog
 cannot be managed in the app — for a `pr` catalog those are the same fact.
 
+### 6.6a The entry page states what you have before what you could do (D21)
+
+Order: name and **install badge** → description → **On this machine** → install/refresh → source
+and catalogs → dependencies.
+
+Two defects, one cause. The page **never stated install status** — the list shows a badge, the
+detail page dropped it — so an entry the list had just labelled `installed · global` opened with a
+panel headed "Install", with "Installed copies (N)" eight sections below to contradict it. And
+three separate sections each re-asked *which copy*: install radios, a push dropdown, a remove list.
+
+So the badge comes from `installStatus`, the same function the list renders, and one section owns
+scope. Each copy row carries its own **Send edits back** and **Remove**, one panel open at a time.
+
+`installedCopies(scopes, installs)` builds those rows from the two halves that each know something
+the other does not (T3.5, G4): `entry.scopes` is disk-driven at destinations this app's anchor
+resolves, `installs[]` is receipt-driven and includes project directories it is not anchored at.
+A scope wins where both describe the same copy, because it is the half that proves the files are
+there now. A receipt no scope resolves is still shown — previously invisible — but offers no
+Remove, since `--scope` would reach a different destination.
+
+That row's `dest` also removed a whole control: `--from` accepts a **base directory** as well as a
+scope name, so a copy outside the anchor is pushed with `--from <parent of dest>`. The project
+directory picker and the `LIBRARY_CWD` anchoring in `push` are both gone — the receipt already
+knows where the copy is.
+
 ### 6.7 What belongs on the catalog toolbar (D20)
 
 Search and Refresh act on the list; Sync and Catalogs are where you go next. Nothing else.

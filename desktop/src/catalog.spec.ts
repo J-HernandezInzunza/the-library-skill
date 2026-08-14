@@ -16,6 +16,7 @@ import {
   describeCatalog,
   describePush,
   entryEdits,
+  installedCopies,
   purgeable,
 } from "./catalog";
 import type {
@@ -845,5 +846,60 @@ describe("describePush", () => {
 
     expect(said.headline).toContain("not open yet");
     expect(said.link).toBeNull();
+  });
+});
+
+describe("installedCopies", () => {
+  it("reports a tool-installed global copy with its path", () => {
+    const copies = installedCopies(["global"], [receipt()]);
+
+    expect(copies).toEqual([
+      {
+        scope: "global",
+        dest: "/Users/dev/.claude/skills/a-skill",
+        pushFrom: "global",
+        removable: true,
+        tracked: true,
+      },
+    ]);
+  });
+
+  it("still lists a copy the tool never placed, which has no receipt", () => {
+    // A hand-made directory: `scopes` sees it, `installs[]` cannot. Dropping it would
+    // hide the exact copy `uninstall`'s refusal exists for.
+    const copies = installedCopies(["global"], []);
+
+    expect(copies).toHaveLength(1);
+    expect(copies[0].tracked).toBe(false);
+    expect(copies[0].dest).toBeNull();
+    expect(copies[0].removable).toBe(true);
+  });
+
+  it("surfaces a receipt no scope resolves, and refuses to offer Remove for it", () => {
+    // A project install in a directory the app is not anchored at. It is real, and
+    // `uninstall --scope project` would reach a different destination or none at all.
+    const copies = installedCopies(
+      ["global"],
+      [receipt(), receipt({ scope: "project", dest: "/work/repo/.claude/skills/a-skill" })],
+    );
+
+    const project = copies.find((copy) => copy.scope === "project");
+    expect(project?.removable).toBe(false);
+    expect(project?.dest).toBe("/work/repo/.claude/skills/a-skill");
+    // `--from` takes the base the copy sits in, so a push can still reach it.
+    expect(project?.pushFrom).toBe("/work/repo/.claude/skills");
+  });
+
+  it("lets the scope win when a receipt describes the same copy", () => {
+    // Otherwise the entry would render twice, and the second row would carry a --from
+    // that resolves to the same place by a longer route.
+    const copies = installedCopies(["global"], [receipt()]);
+
+    expect(copies).toHaveLength(1);
+    expect(copies[0].pushFrom).toBe("global");
+  });
+
+  it("reports nothing for an entry that is not installed", () => {
+    expect(installedCopies([], [])).toEqual([]);
   });
 });

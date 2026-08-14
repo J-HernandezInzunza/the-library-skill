@@ -993,11 +993,12 @@ pub fn remove(
 
 /// The argv shared by a push and its preview, so the two cannot drift apart.
 ///
-/// `--from` is always passed. Without it the CLI auto-detects, and *dies* when the entry
-/// is installed in more than one place — a question the user has already answered by
-/// choosing which copy to push.
-fn push_args<'a>(name: &'a str, scope: &'a str, message: Option<&'a str>) -> Vec<&'a str> {
-    let mut args = vec!["push", name, "--from", scope];
+/// `--from` is always passed, and is either a scope name or the base directory the copy
+/// sits in — the CLI accepts both. Without it the CLI auto-detects and *dies* when the
+/// entry is installed in more than one place, which is a question the caller has already
+/// answered by pushing from a specific copy.
+fn push_args<'a>(name: &'a str, from: &'a str, message: Option<&'a str>) -> Vec<&'a str> {
+    let mut args = vec!["push", name, "--from", from];
     if let Some(message) = message {
         args.extend(["--message", message]);
     }
@@ -1011,12 +1012,8 @@ fn push_args<'a>(name: &'a str, scope: &'a str, message: Option<&'a str>) -> Vec
 /// mapping the second case surfaces as "library exited 1" with an *empty* message, because
 /// the explanation was on stdout. Tolerating the code is not trusting the body, so callers
 /// still check `status` themselves.
-fn push_body(
-    sink: &dyn CommandSink,
-    args: &[&str],
-    project: Option<&str>,
-) -> Result<serde_json::Value, AppError> {
-    let body = run_report(sink, args, &anchor(project))?;
+fn push_body(sink: &dyn CommandSink, args: &[&str]) -> Result<serde_json::Value, AppError> {
+    let body = run_report(sink, args, &library_home())?;
     let status = body.get("status").and_then(|s| s.as_str());
     if matches!(status, Some("OK" | "DRY_RUN")) {
         return Ok(body);
@@ -1039,12 +1036,11 @@ fn push_body(
 pub fn push_preview(
     sink: &dyn CommandSink,
     name: &str,
-    scope: &str,
-    project: Option<&str>,
+    from: &str,
 ) -> Result<PushPreview, AppError> {
-    let mut args = push_args(name, scope, None);
+    let mut args = push_args(name, from, None);
     args.push("--dry-run");
-    parse(push_body(sink, &args, project)?)
+    parse(push_body(sink, &args)?)
 }
 
 /// Push a local copy back to the entry's source (R4.5).
@@ -1052,18 +1048,17 @@ pub fn push_preview(
 /// A local-path source is overwritten in place; a remote one goes through a branch and a
 /// PR. The caller does not choose — the source decides, and the report says which happened.
 ///
-/// `project` anchors `LIBRARY_CWD`, exactly as a project install does (design §3.3): the CLI
-/// resolves `--from project` against it, so the picked directory is the anchor rather than
-/// a flag. Deriving it from the install receipt's path instead would mean encoding the
-/// CLI's own directory layout in the app, which is the duplication R1.1 exists to prevent.
+/// `from` comes from the copy the user pressed the button on: a scope name when that copy's
+/// destination resolves from the app's own anchor, otherwise the base directory the copy
+/// sits in. Both are things `--from` already accepts, so there is no anchoring question and
+/// no directory to ask for — the receipt already knows where the copy is.
 pub fn push(
     sink: &dyn CommandSink,
     name: &str,
-    scope: &str,
-    project: Option<&str>,
+    from: &str,
     message: Option<&str>,
 ) -> Result<PushReport, AppError> {
-    parse(push_body(sink, &push_args(name, scope, message), project)?)
+    parse(push_body(sink, &push_args(name, from, message))?)
 }
 
 /// The source URL a teammate could resolve for a path on this machine (R4.2).

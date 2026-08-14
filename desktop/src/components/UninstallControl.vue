@@ -1,57 +1,43 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import type { InstalledCopy } from "../catalog";
 import { withActivity } from "../commandActivity";
-import { describeAppError, type Receipt, type UninstallReport } from "../types";
+import { describeAppError, type UninstallReport } from "../types";
 import Busy from "./Busy.vue";
 import StatusBanner from "./StatusBanner.vue";
 
 const props = defineProps<{
   name: string;
-  /** Scopes with a copy on disk, from `entry.scopes`. */
-  scopes: string[];
-  /** Receipts, which cover only what the tool itself installed. */
-  installs: Receipt[];
+  /** The copy being deleted. No scope list: you pressed this copy's button. */
+  copy: InstalledCopy;
   /**
    * Installed entries that depend on this one, from the CLI's `dependents[]`.
    *
-   * Removing the files leaves these satisfied on paper and broken on disk, which the
-   * confirmation could not say before the CLI could answer it.
+   * Removing the files leaves these satisfied on paper and broken on disk.
    */
   affected: string[];
 }>();
-const emit = defineEmits<{ uninstalled: [] }>();
+const emit = defineEmits<{ uninstalled: []; close: [] }>();
 
-/** The scope awaiting its first confirmation. */
-const confirming = ref<string | null>(null);
-/** The scope whose refusal is awaiting the second, separate confirmation. */
-const escalating = ref<string | null>(null);
 const report = ref<UninstallReport | null>(null);
 const running = ref(false);
 const error = ref("");
 
-/**
- * The paths the confirmation names.
- *
- * Receipts cover only what the tool installed, so a hand-made copy has none — and that
- * is exactly the copy `uninstall` will refuse. The scope is named instead of inventing
- * a path the app would be guessing at.
- */
-const confirmingPaths = computed(() =>
-  props.installs.filter((install) => install.scope === confirming.value).map((i) => i.dest),
-);
+/** The refusal awaiting its own, separate confirmation. */
+const refused = computed(() => report.value?.refused ?? []);
 
-async function remove(scope: string, force: boolean) {
+async function remove(force: boolean) {
   running.value = true;
   error.value = "";
   try {
-    const result = await withActivity(`removing the ${scope} copy…`, () =>
-      invoke<UninstallReport>("entry_uninstall", { name: props.name, scope, force }),
+    const result = await withActivity(`removing the ${props.copy.scope} copy…`, () =>
+      invoke<UninstallReport>("entry_uninstall", {
+        name: props.name,
+        scope: props.copy.scope,
+        force,
+      }),
     );
-    confirming.value = null;
-    // A refusal is a report, not a retry cue: it opens a second confirmation naming
-    // the paths, and nothing is deleted until the user answers that one too.
-    escalating.value = result.refused.length ? scope : null;
     report.value = result;
     if (result.deleted.length) emit("uninstalled");
   } catch (e) {
@@ -60,51 +46,42 @@ async function remove(scope: string, force: boolean) {
     running.value = false;
   }
 }
-
-function cancel() {
-  confirming.value = null;
-  escalating.value = null;
-}
-
-watch(() => props.name, () => {
-  cancel();
-  report.value = null;
-  error.value = "";
-});
 </script>
 
 <template>
-  <section v-if="scopes.length" class="uninstall">
-    <h3 class="uninstall__heading">Remove installed copies</h3>
-
+  <section class="uninstall">
     <StatusBanner v-if="error" kind="error" :detail="error" />
     <StatusBanner v-else-if="report?.deleted.length" kind="success">
       Removed {{ report.deleted.join(", ") }}. The catalog entry is still listed.
     </StatusBanner>
 
-    <ul class="uninstall__scopes">
-      <li v-for="scope in scopes" :key="scope" class="uninstall__scope">
-        <span class="uninstall__scope-name">{{ scope }}</span>
-        <button
-          type="button"
-          class="ghost"
-          :disabled="running"
-          @click="confirming = scope"
-        >
-          Remove
-        </button>
-      </li>
-    </ul>
-
-    <Busy v-if="running" inline label="Removing files…" />
-
-    <div v-if="confirming" class="uninstall__confirm fade-in">
+    <!-- A refusal is a second confirmation, never a retry: the CLI would not delete a
+         destination it has no receipt for, and --force is only ever pressed from here. -->
+    <div v-if="refused.length" class="uninstall__refused">
       <p class="uninstall__question">
-        Delete the {{ confirming }} copy of {{ name }}?
+        The tool has no install receipt for
+        {{ refused.length === 1 ? "this path" : "these paths" }}, so it cannot prove it
+        created {{ refused.length === 1 ? "it" : "them" }}:
       </p>
-      <ul v-if="confirmingPaths.length" class="uninstall__paths">
-        <li v-for="path in confirmingPaths" :key="path"><code>{{ path }}</code></li>
+      <ul class="uninstall__paths">
+        <li v-for="path in refused" :key="path"><code>{{ path }}</code></li>
       </ul>
+      <p class="uninstall__note">
+        Deleting anyway removes whatever is there, including anything you put there
+        yourself.
+      </p>
+      <div class="uninstall__actions">
+        <button type="button" class="ghost" @click="emit('close')">Leave it alone</button>
+        <button type="button" class="danger" :disabled="running" @click="remove(true)">
+          Delete anyway
+        </button>
+      </div>
+    </div>
+
+    <div v-else-if="!report" class="uninstall__confirm">
+      <p class="uninstall__question">Delete the {{ copy.scope }} copy of {{ name }}?</p>
+      <p v-if="copy.dest" class="uninstall__paths"><code>{{ copy.dest }}</code></p>
+
       <p v-if="affected.length" class="uninstall__affected">
         {{ affected.length }} installed
         {{ affected.length === 1 ? "entry depends" : "entries depend" }} on this and will be
@@ -114,72 +91,21 @@ watch(() => props.name, () => {
         The catalog entry is untouched. Installing it again brings the files back.
       </p>
       <div class="uninstall__actions">
-        <button type="button" class="ghost" @click="cancel()">Cancel</button>
-        <button type="button" :disabled="running" @click="remove(confirming, false)">
+        <button type="button" class="ghost" @click="emit('close')">Cancel</button>
+        <button type="button" class="danger" :disabled="running" @click="remove(false)">
           Delete
         </button>
       </div>
     </div>
 
-    <div v-if="escalating && report" class="uninstall__refused fade-in">
-      <p class="uninstall__question">
-        The tool has no install receipt for
-        {{ report.refused.length === 1 ? "this path" : "these paths" }}, so it cannot
-        prove it created {{ report.refused.length === 1 ? "it" : "them" }}:
-      </p>
-      <ul class="uninstall__paths">
-        <li v-for="path in report.refused" :key="path"><code>{{ path }}</code></li>
-      </ul>
-      <p class="uninstall__note">
-        Deleting anyway removes whatever is there, including anything you put there
-        yourself.
-      </p>
-      <div class="uninstall__actions">
-        <button type="button" class="ghost" @click="cancel()">Leave it alone</button>
-        <button type="button" :disabled="running" @click="remove(escalating, true)">
-          Delete anyway
-        </button>
-      </div>
-    </div>
-
+    <Busy v-if="running" inline label="Removing files…" />
   </section>
 </template>
 
 <style scoped>
-.uninstall {
-  margin-top: 1.75rem;
-}
-.uninstall__heading {
-  margin: 0 0 0.5rem;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  opacity: 0.5;
-}
-.uninstall__scopes {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-.uninstall__scope {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.4rem 0.85rem;
-  border-radius: 8px;
-  background: rgba(128, 128, 128, 0.08);
-  font-size: 0.85rem;
-}
-.uninstall__scope-name {
-  flex: 1;
-}
 .uninstall__confirm,
 .uninstall__refused {
-  margin-top: 0.75rem;
-  padding: 0.85rem;
+  padding: 0.75rem;
   border-radius: 8px;
   background: rgba(220, 38, 38, 0.08);
   border-left: 3px solid #dc2626;
@@ -190,7 +116,7 @@ watch(() => props.name, () => {
 }
 .uninstall__question {
   margin: 0;
-  font-size: 0.88rem;
+  font-size: 0.85rem;
   line-height: 1.45;
   font-weight: 600;
 }
@@ -200,6 +126,9 @@ watch(() => props.name, () => {
   padding: 0;
   font-size: 0.78rem;
   overflow-wrap: anywhere;
+}
+.uninstall__paths code {
+  font-family: ui-monospace, SFMono-Regular, monospace;
 }
 .uninstall__affected {
   margin: 0.5rem 0 0;

@@ -152,28 +152,24 @@ async fn entry_remove(
 async fn entry_push_preview(
     app: tauri::AppHandle,
     name: String,
-    scope: String,
-    project: Option<String>,
+    from: String,
 ) -> Result<PushPreview, AppError> {
-    off_thread(move || cli::push_preview(&app, &name, &scope, project.as_deref())).await
+    off_thread(move || cli::push_preview(&app, &name, &from)).await
 }
 
 /// Push a local copy back to the entry's source (R4.5).
 ///
 /// `message` becomes the commit message and, for a remote source, the PR title — which is
-/// what a reviewer reads first. `project` anchors `LIBRARY_CWD`, as a project install does.
+/// what a reviewer reads first. `from` names the copy being pushed: a scope, or its base
+/// directory when the copy lives somewhere this app is not anchored.
 #[tauri::command]
 async fn entry_push(
     app: tauri::AppHandle,
     name: String,
-    scope: String,
-    project: Option<String>,
+    from: String,
     message: Option<String>,
 ) -> Result<PushReport, AppError> {
-    off_thread(move || {
-        cli::push(&app, &name, &scope, project.as_deref(), message.as_deref())
-    })
-    .await
+    off_thread(move || cli::push(&app, &name, &from, message.as_deref())).await
 }
 
 /// The source URL teammates could use for a local path (R4.2).

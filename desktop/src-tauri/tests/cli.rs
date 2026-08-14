@@ -695,7 +695,7 @@ fn a_push_preview_names_the_scope_it_would_push_from() {
     let log = Recorder::default();
 
     let preview =
-        cli::push_preview(&log, "deploy", "global", None).expect("the fixture preview should parse");
+        cli::push_preview(&log, "deploy", "global").expect("the fixture preview should parse");
 
     assert_eq!(
         &log.started.lock().unwrap()[0].argv[1..],
@@ -707,31 +707,33 @@ fn a_push_preview_names_the_scope_it_would_push_from() {
 }
 
 #[test]
-fn a_project_push_is_anchored_at_the_picked_directory() {
-    // `--from project` resolves against LIBRARY_CWD, so the directory is the anchor rather
-    // than a flag (design §3.3). The fixture echoes the anchor into the dest, so a push
-    // run from the tool repo reads as the wrong path instead of passing.
+fn a_copy_outside_the_apps_anchor_is_pushed_by_its_own_directory() {
+    // `--from` accepts a base directory as well as a scope name, so a receipt whose
+    // destination the app cannot resolve is still pushable — by the path the receipt
+    // already records. That is what removed the project-directory picker: the copy knows
+    // where it is, so nothing has to be asked.
     let _guard = with_fixture_home();
     let log = Recorder::default();
 
-    let preview = cli::push_preview(&log, "deploy", "project", Some("/tmp/some-project"))
+    let preview = cli::push_preview(&log, "deploy", "/work/repo/.claude/skills")
         .expect("the fixture preview should parse");
 
     assert_eq!(
-        preview.dest.as_deref(),
-        Some("/tmp/some-project/sources/deploy/from-project")
+        &log.started.lock().unwrap()[0].argv[1..],
+        ["push", "deploy", "--from", "/work/repo/.claude/skills", "--dry-run", "--json"]
     );
-    assert_eq!(log.started.lock().unwrap()[0].cwd, "/tmp/some-project");
+    // Echoed back by the fixture, so a mangled --from reads as the wrong path.
+    assert!(preview.dest.expect("a dest").ends_with("/from-/work/repo/.claude/skills"));
 }
 
 #[test]
-fn a_global_push_stays_anchored_on_the_tool_repo() {
-    // Paired with the test above so the two anchors are pinned against each other rather
-    // than one being asserted alone.
+fn every_push_runs_from_the_tool_repo() {
+    // No anchoring question left: `--from` carries the location, so LIBRARY_CWD is the
+    // tool repo for every push, the same as every other non-project command.
     let _guard = with_fixture_home();
     let log = Recorder::default();
 
-    cli::push_preview(&log, "deploy", "global", None).expect("preview should parse");
+    cli::push_preview(&log, "deploy", "global").expect("preview should parse");
 
     assert_eq!(
         log.started.lock().unwrap()[0].cwd,
@@ -746,7 +748,7 @@ fn a_preview_carries_the_warning_the_cli_only_writes_to_stderr() {
     // invisible. It is now `note` in the payload, and the app shows it before pushing.
     let _guard = with_fixture_home();
 
-    let preview = cli::push_preview(&Recorder::default(), "shared-skill", "global", None)
+    let preview = cli::push_preview(&Recorder::default(), "shared-skill", "global")
         .expect("preview should parse");
 
     let note = preview.note.expect("a name two catalogs define carries a note");
@@ -762,7 +764,7 @@ fn a_pushed_branch_is_not_reported_as_an_opened_pr() {
     // branch and hands back a compare URL. "Branch pushed" is not "PR opened".
     let _guard = with_fixture_home();
 
-    let report = cli::push(&Recorder::default(), "shared-skill", "global", None, None)
+    let report = cli::push(&Recorder::default(), "shared-skill", "global", None)
         .expect("push should parse");
 
     assert_eq!(report.method.as_deref(), Some("manual"));
@@ -774,7 +776,7 @@ fn a_pushed_branch_is_not_reported_as_an_opened_pr() {
 fn an_opened_pr_reports_its_url() {
     let _guard = with_fixture_home();
 
-    let report = cli::push(&Recorder::default(), "gh-skill", "global", None, None)
+    let report = cli::push(&Recorder::default(), "gh-skill", "global", None)
         .expect("push should parse");
 
     assert_eq!(report.method.as_deref(), Some("gh"));
@@ -786,7 +788,7 @@ fn a_message_becomes_the_commit_and_pr_title_when_given() {
     let _guard = with_fixture_home();
     let log = Recorder::default();
 
-    cli::push(&log, "deploy", "global", None, Some("Tighten the retro prompt"))
+    cli::push(&log, "deploy", "global", Some("Tighten the retro prompt"))
         .expect("push should parse");
 
     assert_eq!(
@@ -801,7 +803,7 @@ fn a_push_that_failed_surfaces_its_reason_rather_than_an_empty_error() {
     // mapping would show "library exited 1" with nothing after it.
     let _guard = with_fixture_home();
 
-    let err = cli::push(&Recorder::default(), "broken", "global", None, None).unwrap_err();
+    let err = cli::push(&Recorder::default(), "broken", "global", None).unwrap_err();
 
     match err {
         AppError::Cli { stderr, .. } => assert!(stderr.contains("lack write access"), "{stderr}"),

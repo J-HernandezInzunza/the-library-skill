@@ -574,6 +574,21 @@ leaves the entry reinstallable, `remove` does not, so the same dependent list me
     leaves the base branch byte-identical. Gate passes.
   - **Commit:** `feat(desktop): push changes back and surface the resulting PR URL`
 
+- [x] **T4.5a — One section owns "which copy" (from using the push panel)**
+  - **Files:** `desktop/src/components/{InstalledCopies,PushControl,UninstallControl,EntryDetail,InstallPreview}.vue`,
+    `desktop/src/catalog.ts`, `desktop/src-tauri/src/{cli,lib}.rs`, `App.vue`
+  - **Requirements:** R4.5a, D21
+  - **Do:** Put the list's install badge in the detail header, title the install panel by
+    state, and fold the push and remove sections into one **On this machine** list whose rows
+    carry their own actions. `installedCopies` merges the disk-driven and receipt-driven halves
+    and marks a copy the app cannot resolve as non-removable (G4) rather than hiding it. A push
+    names both ends before running. `--from <parent of dest>` replaces the push scope dropdown
+    *and* its project-directory picker. One global `.danger` button, since the catalog manager
+    had styled its Remove red from a component-local rule while the entry page had not.
+  - **Verify:** `--from <base dir>` pushes a copy outside the anchor against the real CLI.
+    `installedCopies` executed against a live `show` payload. Gate passes.
+  - **Commit:** `feat(desktop): act on the copy you can see, not on a scope you re-pick`
+
 - [ ] **T4.6 — Registering and unregistering catalogs**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/components/Catalogs.vue`
   - **Requirements:** R4.7, D16, D18

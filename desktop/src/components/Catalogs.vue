@@ -215,7 +215,7 @@ watch(
               </button>
               <button
                 type="button"
-                class="ghost catalogs__danger"
+                class="ghost danger"
                 :aria-pressed="isOpen(entry.name, 'remove')"
                 @click="show(entry.name, 'remove')"
               >
@@ -341,10 +341,6 @@ watch(
 /* Pressed state, so an open form's own button reads as the thing that opened it. */
 .catalogs__entry-actions button[aria-pressed="true"] {
   background: rgba(128, 128, 128, 0.25);
-}
-.catalogs__danger {
-  color: #dc2626;
-  border-color: rgba(220, 38, 38, 0.4);
 }
 .catalogs__panel {
   padding: 0.2rem 0.85rem 0.85rem;
