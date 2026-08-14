@@ -2115,6 +2115,99 @@ class TestRemovePurgeScopes(unittest.TestCase):
             self.assertTrue(target.exists(), f"{target} was deleted without --purge")
 
 
+class TestPushToARemoteSource(unittest.TestCase):
+    """R13.5 — pushing to a remote source previews without writing and never touches the base.
+
+    The local-source half of `--dry-run` has its own tests above; this covers the other
+    early return, which had the same defect independently: with the local copy already
+    matching its source, `--dry-run` printed `status: OK, changed: false`, which is what a
+    completed push prints. Only a real clone reaches that branch, so it needs a repo.
+
+    A bare repo stands in for the host and `clone_urls` is redirected at it, so the whole
+    thing stays offline (R18.6) and `autopush: false` means `gh` is never called.
+    """
+
+    REMOTE_SOURCE = "https://github.com/acme/agentics/blob/main/skills/from-git/SKILL.md"
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.repo = TempGitRepo(self.tool.root, name="agentics")
+        self.repo.commit("skills/from-git/SKILL.md", "# upstream\n")
+        self.repo.push()
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: from-git
+      description: Installed from a git remote
+      source: {self.REMOTE_SOURCE}
+  agents: []
+  prompts: []
+""")
+
+    @contextlib.contextmanager
+    def _local_remote(self):
+        remote = str(self.repo.remote)
+        with patch.object(library.Source, "clone_urls", lambda _self: [remote]):
+            yield
+
+    def install(self, text: str) -> None:
+        target = self.tool.home / ".claude" / "skills" / "from-git"
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "SKILL.md").write_text(text)
+
+    def push(self, *extra: str) -> dict[str, Any]:
+        with self._local_remote():
+            code, out, err = run_cli("push", "from-git", "--from", "global",
+                                     "--no-pull", "--json", *extra)
+        self.assertEqual(code, 0, err)
+        return json.loads(out)
+
+    def branches(self) -> list[str]:
+        proc = subprocess.run(
+            ["git", "-C", str(self.repo.remote), "branch", "--format=%(refname:short)"],
+            capture_output=True, text=True,
+        )
+        return proc.stdout.split()
+
+    def test_dry_run_says_dry_run_when_there_is_nothing_to_push(self) -> None:
+        self.install("# upstream\n")
+        report = self.push("--dry-run")
+
+        self.assertEqual(report["status"], "DRY_RUN")
+        self.assertFalse(report["would_change"])
+        # The give-away that this used to be a completed push's payload.
+        self.assertNotIn("changed", report)
+
+    def test_dry_run_shows_the_diff_and_pushes_no_branch(self) -> None:
+        self.install("# upstream\nedited\n")
+        report = self.push("--dry-run")
+
+        self.assertEqual(report["status"], "DRY_RUN")
+        self.assertTrue(report["would_change"])
+        self.assertIn("+edited", report["diff"])
+        self.assertEqual(self.branches(), ["main"])
+
+    def test_a_push_opens_a_branch_and_leaves_the_base_untouched(self) -> None:
+        self.install("# upstream\nedited\n")
+        report = self.push("--message", "Edit from a test")
+
+        self.assertEqual(report["status"], "OK")
+        self.assertTrue(report["changed"])
+        # No `gh` with autopush off, so the branch is pushed and the PR is not opened.
+        self.assertEqual(report["method"], "manual")
+        self.assertIsNone(report.get("pr_url"))
+        # And no compare URL either: `_remote_web` is given the redirected clone URL,
+        # which is a local path rather than a recognised host. That is not an artefact of
+        # the harness dodging something — it is the real "unrecognised host" outcome, and
+        # a caller has to render "branch pushed" with no link to offer.
+        self.assertIsNone(report.get("compare_url"))
+
+        self.assertIn(report["branch"], self.branches())
+        # The protected branch is the whole point: it must not have moved.
+        self.assertEqual(self.repo.remote_text("skills/from-git/SKILL.md"), "# upstream\n")
+
+
 class TestPushFromScopeNames(unittest.TestCase):
     """R13.2–R13.4 — `push --from` must accept the scope names the tool itself prints.
 
