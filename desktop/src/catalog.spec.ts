@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { allRows, catalogHue, catalogRows, dependencies, winningRows } from "./catalog";
-import type { Entry } from "./types";
+import {
+  allRows,
+  catalogHue,
+  catalogRows,
+  dependencies,
+  installPlan,
+  winningRows,
+} from "./catalog";
+import type { Entry, PlannedInstall, UsePreview } from "./types";
 
 function entry(overrides: Partial<Entry> = {}): Entry {
   return {
@@ -195,5 +202,70 @@ describe("dependencies", () => {
   it("treats every dependency as transitive when no copy wins", () => {
     const orphaned = { ...detail, copies: [{ ...detail.copies[0], wins: false }] };
     expect(dependencies(orphaned, []).every((d) => !d.declared)).toBe(true);
+  });
+});
+
+describe("installPlan", () => {
+  function planned(overrides: Partial<PlannedInstall> = {}): PlannedInstall {
+    return {
+      type: "skill",
+      name: "bug-investigator",
+      catalog: "personal",
+      dest: "/Users/dev/.claude/skills/bug-investigator",
+      state: "not_installed",
+      ...overrides,
+    };
+  }
+
+  function preview(would_install: PlannedInstall[]): UsePreview {
+    return {
+      status: "OK",
+      scope: "global",
+      overrides: [],
+      overridden_by: null,
+      would_install,
+    };
+  }
+
+  it("marks the requested entry apart from the dependencies it drags in", () => {
+    const plan = installPlan(
+      preview([planned(), planned({ name: "triage-bug", type: "prompt" })]),
+      "triage-bug",
+    );
+
+    expect(plan.items.map((item) => [item.install.name, item.target])).toEqual([
+      ["bug-investigator", false],
+      ["triage-bug", true],
+    ]);
+  });
+
+  it("does not let a plan that would discard local edits install in one click", () => {
+    const plan = installPlan(preview([planned({ state: "drifted" })]), "bug-investigator");
+
+    expect(plan.blocked).toBe(true);
+    expect(plan.drifted.map((item) => item.install.dest)).toEqual([
+      "/Users/dev/.claude/skills/bug-investigator",
+    ]);
+  });
+
+  it("blocks on a drifted dependency, not only on the entry itself", () => {
+    // The dependency is overwritten by the same `use`, so its edits are just as lost.
+    const plan = installPlan(
+      preview([planned({ state: "drifted" }), planned({ name: "triage-bug", state: "installed" })]),
+      "triage-bug",
+    );
+
+    expect(plan.blocked).toBe(true);
+  });
+
+  it("treats a hand-installed copy as normal rather than as drift", () => {
+    // `untracked` is where every install predating receipts starts; gating on it would
+    // put a second confirmation in front of the common case.
+    const plan = installPlan(
+      preview([planned({ state: "untracked" }), planned({ state: "missing" })]),
+      "bug-investigator",
+    );
+
+    expect(plan.blocked).toBe(false);
   });
 });

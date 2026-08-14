@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { catalogHue, dependencies } from "../catalog";
 import { describeAppError, type Catalog, type Entry, type EntryDetail } from "../types";
+import InstallPreview from "./InstallPreview.vue";
 
 const props = defineProps<{
   name: string;
@@ -84,6 +85,8 @@ watch(() => props.name, load, { immediate: true });
         <span v-if="detail.has_setup" class="entry-detail__setup">guided setup available</span>
       </header>
       <p class="entry-detail__desc">{{ detail.entry.description }}</p>
+
+      <InstallPreview :name="detail.name" />
 
       <h3 class="entry-detail__section">Source</h3>
       <p class="entry-detail__origin">{{ origin }}</p>

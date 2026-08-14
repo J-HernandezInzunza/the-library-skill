@@ -289,7 +289,7 @@ starting; these are the four that will bite otherwise.
 and T4.4's remove both want them. `show --json` has no `dependents[]`; adding it is a `library.py`
 change in this repo, alongside `unresolved_requires[]` which T2.5 added the same way.
 
-- [ ] **T3.1 — Install preview, including local modifications**
+- [x] **T3.1 — Install preview, including local modifications**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/`
   - **Requirements:** R3.2
   - **Do:** `entry_use_preview` running `use <name> --dry-run --json`; show `would_install[].dest`
@@ -297,6 +297,9 @@ change in this repo, alongside `unresolved_requires[]` which T2.5 added the same
     installing overwrites local edits and require a second confirmation. The CLI reports drift and
     still overwrites by design — **the app is the warning**, which is why C-D4 put this decision
     here rather than changing `use` for the terminal and agent too.
+    **Split with T3.2:** the confirmation *gate* ships here as `installPlan().blocked` in
+    `src/catalog.ts`, covered by Vitest; the confirm control that consumes it is T3.2's, since
+    there is nothing to confirm until `entry_use` exists.
   - **Verify:** Preview of an installed, a not-installed, and a locally-edited entry each show the
     correct dest and state; nothing lands on disk. A drifted preview cannot be confirmed in one
     click. Gate passes.
@@ -305,7 +308,9 @@ change in this repo, alongside `unresolved_requires[]` which T2.5 added the same
 - [ ] **T3.2 — Global install with receipt-backed status**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/`
   - **Requirements:** R3.1, R2.1
-  - **Do:** `entry_use` for global scope, with the change summary from the CLI's payload. The
+  - **Do:** `entry_use` for global scope, with the change summary from the CLI's payload. Add the
+    confirm control to `InstallPreview.vue`, gated on T3.1's `plan.blocked`: a plan that would
+    discard local edits needs an explicit acknowledgement before the button is live. The
     installed badge renders `state`, not a boolean: `installed`, `drifted`, and `untracked` are
     three different things to say, and `untracked` (installed by hand, or before receipts existed)
     must read as normal rather than as an error — it is the state every pre-existing install starts

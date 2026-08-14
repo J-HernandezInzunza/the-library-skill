@@ -195,6 +195,47 @@ fn a_dependency_the_catalog_cannot_follow_is_reported_not_dropped() {
 }
 
 #[test]
+fn a_preview_reports_every_destination_and_what_is_already_there() {
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let preview = cli::use_preview(&log, "triage-bug").expect("fixture preview should parse");
+
+    // --dry-run is the whole contract: the fixture wrapper exits 1 without it, so this
+    // asserting at all means nothing could have been written.
+    assert_eq!(
+        &log.started.lock().unwrap()[0].argv[1..],
+        ["use", "triage-bug", "--dry-run", "--json"]
+    );
+
+    assert_eq!(preview.scope, "global");
+    // Dependencies first, the requested entry last — the CLI's install order.
+    assert_eq!(preview.would_install.len(), 3);
+    assert_eq!(preview.would_install[2].name, "triage-bug");
+    assert_eq!(
+        preview.would_install[2].dest,
+        "/Users/dev/.claude/commands/triage-bug.md"
+    );
+    // Per-dest state, not one status for the whole plan.
+    assert_eq!(preview.would_install[0].state, "installed");
+    assert_eq!(preview.would_install[1].state, "not_installed");
+    // Which copy is about to install, when more than one catalog holds the name.
+    assert_eq!(preview.overrides, ["shared"]);
+}
+
+#[test]
+fn a_preview_of_a_locally_edited_copy_reports_the_drift() {
+    // The state the second confirmation exists for: installing overwrites edits the
+    // tool did not make, and this payload is the only warning the user gets.
+    let _guard = with_fixture_home();
+    let preview = cli::use_preview(&Recorder::default(), "grilling").expect("a preview");
+
+    assert_eq!(preview.would_install[0].state, "drifted");
+    // Not drift: a hand-installed copy the tool never wrote, which is normal.
+    assert_eq!(preview.would_install[1].state, "untracked");
+}
+
+#[test]
 fn a_skipped_catalog_is_still_listed_with_its_reason() {
     let _guard = with_fixture_home();
     let catalogs: Vec<Catalog> = cli::registry(&Recorder::default()).expect("fixture registry should parse");

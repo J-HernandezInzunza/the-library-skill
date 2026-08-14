@@ -440,3 +440,55 @@ working tree.
 
 Verified end to end afterwards: typo → clean failure, no config left → corrected URL with no
 `--force` → 35 entries → `library list` works.
+
+---
+
+## T3.1 — the preview, and where the drift gate lives
+
+`entry_use_preview` runs `use <name> --dry-run --json` and the detail view renders the plan:
+every destination, what is already at it, and which item is the entry you asked for versus a
+dependency dragged in with it.
+
+**The gate ships without its button, deliberately.** T3.1 owns the decision "this plan must not
+install in one click"; T3.2 owns the button that decision governs. So the gate landed here as a
+pure function — `installPlan(preview, name)` in `src/catalog.ts`, returning `blocked` — covered by
+four Vitest cases, and T3.2 wires the confirm control to it. Shipping an acknowledgement checkbox
+that enables nothing would have been the alternative, and it is worse: an affordance whose only
+job is to be inert.
+
+**`untracked` is not drift, and gating on it would have been the easy mistake.** `dest_state`
+returns five values and only `drifted` means "the tool wrote this and someone changed it".
+`untracked` means the tool never wrote it — the state *every* install predating receipts starts
+in, and the common case on a real machine. Blocking on it would put a second confirmation in front
+of the routine path and train people to click through it, which is exactly how a warning stops
+working. Pinned by a test.
+
+**The target is matched by name, not taken as the last item.** `cmd_use` does emit dependencies
+first and the requested entry last (`results[-1]`), so positional would work today. But a plan that
+silently mislabels which entry is being installed is worse than one that labels none, and the name
+is right there in the payload.
+
+**The fixture wrapper refuses a `use` that is not a dry run** — `exit 1` with
+`fixture refuses a use that is not a dry run`. A dropped `--dry-run` is the one bug in this task
+that damages the developer's machine rather than failing a test, so the fixture is where it gets
+caught. The argv assertion and that refusal together mean "nothing lands on disk" is enforced, not
+asserted in prose.
+
+**Verified against the live catalog, all three states, nothing written:**
+
+- `installed` — `grilling` at `~/.claude/skills/grilling`.
+- `drifted` — same entry after appending one line to `SKILL.md`; restored byte-identical after,
+  confirmed by `diff`.
+- `not_installed` — `use grilling --dry-run --dir /tmp/nope-does-not-exist`, which reported the
+  dest and left no directory behind.
+
+The recorded fixtures match that live shape, including `overrides: ["shared"]` on an entry two
+catalogs hold — so the preview can say *which* copy is about to install, which the dest alone
+cannot.
+
+**Scope stays global.** `use` resolves `--project` against `LIBRARY_CWD`, and no project directory
+can be picked until T3.3, so `use_preview` takes no scope parameter rather than carrying one that
+has no caller. T3.3 adds it alongside the picker that makes it meaningful.
+
+**Still not visually verified.** `InstallPreview` is type-checked and driven by recorded payloads;
+it joins `FirstRun`, `Doctor`, and the command log in the set that has never been seen rendered.

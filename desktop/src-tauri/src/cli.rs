@@ -144,6 +144,38 @@ pub struct Source {
     pub clone_urls: Vec<String>,
 }
 
+/// What `use <name> --dry-run --json` reports, having written nothing.
+///
+/// The only chance to see a destination before `use` overwrites it. The CLI reports
+/// each dest's current state and still overwrites when asked (C-D4), so the warning
+/// this payload enables is the app's job, not the CLI's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsePreview {
+    pub status: String,
+    /// `global` or `project`, as the CLI resolved it.
+    pub scope: String,
+    /// Catalogs whose copy of this name the resolved copy beats, and the one that
+    /// beats it — so the preview says which copy is about to be installed.
+    #[serde(default)]
+    pub overrides: Vec<String>,
+    #[serde(default)]
+    pub overridden_by: Option<String>,
+    /// Dependencies first, in install order, with the requested entry last.
+    pub would_install: Vec<PlannedInstall>,
+}
+
+/// One destination `use` would write, with what is there now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlannedInstall {
+    pub r#type: String,
+    pub name: String,
+    pub catalog: String,
+    pub dest: String,
+    /// `installed` / `drifted` / `untracked` / `missing` / `not_installed`. An open
+    /// set, like `Entry::state`.
+    pub state: String,
+}
+
 /// What `init --json` reports once a catalog is registered and cloned.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InitReport {
@@ -341,6 +373,14 @@ pub fn list(sink: &dyn CommandSink) -> Result<Vec<Entry>, AppError> {
 /// Everything known about one name (R2.1).
 pub fn show(sink: &dyn CommandSink, name: &str) -> Result<EntryDetail, AppError> {
     parse(run_json(sink, &["show", name])?)
+}
+
+/// Where `use <name>` would write, without writing it (R3.2).
+///
+/// Scope is left at the CLI's default of `global`: a project install resolves against
+/// `LIBRARY_CWD`, and no project directory can be picked yet (design §3.3, T3.3).
+pub fn use_preview(sink: &dyn CommandSink, name: &str) -> Result<UsePreview, AppError> {
+    parse(run_json(sink, &["use", name, "--dry-run"])?)
 }
 
 /// Catalog health (R7.3). `deep` adds the checks that touch the network.

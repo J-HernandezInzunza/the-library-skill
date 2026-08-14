@@ -29,6 +29,19 @@ case "$sub" in
       *)          cat "$here/payloads/show.json" ;;
     esac
     ;;
+  use)
+    # A preview must never be able to install: this fixture refuses any `use` that
+    # is not a dry run, so a lost --dry-run fails the suite instead of the machine.
+    name=$1
+    case " $* " in
+      *" --dry-run "*) ;;
+      *) echo 'fixture refuses a use that is not a dry run' >&2; exit 1 ;;
+    esac
+    case "$name" in
+      grilling) cat "$here/payloads/use-dry-run-drifted.json" ;;
+      *)        cat "$here/payloads/use-dry-run.json" ;;
+    esac
+    ;;
   catalog)
     # `catalog list` — the subcommand arrives as "$1" after the shift.
     cat "$here/payloads/catalogs.json"

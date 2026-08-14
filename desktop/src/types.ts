@@ -67,6 +67,30 @@ export interface EntryDetail {
   source: Source;
 }
 
+/** One destination `library use` would write, with what is there now. */
+export interface PlannedInstall {
+  type: string;
+  name: string;
+  catalog: string;
+  dest: string;
+  /**
+   * `installed` | `drifted` | `untracked` | `missing` | `not_installed`. Typed as
+   * `string` for the same reason `Entry.state` is: an open set.
+   */
+  state: string;
+}
+
+/** What `library use <name> --dry-run --json` reports, having written nothing. */
+export interface UsePreview {
+  status: string;
+  scope: string;
+  /** Catalogs the copy about to install beats, and the one that beats it. */
+  overrides: string[];
+  overridden_by: string | null;
+  /** Dependencies first, in install order, with the requested entry last. */
+  would_install: PlannedInstall[];
+}
+
 /** The exact argv about to run, from `command://started`. */
 export interface CommandStarted {
   id: number;

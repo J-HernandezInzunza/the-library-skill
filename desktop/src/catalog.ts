@@ -1,4 +1,4 @@
-import type { Entry, EntryDetail, RequiredEntry } from "./types";
+import type { Entry, EntryDetail, PlannedInstall, RequiredEntry, UsePreview } from "./types";
 
 /** An entry as one rendered row, with the single status the CLI would print for it. */
 export interface Row {
@@ -143,6 +143,65 @@ export function dependencies(detail: EntryDetail, catalog: Entry[]): Dependency[
     declared: declared.has(`${entry.type}:${entry.name}`),
     state: stateByName.get(entry.name) ?? "unknown",
   }));
+}
+
+/** One destination in a preview, with its place in the plan. */
+export interface PlannedItem {
+  install: PlannedInstall;
+  /** The entry that was asked for, versus a dependency dragged in alongside it. */
+  target: boolean;
+  /** Installing here overwrites edits the tool did not make. */
+  drifted: boolean;
+}
+
+/** A preview of `use`, and whether installing it may proceed in one click. */
+export interface InstallPlan {
+  items: PlannedItem[];
+  /** The destinations whose local edits installing would discard. */
+  drifted: PlannedItem[];
+  /**
+   * True when confirming must take a second, deliberate step.
+   *
+   * The CLI reports drift and overwrites anyway by design, so this warning is the
+   * only thing standing between a routine install and someone's lost edits.
+   */
+  blocked: boolean;
+}
+
+/**
+ * A dry-run payload as the install panel shows it.
+ *
+ * The target is matched by name rather than taken as the last item: the CLI does emit
+ * dependencies first, but a plan that silently mislabels which entry is being
+ * installed is worse than one that labels none.
+ */
+export function installPlan(preview: UsePreview, name: string): InstallPlan {
+  const items = preview.would_install.map((install) => ({
+    install,
+    target: install.name === name,
+    drifted: install.state === "drifted",
+  }));
+  const drifted = items.filter((item) => item.drifted);
+
+  return { items, drifted, blocked: drifted.length > 0 };
+}
+
+/** A destination's current state in words. Anything unrecognised renders as-is. */
+export function describeDestState(state: string): string {
+  switch (state) {
+    case "installed":
+      return "already installed";
+    case "drifted":
+      return "edited locally";
+    case "untracked":
+      return "installed by hand";
+    case "missing":
+      return "installed, but gone from disk";
+    case "not_installed":
+      return "new";
+    default:
+      return state;
+  }
 }
 
 /** `skill: foo` and `skill:foo` are the same ref; the CLI tolerates the spacing. */
