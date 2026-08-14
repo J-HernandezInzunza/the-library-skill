@@ -257,6 +257,23 @@ pub struct SyncFailure {
     pub reason: String,
 }
 
+/// What `uninstall <name> --json` did, and what it would not do.
+///
+/// `status` is `OK` or `REFUSED`. Both lists can be populated at once: a name installed
+/// in two scopes can have one copy deleted and the other refused.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UninstallReport {
+    pub status: String,
+    pub r#type: String,
+    pub name: String,
+    #[serde(default)]
+    pub deleted: Vec<String>,
+    /// Destinations with no install receipt — the tool cannot prove it put them there,
+    /// so it will not delete them without `--force`.
+    #[serde(default)]
+    pub refused: Vec<String>,
+}
+
 /// What `init --json` reports once a catalog is registered and cloned.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InitReport {
@@ -548,6 +565,51 @@ pub fn sync(sink: &dyn CommandSink, force: bool) -> Result<SyncReport, AppError>
         });
     }
     parse(body)
+}
+
+/// Delete an installed copy, leaving the catalog entry alone (R3.1).
+///
+/// Exit 2 with a `REFUSED` body is a report, not a failure: it names destinations with
+/// no install receipt and deletes nothing there. Handled here rather than in
+/// `run_report`, which tolerates only exit 1 — exit 2's other meaning is
+/// `AMBIGUOUS_CATALOG`, a choice, and widening the tolerance would swallow it.
+///
+/// `force` deletes a destination the tool cannot prove it created. Only ever passed
+/// after a second, separate confirmation; never as a retry.
+pub fn uninstall(
+    sink: &dyn CommandSink,
+    name: &str,
+    scope: &str,
+    force: bool,
+) -> Result<UninstallReport, AppError> {
+    let mut args = vec!["uninstall", name, "--scope", scope];
+    if force {
+        args.push("--force");
+    }
+
+    let home = library_home();
+    let output = run_capture(sink, &args, &home)?;
+    if output.status.code() == Some(2) {
+        if let Some(body) = refused_body(&output.stdout) {
+            return parse(body);
+        }
+    }
+
+    parse(settle(interpret(
+        &home,
+        output.status.code(),
+        &output.stdout,
+        &output.stderr,
+    ))?)
+}
+
+/// The `REFUSED` body from an exit-2 stdout, or `None` if this isn't one.
+fn refused_body(stdout: &[u8]) -> Option<serde_json::Value> {
+    let body: serde_json::Value = serde_json::from_slice(stdout).ok()?;
+    if body.get("status")? != "REFUSED" {
+        return None;
+    }
+    Some(body)
 }
 
 /// Catalog health (R7.3). `deep` adds the checks that touch the network.

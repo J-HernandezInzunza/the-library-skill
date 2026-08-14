@@ -127,6 +127,21 @@ export interface UseReport {
   overridden_by: string | null;
 }
 
+/**
+ * What `library uninstall <name> --json` did, and what it would not do.
+ *
+ * `status` is `OK` or `REFUSED`. Both lists can be populated at once: a name installed
+ * in two scopes can have one copy deleted and the other refused.
+ */
+export interface UninstallReport {
+  status: string;
+  type: string;
+  name: string;
+  deleted: string[];
+  /** Destinations with no install receipt, which the tool will not delete unforced. */
+  refused: string[];
+}
+
 /** One installed entry `library sync` looked at. */
 export interface SyncedItem {
   type: string;

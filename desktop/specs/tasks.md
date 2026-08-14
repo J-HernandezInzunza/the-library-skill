@@ -345,7 +345,7 @@ change in this repo, alongside `unresolved_requires[]` which T2.5 added the same
     Gate passes.
   - **Commit:** `feat(desktop): sync installed entries with change summaries`
 
-- [ ] **T3.5 — Uninstall**
+- [x] **T3.5 — Uninstall**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/`
   - **Requirements:** R3.1
   - **Do:** `entry_uninstall` running `uninstall <name> --scope … --json`, with a confirmation that

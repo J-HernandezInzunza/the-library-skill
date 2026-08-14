@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { catalogHue, dependencies } from "../catalog";
 import { describeAppError, type Catalog, type Entry, type EntryDetail } from "../types";
 import InstallPreview from "./InstallPreview.vue";
+import UninstallControl from "./UninstallControl.vue";
 
 const props = defineProps<{
   name: string;
@@ -14,8 +15,8 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ close: []; open: [name: string]; installed: [] }>();
 
-/** Both views hold state the install just invalidated, so both re-read it. */
-async function afterInstall() {
+/** Both views hold state the write just invalidated, so both re-read it. */
+async function afterWrite() {
   emit("installed");
   await load(props.name);
 }
@@ -92,7 +93,14 @@ watch(() => props.name, load, { immediate: true });
       </header>
       <p class="entry-detail__desc">{{ detail.entry.description }}</p>
 
-      <InstallPreview :name="detail.name" @installed="afterInstall()" />
+      <InstallPreview :name="detail.name" @installed="afterWrite()" />
+
+      <UninstallControl
+        :name="detail.name"
+        :scopes="detail.entry.scopes"
+        :installs="detail.installs"
+        @uninstalled="afterWrite()"
+      />
 
       <h3 class="entry-detail__section">Source</h3>
       <p class="entry-detail__origin">{{ origin }}</p>

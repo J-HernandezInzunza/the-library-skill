@@ -363,6 +363,70 @@ fn a_partial_sync_reports_both_what_refreshed_and_what_failed() {
 }
 
 #[test]
+fn an_uninstall_names_what_it_deleted() {
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let report = cli::uninstall(&log, "grilling", "global", false).expect("a report");
+
+    // --force is never passed unless the caller asked for it.
+    assert_eq!(
+        &log.started.lock().unwrap()[0].argv[1..],
+        ["uninstall", "grilling", "--scope", "global", "--json"]
+    );
+    assert_eq!(report.status, "OK");
+    assert_eq!(report.deleted, ["/Users/dev/.claude/skills/grilling"]);
+    assert!(report.refused.is_empty());
+}
+
+#[test]
+fn a_refusal_names_the_path_instead_of_reading_as_a_failed_command() {
+    // Exit 2 with REFUSED is a report: nothing was deleted, and the app has to be able
+    // to name the path to offer the escalation. Under the strict mapping it would have
+    // surfaced as "library exited 2" with no path at all.
+    let _guard = with_fixture_home();
+    let report = cli::uninstall(&Recorder::default(), "handmade", "all", false)
+        .expect("a refusal is a report");
+
+    assert_eq!(report.status, "REFUSED");
+    assert!(report.deleted.is_empty());
+    assert_eq!(report.refused, ["/Users/dev/.claude/skills/handmade"]);
+}
+
+#[test]
+fn a_partial_refusal_reports_both_halves() {
+    // The case a boolean "did it work" would get wrong: one copy gone, one left alone.
+    let _guard = with_fixture_home();
+    let report = cli::uninstall(&Recorder::default(), "mixed", "all", false).expect("a report");
+
+    assert_eq!(report.status, "REFUSED");
+    assert_eq!(report.deleted, ["/Users/dev/.claude/skills/mixed"]);
+    assert_eq!(report.refused, ["/proj/.claude/skills/mixed"]);
+}
+
+#[test]
+fn force_is_passed_only_when_the_caller_asked_for_it() {
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let report = cli::uninstall(&log, "handmade", "all", true).expect("a report");
+
+    assert!(log.started.lock().unwrap()[0].argv.contains(&"--force".to_string()));
+    assert_eq!(report.status, "OK");
+    assert_eq!(report.deleted, ["/Users/dev/.claude/skills/handmade"]);
+}
+
+#[test]
+fn an_ambiguous_catalog_still_reaches_the_picker_through_the_uninstall_path() {
+    // Exit 2's other meaning. Tolerating exit 2 wholesale would have turned this
+    // routine choice into a dead end, which is why only a REFUSED body is a report.
+    let _guard = with_fixture_home();
+    let err = cli::run_json(&Recorder::default(), &["ambiguous"]).unwrap_err();
+
+    assert!(matches!(err, AppError::Ambiguous { .. }));
+}
+
+#[test]
 fn a_skipped_catalog_is_still_listed_with_its_reason() {
     let _guard = with_fixture_home();
     let catalogs: Vec<Catalog> = cli::registry(&Recorder::default()).expect("fixture registry should parse");

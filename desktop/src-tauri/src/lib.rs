@@ -10,8 +10,8 @@ pub mod error;
 pub mod events;
 
 use cli::{
-    BootstrapReport, Catalog, DoctorReport, Entry, EntryDetail, InitReport, SyncReport, UsePreview,
-    UseReport,
+    BootstrapReport, Catalog, DoctorReport, Entry, EntryDetail, InitReport, SyncReport,
+    UninstallReport, UsePreview, UseReport,
 };
 use error::AppError;
 
@@ -51,6 +51,20 @@ fn entry_use(
     project: Option<String>,
 ) -> Result<UseReport, AppError> {
     cli::use_entry(&app, &name, project.as_deref())
+}
+
+/// Delete an installed copy. The catalog entry is untouched (R3.1).
+///
+/// `force` deletes a destination with no install receipt, and is only ever passed after
+/// the user confirmed that specific refusal.
+#[tauri::command]
+fn entry_uninstall(
+    app: tauri::AppHandle,
+    name: String,
+    scope: String,
+    force: bool,
+) -> Result<UninstallReport, AppError> {
+    cli::uninstall(&app, &name, &scope, force)
 }
 
 /// Re-pull every installed entry (R3.3). `force` re-fetches even unchanged ones.
@@ -97,6 +111,7 @@ pub fn run() {
             entry_show,
             entry_use_preview,
             entry_use,
+            entry_uninstall,
             catalog_sync,
             catalog_doctor,
             catalog_init,

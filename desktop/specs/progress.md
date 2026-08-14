@@ -649,3 +649,63 @@ discover nothing changed.
   which is the behaviour the banner exists to report.
 
 **Still not visually verified**, along with everything else outside the catalog list.
+
+---
+
+## T3.5 — uninstall, and why the control is driven by `scopes` rather than `installs`
+
+`entry_uninstall` runs `uninstall <name> --scope … --json` from the entry detail view, with a
+confirmation naming the exact paths and stating that the catalog entry is untouched.
+
+**Exit 2 is the fourth "non-zero is the answer" case, and the only one that isn't exit 1.** A
+refusal — a destination with no install receipt — prints the whole report and exits 2. Handled in
+`uninstall()` itself rather than by widening `run_report`, because exit 2's *other* meaning is
+`AMBIGUOUS_CATALOG`, a routine choice. Tolerating exit 2 wholesale would have turned that choice
+into a dead end, so the **body** distinguishes them, not the code. Pinned by a test asserting the
+ambiguity path still reaches `AppError::Ambiguous`.
+
+**The finding that shaped the UI: `installs[]` and `entry.scopes` answer different questions, and
+neither is a superset.** Measured live on one entry:
+
+- A hand-created `~/.claude/skills/<name>` reported `scopes: ["global"]`, `state: "untracked"`,
+  and **`installs: []`** — no receipt, because the tool never wrote it.
+- A receipt left behind by a deleted project directory stayed in `installs[]` pointing at a path
+  that no longer exists.
+
+`installs[]` is receipt-driven (what the tool believes it wrote); `scopes` is disk-driven (what is
+actually there). So the remove controls are driven by `scopes`, and `installs[]` only supplies the
+path to name in the confirmation. Had it been the other way round, the hand-made copy — the exact
+case the refusal exists for — would have had no button at all, and the whole `REFUSED` path would
+have been unreachable from the app.
+
+**A refusal is a second confirmation, never a retry.** The refusal opens its own panel, in a
+different colour, naming the refused paths and saying plainly that deleting anyway removes whatever
+is there including anything the user put there themselves. `--force` is only ever passed from that
+panel. Auto-retrying would make the CLI's refusal decorative, which is the one thing it must not
+be.
+
+**Verified end to end on the real machine**, both paths:
+
+1. Hand-made directory, `uninstall --scope global` → exit 2, `REFUSED`, `deleted: []`, the path
+   named — and the file still on disk afterwards with its contents intact.
+2. Same command with `--force` → exit 0, deleted.
+3. A tool-installed copy → exit 0, deleted, and the entry stayed in `list` and reinstalled
+   byte-identical to the original.
+
+**Gap found, noted not actioned.** `uninstall_entry` only considers the destinations the *current*
+scopes resolve to, deliberately ("or `uninstall alpha` would also take out a `--dir` install the
+user never named"). So a receipt whose destination no longer resolves from any scope — a project
+install whose directory has since moved or been deleted — is unreachable: the entry reports
+`missing` with `scopes: []`, the app renders no remove control, and the stale receipt persists. Hit
+while cleaning up this session's own T3.3 probe, and cleared by re-running `uninstall --scope
+project` with `LIBRARY_CWD` pointed at the old path. Narrow, and the fix belongs in `library.py`
+if it is ever worth making — same class as the Phase 1 `--dir` gap.
+
+**Phase 3 is complete.** T3.1–T3.5, five commits, gate green on each: 34 Rust integration tests,
+21 Rust unit tests, 25 Vitest cases, `vue-tsc` and `vite build` clean. The machine was returned to
+its starting state after every live verification, confirmed by `list` (35 winners, all
+`installed`) and `doctor` (`OK`).
+
+**Carried into Phase 4:** `InstallPreview`, `UninstallControl`, and `Sync` have been driven by
+fixtures and by the real CLI underneath them, but none has been seen rendered. That backlog now
+covers `FirstRun`, `Doctor`, `EntryDetail`, `CommandLog`, and all three of these.
