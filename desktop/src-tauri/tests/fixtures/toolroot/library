@@ -11,6 +11,10 @@ case "$sub" in
   list)
     cat "$here/payloads/list.json"
     ;;
+  catalog)
+    # `catalog list` — the subcommand arrives as "$1" after the shift.
+    cat "$here/payloads/catalogs.json"
+    ;;
   probe)
     # Proves the layer's own contract reached the child: `--json` appended by
     # run_json, and LIBRARY_CWD anchored rather than inherited from the GUI's $PWD.

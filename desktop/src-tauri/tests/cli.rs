@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
-use desktop_lib::cli::{self, Entry};
+use desktop_lib::cli::{self, Catalog, Entry};
 use desktop_lib::error::AppError;
 
 /// `LIBRARY_HOME` is process-global, so tests that point it somewhere take turns.
@@ -47,6 +47,23 @@ fn list_parses_the_recorded_catalog() {
     // The second record carries a key this build has never heard of.
     assert_eq!(entries[1].overridden_by.as_deref(), Some("personal"));
     assert!(entries[1].receipt.is_none());
+}
+
+#[test]
+fn a_skipped_catalog_is_still_listed_with_its_reason() {
+    let _guard = with_fixture_home();
+    let catalogs: Vec<Catalog> = cli::registry().expect("fixture registry should parse");
+
+    assert_eq!(catalogs.len(), 3);
+    assert_eq!(catalogs[0].id, "personal");
+    assert_eq!(catalogs[0].entries, Some(35));
+
+    // A skipped catalog reports no entry count at all. Rendering it as zero would
+    // make a remote that failed to clone look like a catalog with nothing in it.
+    let archived = &catalogs[2];
+    assert_eq!(archived.entries, None);
+    assert!(archived.skipped.as_deref().unwrap().contains("not cloned"));
+    assert!(!archived.writable);
 }
 
 #[test]

@@ -1,0 +1,32 @@
+[
+  {
+    "precedence": 1,
+    "id": "personal",
+    "kind": "local",
+    "location": "/Users/tester/my-engineering-library/library.yaml",
+    "write_mode": "local",
+    "writable": true,
+    "entries": 35,
+    "skipped": null
+  },
+  {
+    "precedence": 2,
+    "id": "shared",
+    "kind": "remote",
+    "location": "git@bitbucket.org:example/agent-library.git (develop, library.yaml)",
+    "write_mode": "pr",
+    "writable": true,
+    "entries": 7,
+    "skipped": null
+  },
+  {
+    "precedence": 3,
+    "id": "archived",
+    "kind": "remote",
+    "location": "git@bitbucket.org:example/old-library.git (main, library.yaml)",
+    "write_mode": "pr",
+    "writable": false,
+    "entries": null,
+    "skipped": "not cloned yet at /Users/tester/.library/catalogs/archived"
+  }
+]

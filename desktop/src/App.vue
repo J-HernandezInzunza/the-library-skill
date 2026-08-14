@@ -1,74 +1,71 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { describeAppError, type Entry } from "./types";
-
-/** A catalog name, the copy that wins it, and the copies it overrides. */
-interface Listing {
-  winner: Entry;
-  overrides: Entry[];
-}
+import { catalogRows, winningRows, type Row } from "./catalog";
+import { describeAppError, type Catalog, type Entry } from "./types";
+import CatalogSummary from "./components/CatalogSummary.vue";
+import CatalogTabs from "./components/CatalogTabs.vue";
+import EntryList from "./components/EntryList.vue";
 
 const entries = ref<Entry[]>([]);
+const catalogs = ref<Catalog[]>([]);
+/** The catalog being browsed; `null` browses every catalog's winning entries. */
+const activeCatalog = ref<string | null>(null);
 const query = ref("");
 const loading = ref(false);
 const error = ref("");
 
-/** Load the full catalog once; search filters this in-memory. */
+/** Load the catalog and the registry once; search and tabs work off that payload. */
 async function load() {
   loading.value = true;
   error.value = "";
   try {
-    entries.value = await invoke<Entry[]>("library_list");
+    const [loadedEntries, loadedCatalogs] = await Promise.all([
+      invoke<Entry[]>("library_list"),
+      invoke<Catalog[]>("registry_list"),
+    ]);
+    entries.value = loadedEntries;
+    catalogs.value = loadedCatalogs;
   } catch (e) {
     error.value = describeAppError(e);
     entries.value = [];
+    catalogs.value = [];
   } finally {
     loading.value = false;
   }
 }
 
-/**
- * One row per name, not one per catalog copy.
- *
- * `list` returns a record per copy, so a name held by two catalogs appears twice.
- * The losing copy reports `not_installed` — correct, since it is not what `use`
- * would install, but misleading in a browsing view where the question is "do I
- * have this?". The winner answers that; the copies it overrides are kept so the
- * override is still visible without a detail view.
- */
-const listings = computed<Listing[]>(() => {
-  const byName = new Map<string, Entry[]>();
-  for (const e of entries.value) {
-    // Grouped by name alone, matching how the CLI resolves a winner: a name is
-    // resolved the same way regardless of which section it sits in.
-    const copies = byName.get(e.name);
-    if (copies) copies.push(e);
-    else byName.set(e.name, [e]);
-  }
+const multiCatalog = computed(() => catalogs.value.length > 1);
 
-  return [...byName.values()].map((copies) => {
-    // `overridden_by: null` marks the copy `use` resolves to. Falling back to the
-    // first copy keeps a row on screen if a future CLI ever stops marking one.
-    const winner = copies.find((c) => !c.overridden_by) ?? copies[0];
-    return { winner, overrides: copies.filter((c) => c !== winner) };
-  });
+const selectedCatalog = computed(() => {
+  const found = catalogs.value.find((catalog) => catalog.id === activeCatalog.value);
+  return found ?? null;
+});
+
+const rows = computed<Row[]>(() => {
+  const catalogId = activeCatalog.value;
+  if (catalogId === null) return winningRows(entries.value);
+  return catalogRows(entries.value, catalogId);
 });
 
 /** Case-insensitive filter over name + description, computed client-side. */
 const filtered = computed(() => {
   const q = query.value.trim().toLowerCase();
-  if (!q) return listings.value;
-  return listings.value.filter(
-    ({ winner }) =>
-      winner.name.toLowerCase().includes(q) ||
-      winner.description.toLowerCase().includes(q),
+  if (!q) return rows.value;
+  return rows.value.filter(
+    ({ entry }) =>
+      entry.name.toLowerCase().includes(q) || entry.description.toLowerCase().includes(q),
   );
 });
 
-const installedCount = computed(
-  () => filtered.value.filter(({ winner }) => winner.installed).length,
-);
+const summary = computed(() => {
+  const installed = filtered.value.filter(({ tone }) => tone === "installed").length;
+  const overridden = filtered.value.filter(({ tone }) => tone === "overridden").length;
+
+  const parts = [`${filtered.value.length} of ${rows.value.length} entries`, `${installed} installed`];
+  if (overridden) parts.push(`${overridden} overridden`);
+  return parts.join(" · ");
+});
 
 onMounted(load);
 </script>
@@ -87,35 +84,20 @@ onMounted(load);
       </form>
     </header>
 
-    <p v-if="!loading && !error" class="summary">
-      {{ filtered.length }} of {{ listings.length }} entries ·
-      {{ installedCount }} installed
-    </p>
+    <CatalogTabs v-if="multiCatalog" v-model="activeCatalog" :catalogs="catalogs" />
+    <CatalogSummary v-if="selectedCatalog" :catalog="selectedCatalog" />
+
+    <p v-if="!loading && !error" class="summary">{{ summary }}</p>
 
     <p v-if="loading" class="state">Loading…</p>
     <pre v-else-if="error" class="state error">{{ error }}</pre>
     <p v-else-if="!filtered.length" class="state">No matching entries.</p>
-
-    <ul v-else class="entries">
-      <li v-for="{ winner, overrides } in filtered" :key="winner.name" class="entry">
-        <div class="entry-head">
-          <span class="name">{{ winner.name }}</span>
-          <span class="type">{{ winner.type }}</span>
-          <span class="catalog">{{ winner.catalog }}</span>
-          <span v-if="winner.installed" class="badge installed">
-            installed{{ winner.scopes.length ? ` · ${winner.scopes.join(", ")}` : "" }}
-          </span>
-          <span v-else class="badge missing">not installed</span>
-          <span v-if="overrides.length" class="badge overridden">
-            overrides {{ overrides.map((o) => o.catalog).join(", ") }}
-          </span>
-        </div>
-        <p class="desc">{{ winner.description }}</p>
-        <p v-if="winner.requires.length" class="requires">
-          requires: {{ winner.requires.join(", ") }}
-        </p>
-      </li>
-    </ul>
+    <EntryList
+      v-else
+      :rows="filtered"
+      :catalogs="catalogs"
+      :show-origin="multiCatalog"
+    />
   </main>
 </template>
 
@@ -197,63 +179,5 @@ button.ghost {
   background: rgba(220, 38, 38, 0.08);
   padding: 1rem;
   border-radius: 8px;
-}
-.entries {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-}
-.entry {
-  padding: 0.85rem 1rem;
-  border-radius: 10px;
-  background: rgba(128, 128, 128, 0.08);
-  border: 1px solid rgba(128, 128, 128, 0.15);
-}
-.entry-head {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-.name {
-  font-weight: 600;
-}
-.type,
-.catalog {
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  opacity: 0.6;
-}
-.badge {
-  font-size: 0.7rem;
-  padding: 0.1rem 0.45rem;
-  border-radius: 999px;
-}
-.badge.installed {
-  background: rgba(34, 197, 94, 0.18);
-  color: #16a34a;
-}
-.badge.missing {
-  background: rgba(128, 128, 128, 0.18);
-  opacity: 0.8;
-}
-.badge.overridden {
-  background: rgba(234, 179, 8, 0.18);
-  color: #b45309;
-}
-.desc {
-  margin: 0.4rem 0 0;
-  font-size: 0.88rem;
-  line-height: 1.4;
-  opacity: 0.85;
-}
-.requires {
-  margin: 0.35rem 0 0;
-  font-size: 0.78rem;
-  opacity: 0.6;
 }
 </style>

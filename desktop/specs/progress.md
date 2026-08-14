@@ -145,3 +145,39 @@ unambiguous winner and no name shared across types.
 `entry_install_state`. A losing copy installed under `--dir` — a destination the winner
 never occupies — is therefore invisible in `list`. Narrow, no one has hit it, and the fix
 belongs in `library.py` if it is ever worth making.
+
+---
+
+## Phase 1 — per-catalog browsing, and `registry_list` pulled forward
+
+The list view now has two modes, because "what can I use?" and "what's in this catalog?"
+are different questions and one row layout cannot answer both.
+
+- **All** — winners only, one row per name. Unchanged from the collapse above.
+- **A catalog tab** — that catalog's inventory, one row per copy, overridden copies
+  included. Status follows the CLI's terminal column and is mutually exclusive: an
+  overridden copy reports `overridden by personal` instead of an install state it cannot
+  have.
+
+Verified against the live catalog: All = 35 rows / 35 installed / 7 overriding,
+`personal` = 35 rows all installed, `shared` = 7 rows all overridden.
+
+**`registry_list` (T2.2's backend) landed early.** Tabs are driven by `catalog list --json`,
+not by the catalogs present in the entry list. A catalog that is empty or `skipped`
+contributes no entries, so deriving tabs from entries would delete the tab of a remote
+that failed to clone — the failure would render as "we have nothing shared". `catalog list`
+is deliberately offline and reports `skipped` with a reason, and `entries: null` (not `0`)
+for a skipped catalog, so the count shows as `—` rather than a confident zero.
+
+**Origin is now a filled, colour-coded chip** keyed to precedence, replacing grey text that
+was styled identically to the `type` label. Hue is derived from precedence rather than
+stored, so a newly registered catalog needs no palette entry.
+
+**What this leaves for T2.2:** only the requirement text about matching the CLI's display
+contract, which Phase 1's collapse already superseded. The backend command and per-entry
+origin are done.
+
+**Standing gap:** `src/catalog.ts` holds the winner-resolution and inventory logic as pure
+functions, and there is no frontend test runner, so `npm run check` cannot catch a
+regression in it. Verified by hand against the live payload this time. Adding Vitest would
+close it.

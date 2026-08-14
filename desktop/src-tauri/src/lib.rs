@@ -8,7 +8,7 @@
 pub mod cli;
 pub mod error;
 
-use cli::Entry;
+use cli::{Catalog, Entry};
 use error::AppError;
 
 /// The full catalog with install status — backs the list view.
@@ -21,11 +21,17 @@ fn library_list() -> Result<Vec<Entry>, AppError> {
     cli::list()
 }
 
+/// The registered catalogs, for per-catalog browsing and origin display.
+#[tauri::command]
+fn registry_list() -> Result<Vec<Catalog>, AppError> {
+    cli::registry()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![library_list])
+        .invoke_handler(tauri::generate_handler![library_list, registry_list])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

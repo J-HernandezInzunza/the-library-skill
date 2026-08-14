@@ -1,3 +1,18 @@
+/** One registered catalog from `library catalog list --json`. */
+export interface Catalog {
+  id: string;
+  /** 1-based, and the reason one copy of a name beats another. */
+  precedence: number;
+  kind: string;
+  location: string;
+  write_mode: string;
+  writable: boolean;
+  /** `null` when the catalog was skipped — unknown, not zero. */
+  entries: number | null;
+  /** Why this catalog was excluded from the run, when it was. */
+  skipped: string | null;
+}
+
 /**
  * The install receipt behind an entry's state, when the tool placed the copy.
  *

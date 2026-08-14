@@ -44,6 +44,24 @@ pub struct Entry {
     pub has_setup: bool,
 }
 
+/// One registered catalog, as reported by `catalog list --json`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Catalog {
+    pub id: String,
+    /// 1-based, and the reason one copy of a name beats another.
+    pub precedence: u32,
+    pub kind: String,
+    pub location: String,
+    pub write_mode: String,
+    pub writable: bool,
+    /// `None` when the catalog was skipped — unknown, not zero.
+    #[serde(default)]
+    pub entries: Option<u32>,
+    /// Why this catalog was excluded from the run, when it was.
+    #[serde(default)]
+    pub skipped: Option<String>,
+}
+
 /// The install receipt behind an entry's `state`, when the tool put the copy there.
 ///
 /// Absent for `untracked` and never-installed entries, so every field is optional
@@ -132,7 +150,19 @@ pub fn run_json(args: &[&str]) -> Result<serde_json::Value, AppError> {
 
 /// The full catalog with install state (R2.1).
 pub fn list() -> Result<Vec<Entry>, AppError> {
-    let payload = run_json(&["list"])?;
+    parse(run_json(&["list"])?)
+}
+
+/// The registered catalogs, highest precedence first.
+///
+/// Read from the registry rather than inferred from the entries: a catalog that is
+/// empty or `skipped` contributes no entries, so inferring would make a broken
+/// remote look like an absence of shared work.
+pub fn registry() -> Result<Vec<Catalog>, AppError> {
+    parse(run_json(&["catalog", "list"])?)
+}
+
+fn parse<T: serde::de::DeserializeOwned>(payload: serde_json::Value) -> Result<T, AppError> {
     serde_json::from_value(payload).map_err(|e| AppError::Json {
         detail: e.to_string(),
     })
