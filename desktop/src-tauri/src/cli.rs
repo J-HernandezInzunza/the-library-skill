@@ -426,6 +426,66 @@ pub struct UpdateRequest {
     pub requires: Option<Vec<String>>,
 }
 
+/// What `push <name> --dry-run --json` reports, having written nothing.
+///
+/// One shape for both source kinds, because the caller's question is the same: would this
+/// change anything, and what would it look like? A local-path source has a `dest` and no
+/// diff; a remote one has a `branch` and a diff. Neither is guaranteed, so both are
+/// optional and the UI renders what it got.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PushPreview {
+    /// `DRY_RUN`. A real push reports `OK`, which is how a lost flag is caught.
+    pub status: String,
+    pub would_change: bool,
+    pub name: String,
+    pub catalog: String,
+    /// The directory a local-path source would be copied into.
+    #[serde(default)]
+    pub dest: Option<String>,
+    /// The branch a remote source's PR would come from.
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub diff: Option<String>,
+    /// The multi-catalog warning, when more than one catalog defines this name.
+    ///
+    /// Nothing on disk records which catalog an installed copy came from, so the source
+    /// being pushed to is an inference from precedence. Carried in the payload because the
+    /// CLI's own `warn()` goes to stderr, which `--json` sends nowhere a GUI can read.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// What `push <name> --json` reports after pushing. `status` is `OK`.
+///
+/// `changed: false` is the common healthy outcome — the local copy already matches its
+/// source — and carries none of the destination keys, so all of them are optional.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PushReport {
+    pub status: String,
+    pub name: String,
+    pub catalog: String,
+    pub changed: bool,
+    /// A local-path source: where the files were copied. No git, no review, immediate.
+    #[serde(default)]
+    pub dest: Option<String>,
+    /// True only for a remote source, whose branch reached the remote.
+    #[serde(default)]
+    pub pushed: bool,
+    /// `gh` when the PR was opened for you, `manual` when only the branch was pushed.
+    #[serde(default)]
+    pub method: Option<String>,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub pr_url: Option<String>,
+    /// Where to open the PR by hand, when the CLI could only push the branch.
+    #[serde(default)]
+    pub compare_url: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
 /// What `suggest-source <path> --json` reports.
 ///
 /// `status` is `OK` or `NONE`, and both exit 0: "this file is not in a GitHub repo" is an
@@ -931,6 +991,81 @@ pub fn remove(
     parse(body)
 }
 
+/// The argv shared by a push and its preview, so the two cannot drift apart.
+///
+/// `--from` is always passed. Without it the CLI auto-detects, and *dies* when the entry
+/// is installed in more than one place — a question the user has already answered by
+/// choosing which copy to push.
+fn push_args<'a>(name: &'a str, scope: &'a str, message: Option<&'a str>) -> Vec<&'a str> {
+    let mut args = vec!["push", name, "--from", scope];
+    if let Some(message) = message {
+        args.extend(["--message", message]);
+    }
+    args
+}
+
+/// Run a push and hand back its body, tolerating the exit code it reports failures with.
+///
+/// `push` has `use`'s shape: it exits 1 both for a plain `die()` (stderr, no JSON) and for
+/// a failure it reports as `status: "ERROR"` with a `reason` on stdout. Under the strict
+/// mapping the second case surfaces as "library exited 1" with an *empty* message, because
+/// the explanation was on stdout. Tolerating the code is not trusting the body, so callers
+/// still check `status` themselves.
+fn push_body(
+    sink: &dyn CommandSink,
+    args: &[&str],
+    project: Option<&str>,
+) -> Result<serde_json::Value, AppError> {
+    let body = run_report(sink, args, &anchor(project))?;
+    let status = body.get("status").and_then(|s| s.as_str());
+    if matches!(status, Some("OK" | "DRY_RUN")) {
+        return Ok(body);
+    }
+
+    let reason = body
+        .get("reason")
+        .and_then(|r| r.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| body.to_string());
+    Err(AppError::Cli { code: 1, stderr: reason })
+}
+
+/// What pushing a local copy back to its source would do, without doing it (R4.5).
+///
+/// The CLI's `--dry-run` used to write for a local-path source, which is why this exists
+/// as a separate call rather than as a flag the UI could forget: the preview and the push
+/// return disjoint shapes (`would_change` versus `changed`), so a lost flag fails to
+/// deserialize instead of silently reporting a completed push as a plan.
+pub fn push_preview(
+    sink: &dyn CommandSink,
+    name: &str,
+    scope: &str,
+    project: Option<&str>,
+) -> Result<PushPreview, AppError> {
+    let mut args = push_args(name, scope, None);
+    args.push("--dry-run");
+    parse(push_body(sink, &args, project)?)
+}
+
+/// Push a local copy back to the entry's source (R4.5).
+///
+/// A local-path source is overwritten in place; a remote one goes through a branch and a
+/// PR. The caller does not choose — the source decides, and the report says which happened.
+///
+/// `project` anchors `LIBRARY_CWD`, exactly as a project install does (design §3.3): the CLI
+/// resolves `--from project` against it, so the picked directory is the anchor rather than
+/// a flag. Deriving it from the install receipt's path instead would mean encoding the
+/// CLI's own directory layout in the app, which is the duplication R1.1 exists to prevent.
+pub fn push(
+    sink: &dyn CommandSink,
+    name: &str,
+    scope: &str,
+    project: Option<&str>,
+    message: Option<&str>,
+) -> Result<PushReport, AppError> {
+    parse(push_body(sink, &push_args(name, scope, message), project)?)
+}
+
 /// The source URL a teammate could resolve for a path on this machine (R4.2).
 ///
 /// The derivation lives in `library.py`, where the terminal and the agent get it too — it
@@ -1228,6 +1363,29 @@ mod tests {
         let write = report.write.expect("a changed update wrote somewhere");
         assert_eq!(write.mode, "local");
         assert_eq!(write.path.as_deref(), Some("/c/library.yaml"));
+    }
+
+    #[test]
+    fn a_push_report_cannot_be_read_as_a_preview() {
+        // The CLI shipped a `--dry-run` that wrote a local-path source and reported OK, so
+        // this pair is the app's structural half of that fix: the two shapes are disjoint.
+        let pushed = r#"{"status":"OK","name":"deploy","catalog":"personal","changed":true,
+                        "pushed":false,"dest":"/src/deploy"}"#;
+        assert!(serde_json::from_str::<PushPreview>(pushed).is_err());
+
+        let planned = r#"{"status":"DRY_RUN","would_change":true,"name":"deploy",
+                         "catalog":"personal","dest":"/src/deploy","note":null}"#;
+        assert!(serde_json::from_str::<PushReport>(planned).is_err());
+    }
+
+    #[test]
+    fn a_push_that_changed_nothing_carries_none_of_the_destination_keys() {
+        // The healthy outcome for a remote source whose local copy already matches it.
+        let body = r#"{"status":"OK","name":"deploy","catalog":"personal","changed":false}"#;
+        let report: PushReport = serde_json::from_str(body).expect("parse");
+        assert!(!report.changed);
+        assert!(report.pr_url.is_none());
+        assert!(!report.pushed);
     }
 
     #[test]

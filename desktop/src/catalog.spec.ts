@@ -14,6 +14,7 @@ import {
   editableCatalogs,
   editableCopies,
   describeCatalog,
+  describePush,
   entryEdits,
   purgeable,
 } from "./catalog";
@@ -21,6 +22,7 @@ import type {
   Catalog,
   CatalogCopy,
   Changes,
+  PushReport,
   Receipt,
   Entry,
   EntryDetail,
@@ -768,5 +770,80 @@ describe("describeCatalog", () => {
 
     expect(said.note).toContain("not cloned");
     expect(said.note).not.toContain("read-only");
+  });
+});
+
+function pushReport(overrides: Partial<PushReport> = {}): PushReport {
+  return {
+    status: "OK",
+    name: "grilling",
+    catalog: "personal",
+    changed: true,
+    dest: null,
+    pushed: true,
+    method: null,
+    branch: null,
+    pr_url: null,
+    compare_url: null,
+    note: null,
+    ...overrides,
+  };
+}
+
+describe("describePush", () => {
+  it("calls an unchanged push nothing to push, not a failure", () => {
+    const said = describePush(pushReport({ changed: false, pushed: false }));
+
+    expect(said.headline).toBe("Nothing to push.");
+    expect(said.link).toBeNull();
+  });
+
+  it("says a local source was written straight through, with no review", () => {
+    const said = describePush(
+      pushReport({ dest: "/Users/dev/library/skills/grilling", pushed: false }),
+    );
+
+    expect(said.headline).toContain("Copied");
+    expect(said.detail).toContain("no pull request");
+    expect(said.link).toBeNull();
+  });
+
+  it("reports an opened PR with its url", () => {
+    const said = describePush(
+      pushReport({
+        method: "gh",
+        branch: "library/update-grilling-1",
+        pr_url: "https://github.com/acme/skills/pull/42",
+      }),
+    );
+
+    expect(said.headline).toBe("Pull request opened.");
+    expect(said.link?.url).toBe("https://github.com/acme/skills/pull/42");
+  });
+
+  it("never calls a pushed branch an opened pull request", () => {
+    // The whole reason this function exists. _create_pr always pushes the branch and only
+    // sometimes opens the PR — gh missing, autopush off, or a Bitbucket remote, where gh
+    // does not work at all. Saying "opened" there lets someone close the app believing
+    // their change is in the review queue when nobody has been asked to look at it.
+    const said = describePush(
+      pushReport({
+        method: "manual",
+        branch: "library/update-grilling-1",
+        compare_url: "https://bitbucket.org/acme/skills/pull-requests/new?source=x",
+      }),
+    );
+
+    expect(said.headline).not.toContain("opened");
+    expect(said.headline).toContain("not open yet");
+    expect(said.link?.url).toContain("bitbucket.org");
+  });
+
+  it("still says the branch is pushed when there is no compare url to offer", () => {
+    // An unrecognised host: _remote_web returns nothing, so there is no URL to build.
+    const said = describePush(pushReport({ method: "manual", branch: "library/update-1" }));
+
+    expect(said.headline).toContain("not open yet");
+    expect(said.link).toBeNull();
   });
 });

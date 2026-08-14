@@ -8,6 +8,7 @@ import Busy from "./Busy.vue";
 import StatusBanner from "./StatusBanner.vue";
 import InstallPreview from "./InstallPreview.vue";
 import PageHeader from "./PageHeader.vue";
+import PushControl from "./PushControl.vue";
 import UninstallControl from "./UninstallControl.vue";
 
 const props = defineProps<{
@@ -263,6 +264,11 @@ watch(() => props.name, load, { immediate: true });
           </p>
         </li>
       </ul>
+
+      <!-- After the installed copies, because it acts on one of them, and before the
+           destructive control, because sending your edits back is the thing you want to
+           have done *before* deleting the copy that holds them. -->
+      <PushControl :name="detail.name" :scopes="detail.entry.scopes" />
 
       <!-- Last, and directly under the list of what it deletes. Destructive and rarely
            wanted, so it does not belong above everything you came here to read. -->

@@ -3815,10 +3815,19 @@ def cmd_push(args: argparse.Namespace) -> int:
             ["git", "-C", str(repo_dir), "diff", "--cached", "--quiet"]
         )
         if diff_check.returncode == 0:
+            # Under --dry-run this is still a dry run. Reporting OK here made "nothing to
+            # push" indistinguishable from a completed push, so a caller telling a preview
+            # from the real thing by `status` — the only reliable way — got it wrong on the
+            # most ordinary outcome there is. Same defect as the local-source branch above,
+            # on the other early return.
             if args.json:
-                print(json.dumps({"status": "OK", "name": entry.name,
-                                  "catalog": entry.catalog, "changed": False,
-                                  "note": note or None}, indent=2))
+                print(json.dumps(
+                    {"status": "DRY_RUN", "would_change": False, "name": entry.name,
+                     "catalog": entry.catalog, "branch": branch, "note": note or None}
+                    if args.dry_run else
+                    {"status": "OK", "name": entry.name, "catalog": entry.catalog,
+                     "changed": False, "note": note or None},
+                    indent=2))
             else:
                 print(f"No changes — local copy of {entry.name} matches source.")
             return 0

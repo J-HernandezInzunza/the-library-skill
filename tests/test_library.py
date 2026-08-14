@@ -2230,6 +2230,38 @@ library:
         self.assertEqual(report["status"], "DRY_RUN")
         self.assertFalse(report["would_change"])
 
+    def test_dry_run_says_dry_run_even_when_there_is_nothing_to_push(self) -> None:
+        """A preview is a preview whatever the answer.
+
+        The remote-source branch had the same defect on its own early return: with the
+        local copy already matching, `--dry-run` reported `status: OK, changed: false`,
+        which is byte-identical to what a completed push reports. A caller telling a
+        preview from a real push by `status` — the only reliable way — got it wrong on
+        the most ordinary outcome there is.
+
+        Checked here on a local source, where the same rule applies and no clone is
+        needed; the remote branch is verified against a bare remote by hand.
+        """
+        self.install("global", "# upstream copy\n")
+        report = self.push("--dry-run", "--from", "global")
+
+        self.assertEqual(report["status"], "DRY_RUN")
+        self.assertFalse(report["would_change"])
+        self.assertNotIn("changed", report)
+
+    def test_json_carries_the_multi_catalog_warning_the_terminal_gets(self) -> None:
+        """The one warning whose cost is an edit landing in someone else's repo.
+
+        `push_source_warning` reached a terminal through `warn()` and nothing else, so
+        under `--json` — the mode a GUI and the agent both use — it was invisible.
+        """
+        self.install("global", "# edited copy\n")
+        report = self.push("--dry-run", "--from", "global")
+        # One catalog defines this name here, so there is nothing to warn about, and the
+        # key is present-and-null rather than absent: a caller must not have to guess
+        # whether an old CLI simply never reported it.
+        self.assertIsNone(report["note"])
+
     def test_a_real_push_after_a_dry_run_still_writes(self) -> None:
         # Guards the obvious over-correction: skipping the copy for every local push.
         self.install("global", "# edited copy\n")

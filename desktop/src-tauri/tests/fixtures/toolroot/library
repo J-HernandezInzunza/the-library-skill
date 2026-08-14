@@ -141,6 +141,73 @@ case "$sub" in
       *)               cat "$here/payloads/remove.json" ;;
     esac
     ;;
+  push)
+    # `push` reports four different things depending on the entry's source, and the app
+    # renders each differently, so all four have a case here.
+    name=$1
+    # The scope is echoed back into the payload: pushing from the wrong local copy is the
+    # risk this command carries, so a mis-built argv has to fail rather than quietly match
+    # a canned payload. Same reasoning as `use --project` echoing LIBRARY_CWD.
+    scope=UNSET
+    prev=
+    for a in "$@"; do
+      [ "$prev" = "--from" ] && scope=$a
+      prev=$a
+    done
+
+    case " $* " in
+      *" --dry-run "*)
+        case "$name" in
+          # A remote source, and a name two catalogs define, so the provenance note fires.
+          shared-skill)
+            printf '{"status":"DRY_RUN","would_change":true,"name":"%s","catalog":"personal",' "$name"
+            printf '"branch":"library/update-%s-20250101T1200",' "$name"
+            printf '"diff":"commit abc123\\n--- a/SKILL.md\\n+++ b/SKILL.md\\n+edited locally\\n",'
+            printf '"note":"'"'"'%s'"'"' is defined in more than one catalog and nothing on disk records which copy was installed. Pushing to '"'"'personal'"'"'."}\n' "$name"
+            ;;
+          # The healthy common case: the local copy already matches its source.
+          unchanged)
+            printf '{"status":"DRY_RUN","would_change":false,"name":"%s","catalog":"personal",' "$name"
+            printf '"dest":"/Users/tester/sources/%s","note":null}\n' "$name"
+            ;;
+          # A local-path source. The dest carries both the scope and LIBRARY_CWD, so a lost
+          # --from or a mis-anchored project push reads as the wrong path.
+          *)
+            printf '{"status":"DRY_RUN","would_change":true,"name":"%s","catalog":"personal",' "$name"
+            printf '"dest":"%s/sources/%s/from-%s","note":null}\n' "${LIBRARY_CWD:-UNSET}" "$name" "$scope"
+            ;;
+        esac
+        ;;
+      *)
+        case "$name" in
+          # gh could not open the PR, so only the branch was pushed. "Branch pushed" is
+          # not "PR opened", and the app must not report it as one.
+          shared-skill)
+            printf '{"status":"OK","name":"%s","catalog":"personal","changed":true,' "$name"
+            printf '"note":null,"method":"manual","branch":"library/update-%s-20250101T1200",' "$name"
+            printf '"compare_url":"https://github.com/acme/skills/compare/main...library/update-%s-20250101T1200?expand=1"}\n' "$name"
+            ;;
+          # gh opened it.
+          gh-skill)
+            printf '{"status":"OK","name":"%s","catalog":"personal","changed":true,"note":null,' "$name"
+            printf '"method":"gh","branch":"library/update-%s-20250101T1200",' "$name"
+            printf '"pr_url":"https://github.com/acme/skills/pull/42"}\n' "$name"
+            ;;
+          # A failure the CLI reports as a parseable body on stdout while exiting 1, so
+          # reading stderr alone would surface an empty error.
+          broken)
+            printf '{"status":"ERROR","name":"%s","catalog":"personal",' "$name"
+            printf '"reason":"push rejected — you lack write access to acme/skills.","note":null}\n' "$name"
+            exit 1
+            ;;
+          *)
+            printf '{"status":"OK","name":"%s","catalog":"personal","changed":true,' "$name"
+            printf '"note":null,"pushed":false,"dest":"/Users/tester/sources/%s"}\n' "$name"
+            ;;
+        esac
+        ;;
+    esac
+    ;;
   catalog)
     # `catalog list` — the subcommand arrives as "$1" after the shift.
     cat "$here/payloads/catalogs.json"

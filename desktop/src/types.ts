@@ -302,6 +302,52 @@ export interface UpdateRequest {
 }
 
 /**
+ * What `library push <name> --dry-run --json` reports, having written nothing.
+ *
+ * One shape for both source kinds: a local-path source has a `dest` and no diff, a remote
+ * one has a `branch` and a diff. Disjoint from `PushReport` (`would_change` versus
+ * `changed`), so a preview that lost its flag fails to parse.
+ */
+export interface PushPreview {
+  status: string;
+  would_change: boolean;
+  name: string;
+  catalog: string;
+  /** Where a local-path source would be copied. */
+  dest: string | null;
+  /** The branch a remote source's PR would come from. */
+  branch: string | null;
+  diff: string | null;
+  /**
+   * The multi-catalog warning, when more than one catalog defines this name.
+   *
+   * Nothing on disk records which catalog an installed copy came from, so the source being
+   * pushed to is inferred from precedence. In the payload because the CLI writes it to
+   * stderr, which `--json` sends nowhere a GUI can read.
+   */
+  note: string | null;
+}
+
+/** What `library push <name> --json` reports after pushing. `status` is `OK`. */
+export interface PushReport {
+  status: string;
+  name: string;
+  catalog: string;
+  changed: boolean;
+  /** A local-path source: where the files were copied. Immediate, no git, no review. */
+  dest: string | null;
+  /** True only for a remote source whose branch reached the remote. */
+  pushed: boolean;
+  /** `gh` when the PR was opened for you, `manual` when only the branch was pushed. */
+  method: string | null;
+  branch: string | null;
+  pr_url: string | null;
+  /** Where to open the PR by hand, when the CLI could only push the branch. */
+  compare_url: string | null;
+  note: string | null;
+}
+
+/**
  * What `library suggest-source <path> --json` reports.
  *
  * `status` is `OK` or `NONE`, and both are a successful call: "this file is not in a

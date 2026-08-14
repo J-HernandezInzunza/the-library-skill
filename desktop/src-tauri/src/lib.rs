@@ -17,8 +17,8 @@ pub mod events;
 
 use cli::{
     AddReport, AddRequest, BootstrapReport, Catalog, DoctorReport, Entry, EntryDetail, InitReport,
-    RemovePreview, RemoveReport, SourceSuggestion, SyncReport, UninstallReport, UpdateReport,
-    UpdateRequest, UsePreview, UseReport,
+    PushPreview, PushReport, RemovePreview, RemoveReport, SourceSuggestion, SyncReport,
+    UninstallReport, UpdateReport, UpdateRequest, UsePreview, UseReport,
 };
 use error::AppError;
 
@@ -147,6 +147,35 @@ async fn entry_remove(
     off_thread(move || cli::remove(&app, &name, &catalog, purge)).await
 }
 
+/// What pushing a local copy back to its source would do, without doing it (R4.5).
+#[tauri::command]
+async fn entry_push_preview(
+    app: tauri::AppHandle,
+    name: String,
+    scope: String,
+    project: Option<String>,
+) -> Result<PushPreview, AppError> {
+    off_thread(move || cli::push_preview(&app, &name, &scope, project.as_deref())).await
+}
+
+/// Push a local copy back to the entry's source (R4.5).
+///
+/// `message` becomes the commit message and, for a remote source, the PR title — which is
+/// what a reviewer reads first. `project` anchors `LIBRARY_CWD`, as a project install does.
+#[tauri::command]
+async fn entry_push(
+    app: tauri::AppHandle,
+    name: String,
+    scope: String,
+    project: Option<String>,
+    message: Option<String>,
+) -> Result<PushReport, AppError> {
+    off_thread(move || {
+        cli::push(&app, &name, &scope, project.as_deref(), message.as_deref())
+    })
+    .await
+}
+
 /// The source URL teammates could use for a local path (R4.2).
 #[tauri::command]
 async fn source_suggestion(
@@ -200,6 +229,8 @@ pub fn run() {
             entry_update,
             entry_remove_preview,
             entry_remove,
+            entry_push_preview,
+            entry_push,
             source_suggestion,
             catalog_doctor,
             catalog_init,

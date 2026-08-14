@@ -6,6 +6,7 @@ import type {
   Entry,
   EntryDetail,
   PlannedInstall,
+  PushReport,
   Receipt,
   RequiredEntry,
   UpdateRequest,
@@ -489,6 +490,64 @@ export function installPlan(preview: UsePreview, name: string): InstallPlan {
   const drifted = items.filter((item) => item.drifted);
 
   return { items, drifted, blocked: drifted.length > 0 };
+}
+
+/** How a push actually ended, said in words that match what happened. */
+export interface PushOutcome {
+  headline: string;
+  detail: string | null;
+  /** A URL worth offering, with what pressing it does. */
+  link: { url: string; label: string } | null;
+}
+
+/**
+ * What a finished push really did.
+ *
+ * This is the function that stops the success state lying, which is the objection that
+ * deferred writing to remote catalogs in the first place. `_create_pr` **always pushes the
+ * branch** and only *sometimes* opens the PR: with `autopush` off, or `gh` missing, or a
+ * Bitbucket remote (where `gh` does not work at all), the CLI hands back a compare URL and
+ * nothing is open for review. Reporting that as "pull request opened" would let someone
+ * close the app believing their change had landed in the queue.
+ *
+ * So the wording keys on `method`, and `manual` says plainly that the PR is not open yet.
+ */
+export function describePush(report: PushReport): PushOutcome {
+  if (!report.changed) {
+    return {
+      headline: "Nothing to push.",
+      detail: `The local copy of ${report.name} already matches its source.`,
+      link: null,
+    };
+  }
+
+  // A local-path source is copied in place: no branch, no remote, no review.
+  if (report.dest) {
+    return {
+      headline: `Copied ${report.name} back to its source.`,
+      detail: `${report.dest} — a local source is written straight through, with no pull request.`,
+      link: null,
+    };
+  }
+
+  if (report.method === "gh" && report.pr_url) {
+    return {
+      headline: "Pull request opened.",
+      detail: report.branch ? `From ${report.branch}.` : null,
+      link: { url: report.pr_url, label: "View the pull request" },
+    };
+  }
+
+  // Everything else: the branch reached the remote and the review has not been asked for.
+  return {
+    headline: "Branch pushed — the pull request is not open yet.",
+    detail: report.branch
+      ? `${report.branch} is on the remote. Opening the pull request is the next step, and nobody has been asked to review anything until you do.`
+      : "Opening the pull request is the next step.",
+    link: report.compare_url
+      ? { url: report.compare_url, label: "Open a pull request" }
+      : null,
+  };
 }
 
 /**
