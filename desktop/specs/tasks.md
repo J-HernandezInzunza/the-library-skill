@@ -163,7 +163,7 @@ command in Phase 2 fails on that machine until this exists.
     exit-2 and exit-1 cases. Gate passes.
   - **Commit:** `feat(desktop/cli): map CLI exit 3 to a not-bootstrapped state`
 
-- [ ] **T1a.2 — First-run screen that bootstraps the tool**
+- [x] **T1a.2 — First-run screen that bootstraps the tool**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/components/FirstRun.vue`
   - **Requirements:** R7.1, R8.1
   - **Do:** On `NotBootstrapped`, replace the catalog view with a first-run screen that explains the

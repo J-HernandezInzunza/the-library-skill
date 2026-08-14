@@ -1,3 +1,16 @@
+/** What `bootstrap.py --json` reports once the tool directory can run its CLI. */
+export interface BootstrapReport {
+  tool_dir: string;
+  venv_python: string;
+  wrapper: string;
+  config_path: string;
+  /** False means the tool runs but has no catalog registered yet. */
+  config_exists: boolean;
+  created_venv: boolean;
+  installed_pyyaml: boolean;
+  python: string;
+}
+
 /** One registered catalog from `library catalog list --json`. */
 export interface Catalog {
   id: string;

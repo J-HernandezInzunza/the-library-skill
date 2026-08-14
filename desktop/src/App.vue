@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, defineAsyncComponent, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { catalogRows, winningRows, type Row } from "./catalog";
-import { describeAppError, type Catalog, type Entry } from "./types";
+import { describeAppError, isAppError, type Catalog, type Entry } from "./types";
 import CatalogSummary from "./components/CatalogSummary.vue";
 import CatalogTabs from "./components/CatalogTabs.vue";
 import EntryList from "./components/EntryList.vue";
+
+// Shown only on a machine that has never run the tool, so it stays out of the
+// initial bundle everyone else loads.
+const FirstRun = defineAsyncComponent(() => import("./components/FirstRun.vue"));
 
 const entries = ref<Entry[]>([]);
 const catalogs = ref<Catalog[]>([]);
@@ -13,12 +17,13 @@ const catalogs = ref<Catalog[]>([]);
 const activeCatalog = ref<string | null>(null);
 const query = ref("");
 const loading = ref(false);
-const error = ref("");
+/** Kept typed rather than stringified: a first-run state is recoverable, not an error. */
+const failure = ref<unknown>(null);
 
 /** Load the catalog and the registry once; search and tabs work off that payload. */
 async function load() {
   loading.value = true;
-  error.value = "";
+  failure.value = null;
   try {
     const [loadedEntries, loadedCatalogs] = await Promise.all([
       invoke<Entry[]>("library_list"),
@@ -27,13 +32,25 @@ async function load() {
     entries.value = loadedEntries;
     catalogs.value = loadedCatalogs;
   } catch (e) {
-    error.value = describeAppError(e);
+    failure.value = e;
     entries.value = [];
     catalogs.value = [];
   } finally {
     loading.value = false;
   }
 }
+
+/** The tool directory to offer to prepare, when that is what went wrong. */
+const unbootstrappedDir = computed(() => {
+  const caught = failure.value;
+  if (!isAppError(caught) || caught.kind !== "not_bootstrapped") return null;
+  return caught.tool_dir;
+});
+
+const errorMessage = computed(() => {
+  if (failure.value === null || unbootstrappedDir.value !== null) return "";
+  return describeAppError(failure.value);
+});
 
 const multiCatalog = computed(() => catalogs.value.length > 1);
 
@@ -72,6 +89,9 @@ onMounted(load);
 
 <template>
   <main class="app">
+    <FirstRun v-if="unbootstrappedDir" :tool-dir="unbootstrappedDir" @ready="load()" />
+
+    <template v-else>
     <header class="topbar">
       <h1>The Library</h1>
       <form class="searchbar" @submit.prevent>
@@ -87,10 +107,10 @@ onMounted(load);
     <CatalogTabs v-if="multiCatalog" v-model="activeCatalog" :catalogs="catalogs" />
     <CatalogSummary v-if="selectedCatalog" :catalog="selectedCatalog" />
 
-    <p v-if="!loading && !error" class="summary">{{ summary }}</p>
+    <p v-if="!loading && !errorMessage" class="summary">{{ summary }}</p>
 
     <p v-if="loading" class="state">Loading…</p>
-    <pre v-else-if="error" class="state error">{{ error }}</pre>
+    <pre v-else-if="errorMessage" class="state error">{{ errorMessage }}</pre>
     <p v-else-if="!filtered.length" class="state">No matching entries.</p>
     <EntryList
       v-else
@@ -98,6 +118,7 @@ onMounted(load);
       :catalogs="catalogs"
       :show-origin="multiCatalog"
     />
+    </template>
   </main>
 </template>
 

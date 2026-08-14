@@ -8,7 +8,7 @@
 pub mod cli;
 pub mod error;
 
-use cli::{Catalog, Entry};
+use cli::{BootstrapReport, Catalog, Entry};
 use error::AppError;
 
 /// The full catalog with install status — backs the list view.
@@ -27,11 +27,21 @@ fn registry_list() -> Result<Vec<Catalog>, AppError> {
     cli::registry()
 }
 
+/// Prepare a tool directory that has never been bootstrapped.
+#[tauri::command]
+fn bootstrap_tool() -> Result<BootstrapReport, AppError> {
+    cli::bootstrap()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![library_list, registry_list])
+        .invoke_handler(tauri::generate_handler![
+            library_list,
+            registry_list,
+            bootstrap_tool
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

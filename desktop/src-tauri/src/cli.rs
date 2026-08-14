@@ -44,6 +44,24 @@ pub struct Entry {
     pub has_setup: bool,
 }
 
+/// What `bootstrap.py --json` reports once the tool directory can run its CLI.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BootstrapReport {
+    pub tool_dir: String,
+    pub venv_python: String,
+    pub wrapper: String,
+    pub config_path: String,
+    /// False means the tool runs but has no catalog registered yet — a different
+    /// problem, with a different fix, and not one the app solves by writing the file.
+    pub config_exists: bool,
+    #[serde(default)]
+    pub created_venv: bool,
+    #[serde(default)]
+    pub installed_pyyaml: bool,
+    #[serde(default)]
+    pub python: String,
+}
+
 /// One registered catalog, as reported by `catalog list --json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Catalog {
@@ -165,6 +183,46 @@ pub fn list() -> Result<Vec<Entry>, AppError> {
 /// remote look like an absence of shared work.
 pub fn registry() -> Result<Vec<Catalog>, AppError> {
     parse(run_json(&["catalog", "list"])?)
+}
+
+/// Prepare an unbootstrapped tool directory by running its own `bootstrap.py`.
+///
+/// Stdlib-only and idempotent by design, so re-running it is safe and needs no
+/// confirmation. It is not a `library` subcommand precisely because it fixes the state
+/// that stops `library` from running at all.
+pub fn bootstrap() -> Result<BootstrapReport, AppError> {
+    let home = library_home();
+    let script = home.join("bootstrap.py");
+
+    let output = Command::new("python3")
+        .arg(&script)
+        .arg("--json")
+        // Explicit, for the same reason LIBRARY_CWD is: the script would otherwise
+        // infer the directory, and an inferred path is the one that surprises you.
+        .args(["--dir", &home.display().to_string()])
+        .output()
+        .map_err(|e| AppError::Cli {
+            code: -1,
+            stderr: format!("could not run python3 {}: {e}", script.display()),
+        })?;
+
+    if !output.status.success() {
+        // With --json the script reports its failure on stdout as `problem`, leaving
+        // stderr empty, so reading stderr alone would surface an empty error.
+        let problem = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+            .ok()
+            .and_then(|body| body.get("problem")?.as_str().map(String::from))
+            .unwrap_or_else(|| String::from_utf8_lossy(&output.stderr).trim().to_string());
+
+        return Err(AppError::Cli {
+            code: output.status.code().unwrap_or(-1),
+            stderr: problem,
+        });
+    }
+
+    parse(serde_json::from_slice(&output.stdout).map_err(|e| AppError::Json {
+        detail: e.to_string(),
+    })?)
 }
 
 fn parse<T: serde::de::DeserializeOwned>(payload: serde_json::Value) -> Result<T, AppError> {
