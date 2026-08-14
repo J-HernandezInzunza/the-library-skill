@@ -200,6 +200,13 @@ implementation; changing one is a spec change, not an implementation choice.
   `command://started` is an IPC round trip away, so an indicator keyed to it alone always lags the
   interaction; the UI registers its intent synchronously and the real command takes over when it
   arrives. The verbatim command still wins the label once known, so R3.4 is unaffected.
+- R7.6 Within a surface, the success and the failure of the same action appear in the **same
+  place** — one status banner at the top of the view or panel that owns the command, never below
+  the control that triggered it. A user looking for the outcome of what they just did must not have
+  to learn two locations for it (design.md §6.4).
+- R7.7 Fields holding machine-readable values — entry names, branches, URLs, paths — disable
+  auto-capitalisation, auto-correction, and spellcheck. The CLI matches entry names exactly, so an
+  auto-capitalised name silently becomes a different entry (design.md §6.5).
 
 ### R8 — Build and run from source
 

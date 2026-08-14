@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { withActivity } from "../commandActivity";
 import { describeAppError, type DoctorItem, type DoctorReport } from "../types";
 import Busy from "./Busy.vue";
+import StatusBanner from "./StatusBanner.vue";
 
 defineEmits<{ close: [] }>();
 
@@ -53,7 +54,7 @@ run();
     </header>
 
     <Busy v-if="loading" :label="deep ? 'Checking every source…' : 'Checking the catalog…'" />
-    <pre v-else-if="error" class="doctor__error">{{ error }}</pre>
+    <StatusBanner v-else-if="error" kind="error" :detail="error" />
 
     <template v-else-if="report">
       <p class="doctor__summary fade-in">
@@ -120,16 +121,6 @@ run();
   opacity: 0.7;
 }
 .doctor__clean,
-.doctor__error {
-  margin-top: 1rem;
-}
-.doctor__error {
-  padding: 1rem;
-  border-radius: 8px;
-  white-space: pre-wrap;
-  color: #dc2626;
-  background: rgba(220, 38, 38, 0.08);
-}
 .doctor__section {
   margin: 1.5rem 0 0.5rem;
   font-size: 0.75rem;

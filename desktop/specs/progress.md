@@ -1265,3 +1265,53 @@ catalogs and `personal` usually at precedence 1, "your copy would be overridden"
 happen — but a local catalog registered with `--position last` sits below the shared one, and then
 the same data means the opposite thing. Both directions are covered by Vitest, driven by the same
 entries with an inverted registry.
+
+---
+
+## Feedback placement, codified (R7.6, R7.7)
+
+Reported from the running app: a refused add showed its error at the *bottom* of the form while a
+successful one showed its confirmation at the *top*. The failure was a screen of scrolling away
+from where the eye had just learned to look, so a refused add read as nothing happening at all.
+
+**The fix is a rule, not a move.** Success and failure of the same action render in the same place,
+through one `<StatusBanner kind="success" | "error">`, at the top of the surface that owns the
+command — under the header for a full view, at the top of the panel for a panel, never below the
+control that was clicked. Written into design.md §6.4 and requirements R7.6, because "put it in the
+same place" is exactly the kind of intention that survives one commit and then drifts.
+
+**Every view was migrated, including the ones already doing it right.** Seven had each grown their
+own `<pre class="…__error">` with near-identical CSS — `App`, `Doctor`, `Sync`, `EntryDetail`,
+`InstallPreview`, `UninstallControl`, `FirstRun`, plus `AddEntry`. Leaving the compliant ones alone
+would have kept the convention optional, which is how it comes back. `UninstallControl` also had a
+success line of its own, now the same banner.
+
+**The scroll rule flipped as a consequence.** `AddEntry` scrolled to the banner on success only,
+justified at the time by "a failure renders beside the submit button, where the eye already is."
+That justification died with the move, so it scrolls on both. Worth recording as a case where a
+correct local decision became wrong when its premise changed.
+
+**Guarded structurally, because nothing else can see it.** `src/statusFeedback.spec.ts` reads the
+component sources and fails if a view holds an `error`/`failure` ref without using `<StatusBanner>`,
+or defines its own `__error`/`__failure` rule. `--error` *modifiers* are deliberately allowed: those
+style findings *inside* a report — a doctor error, a failed sync item — which are content, not the
+outcome of the command. **Verified by mutation:** reverting `Sync` to its own `<pre>` fails both
+checks and names the file. A fourth test asserts the glob actually matched the views, since a broken
+glob would make the other two pass by scanning nothing.
+
+Sources are read with Vite's `import.meta.glob(..., { query: "?raw" })` rather than `node:fs`: the
+suite then needs no `@types/node` (which `vue-tsc` does not have, and which would be a dependency
+added for one test) and the paths cannot go stale relative to the spec file.
+
+### The auto-capitalised name was a real bug, not a nuisance
+
+Also reported: typing a name capitalises its first letter. macOS does this to any text field by
+default — and `find_exact` matches entry names **exactly**, so `Grilling` is a different entry from
+`grilling` to the CLI. The app would have cheerfully created it, and T4.3's collision warning would
+correctly have said nothing, because there is no collision between two different names.
+
+`RAW_TEXT` (`autocapitalize`/`autocorrect` off, `spellcheck="false"`) is bound with `v-bind` on
+every field holding a machine-readable value: entry name, description, source, repo URL, branch. One
+object rather than three repeated attributes, so a new field cannot opt out of it by being written
+without them. R7.7 and design.md §6.5. The search box is deliberately left alone — filtering
+lowercases both sides, so a capital there changes nothing.

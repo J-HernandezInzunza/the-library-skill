@@ -7,6 +7,7 @@ import { withActivity } from "../commandActivity";
 import { recentProjects, rememberProject } from "../recentProjects";
 import { describeAppError, type UsePreview, type UseReport } from "../types";
 import Busy from "./Busy.vue";
+import StatusBanner from "./StatusBanner.vue";
 
 const props = defineProps<{ name: string }>();
 const emit = defineEmits<{ installed: [] }>();
@@ -109,6 +110,8 @@ watch([() => props.name, scope], () => {
   <section class="install-preview">
     <h3 class="install-preview__heading">Install</h3>
 
+    <StatusBanner v-if="error" kind="error" :detail="error" />
+
     <div class="install-preview__scopes">
       <label><input v-model="scope" type="radio" value="global" /> Globally</label>
       <label><input v-model="scope" type="radio" value="project" /> Into a project</label>
@@ -153,7 +156,6 @@ watch([() => props.name, scope], () => {
     </p>
 
     <Busy v-if="loading" inline label="Resolving the destination…" />
-    <pre v-if="error" class="install-preview__error">{{ error }}</pre>
 
     <template v-if="plan">
       <p v-if="plan.blocked" class="install-preview__warning">
@@ -249,14 +251,6 @@ watch([() => props.name, scope], () => {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   opacity: 0.5;
-}
-.install-preview__error {
-  margin: 0.75rem 0 0;
-  padding: 1rem;
-  border-radius: 8px;
-  white-space: pre-wrap;
-  color: #dc2626;
-  background: rgba(220, 38, 38, 0.08);
 }
 .install-preview__warning {
   margin: 0.75rem 0 0;

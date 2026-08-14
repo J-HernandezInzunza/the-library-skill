@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { withActivity } from "../commandActivity";
 import { describeAppError, type Receipt, type UninstallReport } from "../types";
 import Busy from "./Busy.vue";
+import StatusBanner from "./StatusBanner.vue";
 
 const props = defineProps<{
   name: string;
@@ -76,6 +77,11 @@ watch(() => props.name, () => {
   <section v-if="scopes.length" class="uninstall">
     <h3 class="uninstall__heading">Remove installed copies</h3>
 
+    <StatusBanner v-if="error" kind="error" :detail="error" />
+    <StatusBanner v-else-if="report?.deleted.length" kind="success">
+      Removed {{ report.deleted.join(", ") }}. The catalog entry is still listed.
+    </StatusBanner>
+
     <ul class="uninstall__scopes">
       <li v-for="scope in scopes" :key="scope" class="uninstall__scope">
         <span class="uninstall__scope-name">{{ scope }}</span>
@@ -136,11 +142,6 @@ watch(() => props.name, () => {
       </div>
     </div>
 
-    <p v-if="report?.deleted.length" class="uninstall__done fade-in">
-      Removed {{ report.deleted.join(", ") }}. The catalog entry is still listed.
-    </p>
-
-    <pre v-if="error" class="uninstall__error">{{ error }}</pre>
   </section>
 </template>
 
@@ -219,19 +220,5 @@ watch(() => props.name, () => {
   display: flex;
   gap: 0.5rem;
   margin-top: 0.75rem;
-}
-.uninstall__done {
-  margin: 0.75rem 0 0;
-  font-size: 0.83rem;
-  color: #16a34a;
-  overflow-wrap: anywhere;
-}
-.uninstall__error {
-  margin: 0.75rem 0 0;
-  padding: 1rem;
-  border-radius: 8px;
-  white-space: pre-wrap;
-  color: #dc2626;
-  background: rgba(220, 38, 38, 0.08);
 }
 </style>

@@ -471,6 +471,39 @@ if it wasn't, which is the one failure mode this cannot have. Passing it also ma
 The log component stays mounted and only its body collapses. Mounting it with the panel would
 miss every command run while the panel was closed, which is most of them.
 
+### 6.4 One place per surface for how a command turned out (R7.6)
+
+**Success and failure of the same action render in the same place**, through one
+`<StatusBanner kind="success" | "error">`, placed at the top of the surface that owns the command:
+under the header for a full view, at the top of the panel for a panel. Never below the control that
+was clicked.
+
+This is a rule rather than a preference because the alternative shipped and was wrong. The add form
+put its confirmation above the form and its error below it, so a refused add looked like nothing
+happening — the failure was a screen of scrolling away from where the eye had learned to look for
+the outcome. Two placements for one question teach two habits, and the user only ever has one.
+
+Three consequences worth stating, because each was a decision:
+
+- **Every view uses the component**, including the ones that were already correct. Seven views had
+  each grown their own `<pre class="…__error">` with near-identical CSS; leaving the compliant ones
+  alone would have kept the convention optional, which is how it drifts back.
+- **A view scrolls to the banner on *both* outcomes.** The earlier "scroll on success only" was
+  right only while the error still rendered beside the submit button.
+- **A CLI failure is `detail`, rendered `<pre>`**, because stderr is surfaced verbatim (R1.4) and
+  its line breaks carry meaning. Anything the app writes itself goes in the slot as prose.
+
+The banner is not the activity indicator (§6.3, R7.5) and does not replace it: one says what is
+happening, the other what happened.
+
+### 6.5 Machine-readable fields are not prose
+
+Text inputs holding an entry name, a branch, a repo URL, or a file path bind `RAW_TEXT`
+(`autocapitalize`/`autocorrect` off, `spellcheck="false"`). macOS capitalises the first letter of a
+text field by default, and `find_exact` matches names **exactly** — so an auto-capitalised name is a
+different entry to the CLI, and the app would have silently created it. Bound as one object rather
+than three repeated attributes so a new field cannot opt out by being written without them.
+
 ## 7. Secrets (`secrets.rs`, R6 / D7)
 
 The invariant: **a secret value never enters the agent process, the prompt, or any payload sent

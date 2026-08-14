@@ -10,6 +10,7 @@ import CatalogSummary from "./components/CatalogSummary.vue";
 import CatalogTabs from "./components/CatalogTabs.vue";
 import CommandLog from "./components/CommandLog.vue";
 import EntryList from "./components/EntryList.vue";
+import StatusBanner from "./components/StatusBanner.vue";
 
 // Shown only on a machine that has never run the tool, so it stays out of the
 // initial bundle everyone else loads.
@@ -200,7 +201,7 @@ onMounted(async () => {
     </p>
 
     <Busy v-if="loading" label="Reading the catalog…" />
-    <pre v-else-if="errorMessage" class="state error">{{ errorMessage }}</pre>
+    <StatusBanner v-else-if="errorMessage" kind="error" :detail="errorMessage" />
     <p v-else-if="!filtered.length" class="state">No matching entries.</p>
     <EntryList
       v-else

@@ -17,7 +17,9 @@ import {
   type Entry,
   type SourceSuggestion,
 } from "../types";
+import { RAW_TEXT } from "../rawText";
 import Busy from "./Busy.vue";
+import StatusBanner from "./StatusBanner.vue";
 
 const props = defineProps<{
   /** The registry, for the destination dropdown. */
@@ -157,11 +159,11 @@ async function submit() {
       }),
     );
     resetForm();
-    scrollToBanner();
     emit("added");
   } catch (e) {
     failure.value = describeAppError(e);
   } finally {
+    scrollToBanner();
     submitting.value = false;
   }
 }
@@ -170,9 +172,9 @@ async function submit() {
  * Bring the confirmation into view.
  *
  * The banner sits above a form tall enough to scroll, so on a long requires list the
- * success message lands off-screen and the add reads as though nothing happened. Only on
- * success: a failure renders beside the submit button, where the eye already is, and
- * scrolling away from it would be the opposite of helpful.
+ * outcome lands off-screen and the add reads as though nothing happened. Both outcomes,
+ * because both render in the same place — the earlier version scrolled only on success,
+ * which was correct only while the error still sat beside the submit button.
  */
 function scrollToBanner() {
   const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -202,7 +204,9 @@ async function reveal(path: string) {
       <h2 class="add-entry__title">Add an entry</h2>
     </header>
 
-    <div v-if="report" class="add-entry__added fade-in">
+    <StatusBanner v-if="failure" kind="error" :detail="failure" />
+
+    <StatusBanner v-else-if="report" kind="success">
       <p class="add-entry__added-line">
         Added <strong>{{ report.added.name }}</strong> to
         <strong>{{ report.catalog }}</strong>, under {{ report.added.section }}.
@@ -217,7 +221,7 @@ async function reveal(path: string) {
       <p v-else-if="report.committed" class="add-entry__added-where">
         Committed to {{ report.branch }}; the push did not happen.
       </p>
-    </div>
+    </StatusBanner>
 
     <p v-if="!destinations.length" class="add-entry__empty">
       You have no catalog of your own on this machine, so there is nowhere to add an entry yet.
@@ -228,7 +232,13 @@ async function reveal(path: string) {
     <form v-else class="add-entry__form" @submit.prevent="submit">
       <label class="add-entry__field">
         <span>Name</span>
-        <input v-model="name" type="text" placeholder="bug-investigator" autofocus />
+        <input
+          v-model="name"
+          type="text"
+          placeholder="bug-investigator"
+          autofocus
+          v-bind="RAW_TEXT"
+        />
 
         <span v-if="consequences.blocked" class="add-entry__conflict">
           <strong>{{ catalogId }}</strong> already has an entry called
@@ -256,7 +266,12 @@ async function reveal(path: string) {
 
       <label class="add-entry__field">
         <span>Description</span>
-        <input v-model="description" type="text" placeholder="What it does, in one line, this is what will show in the catalog entry" />
+        <input
+          v-model="description"
+          type="text"
+          placeholder="What it does, in one line, this is what will show in the catalog entry"
+          v-bind="RAW_TEXT"
+        />
       </label>
 
       <label class="add-entry__field">
@@ -266,6 +281,7 @@ async function reveal(path: string) {
             v-model="source"
             type="text"
             placeholder="https://github.com/your-team/repo/blob/main/bug-investigator/SKILL.md"
+            v-bind="RAW_TEXT"
           />
           <button type="button" class="ghost" @click="pickSource">Choose file…</button>
         </span>
@@ -316,8 +332,6 @@ async function reveal(path: string) {
       <button type="submit" :disabled="!canSubmit">Add to {{ catalogId }}</button>
       <Busy v-if="submitting" inline label="Writing the catalog…" />
     </form>
-
-    <pre v-if="failure" class="add-entry__failure">{{ failure }}</pre>
   </section>
 </template>
 
@@ -422,13 +436,6 @@ async function reveal(path: string) {
   padding: 0.3rem 0.6rem;
   font-size: 0.75rem;
 }
-.add-entry__added {
-  margin: 0 0 1.5rem;
-  padding: 0.9rem 1rem;
-  border: 1px solid rgba(34, 197, 94, 0.35);
-  border-radius: 8px;
-  background: rgba(34, 197, 94, 0.1);
-}
 .add-entry__added-line {
   margin: 0;
   font-size: 0.95rem;
@@ -485,15 +492,6 @@ async function reveal(path: string) {
   padding: 0.1rem 0.3rem;
   border-radius: 4px;
   background: rgba(128, 128, 128, 0.15);
-}
-.add-entry__failure {
-  margin: 1.25rem 0 0;
-  padding: 1rem;
-  border-radius: 8px;
-  max-width: 34rem;
-  white-space: pre-wrap;
-  color: #dc2626;
-  background: rgba(220, 38, 38, 0.08);
 }
 .add-entry__where {
   font-family: ui-monospace, SFMono-Regular, monospace;

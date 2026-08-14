@@ -5,6 +5,7 @@ import { catalogHue, dependencies, dependents, isOnDisk } from "../catalog";
 import { withActivity } from "../commandActivity";
 import { describeAppError, type Catalog, type Entry, type EntryDetail } from "../types";
 import Busy from "./Busy.vue";
+import StatusBanner from "./StatusBanner.vue";
 import InstallPreview from "./InstallPreview.vue";
 import UninstallControl from "./UninstallControl.vue";
 
@@ -95,7 +96,7 @@ watch(() => props.name, load, { immediate: true });
     </button>
 
     <Busy v-if="loading" :label="`Reading ${name}…`" />
-    <pre v-else-if="error" class="entry-detail__error">{{ error }}</pre>
+    <StatusBanner v-else-if="error" kind="error" :detail="error" />
 
     <template v-else-if="detail">
       <header class="entry-detail__head fade-in">
@@ -258,13 +259,6 @@ watch(() => props.name, load, { immediate: true });
 .entry-detail__none {
   opacity: 0.7;
   font-size: 0.88rem;
-}
-.entry-detail__error {
-  padding: 1rem;
-  border-radius: 8px;
-  white-space: pre-wrap;
-  color: #dc2626;
-  background: rgba(220, 38, 38, 0.08);
 }
 .entry-detail__head {
   display: flex;

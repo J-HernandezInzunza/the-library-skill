@@ -5,6 +5,7 @@ import { summarizeChanges } from "../catalog";
 import { withActivity } from "../commandActivity";
 import { describeAppError, type SyncedItem, type SyncReport } from "../types";
 import Busy from "./Busy.vue";
+import StatusBanner from "./StatusBanner.vue";
 
 const emit = defineEmits<{ close: []; synced: [] }>();
 
@@ -61,7 +62,7 @@ run(false);
     </header>
 
     <Busy v-if="loading" label="Checking every installed entry against its source…" />
-    <pre v-else-if="error" class="sync__error">{{ error }}</pre>
+    <StatusBanner v-else-if="error" kind="error" :detail="error" />
 
     <template v-else-if="report">
       <p class="sync__summary fade-in">
@@ -140,14 +141,6 @@ run(false);
   margin: 0.75rem 0 0;
   font-size: 0.85rem;
   opacity: 0.7;
-}
-.sync__error {
-  margin-top: 1rem;
-  padding: 1rem;
-  border-radius: 8px;
-  white-space: pre-wrap;
-  color: #dc2626;
-  background: rgba(220, 38, 38, 0.08);
 }
 .sync__warning {
   margin: 0.75rem 0 0;

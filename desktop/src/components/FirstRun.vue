@@ -3,7 +3,9 @@ import { computed, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { withActivity } from "../commandActivity";
 import { describeAppError, type BootstrapReport, type InitReport } from "../types";
+import { RAW_TEXT } from "../rawText";
 import Busy from "./Busy.vue";
+import StatusBanner from "./StatusBanner.vue";
 
 const props = defineProps<{
   /** Which half of setup is missing. */
@@ -78,6 +80,8 @@ async function setUp() {
 
 <template>
   <section class="first-run">
+    <StatusBanner v-if="failure" kind="error" :detail="failure" />
+
     <template v-if="stage === 'bootstrap'">
       <h2 class="first-run__title">Let's set up your library</h2>
       <p class="first-run__lead">
@@ -110,12 +114,13 @@ async function setUp() {
             type="text"
             placeholder="git@github.com:your-team/agent-library.git"
             autofocus
+            v-bind="RAW_TEXT"
           />
         </label>
 
         <label class="first-run__field">
           <span>Branch</span>
-          <input v-model="branch" type="text" placeholder="main" />
+          <input v-model="branch" type="text" placeholder="main" v-bind="RAW_TEXT" />
         </label>
 
         <p class="first-run__preview">{{ initCommand }}</p>
@@ -131,8 +136,6 @@ async function setUp() {
         few seconds.
       </p>
     </template>
-
-    <pre v-if="failure" class="first-run__failure">{{ failure }}</pre>
 
     <dl v-if="report" class="first-run__report">
       <dt>Python</dt>
@@ -214,15 +217,6 @@ async function setUp() {
   font-size: 0.72rem;
   opacity: 0.5;
   overflow-wrap: anywhere;
-}
-.first-run__failure {
-  margin: 1.5rem 0 0;
-  padding: 1rem;
-  border-radius: 8px;
-  text-align: left;
-  white-space: pre-wrap;
-  color: #dc2626;
-  background: rgba(220, 38, 38, 0.08);
 }
 .first-run__report {
   display: grid;
