@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { describeAppError, type BootstrapReport } from "../types";
+import { describeAppError, type BootstrapReport, type InitReport } from "../types";
 
 const props = defineProps<{
   /** Which half of setup is missing. */
@@ -27,6 +27,37 @@ const stage = computed(() => {
 });
 
 const configPath = computed(() => report.value?.config_path ?? props.path);
+
+const repo = ref("");
+const branch = ref("main");
+const yamlPath = ref("");
+const registering = ref(false);
+const canRegister = computed(() => !!repo.value.trim() && !!branch.value.trim());
+
+/** Shown before it runs, so the form is never a black box (D5). */
+const initCommand = computed(() => {
+  const parts = ["library init", `--repo ${repo.value.trim() || "<url>"}`,
+                 `--branch ${branch.value.trim() || "<branch>"}`];
+  if (yamlPath.value.trim()) parts.push(`--yaml-path ${yamlPath.value.trim()}`);
+  return parts.join(" ");
+});
+
+async function register() {
+  registering.value = true;
+  failure.value = "";
+  try {
+    await invoke<InitReport>("catalog_init", {
+      repo: repo.value.trim(),
+      branch: branch.value.trim(),
+      yamlPath: yamlPath.value.trim() || null,
+    });
+    emit("ready");
+  } catch (e) {
+    failure.value = describeAppError(e);
+  } finally {
+    registering.value = false;
+  }
+}
 
 async function setUp() {
   running.value = true;
@@ -62,18 +93,45 @@ async function setUp() {
     </template>
 
     <template v-else>
-      <h2 class="first-run__title">No catalog is registered yet</h2>
+      <h2 class="first-run__title">Point it at your catalog</h2>
       <p class="first-run__lead">
-        The tool is ready to run, but it doesn't know which catalog to read. That's set once,
-        in the terminal, by pointing it at your catalog repository:
-      </p>
-      <pre class="first-run__command">library init --repo &lt;catalog-repo-url&gt; --branch &lt;branch&gt;</pre>
-      <p class="first-run__note">
-        This app deliberately doesn't write that file. Run the command, then reload.
-        It will be created at <code>{{ configPath }}</code>.
+        The tool is ready to run, but it doesn't know which catalog to read. Your team's catalog
+        is a git repository holding a <code>library.yaml</code>.
       </p>
 
-      <button type="button" class="first-run__action" @click="emit('ready')">Reload</button>
+      <form class="first-run__form" @submit.prevent="register">
+        <label class="first-run__field">
+          <span>Catalog repository</span>
+          <input
+            v-model="repo"
+            type="text"
+            placeholder="git@github.com:your-team/agent-library.git"
+            autofocus
+          />
+        </label>
+
+        <div class="first-run__row">
+          <label class="first-run__field">
+            <span>Branch</span>
+            <input v-model="branch" type="text" placeholder="main" />
+          </label>
+          <label class="first-run__field">
+            <span>Catalog file <em>(optional)</em></span>
+            <input v-model="yamlPath" type="text" placeholder="library.yaml" />
+          </label>
+        </div>
+
+        <p class="first-run__preview">{{ initCommand }}</p>
+
+        <button type="submit" class="first-run__action" :disabled="!canRegister || registering">
+          {{ registering ? "Cloning catalog…" : "Connect catalog" }}
+        </button>
+      </form>
+
+      <p class="first-run__note">
+        Registering writes <code>{{ configPath }}</code> and clones the catalog, which can take a
+        few seconds.
+      </p>
     </template>
 
     <pre v-if="failure" class="first-run__failure">{{ failure }}</pre>
@@ -125,7 +183,47 @@ async function setUp() {
   opacity: 0.6;
 }
 .first-run__action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.first-run__form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  text-align: left;
+  margin-bottom: 1rem;
+}
+.first-run__row {
+  display: flex;
+  gap: 0.75rem;
+}
+.first-run__field {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  opacity: 0.85;
+}
+.first-run__field em {
   opacity: 0.6;
+  font-style: normal;
+}
+.first-run__field input {
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  background: transparent;
+  color: inherit;
+  font-size: 0.85rem;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+.first-run__preview {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.72rem;
+  opacity: 0.5;
+  overflow-wrap: anywhere;
 }
 .first-run__failure {
   margin: 1.5rem 0 0;

@@ -67,6 +67,7 @@ implementation; changing one is a spec change, not an implementation choice.
 | D14 | The app hosts its MCP server **in-process over loopback HTTP** (`127.0.0.1`, ephemeral port, per-walkthrough bearer token), not over stdio. | A stdio server is spawned by `claude` as a fresh child process per turn (twice per turn, measured in T0.2), so it cannot own walkthrough state or reach the GUI. `request_secret` (D7) must suspend until the user submits in a Vue field, which requires the tool handler to live in the process that owns the UI. |
 | D12 | Skills declare setup in a `setup.yaml` file in the skill's own directory, per [skill-setup-schema.md](skill-setup-schema.md). Discovery is file presence; absence means no walkthrough. | Keeps install-time data out of `SKILL.md`'s runtime frontmatter, avoids teaching the tooling to parse frontmatter at all (`library.py` doesn't today), and lets a ~45-line block be validated and reviewed as its own file. Declaring commands by id is what makes `run_skill_setup` enforceable. |
 | D15 | The catalog view lists **one row per catalog copy**, with each name's copies kept adjacent, and offers a "hide overridden" toggle that collapses to just the copies that would install. Selecting a single catalog shows that catalog's inventory. In every mode a row carries exactly **one** mutually-exclusive status, so an overridden copy reports the override in place of an install state. | Showing every copy is what makes a shadowed catalog visible at all — with winners only, a catalog whose entries are all overridden never appears in the main view, and divergence from the team's copy is invisible. The single-status rule, not hiding rows, is what fixes the original defect: independent badges once rendered `not installed` beside `overridden by personal` for a skill that was installed. Copies are grouped at the position of the name's first copy rather than sorted, because entries arrive in catalog-precedence order and sorting would either clump every overridden copy at the end or discard the catalog's own ordering. |
+| D16 | The GUI registers catalogs by invoking `library init` and `library catalog add`, never by writing `config.local.yaml`. First run runs `init` only; further catalogs are added later from settings. | Running a CLI command from a form is the same thin-client pattern as `use` (D6), so R1.1 holds — what stays out of scope is the app authoring YAML. The order is forced by the CLI, not chosen: `init` requires `--repo` and is the only command that can create the config, while `catalog add` exits 1 until one exists. Splitting them also avoids a partial-success state (`init` wrote the config, `catalog add` failed) that the CLI has no transaction around. |
 | D13 | A collected secret is delivered per the skill's declared `delivery` mode: `config-file` (default), `env`, or `manual`. The app writes only to the skill's declared `config.path`. | `atlassian-toolkit`'s durable store is a config file, so env injection alone would not persist. Skills that want the human to type the credential themselves declare `manual`. |
 
 ## Requirements
@@ -131,6 +132,14 @@ implementation; changing one is a spec change, not an implementation choice.
   choice rather than guessing (the CLI's `AMBIGUOUS_CATALOG` contract).
 - R4.5 A write that targets a protected remote catalog surfaces the resulting PR URL (or compare
   URL) to the user.
+
+- R4.6 First run collects the shared catalog's repo URL and branch in a form and runs
+  `library init`. Directing a teammate to a terminal here contradicts the app's reason to exist:
+  it is the first screen a new user sees, and they have no catalog until it is done.
+- R4.7 Registered catalogs can be added and removed after first run, from a settings surface.
+  Adding a local catalog uses a native directory picker; the CLI defines a local catalog as a
+  `library.yaml` or a directory holding one. Precedence is presented in plain language, because
+  the default (`--position first`) silently decides which copy of a name installs.
 
 ### R5 — Agent walkthroughs (interactive)
 
@@ -198,8 +207,8 @@ implementation; changing one is a spec change, not an implementation choice.
 - Codesigning, notarization, and distribution as a signed `.app` (deferred; D9).
 - Bundling or embedding an agent runtime or the Agent SDK (rejected; D1/D2).
 - Windows/Linux builds (macOS-only per the desktop initiative's target).
-- Editing `config.local.yaml` catalog registry from the GUI (catalog registration stays a CLI
-  concern for now; revisit if teammates need it).
+- Hand-editing `config.local.yaml` from the GUI. The app registers catalogs by *invoking*
+  `init` and `catalog add` (D16, R4.6–R4.7); it never authors that file itself.
 - Any agent involvement in list/search/use/sync/add/update/remove/doctor (D6).
 
 ## Acceptance

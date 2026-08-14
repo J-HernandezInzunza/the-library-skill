@@ -404,3 +404,39 @@ immediately followed by `grilling (shared, overridden by personal)`.
 dependency chain and stepping back lands on the entry you came from. `tsconfig` moved to ES2022
 for `Array.prototype.at`; the app only ever runs in Tauri's WebView, so the scaffold's ES2020
 baseline was protecting against a browser matrix that does not exist here.
+
+---
+
+## T1a.4 — first run registers the catalog, and a CLI defect it exposed
+
+The "no catalog registered" screen printed a command and told the user to run it in a terminal,
+in an app whose stated purpose is doing this *without* a terminal. It is now a form (repo URL,
+branch, optional catalog path) that runs `library init`.
+
+**This is not the app writing config.** It invokes a CLI command, exactly as `use` will in Phase
+3, so R1.1 holds. `requirements.md`'s out-of-scope entry was narrowed rather than deleted: what
+stays out of scope is the app *authoring* `config.local.yaml`. Recorded as D16.
+
+**The order was forced by the CLI, not chosen.** `init` requires `--repo` and is the only command
+that can create the config; `catalog add` exits 1 until one exists (verified). So the first
+catalog must be remote and a personal one can only be added afterward — which is why registry
+management is T4.6 and not part of first run.
+
+**The defect this exposed.** `init` wrote the config *before* cloning, so a typo'd URL left a
+config pointing at a repo that was never cloned — and every later `init` refused with
+"already exists; pass --force". One typo bricked the first-run screen permanently, with the
+recovery flag invisible to exactly the person who needed it.
+
+Fixed in `library.py` rather than papered over app-side, because the terminal and the agent hit it
+too: `cmd_init` now snapshots the config, and a failure in the clone/verify phase restores it or
+removes it. A failed `--force` re-init also restores the working config it was replacing, which
+was the more damaging half. Three tests pin it; 617 CLI tests pass.
+
+**Caught by testing the real artifact.** The first end-to-end run still showed the config left
+behind — because the fixture clone is a `git archive` snapshot carrying *its own* `library.py`,
+predating the fix. The rollback was working; the clone was stale. Worth remembering: verifying
+against `/tmp/library-freshclone` tests the code that was committed when it was created, not the
+working tree.
+
+Verified end to end afterwards: typo → clean failure, no config left → corrected URL with no
+`--force` → 35 entries → `library list` works.

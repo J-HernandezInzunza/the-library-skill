@@ -187,6 +187,22 @@ command in Phase 2 fails on that machine until this exists.
     is created. Gate passes.
   - **Commit:** `feat(desktop): explain an unconfigured tool instead of showing an empty catalog`
 
+- [x] **T1a.4 — Register the catalog from the app, not from a terminal**
+  - **Files:** `desktop/src-tauri/src/{cli,lib}.rs`, `desktop/src/components/FirstRun.vue`
+  - **Requirements:** R4.6, D16
+  - **Do:** Replace the "run this in a terminal" block with a form — repo URL, branch, and an
+    optional catalog path within the repo — that runs `library init --repo … --branch … --json`.
+    Directing a teammate to a terminal on the first screen contradicts the app's reason to exist.
+    The app still writes no YAML; it invokes the CLI, exactly as `use` will.
+    `init` clones over the network, so it needs a visible pending state. Its failure must **not**
+    pass through `settle()` (design §3.8a): a missing config is `init`'s premise, and relabelling
+    it `NotConfigured` would hide the git error for the state the user is trying to leave. Show
+    the CLI's stderr verbatim — it already ends with "check your --repo URL and auth".
+  - **Verify:** Against a bootstrapped fixture clone with no config, the form registers a real
+    catalog and the list loads without a restart. A bad URL shows the CLI's clone error and leaves
+    no config behind. Gate passes.
+  - **Commit:** `feat(desktop): register the shared catalog from the first-run screen`
+
 ---
 
 ## Phase 2 — Read surface
@@ -389,6 +405,22 @@ an agent used to resolve from prose.
   - **Verify:** Against a protected catalog, a push prints a branch and a URL and does not touch the
     protected branch. Gate passes.
   - **Commit:** `feat(desktop): push changes back and surface the resulting PR URL`
+
+- [ ] **T4.6 — Catalog settings**
+  - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/components/CatalogSettings.vue`
+  - **Requirements:** R4.7, D16
+  - **Do:** `registry_add` and `registry_remove` over `catalog add` / `catalog remove`, reached
+    from a settings surface rather than first run. A local catalog is chosen with a native
+    directory picker, labelled as the CLI defines it — a `library.yaml`, or a directory holding
+    one. Ask for the id explicitly; the CLI requires it and cannot infer it.
+    Present precedence in plain language ("this catalog wins when two define the same name"),
+    not as a `first`/`last` dropdown: the default is `first`, and getting it backwards silently
+    changes which copy installs. `catalog init` (scaffold an empty catalog) is the answer for a
+    teammate with no catalog of their own — offer it here or note it as deferred.
+  - **Verify:** Adding a local directory registers it and its entries appear with a new catalog
+    tab and colour. Removing it leaves the entries' files on disk untouched. A path with no
+    `library.yaml` is refused by the CLI and the message is surfaced. Gate passes.
+  - **Commit:** `feat(desktop): add and remove registered catalogs from settings`
 
 ---
 

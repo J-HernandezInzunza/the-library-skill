@@ -9,7 +9,7 @@ pub mod cli;
 pub mod error;
 pub mod events;
 
-use cli::{BootstrapReport, Catalog, DoctorReport, Entry, EntryDetail};
+use cli::{BootstrapReport, Catalog, DoctorReport, Entry, EntryDetail, InitReport};
 use error::AppError;
 
 /// The full catalog with install status — backs the list view.
@@ -34,6 +34,17 @@ fn catalog_doctor(app: tauri::AppHandle, deep: bool) -> Result<DoctorReport, App
     cli::doctor(&app, deep)
 }
 
+/// Register the shared catalog on first run. Clones over the network.
+#[tauri::command]
+fn catalog_init(
+    app: tauri::AppHandle,
+    repo: String,
+    branch: String,
+    yaml_path: Option<String>,
+) -> Result<InitReport, AppError> {
+    cli::init(&app, &repo, &branch, yaml_path.as_deref())
+}
+
 /// The registered catalogs, for per-catalog browsing and origin display.
 #[tauri::command]
 fn registry_list(app: tauri::AppHandle) -> Result<Vec<Catalog>, AppError> {
@@ -54,6 +65,7 @@ pub fn run() {
             library_list,
             entry_show,
             catalog_doctor,
+            catalog_init,
             registry_list,
             bootstrap_tool
         ])

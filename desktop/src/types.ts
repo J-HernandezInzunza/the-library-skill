@@ -81,6 +81,16 @@ export interface CommandFinished {
   duration_ms: number;
 }
 
+/** What `library init --json` reports once a catalog is registered and cloned. */
+export interface InitReport {
+  config: string;
+  catalog_repo: string;
+  catalog_yaml_path: string;
+  catalog_branch: string;
+  catalog_clone: string;
+  catalog_entries: number;
+}
+
 /** What `bootstrap.py --json` reports once the tool directory can run its CLI. */
 export interface BootstrapReport {
   tool_dir: string;

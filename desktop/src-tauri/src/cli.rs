@@ -144,6 +144,18 @@ pub struct Source {
     pub clone_urls: Vec<String>,
 }
 
+/// What `init --json` reports once a catalog is registered and cloned.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InitReport {
+    pub config: String,
+    pub catalog_repo: String,
+    pub catalog_yaml_path: String,
+    pub catalog_branch: String,
+    pub catalog_clone: String,
+    #[serde(default)]
+    pub catalog_entries: u32,
+}
+
 /// What `bootstrap.py --json` reports once the tool directory can run its CLI.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BootstrapReport {
@@ -338,6 +350,33 @@ pub fn doctor(sink: &dyn CommandSink, deep: bool) -> Result<DoctorReport, AppErr
         args.push("--deep");
     }
     parse(run_report(sink, &args)?)
+}
+
+/// Register the shared catalog and clone it (R4.6).
+///
+/// Deliberately bypasses `settle()`: a missing config is this command's *premise*, so
+/// relabelling its failure as `NotConfigured` would replace the real git error with the
+/// state the user is trying to leave. The CLI's stderr already ends with an actionable
+/// hint, so it is surfaced verbatim.
+pub fn init(
+    sink: &dyn CommandSink,
+    repo: &str,
+    branch: &str,
+    yaml_path: Option<&str>,
+) -> Result<InitReport, AppError> {
+    let mut args = vec!["init", "--repo", repo, "--branch", branch];
+    if let Some(path) = yaml_path {
+        args.extend(["--yaml-path", path]);
+    }
+
+    let output = run_capture(sink, &args)?;
+    let home = library_home();
+    parse(interpret(
+        &home,
+        output.status.code(),
+        &output.stdout,
+        &output.stderr,
+    )?)
 }
 
 /// The registered catalogs, highest precedence first.

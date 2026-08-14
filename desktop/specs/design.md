@@ -119,6 +119,9 @@ One Tauri command per operation (R1.2) — never a generic passthrough:
 | `entry_show` | `show <name> --json` | R2.1 |
 | `registry_list` | `catalog list --json` | R2.4, R2.5, R4.1 |
 | `bootstrap_tool` | `python3 bootstrap.py --json --dir <home>` | R7.1 |
+| `catalog_init` | `init --repo … --branch … [--yaml-path]` | R4.6 |
+| `registry_add` | `catalog add --id … (--path … \| --repo … --branch …) [--position]` | R4.7 |
+| `registry_remove` | `catalog remove <id>` | R4.7 |
 
 Search is deliberately absent, but no longer for the original reason. `search --json` used to
 return a leaner record than `list --json`; on this base the two are identical. R2.2 filters the
@@ -166,6 +169,15 @@ the first level, while breakage can be transitive. `library.py` therefore report
 `unresolved_requires[]` as `{ref, required_by, reason}` with `reason` in `not_found` /
 `malformed` / `cycle`. Added to `show` rather than to the app so the terminal and the agent get
 it too.
+
+### 3.8a `init` must not be relabelled as unconfigured
+
+§3.8 turns a failure into `AppError::NotConfigured` when `config.local.yaml` is absent. `init` is
+the command that *creates* that file, so its own failure always meets that condition — and
+relabelling it would replace the real git error ("could not clone catalog repo … check your
+--repo URL and auth") with the state the user is already trying to leave. `catalog_init`
+therefore skips `settle()` and surfaces the CLI's stderr verbatim, which already carries the
+actionable hint.
 
 ### 3.7 When a non-zero exit is the answer
 
