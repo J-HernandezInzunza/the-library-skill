@@ -125,6 +125,11 @@ pub fn library_wrapper() -> PathBuf {
     library_home().join("library")
 }
 
+/// The tool's own config, naming the catalogs to read. Written by `library init`.
+pub fn library_config() -> PathBuf {
+    library_home().join("config.local.yaml")
+}
+
 /// The invocation every call goes through: wrapper, args, `--json`, anchored cwd.
 ///
 /// `LIBRARY_CWD` is set explicitly rather than inherited (design §3.3). The
@@ -163,12 +168,26 @@ pub fn run_json(args: &[&str]) -> Result<serde_json::Value, AppError> {
         }
     };
 
-    interpret(
+    let result = interpret(
         &library_home(),
         output.status.code(),
         &output.stdout,
         &output.stderr,
-    )
+    );
+
+    // An unconfigured tool fails every command with exit 1 and no structured marker,
+    // so the file itself is the signal. Checked only after a failure, and only for its
+    // absence, so a real error is never relabelled as a setup problem. Matching the
+    // CLI's stderr text instead would break the first time that sentence is reworded.
+    if matches!(result, Err(AppError::Cli { .. })) {
+        let config = library_config();
+        if !config.is_file() {
+            return Err(AppError::NotConfigured {
+                config_path: config.display().to_string(),
+            });
+        }
+    }
+    result
 }
 
 /// The full catalog with install state (R2.1).

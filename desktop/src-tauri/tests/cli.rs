@@ -142,6 +142,29 @@ fn human_output_is_a_parse_error_rather_than_an_empty_catalog() {
 }
 
 #[test]
+fn a_tool_with_no_config_is_unconfigured_rather_than_broken() {
+    let root = fixtures().join("unconfigured");
+    let _guard = with_home(root.clone());
+    let err = cli::run_json(&["list"]).unwrap_err();
+
+    assert_eq!(
+        err,
+        AppError::NotConfigured {
+            config_path: root.join("config.local.yaml").display().to_string()
+        }
+    );
+}
+
+#[test]
+fn a_real_failure_in_a_configured_tool_stays_a_failure() {
+    // Guards the ordering: the config check must not swallow genuine errors.
+    let _guard = with_fixture_home();
+    let err = cli::run_json(&["boom"]).unwrap_err();
+
+    assert!(matches!(err, AppError::Cli { code: 1, .. }), "got {err:?}");
+}
+
+#[test]
 fn a_missing_wrapper_names_the_path_it_looked_at() {
     let missing = fixtures().join("no-such-clone");
     let _guard = with_home(missing.clone());

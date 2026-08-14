@@ -1,0 +1,5 @@
+#!/bin/sh
+# A bootstrapped tool with no config.local.yaml: every command fails this way.
+echo "error: no local config at $(dirname "$0")/config.local.yaml" >&2
+echo "  run \`library init --repo <catalog-repo-url>\` first" >&2
+exit 1

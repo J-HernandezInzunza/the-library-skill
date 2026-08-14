@@ -29,6 +29,10 @@ pub enum AppError {
     /// what lets a front door offer the one-click fix instead of "command failed".
     NotBootstrapped { tool_dir: String },
 
+    /// The tool runs, but no `config.local.yaml` exists, so no catalog is registered.
+    /// Distinct from an empty catalog, which would read as "your team has no skills".
+    NotConfigured { config_path: String },
+
     /// The CLI succeeded but its stdout was not the JSON we expected. Never
     /// coerced to an empty list — a blank catalog and a broken parse look
     /// identical to the user otherwise.
@@ -85,6 +89,14 @@ mod tests {
         assert_eq!(
             shape(AppError::NotBootstrapped { tool_dir: "/tmp/clone".into() }),
             json!({ "kind": "not_bootstrapped", "tool_dir": "/tmp/clone" })
+        );
+    }
+
+    #[test]
+    fn not_configured_names_the_config_file_that_is_missing() {
+        assert_eq!(
+            shape(AppError::NotConfigured { config_path: "/tmp/c.yaml".into() }),
+            json!({ "kind": "not_configured", "config_path": "/tmp/c.yaml" })
         );
     }
 

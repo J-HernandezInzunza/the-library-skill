@@ -40,15 +40,26 @@ async function load() {
   }
 }
 
-/** The tool directory to offer to prepare, when that is what went wrong. */
-const unbootstrappedDir = computed(() => {
+/**
+ * The setup step the machine is missing, if that is why loading failed.
+ *
+ * Both states are recoverable and have a specific next action, so neither belongs in
+ * the red error box beside genuine failures.
+ */
+const setupNeeded = computed(() => {
   const caught = failure.value;
-  if (!isAppError(caught) || caught.kind !== "not_bootstrapped") return null;
-  return caught.tool_dir;
+  if (!isAppError(caught)) return null;
+  if (caught.kind === "not_bootstrapped") {
+    return { state: "not_bootstrapped" as const, path: caught.tool_dir };
+  }
+  if (caught.kind === "not_configured") {
+    return { state: "not_configured" as const, path: caught.config_path };
+  }
+  return null;
 });
 
 const errorMessage = computed(() => {
-  if (failure.value === null || unbootstrappedDir.value !== null) return "";
+  if (failure.value === null || setupNeeded.value !== null) return "";
   return describeAppError(failure.value);
 });
 
@@ -89,7 +100,12 @@ onMounted(load);
 
 <template>
   <main class="app">
-    <FirstRun v-if="unbootstrappedDir" :tool-dir="unbootstrappedDir" @ready="load()" />
+    <FirstRun
+      v-if="setupNeeded"
+      :state="setupNeeded.state"
+      :path="setupNeeded.path"
+      @ready="load()"
+    />
 
     <template v-else>
     <header class="topbar">

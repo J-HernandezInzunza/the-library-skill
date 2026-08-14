@@ -1,0 +1,5 @@
+# Present so the fixture behaves like a configured tool: without it, every failing
+# command would be reported as "not configured" rather than as the failure it is.
+catalogs:
+  - id: personal
+    path: ./catalog

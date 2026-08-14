@@ -175,7 +175,7 @@ command in Phase 2 fails on that machine until this exists.
     succeeds, and the catalog loads without restarting the app. Gate passes.
   - **Commit:** `feat(desktop): bootstrap an unprepared tool directory on first run`
 
-- [ ] **T1a.3 — Missing config is explained, not silently empty**
+- [x] **T1a.3 — Missing config is explained, not silently empty**
   - **Files:** `desktop/src/components/FirstRun.vue`
   - **Requirements:** R7.1
   - **Do:** A bootstrapped tool with no `config.local.yaml` (`config_exists: false`, or `doctor`
