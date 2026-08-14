@@ -1060,3 +1060,74 @@ makes it one dropdown away instead of a typo.
 **Not visually verified.** `AddEntry.vue` has been driven by the fixture and by the real CLI
 underneath it, but has not been seen rendered — the same backlog Phase 3 carried, and the same
 lesson: the gate proves the contracts, not that the app works.
+
+---
+
+## T4.1, revisited: the form writes to your own catalog only
+
+Asked after the first cut landed: does adding an entry even belong in this UI, given that for the
+shared catalog it is the equivalent of editing `library.yaml` in that repository? Worth answering
+properly, because `add` means two very different things depending on the destination:
+
+| Destination | `write_mode` | What `add` actually does |
+| --- | --- | --- |
+| A catalog file on this machine | `local` | Splices the YAML on disk. Instant, no git, no review |
+| A remote catalog, unprotected | `direct` | Pulls the persistent clone, commits, pushes to its branch |
+| A remote protected catalog | `pr` | Temp clone → branch → commit → **pushes the branch**, then hands back a compare URL |
+
+**The answer for a local catalog is unambiguously yes.** A catalog entry is four fields — name,
+description, source, `requires` — pointing at a skill that lives somewhere else. It is not content,
+it is a pointer, and it is exactly the shape a form is good at and hand-edited YAML is bad at:
+indentation, the right section, `skill:foo` ref syntax, and which of two catalogs you are writing
+to. The app's whole premise is the teammate who will not clone the tool repo; the form removes their
+last reason to.
+
+**The answer for a remote catalog is no, for now.** Three reasons, in order of weight:
+
+- **The success state would lie.** With `autopush: true` and a Bitbucket remote, `_create_pr` has no
+  CLI path (`gh` is GitHub-only), so it degrades to "branch pushed, here is a compare URL". "Branch
+  pushed" is not "entry added", and someone could reasonably close the app believing it landed.
+- **There is no preview.** `use` got a full dry-run with a second confirmation for drift (T3.1); a
+  catalog write got none, on the action that touches a *shared repository*. `add --dry-run --json`
+  already returns the YAML diff, so this is a gap in the app rather than in the CLI — but it is the
+  wrong order to ship the push before the preview.
+- **It is a review event.** A one-click button that opens a PR against the team catalog invites
+  entries without the context a reviewer needs. That belongs in the repository's own workflow.
+
+So `editableCatalogs` filters on `kind === "local"` on top of the CLI's own `writable` and `skipped`
+limits, and the restriction is annotated as a product decision rather than a technical one — a
+future reader deleting the `kind` check should know it was not there to work around a CLI
+limitation. Recorded under **Deferred** in [tasks.md](tasks.md) with what would have to exist first.
+
+**Remote catalogs are named on the screen, not silently dropped.** A missing `shared` option reads
+as a bug; the note says entries there are contributed through the repository so the change gets the
+same review as anything else, and prints each catalog's `location` verbatim so there is something
+to go on. Verbatim, and not a clickable link, on purpose: `catalog list --json` reports `location` as
+a *display string* (`git@bitbucket.org:org/repo.git (develop, library.yaml)`), so turning it into a
+browsable URL would mean either string-splitting the CLI's prose — which `cli.rs` refuses on the
+grounds that the sentence gets reworded — or re-implementing `_remote_web` app-side, which is the
+R1.1 failure. The CLI could grow `repo`/`branch`/`web_url` keys; that was considered and
+deliberately not done for one link.
+
+**`--allow-local` is gone, structurally.** The flag exists to force a local-path source into a
+*remote* catalog — the refusal is `src.kind == "local" and dest.is_remote`, about the catalog, not
+the source. With only local destinations there is no refusal to override, so the flag became
+unreachable and was removed from the Rust request, the TS mirror, and the test rather than left as
+a field nothing sets.
+
+**A local source is a *file*, and for a skill it is the `SKILL.md`.** From `parse_source` and
+`fetch_local`: the path must be absolute (`/` or `~`; a relative path is "unrecognized source
+format") and must exist. For a skill the source names the file and `use` copies `ref.parent`, so the
+containing folder is what installs; for an agent or prompt the file itself is copied. **A directory
+passes `add`'s validation and then installs the wrong tree** — `_copy_dir(dir.parent, …)` — with
+`verified: false` as the only signal. So the form says which file to point at, per type, and offers
+a native file picker (`directory: false`), which is the one input method that cannot produce a
+relative or non-existent path. The source string itself is still not validated app-side: deciding
+what a valid source looks like is `parse_source`'s job, and the CLI's refusals are surfaced
+verbatim.
+
+**T4.2 got both harder and more valuable.** Harder: `_suggest_remote_for_local` is reachable only
+inside the `die()` that refuses a local source, so there is no CLI surface to call and one has to be
+added to `library.py` first. More valuable: with the form writing local-only, suggest-source is the
+on-ramp from "a file on my disk" to "a URL a teammate can resolve" — which is now the *only* path
+from a personal entry to a shared one, and the step people most often get wrong by hand.

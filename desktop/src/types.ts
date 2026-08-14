@@ -249,8 +249,6 @@ export interface AddRequest {
   requires: string[];
   /** The destination catalog; null lets the CLI pick, which needs one writable catalog. */
   catalog: string | null;
-  /** Permit a local-path source, which only resolves on this machine. */
-  allow_local: boolean;
 }
 
 /** What `library init --json` reports once a catalog is registered and cloned. */

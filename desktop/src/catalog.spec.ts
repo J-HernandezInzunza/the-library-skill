@@ -5,12 +5,13 @@ import {
   catalogRows,
   dependencies,
   dependents,
+  contributedCatalogs,
   installPlan,
   isOnDisk,
   requirableRefs,
   summarizeChanges,
   winningRows,
-  writableCatalogs,
+  editableCatalogs,
 } from "./catalog";
 import type {
   Catalog,
@@ -435,9 +436,9 @@ function catalog(overrides: Partial<Catalog> = {}): Catalog {
   };
 }
 
-describe("writableCatalogs", () => {
+describe("editableCatalogs", () => {
   it("drops a read-only catalog, which the CLI refuses every write to", () => {
-    const offered = writableCatalogs([
+    const offered = editableCatalogs([
       catalog({ id: "personal" }),
       catalog({ id: "vendor", writable: false }),
     ]);
@@ -447,12 +448,35 @@ describe("writableCatalogs", () => {
 
   it("drops a catalog that could not even be read", () => {
     // A skipped catalog is registered but unreadable, so it has no file to write to.
-    const offered = writableCatalogs([
+    const offered = editableCatalogs([
       catalog({ id: "archived", skipped: "not cloned" }),
       catalog({ id: "personal" }),
     ]);
 
     expect(offered.map((c) => c.id)).toEqual(["personal"]);
+  });
+
+  it("drops a remote catalog even though the CLI would happily write to it", () => {
+    // The restriction the app adds: a write here pushes a branch to a shared repo.
+    const offered = editableCatalogs([
+      catalog({ id: "shared", kind: "remote", write_mode: "pr", writable: true }),
+      catalog({ id: "personal" }),
+    ]);
+
+    expect(offered.map((c) => c.id)).toEqual(["personal"]);
+  });
+});
+
+describe("contributedCatalogs", () => {
+  it("names the remote catalogs, so their absence reads as a decision", () => {
+    const deferred = contributedCatalogs([
+      catalog({ id: "personal" }),
+      catalog({ id: "shared", kind: "remote" }),
+      // Unreadable, but still somewhere entries are contributed; it belongs on the list.
+      catalog({ id: "archived", kind: "remote", writable: false, skipped: "not cloned" }),
+    ]);
+
+    expect(deferred.map((c) => c.id)).toEqual(["shared", "archived"]);
   });
 });
 

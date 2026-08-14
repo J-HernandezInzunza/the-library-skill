@@ -441,17 +441,28 @@ leaves the entry reinstallable, `remove` does not, so the same dependent list me
   - **Requirements:** R4.1
   - **Do:** Explicit fields: name, type, description, source, requires (multiselect from the
     catalog), destination catalog (dropdown from `registry_list`). Invokes `add` with flags.
-    The destination dropdown offers only writable, readable catalogs, and the requires picker
-    only the destination catalog's own entries — a ref across catalogs dangles, and the CLI
-    warns about it on stderr where no GUI can see it. See [progress.md](progress.md).
+    The requires picker offers only the destination catalog's own entries — a ref across
+    catalogs dangles, and the CLI warns about it on stderr where no GUI can see it.
+    **The destination dropdown offers only catalogs on this machine** (`kind: local`): a write
+    to a remote catalog pushes a branch to a shared repository, which is a review event that
+    belongs in that repository's workflow rather than behind a form button. Remote catalogs are
+    named on the screen with their location, so their absence reads as a decision rather than a
+    bug. See [progress.md](progress.md).
   - **Verify:** Adding to a local catalog writes immediately; the entry appears in `list`. Gate passes.
   - **Commit:** `feat(desktop): add catalog entries through an explicit form`
 
 - [ ] **T4.2 — Source auto-suggest**
-  - **Files:** `desktop/src/components/AddEntry.vue`, `desktop/src-tauri/src/cli.rs`
+  - **Files:** `library.py`, `desktop/src/components/AddEntry.vue`, `desktop/src-tauri/src/cli.rs`
   - **Requirements:** R4.2
   - **Do:** When the chosen local path sits in a git repo with a GitHub/Bitbucket origin, offer the
     browser URL. Reuse the CLI's existing suggestion logic rather than reimplementing it (R1.1).
+    **`library.py` must expose it first.** `_suggest_remote_for_local` exists but is reachable only
+    embedded in the `die()` message that refuses a local source, so there is nothing for the app to
+    call. Scraping that stderr is ruled out by `cli.rs`'s own rule against matching CLI prose, and
+    re-implementing the regex app-side is the R1.1 failure. Add a `--json` surface for it — same
+    pattern as `unresolved_requires[]` (T2.5) and `dependents[]` (G5) — then the app change is thin.
+    Now that T4.1 writes only to local catalogs, this is also the on-ramp from a personal entry to a
+    shareable one: it turns "a file on my disk" into the URL a teammate could resolve.
   - **Verify:** A path inside a GitHub repo suggests the correct `blob` URL; one outside a repo
     suggests nothing. Gate passes.
   - **Commit:** `feat(desktop): suggest a remote source URL from the local git remote`
@@ -723,6 +734,7 @@ Parked deliberately; each would expand scope without changing what v1 must prove
 | --- | --- |
 | Codesigning / notarization | D9 — run from source; needed only for distribution beyond source |
 | Editing the catalog registry from the GUI | Out of scope in requirements; registration stays a CLI concern |
+| **Writing to a remote catalog from the app** (`add`/`update`/`remove` against a `direct` or `pr` catalog) | A write there pushes a branch to a shared repository and, for a protected one, leaves a PR to open by hand — a review event, and one the app would report as "branch pushed" when the user reads it as "added". Contributing to a shared catalog stays a deliberate act in that repository. Revisit only with a dry-run diff preview and mode-aware confirm/success text (the shape T3.1 established for `use`), not before |
 | `ini` / `env` config formats | No skill needs them yet (schema §10.3) |
 | ~~`library doctor` validation of `setup.yaml`~~ | **Delivered** in `feat/cli-app-support`: `doctor` validates every installed skill's manifest and reports drifted, untracked, and orphaned installs |
 | NDJSON progress events from the CLI (`--progress-json`) | Parked CLI-side: skipping unchanged items removed most of the waiting that motivated it. Revisit if syncs still feel slow in the GUI |

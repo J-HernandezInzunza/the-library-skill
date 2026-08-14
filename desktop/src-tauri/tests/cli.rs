@@ -493,7 +493,6 @@ fn add_passes_every_form_field_as_an_explicit_flag() {
             source: "https://github.com/acme/repo/blob/main/new-skill/SKILL.md".into(),
             requires: vec!["skill:existing-skill".into(), "agent:reviewer".into()],
             catalog: Some("personal".into()),
-            allow_local: false,
         },
     )
     .expect("the fixture add should parse");
@@ -544,7 +543,6 @@ fn add_omits_the_flags_the_form_left_empty() {
             source: "/Users/dev/notes/solo.md".into(),
             requires: vec![],
             catalog: None,
-            allow_local: true,
         },
     )
     .expect("the fixture add should parse");
@@ -552,9 +550,7 @@ fn add_omits_the_flags_the_form_left_empty() {
     let argv = &log.started.lock().unwrap()[0].argv[1..].to_vec();
     assert!(!argv.iter().any(|a| a == "--requires"), "argv: {argv:?}");
     assert!(!argv.iter().any(|a| a == "--catalog"), "argv: {argv:?}");
-    // The local-source escape hatch is passed only when the form asked for it.
     assert_eq!(argv.last().map(String::as_str), Some("--json"));
-    assert!(argv.iter().any(|a| a == "--allow-local"), "argv: {argv:?}");
 }
 
 #[test]

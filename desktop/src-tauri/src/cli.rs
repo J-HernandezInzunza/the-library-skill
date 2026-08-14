@@ -358,10 +358,6 @@ pub struct AddRequest {
     /// with one writable catalog registered.
     #[serde(default)]
     pub catalog: Option<String>,
-    /// Permit a local-path source, which resolves on this machine only. Passed only
-    /// after the form said so explicitly; never as a retry.
-    #[serde(default)]
-    pub allow_local: bool,
 }
 
 /// What `init --json` reports once a catalog is registered and cloned.
@@ -738,6 +734,10 @@ pub fn init(sink: &dyn CommandSink, repo: &str, branch: &str) -> Result<InitRepo
 /// on purpose: `add` exits 0 only when the entry is in the file, and exits 2 with
 /// `AMBIGUOUS_CATALOG` when more than one catalog could take the write — which
 /// `interpret` already turns into a choice rather than a failure.
+///
+/// No `--allow-local`: the flag exists to force a local-path source into a *remote*
+/// catalog, and the app only writes to local ones, where such a source is accepted
+/// outright. Nothing here can reach the refusal it overrides.
 pub fn add(sink: &dyn CommandSink, request: &AddRequest) -> Result<AddReport, AppError> {
     let requires = request.requires.join(",");
     let mut args = vec![
@@ -756,9 +756,6 @@ pub fn add(sink: &dyn CommandSink, request: &AddRequest) -> Result<AddReport, Ap
     }
     if let Some(catalog) = &request.catalog {
         args.extend(["--catalog", catalog]);
-    }
-    if request.allow_local {
-        args.push("--allow-local");
     }
 
     parse(run_json(sink, &args)?)

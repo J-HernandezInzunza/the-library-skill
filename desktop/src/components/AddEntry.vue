@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { requirableRefs, writableCatalogs } from "../catalog";
+import { open } from "@tauri-apps/plugin-dialog";
+import { contributedCatalogs, editableCatalogs, requirableRefs } from "../catalog";
 import { withActivity } from "../commandActivity";
 import { describeAppError, type AddReport, type Catalog, type Entry } from "../types";
 import Busy from "./Busy.vue";
@@ -21,24 +22,13 @@ const type = ref<(typeof TYPES)[number]>("skill");
 const description = ref("");
 const source = ref("");
 const requires = ref<string[]>([]);
-const allowLocal = ref(false);
 const submitting = ref(false);
 const failure = ref("");
 const report = ref<AddReport | null>(null);
 
-const destinations = computed(() => writableCatalogs(props.catalogs));
+const destinations = computed(() => editableCatalogs(props.catalogs));
+const contributed = computed(() => contributedCatalogs(props.catalogs));
 const catalogId = ref(destinations.value[0]?.id ?? "");
-
-const destination = computed(
-  () => destinations.value.find((catalog) => catalog.id === catalogId.value) ?? null,
-);
-
-/**
- * A local-path source is fine for a local catalog and broken for a remote one, which is
- * pulled on other machines. The CLI refuses it there unless told otherwise, so the
- * escape hatch is offered where it applies rather than as a permanent checkbox.
- */
-const remoteDestination = computed(() => destination.value?.kind === "remote");
 
 /** Only this catalog's entries: a ref into another catalog would dangle. */
 const available = computed(() => requirableRefs(props.entries, catalogId.value));
@@ -47,8 +37,32 @@ const available = computed(() => requirableRefs(props.entries, catalogId.value))
 // that was selected when they were picked.
 watch(catalogId, () => {
   requires.value = [];
-  allowLocal.value = false;
 });
+
+/**
+ * What the source has to point at, which differs by type.
+ *
+ * A skill's source names its `SKILL.md` and the *containing folder* is what installs, so
+ * pointing at the folder itself would install that folder's parent. The CLI checks only
+ * that the path exists, so this is the one place the difference gets said out loud.
+ */
+const sourceHint = computed(() => {
+  if (type.value === "skill") {
+    return "A URL, or a file on this machine. Point at the skill's SKILL.md — the folder holding it is what installs.";
+  }
+  return `A URL, or a file on this machine. Point at the ${type.value} file itself.`;
+});
+
+/**
+ * Pick the source file natively.
+ *
+ * A picked file is absolute and real, which is the shape the CLI requires and the shape a
+ * typed path most often gets wrong. The field stays editable for a URL.
+ */
+async function pickSource() {
+  const picked = await open({ directory: false, title: "Which file is this entry?" });
+  if (typeof picked === "string") source.value = picked;
+}
 
 const filled = computed(
   () => !!name.value.trim() && !!description.value.trim() && !!source.value.trim(),
@@ -69,7 +83,6 @@ async function submit() {
           source: source.value.trim(),
           requires: requires.value,
           catalog: catalogId.value,
-          allow_local: allowLocal.value,
         },
       }),
     );
@@ -90,7 +103,9 @@ async function submit() {
     </header>
 
     <p v-if="!destinations.length" class="add-entry__empty">
-      None of your registered catalogs can be written to, so there is nowhere to add an entry.
+      You have no catalog of your own on this machine, so there is nowhere to add an entry yet.
+      A personal catalog is a <code>library.yaml</code> file you own; register one and it appears
+      here.
     </p>
 
     <form v-else class="add-entry__form" @submit.prevent="submit">
@@ -113,11 +128,15 @@ async function submit() {
 
       <label class="add-entry__field">
         <span>Source</span>
-        <input
-          v-model="source"
-          type="text"
-          placeholder="https://github.com/your-team/repo/blob/main/bug-investigator/SKILL.md"
-        />
+        <span class="add-entry__row">
+          <input
+            v-model="source"
+            type="text"
+            placeholder="https://github.com/your-team/repo/blob/main/bug-investigator/SKILL.md"
+          />
+          <button type="button" class="ghost" @click="pickSource">Choose file…</button>
+        </span>
+        <span class="add-entry__hint">{{ sourceHint }}</span>
       </label>
 
       <label class="add-entry__field">
@@ -127,14 +146,6 @@ async function submit() {
             {{ option.id }} · {{ option.write_mode }}
           </option>
         </select>
-      </label>
-
-      <label v-if="remoteDestination" class="add-entry__check">
-        <input v-model="allowLocal" type="checkbox" />
-        <span>
-          Allow a source path on this machine only. Anyone else pulling
-          <code>{{ catalogId }}</code> will not be able to resolve it.
-        </span>
       </label>
 
       <fieldset v-if="available.length" class="add-entry__requires">
@@ -148,6 +159,18 @@ async function submit() {
       <button type="submit" :disabled="!canSubmit">Add to {{ catalogId }}</button>
       <Busy v-if="submitting" inline label="Writing the catalog…" />
     </form>
+
+    <p v-if="contributed.length" class="add-entry__deferred">
+      <template v-for="(shared, index) in contributed" :key="shared.id">
+        <span v-if="index">, </span><code>{{ shared.id }}</code>
+      </template>
+      {{ contributed.length > 1 ? "are shared catalogs" : "is a shared catalog" }}, so entries
+      there are contributed through the repository itself rather than from here — that way the
+      change goes through the same review as any other.
+      <span v-for="shared in contributed" :key="shared.id" class="add-entry__where">
+        {{ shared.location }}
+      </span>
+    </p>
 
     <pre v-if="failure" class="add-entry__failure">{{ failure }}</pre>
 
@@ -209,6 +232,38 @@ async function submit() {
 }
 .add-entry__field input {
   font-family: ui-monospace, SFMono-Regular, monospace;
+}
+.add-entry__row {
+  display: flex;
+  gap: 0.4rem;
+}
+.add-entry__row input {
+  flex: 1;
+  min-width: 0;
+}
+.add-entry__hint {
+  font-size: 0.72rem;
+  opacity: 0.6;
+  line-height: 1.4;
+}
+.add-entry__deferred {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  max-width: 34rem;
+  margin: 1.5rem 0 0;
+  padding: 0.75rem 0.9rem;
+  border-radius: 8px;
+  background: rgba(128, 128, 128, 0.1);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  opacity: 0.85;
+}
+.add-entry__deferred code {
+  font-size: 0.85em;
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+  background: rgba(128, 128, 128, 0.2);
 }
 .add-entry__check {
   display: flex;

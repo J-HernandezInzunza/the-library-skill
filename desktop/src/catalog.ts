@@ -224,13 +224,28 @@ function installStateByName(catalog: Entry[]): Map<string, string> {
 }
 
 /**
- * The catalogs a write can actually target.
+ * The catalogs the app will write to: a file on this machine, readable and writable.
  *
- * A read-only catalog is refused by the CLI, and a skipped one could not even be read,
- * so offering either as a destination is a dead end dressed up as a choice.
+ * `writable` and `skipped` are the CLI's own limits — it refuses a read-only catalog and
+ * a skipped one has no readable file to splice. `kind === "local"` is the app's, and it
+ * is a product decision rather than a technical one: writing to a remote catalog means
+ * pushing a branch to a shared repository, which is a review event that belongs in that
+ * repository's own workflow, not behind a form button. See progress.md.
  */
-export function writableCatalogs(catalogs: Catalog[]): Catalog[] {
-  return catalogs.filter((catalog) => catalog.writable && catalog.skipped === null);
+export function editableCatalogs(catalogs: Catalog[]): Catalog[] {
+  return catalogs.filter(
+    (catalog) => catalog.kind === "local" && catalog.writable && catalog.skipped === null,
+  );
+}
+
+/**
+ * The catalogs the app deliberately will not write to.
+ *
+ * Rendered rather than silently omitted: a missing `shared` option reads as a bug, not
+ * as a decision, and the person looking for it needs to be told where to go instead.
+ */
+export function contributedCatalogs(catalogs: Catalog[]): Catalog[] {
+  return catalogs.filter((catalog) => catalog.kind !== "local");
 }
 
 /**
