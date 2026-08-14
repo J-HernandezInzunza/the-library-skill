@@ -181,3 +181,39 @@ origin are done.
 functions, and there is no frontend test runner, so `npm run check` cannot catch a
 regression in it. Verified by hand against the live payload this time. Adding Vitest would
 close it.
+
+---
+
+## State of play at the end of Phase 1
+
+**Done:** T0.1, T0.2, T1.1–T1.6, and T2.2 (early). Nine commits on `feat/desktop-app-prototype`,
+each leaving `npm run check` green: 18 unit tests, 8 integration tests against the fixture tool
+root, `vue-tsc` and `vite build` clean.
+
+**Specs reconciled with what shipped**, so the next phase starts from an accurate baseline:
+
+- **D15 added** — the two catalog view modes, promoted to a settled decision rather than living
+  only in this log.
+- **R2.2 corrected** — its stated reason for filtering client-side (that `search --json` was
+  thinner than `list --json`) is no longer true; the payloads are identical. The surviving reason
+  is that filtering the loaded list is instant and offline.
+- **R2.4 amended, R2.5 added** — origin matches the CLI, layout deliberately does not; browsing a
+  single catalog's inventory is now a requirement, including the skipped-catalog case.
+- **design.md §3.4** — `catalog_list` renamed to `library_list`, matching the code.
+- **design.md §3.5** — nine keys became twelve, with `state` called out as an open string set and
+  `entries: null` as unknown-not-zero.
+- **design.md §6.1** — records that the view model is derived in `src/catalog.ts`, and why one
+  mutually-exclusive status per row is the point rather than a style choice.
+
+**Fixed after looking at it running:** the sticky header had `backdrop-filter` but no background,
+so the title and search box composited over the scrolling list. It now carries its own surface,
+and `.app`'s top padding moved into the header so the gap above the title stays opaque.
+
+**Known gaps carried into Phase 1a:**
+
+- No frontend test runner, so `src/catalog.ts` — the winner-resolution and inventory logic — is
+  unguarded by the gate. Verified by executing the module against the live payload; that is a
+  one-off, not a regression test.
+- Two manual checks remain outside the gate: a renamed wrapper surfacing `WrapperMissing`, and
+  every empty/error state, since only the populated path has been seen running.
+- `cargo` is not on a non-login shell's `PATH`, so `npm run check` fails there. Belongs in T8.1.

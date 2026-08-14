@@ -66,6 +66,7 @@ implementation; changing one is a spec change, not an implementation choice.
 | D11 | The D4 whitelist is delivered as an app-hosted MCP server (`--mcp-config`) for the allowed capabilities, and enforced by a **`PreToolUse` hook that denies every tool not named `mcp__library__*`**. `--allowedTools` and `--permission-mode dontAsk` only suppress prompting for the allowed calls; they are not the boundary. | The MCP server gives `request_secret` (D7) a structured tool call instead of prose the app would have to pattern-match. The hook is what makes the whitelist enforceable: the T0.2 spike proved `--allowedTools` + `dontAsk` still let the agent run `Bash` freely, and that a deny-list of builtins is a moving target across Claude Code releases. Deny-by-default on tool name is the only form that survives a CLI upgrade. |
 | D14 | The app hosts its MCP server **in-process over loopback HTTP** (`127.0.0.1`, ephemeral port, per-walkthrough bearer token), not over stdio. | A stdio server is spawned by `claude` as a fresh child process per turn (twice per turn, measured in T0.2), so it cannot own walkthrough state or reach the GUI. `request_secret` (D7) must suspend until the user submits in a Vue field, which requires the tool handler to live in the process that owns the UI. |
 | D12 | Skills declare setup in a `setup.yaml` file in the skill's own directory, per [skill-setup-schema.md](skill-setup-schema.md). Discovery is file presence; absence means no walkthrough. | Keeps install-time data out of `SKILL.md`'s runtime frontmatter, avoids teaching the tooling to parse frontmatter at all (`library.py` doesn't today), and lets a ~45-line block be validated and reviewed as its own file. Declaring commands by id is what makes `run_skill_setup` enforceable. |
+| D15 | The catalog view has two modes. The default lists **one row per name** — the copy `use` would install — with the catalogs it overrides shown alongside. Selecting a single catalog switches to **one row per copy**, that catalog's full inventory, where an overridden copy reports the override in place of an install state. | The CLI returns a row per catalog copy, and its terminal renderer hides the resulting contradiction by making status a single mutually-exclusive column. Rendering row-per-copy with independent badges produced `not installed` next to `overridden by personal` for a skill that was installed. The two modes answer different questions — "what can I use?" and "what's in this catalog?" — and one layout cannot answer both. |
 | D13 | A collected secret is delivered per the skill's declared `delivery` mode: `config-file` (default), `env`, or `manual`. The app writes only to the skill's declared `config.path`. | `atlassian-toolkit`'s durable store is a config file, so env injection alone would not persist. Skills that want the human to type the credential themselves declare `manual`. |
 
 ## Requirements
@@ -87,11 +88,16 @@ implementation; changing one is a spec change, not an implementation choice.
   type, description, source, catalog origin, install status, installed scope(s), and override
   relationship.
 - R2.2 The app filters the loaded list client-side over name and description. Search does not
-  shell out per keystroke and does not use `library search` (its `--json` payload is leaner than
-  `list`; filtering `list` keeps the data consistent).
+  shell out per keystroke. It also does not use `library search`, though no longer because that
+  payload is thinner: `search --json` and `list --json` now return an identical record. Filtering
+  the loaded list is instant and works offline, which is the reason that survives.
 - R2.3 A refresh action re-runs `library list` against the live catalog.
-- R2.4 When more than one catalog is registered, per-catalog origin is always visible, matching
-  the CLI's multi-catalog display contract.
+- R2.4 When more than one catalog is registered, per-catalog origin is visible on every row.
+  Origin matches the CLI; the row *layout* deliberately does not (D15).
+- R2.5 The app can browse one catalog's inventory in isolation, overridden copies included. The
+  catalogs offered come from `catalog list --json`, not from the loaded entries, so a catalog
+  that is empty or `skipped` is still listed — with its skip reason — rather than silently
+  vanishing (D15).
 
 ### R3 — Install / sync (deterministic write)
 

@@ -200,11 +200,13 @@ command in Phase 2 fails on that machine until this exists.
   - **Verify:** Every existing command appears in the log with its argv. Gate passes.
   - **Commit:** `feat(desktop): show every command that runs in a command log`
 
-- [ ] **T2.2 — Registry list and multi-catalog display**
+- [x] **T2.2 — Registry list and multi-catalog display** — *landed early, during Phase 1*
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/`
-  - **Requirements:** R2.4, R4.1
+  - **Requirements:** R2.4, R2.5, R4.1
   - **Do:** Add `registry_list` (`catalog list --json`). Show catalog origin on every entry when more
-    than one catalog is registered, matching the CLI's display contract.
+    than one catalog is registered. Origin matches the CLI; the row layout does not — see D15 and
+    [progress.md](progress.md). Tabs are driven by the registry, never by the catalogs present in
+    the entry list, so a `skipped` catalog stays visible with its reason instead of vanishing.
   - **Verify:** With two catalogs registered, origin and override badges are correct; with one, the
     display stays as-is. Gate passes.
   - **Commit:** `feat(desktop): surface the catalog registry and per-entry origin`

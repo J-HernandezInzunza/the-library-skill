@@ -107,7 +107,7 @@ One Tauri command per operation (R1.2) — never a generic passthrough:
 
 | Tauri command | CLI invocation | Req |
 | --- | --- | --- |
-| `catalog_list` | `list --json` | R2.1 |
+| `library_list` | `list --json` | R2.1 |
 | `catalog_doctor` | `doctor --json` (+`--deep`) | R7.3 |
 | `entry_use_preview` | `use <name> --dry-run --json` (+scope/`--catalog`) | R3.2 |
 | `entry_use` | `use <name> --json` (+`--project`/`--dir`/`--catalog`) | R3.1 |
@@ -118,17 +118,23 @@ One Tauri command per operation (R1.2) — never a generic passthrough:
 | `entry_push` | `push <name> [--catalog]` | R4.5 |
 | `registry_list` | `catalog list --json` | R2.4, R4.1 |
 
-Search is deliberately absent: R2.2 filters `catalog_list`'s payload client-side because
-`search --json` returns a leaner record (verified: 4 keys vs. `list`'s 9, missing `installed`,
-`scopes`, `requires`, `overridden_by`). Using it would make install badges wrong.
+Search is deliberately absent, but no longer for the original reason. `search --json` used to
+return a leaner record than `list --json`; on this base the two are identical. R2.2 filters the
+loaded payload client-side because that is instant and works offline, not because `search` is
+deficient.
 
 ### 3.5 Typed payloads
 
-`list --json` entries carry exactly: `type`, `name`, `description`, `source`, `requires`,
-`installed`, `scopes`, `catalog`, `overridden_by` (verified on this base). These are mirrored in
-one TypeScript interface (§6.1) and one Rust struct. `library.py`'s documented contract is that
-existing keys never change name/type/meaning while new keys may be added, so both mirrors
-**ignore unknown fields** rather than failing to deserialize.
+`list --json` entries carry twelve keys: the nine documented ones — `type`, `name`,
+`description`, `source`, `requires`, `installed`, `scopes`, `catalog`, `overridden_by` — plus
+`state`, `receipt`, and `has_setup`. `search --json` returns the same record, so there is one
+type, not two. These are mirrored in one TypeScript interface (§6.1) and one Rust struct.
+`library.py`'s documented contract is that existing keys never change name/type/meaning while new
+keys may be added, so both mirrors **ignore unknown fields** rather than failing to deserialize.
+
+`state` is an **open string set**, never a Rust enum or a TS union: a state added by a future CLI
+must render as unknown rather than fail the parse for every entry. `catalog list --json` reports
+`entries: null` for a skipped catalog — unknown, not zero — so it is `Option<u32>`.
 
 ### 3.6 Exit-code semantics
 
@@ -310,15 +316,22 @@ simply has no walkthrough.
 
 ### 6.1 Types and data flow
 
-One `Entry` interface mirroring §3.5, with `installed`/`scopes`/`overridden_by` optional so a
-future CLI key addition can't break parsing. `catalog_list` loads once into a store; R2.2 search
-is a `computed` filter over it. The prototype already does exactly this.
+One `Entry` interface mirroring §3.5. `library_list` and `registry_list` load once on mount; R2.2
+search is a `computed` filter over the result.
+
+The view model is derived, not stored. `src/catalog.ts` turns entries into rows as pure
+functions — `winningRows` (one row per name, per D15's default mode) and `catalogRows` (one row
+per copy, for a single catalog's inventory) — each attaching **one** mutually-exclusive status
+string. Stacking independent status badges in the template is what produced `not installed`
+alongside `overridden by personal`; a single status per row makes that class of contradiction
+unrepresentable.
 
 ### 6.2 Views
 
 | View | Purpose | Req |
 | --- | --- | --- |
-| Catalog | list + filter + install status/override badges | R2 |
+| Catalog | list + filter + install status/override badges, in either D15 mode | R2 |
+| Catalog tabs | switch between all-winners and a single catalog's inventory; surfaces precedence, write mode, and skip reasons | R2.4, R2.5 |
 | Entry detail | source, requires, catalogs holding the name, install/sync actions | R2.1, R3 |
 | Add / Update form | explicit fields; requires-multiselect; catalog dropdown from `registry_list` | R4.1–R4.4 |
 | Command log | every command run + exit status | D5, R3.4 |
