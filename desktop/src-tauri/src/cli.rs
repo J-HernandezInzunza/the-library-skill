@@ -6,11 +6,13 @@
 // the terminal and the agent front doors get it too.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
+use crate::events::{next_command_id, CommandFinished, CommandSink, CommandStarted};
 
 /// One record from `list --json` (and, identically, `search --json`).
 ///
@@ -147,7 +149,7 @@ pub fn command(args: &[&str], cwd: &Path) -> Command {
 ///
 /// `args` is the subcommand plus its own flags (e.g. `["search", "jira"]`).
 /// `--json` is appended here so the caller can't forget it and get human text.
-pub fn run_json(args: &[&str]) -> Result<serde_json::Value, AppError> {
+pub fn run_json(sink: &dyn CommandSink, args: &[&str]) -> Result<serde_json::Value, AppError> {
     let wrapper = library_wrapper();
     if !wrapper.exists() {
         return Err(AppError::WrapperMissing {
@@ -155,7 +157,8 @@ pub fn run_json(args: &[&str]) -> Result<serde_json::Value, AppError> {
         });
     }
 
-    let output = match command(args, &library_home()).output() {
+    let home = library_home();
+    let output = match spawn(sink, command(args, &home), &home) {
         Ok(output) => output,
         // The wrapper is on disk but would not execute (not executable, missing
         // interpreter). There is no exit status to report, so -1 stands in and the
@@ -191,8 +194,8 @@ pub fn run_json(args: &[&str]) -> Result<serde_json::Value, AppError> {
 }
 
 /// The full catalog with install state (R2.1).
-pub fn list() -> Result<Vec<Entry>, AppError> {
-    parse(run_json(&["list"])?)
+pub fn list(sink: &dyn CommandSink) -> Result<Vec<Entry>, AppError> {
+    parse(run_json(sink, &["list"])?)
 }
 
 /// The registered catalogs, highest precedence first.
@@ -200,8 +203,8 @@ pub fn list() -> Result<Vec<Entry>, AppError> {
 /// Read from the registry rather than inferred from the entries: a catalog that is
 /// empty or `skipped` contributes no entries, so inferring would make a broken
 /// remote look like an absence of shared work.
-pub fn registry() -> Result<Vec<Catalog>, AppError> {
-    parse(run_json(&["catalog", "list"])?)
+pub fn registry(sink: &dyn CommandSink) -> Result<Vec<Catalog>, AppError> {
+    parse(run_json(sink, &["catalog", "list"])?)
 }
 
 /// Prepare an unbootstrapped tool directory by running its own `bootstrap.py`.
@@ -209,21 +212,21 @@ pub fn registry() -> Result<Vec<Catalog>, AppError> {
 /// Stdlib-only and idempotent by design, so re-running it is safe and needs no
 /// confirmation. It is not a `library` subcommand precisely because it fixes the state
 /// that stops `library` from running at all.
-pub fn bootstrap() -> Result<BootstrapReport, AppError> {
+pub fn bootstrap(sink: &dyn CommandSink) -> Result<BootstrapReport, AppError> {
     let home = library_home();
     let script = home.join("bootstrap.py");
 
-    let output = Command::new("python3")
-        .arg(&script)
+    let mut cmd = Command::new("python3");
+    cmd.arg(&script)
         .arg("--json")
         // Explicit, for the same reason LIBRARY_CWD is: the script would otherwise
         // infer the directory, and an inferred path is the one that surprises you.
-        .args(["--dir", &home.display().to_string()])
-        .output()
-        .map_err(|e| AppError::Cli {
-            code: -1,
-            stderr: format!("could not run python3 {}: {e}", script.display()),
-        })?;
+        .args(["--dir", &home.display().to_string()]);
+
+    let output = spawn(sink, cmd, &home).map_err(|e| AppError::Cli {
+        code: -1,
+        stderr: format!("could not run python3 {}: {e}", script.display()),
+    })?;
 
     if !output.status.success() {
         // With --json the script reports its failure on stdout as `problem`, leaving
@@ -248,6 +251,35 @@ fn parse<T: serde::de::DeserializeOwned>(payload: serde_json::Value) -> Result<T
     serde_json::from_value(payload).map_err(|e| AppError::Json {
         detail: e.to_string(),
     })
+}
+
+/// The only place a child process is started.
+///
+/// Every spawn is bracketed by a started/finished pair, so the command log cannot be
+/// bypassed by adding a caller that forgets to emit.
+fn spawn(sink: &dyn CommandSink, mut cmd: Command, cwd: &Path) -> std::io::Result<Output> {
+    let id = next_command_id();
+    sink.started(&CommandStarted {
+        id,
+        argv: std::iter::once(cmd.get_program())
+            .chain(cmd.get_args())
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect(),
+        cwd: cwd.display().to_string(),
+    });
+
+    let started_at = Instant::now();
+    let output = cmd.output();
+    sink.finished(&CommandFinished {
+        id,
+        // An io error means nothing ran; -1 distinguishes that from any real exit code.
+        code: match &output {
+            Ok(output) => output.status.code().unwrap_or(-1),
+            Err(_) => -1,
+        },
+        duration_ms: started_at.elapsed().as_millis() as u64,
+    });
+    output
 }
 
 /// Turn a finished `library` run into JSON or a typed error.

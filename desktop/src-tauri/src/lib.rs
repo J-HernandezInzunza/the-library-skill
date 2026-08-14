@@ -7,6 +7,7 @@
 
 pub mod cli;
 pub mod error;
+pub mod events;
 
 use cli::{BootstrapReport, Catalog, Entry};
 use error::AppError;
@@ -17,20 +18,20 @@ use error::AppError;
 /// subcommand: filtering in the UI is instant, offline, and costs no subprocess
 /// per keystroke.
 #[tauri::command]
-fn library_list() -> Result<Vec<Entry>, AppError> {
-    cli::list()
+fn library_list(app: tauri::AppHandle) -> Result<Vec<Entry>, AppError> {
+    cli::list(&app)
 }
 
 /// The registered catalogs, for per-catalog browsing and origin display.
 #[tauri::command]
-fn registry_list() -> Result<Vec<Catalog>, AppError> {
-    cli::registry()
+fn registry_list(app: tauri::AppHandle) -> Result<Vec<Catalog>, AppError> {
+    cli::registry(&app)
 }
 
 /// Prepare a tool directory that has never been bootstrapped.
 #[tauri::command]
-fn bootstrap_tool() -> Result<BootstrapReport, AppError> {
-    cli::bootstrap()
+fn bootstrap_tool(app: tauri::AppHandle) -> Result<BootstrapReport, AppError> {
+    cli::bootstrap(&app)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

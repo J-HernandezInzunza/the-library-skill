@@ -191,7 +191,7 @@ command in Phase 2 fails on that machine until this exists.
 
 ## Phase 2 — Read surface
 
-- [ ] **T2.1 — Command log events**
+- [x] **T2.1 — Command log events**
   - **Files:** `desktop/src-tauri/src/cli.rs`, `desktop/src/components/CommandLog.vue`
   - **Requirements:** R3.4, D5
   - **Do:** Emit `command://started` (exact argv) before every spawn and `command://finished`

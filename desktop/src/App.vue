@@ -5,6 +5,7 @@ import { catalogRows, winningRows, type Row } from "./catalog";
 import { describeAppError, isAppError, type Catalog, type Entry } from "./types";
 import CatalogSummary from "./components/CatalogSummary.vue";
 import CatalogTabs from "./components/CatalogTabs.vue";
+import CommandLog from "./components/CommandLog.vue";
 import EntryList from "./components/EntryList.vue";
 
 // Shown only on a machine that has never run the tool, so it stays out of the
@@ -135,6 +136,8 @@ onMounted(load);
       :show-origin="multiCatalog"
     />
     </template>
+
+    <CommandLog />
   </main>
 </template>
 
@@ -169,7 +172,7 @@ body {
   margin: 0 auto;
   /* No top padding: the sticky header carries its own, so the gap above the title
      stays part of the opaque surface instead of scrolling away from under it. */
-  padding: 0 1.25rem 3rem;
+  padding: 0 1.25rem 5rem;
 }
 .topbar {
   position: sticky;

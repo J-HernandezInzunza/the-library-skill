@@ -1,3 +1,17 @@
+/** The exact argv about to run, from `command://started`. */
+export interface CommandStarted {
+  id: number;
+  argv: string[];
+  cwd: string;
+}
+
+/** How a run ended, from `command://finished`, correlated by `id`. */
+export interface CommandFinished {
+  id: number;
+  code: number;
+  duration_ms: number;
+}
+
 /** What `bootstrap.py --json` reports once the tool directory can run its CLI. */
 export interface BootstrapReport {
   tool_dir: string;

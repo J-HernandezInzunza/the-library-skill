@@ -10,6 +10,25 @@ use std::sync::{Mutex, MutexGuard};
 
 use desktop_lib::cli::{self, Catalog, Entry};
 use desktop_lib::error::AppError;
+use desktop_lib::events::{CommandFinished, CommandSink, CommandStarted};
+
+/// Captures what the command log would show, so D5's transparency is assertable
+/// rather than assumed.
+#[derive(Default)]
+struct Recorder {
+    started: Mutex<Vec<CommandStarted>>,
+    finished: Mutex<Vec<CommandFinished>>,
+}
+
+impl CommandSink for Recorder {
+    fn started(&self, event: &CommandStarted) {
+        self.started.lock().unwrap().push(event.clone());
+    }
+
+    fn finished(&self, event: &CommandFinished) {
+        self.finished.lock().unwrap().push(event.clone());
+    }
+}
 
 /// `LIBRARY_HOME` is process-global, so tests that point it somewhere take turns.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -32,9 +51,39 @@ fn with_fixture_home() -> MutexGuard<'static, ()> {
 }
 
 #[test]
+fn every_run_is_reported_to_the_command_log() {
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    cli::list(&log).expect("fixture list should run");
+
+    let started = log.started.lock().unwrap();
+    let finished = log.finished.lock().unwrap();
+    assert_eq!(started.len(), 1);
+    assert_eq!(finished.len(), 1);
+    // The log shows what actually ran, wrapper and appended --json included.
+    assert!(started[0].argv[0].ends_with("/library"));
+    assert_eq!(&started[0].argv[1..], ["list", "--json"]);
+    assert_eq!(finished[0].code, 0);
+    // Correlated, so the view can pair them.
+    assert_eq!(started[0].id, finished[0].id);
+}
+
+#[test]
+fn a_failing_command_is_logged_with_its_exit_code() {
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    cli::run_json(&log, &["boom"]).unwrap_err();
+
+    assert_eq!(log.started.lock().unwrap().len(), 1);
+    assert_eq!(log.finished.lock().unwrap()[0].code, 1);
+}
+
+#[test]
 fn list_parses_the_recorded_catalog() {
     let _guard = with_fixture_home();
-    let entries: Vec<Entry> = cli::list().expect("fixture list should parse");
+    let entries: Vec<Entry> = cli::list(&Recorder::default()).expect("fixture list should parse");
 
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].name, "atlassian-toolkit");
@@ -52,7 +101,7 @@ fn list_parses_the_recorded_catalog() {
 #[test]
 fn a_skipped_catalog_is_still_listed_with_its_reason() {
     let _guard = with_fixture_home();
-    let catalogs: Vec<Catalog> = cli::registry().expect("fixture registry should parse");
+    let catalogs: Vec<Catalog> = cli::registry(&Recorder::default()).expect("fixture registry should parse");
 
     assert_eq!(catalogs.len(), 3);
     assert_eq!(catalogs[0].id, "personal");
@@ -69,7 +118,7 @@ fn a_skipped_catalog_is_still_listed_with_its_reason() {
 #[test]
 fn the_child_receives_json_and_an_anchored_cwd() {
     let _guard = with_fixture_home();
-    let probe = cli::run_json(&["probe"]).expect("probe should run");
+    let probe = cli::run_json(&Recorder::default(), &["probe"]).expect("probe should run");
 
     assert_eq!(probe["argv"], serde_json::json!(["--json"]));
     assert_eq!(
@@ -81,7 +130,7 @@ fn the_child_receives_json_and_an_anchored_cwd() {
 #[test]
 fn an_ambiguous_catalog_comes_back_as_a_choice() {
     let _guard = with_fixture_home();
-    let err = cli::run_json(&["ambiguous"]).unwrap_err();
+    let err = cli::run_json(&Recorder::default(), &["ambiguous"]).unwrap_err();
 
     assert_eq!(
         err,
@@ -94,7 +143,7 @@ fn an_ambiguous_catalog_comes_back_as_a_choice() {
 #[test]
 fn a_refusal_stays_a_failure_even_though_it_also_exits_two() {
     let _guard = with_fixture_home();
-    let err = cli::run_json(&["refused"]).unwrap_err();
+    let err = cli::run_json(&Recorder::default(), &["refused"]).unwrap_err();
 
     match err {
         AppError::Cli { code, stderr } => {
@@ -109,7 +158,7 @@ fn a_refusal_stays_a_failure_even_though_it_also_exits_two() {
 fn an_unbootstrapped_clone_is_reported_as_fixable_not_broken() {
     let root = fixtures().join("toolroot");
     let _guard = with_home(root.clone());
-    let err = cli::run_json(&["unbootstrapped"]).unwrap_err();
+    let err = cli::run_json(&Recorder::default(), &["unbootstrapped"]).unwrap_err();
 
     assert_eq!(
         err,
@@ -122,7 +171,7 @@ fn an_unbootstrapped_clone_is_reported_as_fixable_not_broken() {
 #[test]
 fn a_failing_command_surfaces_its_stderr_verbatim() {
     let _guard = with_fixture_home();
-    let err = cli::run_json(&["boom"]).unwrap_err();
+    let err = cli::run_json(&Recorder::default(), &["boom"]).unwrap_err();
 
     assert_eq!(
         err,
@@ -136,7 +185,7 @@ fn a_failing_command_surfaces_its_stderr_verbatim() {
 #[test]
 fn human_output_is_a_parse_error_rather_than_an_empty_catalog() {
     let _guard = with_fixture_home();
-    let err = cli::run_json(&["garbage"]).unwrap_err();
+    let err = cli::run_json(&Recorder::default(), &["garbage"]).unwrap_err();
 
     assert!(matches!(err, AppError::Json { .. }), "got {err:?}");
 }
@@ -145,7 +194,7 @@ fn human_output_is_a_parse_error_rather_than_an_empty_catalog() {
 fn a_tool_with_no_config_is_unconfigured_rather_than_broken() {
     let root = fixtures().join("unconfigured");
     let _guard = with_home(root.clone());
-    let err = cli::run_json(&["list"]).unwrap_err();
+    let err = cli::run_json(&Recorder::default(), &["list"]).unwrap_err();
 
     assert_eq!(
         err,
@@ -159,7 +208,7 @@ fn a_tool_with_no_config_is_unconfigured_rather_than_broken() {
 fn a_real_failure_in_a_configured_tool_stays_a_failure() {
     // Guards the ordering: the config check must not swallow genuine errors.
     let _guard = with_fixture_home();
-    let err = cli::run_json(&["boom"]).unwrap_err();
+    let err = cli::run_json(&Recorder::default(), &["boom"]).unwrap_err();
 
     assert!(matches!(err, AppError::Cli { code: 1, .. }), "got {err:?}");
 }
@@ -168,7 +217,7 @@ fn a_real_failure_in_a_configured_tool_stays_a_failure() {
 fn a_missing_wrapper_names_the_path_it_looked_at() {
     let missing = fixtures().join("no-such-clone");
     let _guard = with_home(missing.clone());
-    let err = cli::run_json(&["list"]).unwrap_err();
+    let err = cli::run_json(&Recorder::default(), &["list"]).unwrap_err();
 
     assert_eq!(
         err,
