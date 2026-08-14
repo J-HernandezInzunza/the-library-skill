@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, defineAsyncComponent, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { catalogRows, winningRows, type Row } from "./catalog";
+import { allRows, catalogRows, winningRows, type Row } from "./catalog";
 import { describeAppError, isAppError, type Catalog, type Entry } from "./types";
 import CatalogSummary from "./components/CatalogSummary.vue";
 import CatalogTabs from "./components/CatalogTabs.vue";
@@ -33,6 +33,8 @@ const openEntry = computed(() => trail.value.at(-1) ?? null);
 /** The entry Back returns to, or null when that is the catalog. */
 const previousEntry = computed(() => trail.value.at(-2) ?? null);
 const showDoctor = ref(false);
+/** Collapse the catalog to just the copies that would actually install. */
+const hideOverridden = ref(false);
 const loading = ref(false);
 /** Kept typed rather than stringified: a first-run state is recoverable, not an error. */
 const failure = ref<unknown>(null);
@@ -89,9 +91,15 @@ const selectedCatalog = computed(() => {
 
 const rows = computed<Row[]>(() => {
   const catalogId = activeCatalog.value;
-  if (catalogId === null) return winningRows(entries.value);
-  return catalogRows(entries.value, catalogId);
+  if (catalogId !== null) return catalogRows(entries.value, catalogId);
+  if (hideOverridden.value) return winningRows(entries.value);
+  return allRows(entries.value);
 });
+
+/** Only worth offering once something is actually being overridden. */
+const overriddenCount = computed(
+  () => entries.value.filter((entry) => entry.overridden_by).length,
+);
 
 /** Case-insensitive filter over name + description, computed client-side. */
 const filtered = computed(() => {
@@ -153,7 +161,13 @@ onMounted(load);
     <CatalogTabs v-if="multiCatalog" v-model="activeCatalog" :catalogs="catalogs" />
     <CatalogSummary v-if="selectedCatalog" :catalog="selectedCatalog" />
 
-    <p v-if="!loading && !errorMessage" class="summary">{{ summary }}</p>
+    <p v-if="!loading && !errorMessage" class="summary">
+      {{ summary }}
+      <label v-if="activeCatalog === null && overriddenCount" class="summary__toggle">
+        <input v-model="hideOverridden" type="checkbox" />
+        Hide overridden
+      </label>
+    </p>
 
     <p v-if="loading" class="state">Loading…</p>
     <pre v-else-if="errorMessage" class="state error">{{ errorMessage }}</pre>
@@ -250,9 +264,17 @@ h1 {
   font-size: 0.95rem;
 }
 .summary {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
   font-size: 0.85rem;
   opacity: 0.7;
   margin: 0.5rem 0 1rem;
+}
+.summary__toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
 }
 .state {
   padding: 2rem 0;

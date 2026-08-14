@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { catalogHue, catalogRows, dependencies, winningRows } from "./catalog";
+import { allRows, catalogHue, catalogRows, dependencies, winningRows } from "./catalog";
 import type { Entry } from "./types";
 
 function entry(overrides: Partial<Entry> = {}): Entry {
@@ -67,6 +67,33 @@ describe("winningRows", () => {
 
     expect(rows).toHaveLength(1);
     expect(rows[0].entry.catalog).toBe("personal");
+  });
+});
+
+describe("allRows", () => {
+  it("keeps a name's copies together and gives each its own status", () => {
+    // Entries arrive in catalog-precedence order, so an unsorted render would put
+    // `shared` at the very end, far from the copy it loses to.
+    const catalog = [
+      heldByBoth[0],
+      entry({ name: "zebra", catalog: "personal", installed: true, scopes: ["global"] }),
+      heldByBoth[1],
+    ];
+    const rows = allRows(catalog);
+
+    expect(rows.map((r) => [r.entry.name, r.entry.catalog, r.status])).toEqual([
+      ["grilling", "personal", "installed · global"],
+      ["grilling", "shared", "overridden by personal"],
+      ["zebra", "personal", "installed · global"],
+    ]);
+    // The two rows point at each other rather than repeating the same claim.
+    expect(rows[0].overrides).toEqual(["shared"]);
+    expect(rows[1].overrides).toEqual([]);
+  });
+
+  it("hides nothing that winningRows would collapse away", () => {
+    expect(allRows(heldByBoth)).toHaveLength(2);
+    expect(winningRows(heldByBoth)).toHaveLength(1);
   });
 });
 

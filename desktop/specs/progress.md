@@ -360,3 +360,47 @@ refs.
 **Deliberately not built: reverse dependencies** ("what breaks if I remove this"). It needs a CLI
 change and its real consumer is T3.5's uninstall confirmation and T4.4's remove, not the detail
 view. Left for whoever picks those up.
+
+---
+
+## D15 revised after seeing it run: show every copy, with a toggle
+
+The original collapse hid overridden copies from the main list. Reviewing the running app made the
+cost obvious: the shared catalog is **100% shadowed**, so it never appeared in the main view at
+all, and divergence between a personal copy and the team's was invisible without switching tabs.
+
+The list now shows **one row per catalog copy** (42 rows), with a "hide overridden" toggle that
+collapses to the 35 that would actually install.
+
+**This does not reopen the original bug**, and the reason matters: the defect was never
+"duplicates are confusing" — it was that a losing row claimed `not installed` for a skill that was
+installed. What fixes that is the **single mutually-exclusive status per row**, not hiding the
+row. All three view modes now go through one `toRow`, so an overridden copy reports the override
+in place of an install state no matter which mode renders it. Hiding rows was a workaround for a
+defect that had already been fixed properly.
+
+**Grouped, not sorted.** Entries arrive in catalog-precedence order — all 35 personal, then all 7
+shared — so rendering them as-is would strand every overridden copy in a block at the end, 35 rows
+from the copy it loses to. Emitting each name's copies at the position of its *first* copy keeps
+the catalog's own ordering (skills then prompts, as the YAML has them) while putting the
+comparison side by side. Sorting by name would have achieved adjacency but silently interleaved
+skills and prompts, which nothing asked for.
+
+Verified against the live catalog: `grilling (personal, installed · global, overrides shared)` is
+immediately followed by `grilling (shared, overridden by personal)`.
+
+**Also fixed in this pass, all found by reading rather than from the screenshots:**
+
+- Every `.ghost` button inside a child component was rendering as a default OS button. App.vue's
+  `button` rules lived in its `<style scoped>` block, and scoped styles never reach a child
+  component's *inner* elements — only its root. Moved to the global block.
+- `Doctor` and `EntryDetail` sat flush against the window top: fixing the sticky-header overlap
+  had moved `.app`'s top padding into `.topbar`, and those views render *instead of* the topbar.
+- The window title was still `desktop`.
+- The catalog chip on dependency rows was structurally redundant — `resolve_deps` resolves within
+  the winner's own catalog, so it always repeated the entry's own catalog.
+
+**Back now walks the trail** rather than always returning to the catalog, so following a
+dependency chain and stepping back lands on the entry you came from. `tsconfig` moved to ES2022
+for `Array.prototype.at`; the app only ever runs in Tauri's WebView, so the scaffold's ES2020
+baseline was protecting against a browser matrix that does not exist here.

@@ -363,9 +363,9 @@ One `Entry` interface mirroring §3.5. `library_list` and `registry_list` load o
 search is a `computed` filter over the result.
 
 The view model is derived, not stored. `src/catalog.ts` turns entries into rows as pure
-functions — `winningRows` (one row per name, per D15's default mode) and `catalogRows` (one row
-per copy, for a single catalog's inventory) — each attaching **one** mutually-exclusive status
-string. Stacking independent status badges in the template is what produced `not installed`
+functions — `allRows` (every copy, D15's default), `winningRows` (the "hide overridden" collapse),
+and `catalogRows` (a single catalog's inventory) — all three built from one `toRow` that attaches
+exactly **one** mutually-exclusive status string. Stacking independent status badges in the template is what produced `not installed`
 alongside `overridden by personal`; a single status per row makes that class of contradiction
 unrepresentable.
 

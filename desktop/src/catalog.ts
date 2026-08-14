@@ -17,33 +17,38 @@ export function catalogHue(precedence: number): number {
 }
 
 /**
+ * Every copy of every name, with a name's copies kept together.
+ *
+ * Answers "what exists, and where does it come from?". Grouped rather than sorted:
+ * entries arrive in catalog-precedence order, so emitting them as-is clumps every
+ * overridden copy at the end, far from the copy it loses to. Emitting each name's
+ * copies at the position of its first one preserves the existing order while putting
+ * the comparison side by side.
+ */
+export function allRows(entries: Entry[]): Row[] {
+  const rows: Row[] = [];
+  for (const copies of byName(entries).values()) {
+    const winner = pickWinner(copies);
+    const beaten = copies.filter((copy) => copy !== winner).map((copy) => copy.catalog);
+    for (const copy of copies) {
+      rows.push(toRow(copy, copy === winner ? beaten : []));
+    }
+  }
+  return rows;
+}
+
+/**
  * One row per name: the copy `use` would install, plus the copies it beats.
  *
- * Answers "what can I use, and do I have it?". A name held by two catalogs appears
- * once, because the losing copy's `not_installed` describes a copy you would never
- * get and reads as a contradiction next to an override badge.
+ * Answers "what can I use, and do I have it?" — the same list with the overridden
+ * copies hidden.
  */
 export function winningRows(entries: Entry[]): Row[] {
-  const byName = new Map<string, Entry[]>();
-  for (const entry of entries) {
-    // Grouped by name alone, matching how the CLI resolves a winner: a name is
-    // resolved the same way regardless of which section it sits in.
-    const copies = byName.get(entry.name);
-    if (copies) copies.push(entry);
-    else byName.set(entry.name, [entry]);
-  }
-
   const rows: Row[] = [];
-  for (const copies of byName.values()) {
-    // `overridden_by: null` marks the copy `use` resolves to. Falling back to the
-    // first copy keeps a row on screen if a future CLI ever stops marking one.
-    const winner = copies.find((copy) => !copy.overridden_by) ?? copies[0];
-    const beaten = copies.filter((copy) => copy !== winner);
-    rows.push({
-      entry: winner,
-      ...installStatus(winner),
-      overrides: beaten.map((copy) => copy.catalog),
-    });
+  for (const copies of byName(entries).values()) {
+    const winner = pickWinner(copies);
+    const beaten = copies.filter((copy) => copy !== winner).map((copy) => copy.catalog);
+    rows.push(toRow(winner, beaten));
   }
   return rows;
 }
@@ -51,25 +56,51 @@ export function winningRows(entries: Entry[]): Row[] {
 /**
  * Every copy one catalog holds, overridden ones included.
  *
- * Answers "what's in this catalog?", so it stays copy-keyed: an entry that loses to
- * a higher-precedence catalog is still part of this catalog's inventory. Status
- * follows the CLI's terminal column and is mutually exclusive — an overridden copy
- * reports the override instead of an install state it cannot have.
+ * Answers "what's in this catalog?", so it stays copy-keyed: an entry that loses to a
+ * higher-precedence catalog is still part of this catalog's inventory.
  */
 export function catalogRows(entries: Entry[], catalogId: string): Row[] {
   const held = entries.filter((entry) => entry.catalog === catalogId);
+  return held.map((entry) => toRow(entry));
+}
 
-  return held.map((entry) => {
-    if (entry.overridden_by) {
-      return {
-        entry,
-        status: `overridden by ${entry.overridden_by}`,
-        tone: "overridden" as const,
-        overrides: [],
-      };
-    }
-    return { entry, ...installStatus(entry), overrides: [] };
-  });
+/** Grouped by name alone, matching how the CLI resolves a winner. */
+function byName(entries: Entry[]): Map<string, Entry[]> {
+  const groups = new Map<string, Entry[]>();
+  for (const entry of entries) {
+    const copies = groups.get(entry.name);
+    if (copies) copies.push(entry);
+    else groups.set(entry.name, [entry]);
+  }
+  return groups;
+}
+
+/**
+ * `overridden_by: null` marks the copy `use` resolves to. Falling back to the first
+ * copy keeps a row on screen if a future CLI ever stops marking one.
+ */
+function pickWinner(copies: Entry[]): Entry {
+  return copies.find((copy) => !copy.overridden_by) ?? copies[0];
+}
+
+/**
+ * One row with one status.
+ *
+ * Status is mutually exclusive, following the CLI's terminal column: an overridden copy
+ * reports the override *instead of* an install state it cannot have. Rendering the two
+ * as independent badges is what once produced "not installed" beside "overridden by
+ * personal" for a skill that was installed.
+ */
+function toRow(entry: Entry, overrides: string[] = []): Row {
+  if (entry.overridden_by) {
+    return {
+      entry,
+      status: `overridden by ${entry.overridden_by}`,
+      tone: "overridden",
+      overrides: [],
+    };
+  }
+  return { entry, ...installStatus(entry), overrides };
 }
 
 function installStatus(entry: Entry): Pick<Row, "status" | "tone"> {
