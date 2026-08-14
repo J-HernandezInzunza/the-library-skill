@@ -119,7 +119,7 @@ One Tauri command per operation (R1.2) — never a generic passthrough:
 | `entry_show` | `show <name> --json` | R2.1 |
 | `registry_list` | `catalog list --json` | R2.4, R2.5, R4.1 |
 | `bootstrap_tool` | `python3 bootstrap.py --json --dir <home>` | R7.1 |
-| `catalog_init` | `init --repo … --branch … [--yaml-path]` | R4.6 |
+| `catalog_init` | `init --repo … --branch …` | R4.6 |
 | `registry_add` | `catalog add --id … (--path … \| --repo … --branch …) [--position]` | R4.7 |
 | `registry_remove` | `catalog remove <id>` | R4.7 |
 

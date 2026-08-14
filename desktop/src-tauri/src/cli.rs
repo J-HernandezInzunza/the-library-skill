@@ -358,18 +358,12 @@ pub fn doctor(sink: &dyn CommandSink, deep: bool) -> Result<DoctorReport, AppErr
 /// relabelling its failure as `NotConfigured` would replace the real git error with the
 /// state the user is trying to leave. The CLI's stderr already ends with an actionable
 /// hint, so it is surfaced verbatim.
-pub fn init(
-    sink: &dyn CommandSink,
-    repo: &str,
-    branch: &str,
-    yaml_path: Option<&str>,
-) -> Result<InitReport, AppError> {
-    let mut args = vec!["init", "--repo", repo, "--branch", branch];
-    if let Some(path) = yaml_path {
-        args.extend(["--yaml-path", path]);
-    }
-
-    let output = run_capture(sink, &args)?;
+/// `--yaml-path` is deliberately not passed: the CLI defaults it to `library.yaml`,
+/// which is the convention, and letting its own default run also preserves the legacy
+/// `LIBRARY_YAML_PATH` migration that hardcoding the name here would override. A catalog
+/// stored under another name is registered from a terminal.
+pub fn init(sink: &dyn CommandSink, repo: &str, branch: &str) -> Result<InitReport, AppError> {
+    let output = run_capture(sink, &["init", "--repo", repo, "--branch", branch])?;
     let home = library_home();
     parse(interpret(
         &home,

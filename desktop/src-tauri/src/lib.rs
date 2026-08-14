@@ -40,9 +40,8 @@ fn catalog_init(
     app: tauri::AppHandle,
     repo: String,
     branch: String,
-    yaml_path: Option<String>,
 ) -> Result<InitReport, AppError> {
-    cli::init(&app, &repo, &branch, yaml_path.as_deref())
+    cli::init(&app, &repo, &branch)
 }
 
 /// The registered catalogs, for per-catalog browsing and origin display.

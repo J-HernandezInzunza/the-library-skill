@@ -30,17 +30,14 @@ const configPath = computed(() => report.value?.config_path ?? props.path);
 
 const repo = ref("");
 const branch = ref("main");
-const yamlPath = ref("");
 const registering = ref(false);
 const canRegister = computed(() => !!repo.value.trim() && !!branch.value.trim());
 
 /** Shown before it runs, so the form is never a black box (D5). */
-const initCommand = computed(() => {
-  const parts = ["library init", `--repo ${repo.value.trim() || "<url>"}`,
-                 `--branch ${branch.value.trim() || "<branch>"}`];
-  if (yamlPath.value.trim()) parts.push(`--yaml-path ${yamlPath.value.trim()}`);
-  return parts.join(" ");
-});
+const initCommand = computed(
+  () =>
+    `library init --repo ${repo.value.trim() || "<url>"} --branch ${branch.value.trim() || "<branch>"}`,
+);
 
 async function register() {
   registering.value = true;
@@ -49,7 +46,6 @@ async function register() {
     await invoke<InitReport>("catalog_init", {
       repo: repo.value.trim(),
       branch: branch.value.trim(),
-      yamlPath: yamlPath.value.trim() || null,
     });
     emit("ready");
   } catch (e) {
@@ -96,7 +92,7 @@ async function setUp() {
       <h2 class="first-run__title">Point it at your catalog</h2>
       <p class="first-run__lead">
         The tool is ready to run, but it doesn't know which catalog to read. Your team's catalog
-        is a git repository holding a <code>library.yaml</code>.
+        is a git repository with a <code>library.yaml</code> at its root.
       </p>
 
       <form class="first-run__form" @submit.prevent="register">
@@ -110,16 +106,10 @@ async function setUp() {
           />
         </label>
 
-        <div class="first-run__row">
-          <label class="first-run__field">
-            <span>Branch</span>
-            <input v-model="branch" type="text" placeholder="main" />
-          </label>
-          <label class="first-run__field">
-            <span>Catalog file <em>(optional)</em></span>
-            <input v-model="yamlPath" type="text" placeholder="library.yaml" />
-          </label>
-        </div>
+        <label class="first-run__field">
+          <span>Branch</span>
+          <input v-model="branch" type="text" placeholder="main" />
+        </label>
 
         <p class="first-run__preview">{{ initCommand }}</p>
 
@@ -193,10 +183,6 @@ async function setUp() {
   text-align: left;
   margin-bottom: 1rem;
 }
-.first-run__row {
-  display: flex;
-  gap: 0.75rem;
-}
 .first-run__field {
   flex: 1;
   display: flex;
@@ -204,10 +190,6 @@ async function setUp() {
   gap: 0.25rem;
   font-size: 0.78rem;
   opacity: 0.85;
-}
-.first-run__field em {
-  opacity: 0.6;
-  font-style: normal;
 }
 .first-run__field input {
   padding: 0.45rem 0.6rem;
