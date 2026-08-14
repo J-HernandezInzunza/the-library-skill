@@ -1610,3 +1610,34 @@ that put every subprocess through one `spawn()`.
 
 The view chain is now ordered so a view opened *from* another sits above it, which means closing
 Doctor or the add form falls back to whatever is still open underneath with no state to restore.
+
+---
+
+## T4.4d — navigation gets its own row, and back labels stop being free text
+
+Three small things asked for, and one found while doing them.
+
+**`PageHeader` is two rows now.** Navigation alone on the first; the title and that page's actions
+on the second, actions pushed right with `margin-left: auto`. The single-row version made the back
+button's position depend on the title's length and on how many actions the view had, which is the
+same defect T4.4b fixed one level up — the button was consistent *between* views and still moved
+*within* one as its title changed.
+
+Badges stay in the default slot beside the title (`EntryDetail`'s type and setup chips describe the
+title); anything pressable goes in `#actions`. **Guarded**, because the distinction is invisible
+otherwise: a button in the default slot renders left, next to the heading, which is where the eye
+is reading a title rather than looking for something to press. Verified by mutation — stripping
+`Sync`'s `#actions` wrapper fails the check by name.
+
+**Sync and Refresh swapped**, and the Catalogs action says "Check catalog health" rather than
+"Check health" — the shorter label was ambiguous on a screen that also lists installed entries'
+health indirectly.
+
+**Found while there: the back labels had already drifted**, four ways — "Back to catalog", "All
+catalogs", "Back to Catalogs", and a bare `personal`. The worst pair is the middle two: the entry
+list and the registry differed by a single letter's case.
+
+The rule is now that **a back label is the title of the page it returns to**, rendered as-is:
+`← The Library`, `← Catalogs`, `← personal`, `← grilling`. That makes the label derivable instead
+of written, so two screens cannot describe each other differently — the same reasoning as
+`describeCatalog` replacing hand-written per-catalog prose.

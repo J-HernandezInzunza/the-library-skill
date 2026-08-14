@@ -546,6 +546,17 @@ leaves the entry reinstallable, `remove` does not, so the same dependent list me
     registry. Gate passes.
   - **Commit:** `feat(desktop): stop the layout shifting, and shorten the toolbar`
 
+- [x] **T4.4d — Two-row header, and back labels that name their destination**
+  - **Files:** `desktop/src/components/PageHeader.vue` + every view, `desktop/src/App.vue`
+  - **Requirements:** D19
+  - **Do:** Split `PageHeader` into navigation-alone and title-plus-actions, with actions in a
+    right-aligned `#actions` slot and badges staying beside the title. Guard the slot choice,
+    since a button in the default slot renders next to the heading. Swap Sync and Refresh on
+    the toolbar, and make the health button say what it checks. Back labels become the title
+    of the destination page rather than free text.
+  - **Verify:** Removing a view's `#actions` wrapper fails the guard by name. Gate passes.
+  - **Commit:** `feat(desktop): give navigation its own row, and actions one place`
+
 - [ ] **T4.5 — Push, and surfacing the PR**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/`
   - **Requirements:** R4.5

@@ -178,7 +178,7 @@ onMounted(async () => {
          form falls back to whatever is still open underneath, with no state to restore. -->
     <Doctor
       v-else-if="showDoctor"
-      :back-to="manage ? 'Catalogs' : 'catalog'"
+      :back-to="manage ? 'Catalogs' : 'The Library'"
       @close="showDoctor = false"
     />
 
@@ -199,7 +199,7 @@ onMounted(async () => {
       :entries="entries"
       :at-catalog="manage.catalog"
       :at-entry="manage.entry"
-      :back-to="openEntry ?? 'catalog'"
+      :back-to="openEntry ?? 'The Library'"
       @close="manage = null"
       @changed="load()"
       @add="addingTo = $event"
@@ -230,7 +230,7 @@ onMounted(async () => {
         />
         <!-- What you do to this list, and where you go. Adding an entry and checking
              catalog health both moved into Catalogs, which is their subject (D18). -->
-        <button type="button" class="ghost" @click="showSync = true">Sync</button>
+        <button type="button" class="ghost" @click="load()">Refresh</button>
         <button
           type="button"
           class="ghost"
@@ -238,7 +238,7 @@ onMounted(async () => {
         >
           Catalogs
         </button>
-        <button type="button" class="ghost" @click="load()">Refresh</button>
+        <button type="button" class="ghost" @click="showSync = true">Sync</button>
       </form>
     </header>
 

@@ -113,7 +113,7 @@ watch(() => props.name, load, { immediate: true });
   <section class="view">
     <!-- Titled from the prop, not from the payload: the header must be in place before
          the command returns, or it lands late and shifts everything under it. -->
-    <PageHeader :title="name" :back="`Back to ${backTo ?? 'catalog'}`" @back="$emit('close')">
+    <PageHeader :title="name" :back="backTo ?? 'The Library'" @back="$emit('close')">
       <span v-if="detail" class="entry-detail__type">{{ detail.entry.type }}</span>
       <span v-if="detail?.has_setup" class="entry-detail__setup">guided setup available</span>
     </PageHeader>

@@ -7,7 +7,7 @@ import Busy from "./Busy.vue";
 import StatusBanner from "./StatusBanner.vue";
 import PageHeader from "./PageHeader.vue";
 
-/** Reached from the catalog list and from the Catalogs view, so Back names where it goes. */
+/** Reached from the catalog and from the Catalogs view, so Back names the page it returns to. */
 defineProps<{ backTo: string }>();
 defineEmits<{ close: [] }>();
 
@@ -41,14 +41,16 @@ run();
 
 <template>
   <section class="view">
-    <PageHeader title="Catalog health" :back="`Back to ${backTo}`" @back="$emit('close')">
-      <label class="doctor__deep">
-        <input v-model="deep" type="checkbox" @change="run()" />
-        Deep checks (reaches the network)
-      </label>
-      <button type="button" class="ghost" :disabled="loading" @click="run()">
-        {{ loading ? "Checking…" : "Re-run" }}
-      </button>
+    <PageHeader title="Catalog health" :back="backTo" @back="$emit('close')">
+      <template #actions>
+        <label class="doctor__deep">
+          <input v-model="deep" type="checkbox" @change="run()" />
+          Deep checks (reaches the network)
+        </label>
+        <button type="button" class="ghost" :disabled="loading" @click="run()">
+          {{ loading ? "Checking…" : "Re-run" }}
+        </button>
+      </template>
     </PageHeader>
 
     <Busy v-if="loading" :label="deep ? 'Checking every source…' : 'Checking the catalog…'" />

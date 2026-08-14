@@ -14,7 +14,7 @@ const props = defineProps<{
   /** Open straight at a catalog, and optionally an entry, when arriving from elsewhere. */
   atCatalog?: string | null;
   atEntry?: string | null;
-  /** What leaving the view returns to, which is not always the catalog list. */
+  /** The title of the page leaving this one returns to, which is not always the catalog. */
   backTo: string;
 }>();
 const emit = defineEmits<{
@@ -133,12 +133,14 @@ watch(
   <section class="view">
     <!-- Level 1: the registry. -->
     <template v-if="!openCatalog">
-      <PageHeader title="Catalogs" :back="`Back to ${backTo}`" @back="emit('close')">
-        <!-- `doctor` validates config and catalog integrity, so this is its subject rather
-             than the install list it used to sit above. -->
-        <button type="button" class="ghost catalogs__health" @click="emit('doctor')">
-          Check health
-        </button>
+      <PageHeader title="Catalogs" :back="backTo" @back="emit('close')">
+        <template #actions>
+          <!-- `doctor` validates config and catalog integrity, so this is its subject
+               rather than the install list it used to sit above. -->
+          <button type="button" class="ghost" @click="emit('doctor')">
+            Check catalog health
+          </button>
+        </template>
       </PageHeader>
       <p class="catalogs__lead">
         Where your entries come from, in precedence order: when two catalogs define the same
@@ -179,8 +181,12 @@ watch(
 
     <!-- Level 2: one catalog's entries, each row carrying its own actions. -->
     <template v-else>
-      <PageHeader :title="openCatalog" back="All catalogs" @back="goTo(null)">
-        <button type="button" class="ghost" @click="emit('add', openCatalog)">Add an entry</button>
+      <PageHeader :title="openCatalog" back="Catalogs" @back="goTo(null)">
+        <template #actions>
+          <button type="button" class="ghost" @click="emit('add', openCatalog)">
+            Add an entry
+          </button>
+        </template>
       </PageHeader>
       <p class="catalogs__lead">{{ catalog?.location }}</p>
       <p v-if="!held.length" class="catalogs__lead">
@@ -275,9 +281,6 @@ watch(
   flex: 1;
   font-size: 0.75rem;
   opacity: 0.7;
-}
-.catalogs__health {
-  margin-left: auto;
 }
 .catalogs__manage {
   padding: 0.3rem 0.6rem;

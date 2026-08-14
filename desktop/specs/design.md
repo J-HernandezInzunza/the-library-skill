@@ -530,6 +530,19 @@ is the only root padding. Both are guarded by `src/pageChrome.spec.ts` reading t
 a header that lands 0.5rem lower on one screen is invisible to the type checker, to the build, and
 to any test that renders one view at a time.
 
+The header is **two rows**:
+
+- **Navigation alone.** The back button's position must not depend on the title's length or on how
+  many actions the view has, which is what a single shared row would make it depend on.
+- **Title, then that page's actions, pushed right.** Badges describing the title go in the default
+  slot beside it; anything pressable goes in `#actions`, which is `margin-left: auto`. Guarded, so
+  a control cannot drift back to sitting next to the heading where the eye is reading a title.
+
+**A back label names the title of the page it returns to** — `← The Library`, `← Catalogs`,
+`← personal`, `← grilling`. Derived rather than written, because the hand-written versions had
+already drifted to "Back to catalog", "All catalogs", and a bare catalog id, with "Back to catalog"
+(the entry list) and "Back to Catalogs" (the registry) differing by one letter.
+
 Separately: a catalog rendered as `local · local` and `remote · pr` — the CLI's `kind` and
 `write_mode` verbatim. Those are internal field values, and worse, the pair *looks* like a category
 and a subcategory when it is actually "where it lives" and "what a change to it costs". They are

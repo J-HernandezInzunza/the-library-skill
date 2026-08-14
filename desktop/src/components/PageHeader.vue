@@ -2,14 +2,23 @@
 /**
  * The one header every full-screen view uses.
  *
- * Five views had each grown their own: two put the back button above the title and three
- * beside it, with three different margins, so the button visibly jumped as you navigated
- * between them. Consistency here is not styling — a control that moves between screens is
- * one you have to re-find every time.
+ * Two rows, deliberately. Navigation gets a row to itself so the back button is always in
+ * the same place regardless of how long the title is or how many actions the view has —
+ * five views had each written their own and the control visibly jumped as you navigated.
+ * The title and that page's actions share the second row, actions pushed right, so "where
+ * am I" and "what can I do here" read as one line rather than competing with the way out.
  */
 defineProps<{
   title: string;
-  /** Where Back returns to, in words. Omit for a view with nowhere to go back to. */
+  /**
+   * The **title of the page Back returns to**, rendered as-is. Omit where there is no back.
+   *
+   * A rule, not a caption: the labels had drifted to "Back to catalog", "All catalogs", and
+   * a bare catalog id, and "Back to catalog" (the entry list) against "Back to Catalogs"
+   * (the registry) differed by one letter. Naming the destination's own title makes the
+   * label derivable rather than written, so two screens cannot describe each other
+   * differently.
+   */
   back?: string;
 }>();
 defineEmits<{ back: [] }>();
@@ -17,30 +26,44 @@ defineEmits<{ back: [] }>();
 
 <template>
   <header class="page-head">
-    <button v-if="back" type="button" class="ghost page-head__back" @click="$emit('back')">
-      ← {{ back }}
-    </button>
-    <h2 class="page-head__title">{{ title }}</h2>
-    <!-- Badges and status chips that belong to the title, not to the page. -->
-    <slot />
+    <div v-if="back" class="page-head__nav">
+      <button type="button" class="ghost" @click="$emit('back')">← {{ back }}</button>
+    </div>
+
+    <div class="page-head__main">
+      <h2 class="page-head__title">{{ title }}</h2>
+      <!-- Badges that describe the title, so they sit beside it. -->
+      <slot />
+      <!-- What this page can do, always right-aligned. -->
+      <div class="page-head__actions"><slot name="actions" /></div>
+    </div>
   </header>
 </template>
 
 <style scoped>
 .page-head {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
   margin-bottom: 1.25rem;
 }
-.page-head__back {
-  /* Fixed against the title's baseline rather than the text length, so the button lands
-     in the same place on every view regardless of how long its label is. */
-  flex: none;
+.page-head__nav {
+  /* Its own row: the back button's position must not depend on the title's length. */
+  margin-bottom: 0.9rem;
+}
+.page-head__main {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
 }
 .page-head__title {
   margin: 0;
   font-size: 1.15rem;
+}
+.page-head__actions {
+  /* Pushed right even when the title is short, so actions are found in one place. */
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
 }
 </style>

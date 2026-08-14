@@ -48,13 +48,15 @@ run(false);
 
 <template>
   <section class="view">
-    <PageHeader title="Sync" back="Back to catalog" @back="$emit('close')">
-      <button type="button" class="ghost" :disabled="loading" @click="run(false)">
-        {{ loading ? "Syncing…" : "Sync again" }}
-      </button>
-      <button type="button" class="ghost" :disabled="loading" @click="run(true)">
-        Force re-fetch
-      </button>
+    <PageHeader title="Sync" back="The Library" @back="$emit('close')">
+      <template #actions>
+        <button type="button" class="ghost" :disabled="loading" @click="run(false)">
+          {{ loading ? "Syncing…" : "Sync again" }}
+        </button>
+        <button type="button" class="ghost" :disabled="loading" @click="run(true)">
+          Force re-fetch
+        </button>
+      </template>
     </PageHeader>
 
     <Busy v-if="loading" label="Checking every installed entry against its source…" />

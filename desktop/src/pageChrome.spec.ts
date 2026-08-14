@@ -58,6 +58,20 @@ describe("page chrome", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("puts a view's own actions in the actions slot, not beside the title", () => {
+    // The default slot is for badges describing the title; `#actions` is right-aligned.
+    // A control passed to the default slot renders left, next to the heading, which is
+    // where the eye is looking for the title rather than for something to press.
+    const offenders = fullScreenViews()
+      .filter(([, source]) => {
+        const header = source.match(/<PageHeader[\s\S]*?<\/PageHeader>/);
+        return !!header && header[0].includes("<button") && !header[0].includes("#actions");
+      })
+      .map(([name]) => name);
+
+    expect(offenders).toEqual([]);
+  });
+
   it("reserves the scrollbar's width so a long page does not move the layout", () => {
     // `.app` is centred, so without a stable gutter a page long enough to scroll narrows
     // the viewport and both edges move inward by half the scrollbar width. Invisible on a
