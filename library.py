@@ -1537,6 +1537,61 @@ def resolve_deps(entries: list[Entry], target: Entry,
     return order
 
 
+def resolve_dependents(entries: list[Entry], target: Entry) -> list[tuple[Entry, bool]]:
+    """Entries that break if *target* is removed, direct ones first. Cycle-safe.
+
+    The inverse of `resolve_deps`, and deliberately scoped the same way: only *entries* is
+    searched, which callers pass as the target's own catalog (D9). A ref in another catalog
+    naming this target's name resolves to that catalog's own copy, or dangles — either way
+    it is not this entry's dependent, and claiming otherwise would overstate the blast
+    radius across a catalog boundary that `use` never crosses.
+
+    The bool is whether the entry names *target* itself. Transitive dependents are included
+    because they break too: `use P` installs P's whole closure, so an entry missing three
+    levels down fails P's install as surely as its own. A caller that wants only the direct
+    ones filters on the flag; one that reports "removing this breaks N entries" needs all.
+
+    Malformed refs are skipped silently rather than warned about, unlike in `resolve_deps`:
+    a ref with no `:` cannot name anything, and the entry that owns it already reports it
+    as `unresolved_requires` when *it* is the subject. Warning here would emit noise about
+    an unrelated entry every time any entry is shown.
+    """
+    by_key = {(e.type, e.name): e for e in entries}
+    requires_of: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    for e in entries:
+        refs = set()
+        for ref in e.requires:
+            if ":" not in ref:
+                continue
+            dtype, dname = ref.split(":", 1)
+            refs.add((dtype.strip(), dname.strip()))
+        requires_of[(e.type, e.name)] = refs
+
+    target_key = (target.type, target.name)
+    # Breadth-first outward from the target, so the first ring is the direct dependents.
+    # Recording a key once is what makes a dependency cycle terminate here.
+    found: dict[tuple[str, str], bool] = {}
+    frontier = {target_key}
+    direct = True
+    while frontier:
+        ring = {
+            key for key, refs in requires_of.items()
+            if key != target_key and key not in found and refs & frontier
+        }
+        for key in ring:
+            found[key] = direct
+        frontier = ring
+        direct = False
+
+    return [
+        (by_key[key], is_direct)
+        for key, is_direct in sorted(
+            found.items(),
+            key=lambda kv: (not kv[1], by_key[kv[0]].type, by_key[kv[0]].name),
+        )
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # Fetching
 # --------------------------------------------------------------------------- #
@@ -2619,8 +2674,14 @@ def cmd_show(args: argparse.Namespace) -> int:
     # Dependencies resolve within the winner's own catalog, as `use` resolves them (D9);
     # showing them from the merged list would promise an install that won't happen.
     unresolved: list[dict[str, str]] = []
-    deps = [d for d in resolve_deps(cfg.entries_of(winner.catalog), winner, unresolved)
+    catalog_entries = cfg.entries_of(winner.catalog)
+    deps = [d for d in resolve_deps(catalog_entries, winner, unresolved)
             if d is not winner]
+    # The other direction: what breaks if this entry goes away. Nothing could answer that
+    # before, so `remove` and `uninstall` could only ask for confirmation without naming
+    # the consequence — and a caller cannot derive it, since it needs every entry's
+    # transitive closure rather than one entry's refs.
+    dependents = resolve_dependents(catalog_entries, winner)
 
     installs = sorted((r for r in receipts.values() if r["name"] == winner.name),
                       key=lambda r: r["dest"])
@@ -2633,6 +2694,9 @@ def cmd_show(args: argparse.Namespace) -> int:
         "requires": [{"type": d.type, "name": d.name, "catalog": d.catalog,
                       "description": d.description} for d in deps],
         "unresolved_requires": unresolved,
+        "dependents": [{"type": d.type, "name": d.name, "catalog": d.catalog,
+                        "description": d.description, "direct": direct}
+                       for d, direct in dependents],
         "installs": installs,
         "has_setup": winner_record["has_setup"],
         "source": source_record(winner),
@@ -2667,6 +2731,11 @@ def cmd_show(args: argparse.Namespace) -> int:
         print("\nUnresolved requires:")
         for u in unresolved:
             print(f"  {u['ref']}  ({u['reason'].replace('_', ' ')}, required by {u['required_by']})")
+
+    if dependents:
+        print(f"\nRequired by ({len(dependents)}):")
+        for d, direct in dependents:
+            print(f"  [{d.type}] {d.name}" + ("" if direct else "  (indirectly)"))
 
     if multi:
         print("\nCopies (precedence order):")

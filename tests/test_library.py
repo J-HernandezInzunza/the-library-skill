@@ -1305,6 +1305,104 @@ class TestResolveDeps(unittest.TestCase):
         self.assertTrue(any("cycle detected" in m for m in msgs), msgs)
 
 
+class TestResolveDependents(unittest.TestCase):
+    """The inverse of resolve_deps: what breaks if an entry is removed."""
+
+    @staticmethod
+    def names(entries: list[library.Entry], target: library.Entry) -> list[tuple[str, bool]]:
+        return [(e.name, direct) for e, direct in library.resolve_dependents(entries, target)]
+
+    def test_an_entry_that_names_the_target_is_a_direct_dependent(self) -> None:
+        dep = make_entry("dep")
+        user = make_entry("user", requires=["skill:dep"])
+        self.assertEqual(self.names([dep, user], dep), [("user", True)])
+
+    def test_a_leaf_nothing_requires_has_no_dependents(self) -> None:
+        alone = make_entry("alone")
+        other = make_entry("other", requires=["skill:something-else"])
+        self.assertEqual(self.names([alone, other], alone), [])
+
+    def test_transitive_dependents_are_included_but_marked_indirect(self) -> None:
+        # `use top` installs top's whole closure, so a missing `base` fails top's install
+        # as surely as it fails mid's. Reporting only direct dependents would understate
+        # the blast radius, which is the number the confirmation exists to show.
+        base = make_entry("base")
+        mid = make_entry("mid", requires=["skill:base"])
+        top = make_entry("top", requires=["skill:mid"])
+        self.assertEqual(self.names([base, mid, top], base), [("mid", True), ("top", False)])
+
+    def test_direct_dependents_come_first_then_alphabetical(self) -> None:
+        base = make_entry("base")
+        zed = make_entry("zed", requires=["skill:base"])
+        amy = make_entry("amy", requires=["skill:base"])
+        far = make_entry("far", requires=["skill:amy"])
+        self.assertEqual(
+            self.names([base, zed, amy, far], base),
+            [("amy", True), ("zed", True), ("far", False)],
+        )
+
+    def test_a_diamond_reports_each_dependent_once(self) -> None:
+        base = make_entry("base")
+        left = make_entry("left", requires=["skill:base"])
+        right = make_entry("right", requires=["skill:base"])
+        top = make_entry("top", requires=["skill:left", "skill:right"])
+        self.assertEqual(
+            self.names([base, left, right, top], base),
+            [("left", True), ("right", True), ("top", False)],
+        )
+
+    def test_the_nearest_relationship_wins_when_an_entry_is_both(self) -> None:
+        # `top` names base directly *and* reaches it through mid. It is a direct dependent;
+        # reporting it as indirect would hide the ref it actually declares.
+        base = make_entry("base")
+        mid = make_entry("mid", requires=["skill:base"])
+        top = make_entry("top", requires=["skill:base", "skill:mid"])
+        self.assertEqual(self.names([base, mid, top], base), [("mid", True), ("top", True)])
+
+    def test_a_cycle_terminates_instead_of_recursing(self) -> None:
+        left = make_entry("left", requires=["skill:right"])
+        right = make_entry("right", requires=["skill:left"])
+        self.assertEqual(self.names([left, right], left), [("right", True)])
+
+    def test_refs_are_typed_so_a_prompt_and_a_skill_do_not_collide(self) -> None:
+        skill_alpha = make_entry("alpha")
+        prompt_alpha = make_entry("alpha", etype="prompt")
+        user = make_entry("user", requires=["prompt:alpha"])
+        self.assertEqual(self.names([skill_alpha, prompt_alpha, user], prompt_alpha),
+                         [("user", True)])
+        self.assertEqual(self.names([skill_alpha, prompt_alpha, user], skill_alpha), [])
+
+    def test_whitespace_around_a_ref_is_tolerated(self) -> None:
+        dep = make_entry("dep")
+        user = make_entry("user", requires=["skill: dep"])
+        self.assertEqual(self.names([dep, user], dep), [("user", True)])
+
+    def test_a_malformed_ref_is_skipped_without_warning(self) -> None:
+        # It cannot name anything, and the entry that owns it already reports it as
+        # unresolved when that entry is the subject. Warning here would emit noise about
+        # an unrelated entry every time any entry is shown.
+        dep = make_entry("dep")
+        user = make_entry("user", requires=["dep"])
+        with captured_warnings() as msgs:
+            self.assertEqual(self.names([dep, user], dep), [])
+        self.assertEqual(msgs, [])
+
+    def test_only_the_entries_passed_in_are_searched(self) -> None:
+        # Callers pass the target's own catalog (D9). A ref in another catalog naming this
+        # name resolves to that catalog's copy or dangles, so counting it would overstate
+        # the blast radius across a boundary `use` never crosses.
+        dep = make_entry("dep")
+        same_catalog = make_entry("same", requires=["skill:dep"])
+        other_catalog = make_entry("other", requires=["skill:dep"])
+        self.assertEqual(self.names([dep, same_catalog], dep), [("same", True)])
+        self.assertNotIn("other", [n for n, _ in self.names([dep, same_catalog], dep)])
+        # Passed in, it is found — proving the scoping is the caller's choice, not luck.
+        self.assertEqual(
+            self.names([dep, same_catalog, other_catalog], dep),
+            [("other", True), ("same", True)],
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Install directories and the CWD-anchoring contract (R18.3)
 #

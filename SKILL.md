@@ -109,7 +109,7 @@ Never say "PR opened" unless `mode == "pr"` **and** `method == "gh"`. Claiming a
 | `/library uninstall <name>` | Delete the installed copy from this machine (the catalog entry is kept)               |
 | `/library remove <name>`    | Remove from a catalog (same three modes); optionally purge local                       |
 | `/library list`             | Show full catalog with install status                                                 |
-| `/library show <name>`      | Everything about one entry: copies, overrides, deps, source, installs                 |
+| `/library show <name>`      | Everything about one entry: copies, overrides, deps, dependents, source, installs     |
 | `/library sync`             | Re-pull all installed items from source                                               |
 | `/library setup <name>`     | Report an installed skill's setup manifest + prerequisite state (never executes it)   |
 | `/library search <keyword>` | Find entries by keyword                                                               |
