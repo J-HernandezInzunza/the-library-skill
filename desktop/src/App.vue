@@ -350,6 +350,16 @@ button:disabled {
   cursor: not-allowed;
 }
 
+/* The surface a section's content sits on. Global because it is the thing that makes the
+   page read as grouped: "On this machine", "Catalogs holding this name", and "Required by"
+   each had one and Source and Install did not, so those two read as loose text between
+   grouped blocks rather than as sections of their own. */
+.card {
+  padding: 0.7rem 0.85rem;
+  border-radius: 8px;
+  background: rgba(128, 128, 128, 0.08);
+}
+
 /* Every full-screen view's root. Global rather than repeated per component because the
    whole point is that the views agree: five of them had drifted to three different
    paddings, so the header visibly shifted as you navigated between them. */

@@ -575,6 +575,25 @@ A scope wins where both describe the same copy, because it is the half that prov
 there now. A receipt no scope resolves is still shown — previously invisible — but offers no
 Remove, since `--scope` would reach a different destination.
 
+**Every section's content sits on a card** (`.card`, global in `App.vue`), or on a list of them.
+"On this machine", "Catalogs holding this name", and "Required by" each had one while Source and
+Install did not, so those two read as loose text drifting between grouped blocks. The card is what
+makes the page scan as sections rather than as a column of headings.
+
+**The install button is described by the plan, not by a boolean.** "Install globally" over a
+destination the same panel has just labelled *already installed* is the page disagreeing with
+itself, one section below the badge fix. `describeInstallAction` returns the label and a caution
+that is **per state**, because one blanket "this overwrites your local edits" is false for the
+common case: `installed` means the copy matches its receipt, so there is nothing of the user's to
+lose, and saying otherwise trains people to click through a warning that never meant anything.
+`untracked` is the case that deserves the sentence — the tool has no record of what is in that copy
+— and `drifted` already has its own acknowledgement gate (T3.1) rather than a second warning.
+
+**A level you did not walk through is not one you walk back out of.** Arriving at a catalog from an
+entry's "Edit this entry in …" hand-off, Back means *that entry*, not the registry the user never
+visited. `Catalogs` tracks whether it was opened at a catalog or navigated to one, and the flag
+clears the moment the user moves within the view.
+
 That row's `dest` also removed a whole control: `--from` accepts a **base directory** as well as a
 scope name, so a copy outside the anchor is pushed with `--from <parent of dest>`. The project
 directory picker and the `LIBRARY_CWD` anchoring in `push` are both gone — the receipt already

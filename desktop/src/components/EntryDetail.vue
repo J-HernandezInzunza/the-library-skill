@@ -175,10 +175,12 @@ watch(() => props.name, load, { immediate: true });
       />
 
       <h3 class="entry-detail__section">Source</h3>
-      <p class="entry-detail__origin">{{ origin }}</p>
-      <p v-if="detail.source.file_path" class="entry-detail__path">
-        {{ detail.source.file_path }}
-      </p>
+      <div class="card">
+        <p class="entry-detail__origin">{{ origin }}</p>
+        <p v-if="detail.source.file_path" class="entry-detail__path">
+          {{ detail.source.file_path }}
+        </p>
+      </div>
 
       <h3 class="entry-detail__section">
         Catalogs holding this name ({{ detail.copies.length }})

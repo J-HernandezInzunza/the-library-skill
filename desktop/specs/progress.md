@@ -1796,3 +1796,49 @@ is the point of sharing the function.
 **Also fixed:** `.danger` is now a global button style beside `.ghost`. The catalog manager had
 styled its Remove red from a component-local rule while the entry page left the identical action
 looking like every other button — the same drift `.ghost` was made global to stop.
+
+---
+
+## T4.5b — three things from the restructured page
+
+**Source and Install had no card.** Every other section sat on one, so those two read as loose
+text drifting between grouped blocks. `.card` is global now, beside `.view` and `.ghost`, for the
+same reason those are: it is the thing that makes the page scan as sections rather than as a
+column of headings.
+
+Deliberately **not guarded**, unlike the page header. A source check would have to recognise "a
+heading followed by a card *or* a list of cards", and the existing list items each carry the same
+surface inline — so the honest options were a brittle regex or refactoring six components that
+already look right. This one is verified by eye, and that is written down rather than implied.
+
+**"Install globally" sat directly under a row the same panel had labelled *already installed*.**
+The page disagreeing with itself again, one section below the badge fix that prompted the last
+pass. `describeInstallAction` derives the label from the plan: *Reinstall* when every destination
+already holds a copy, *Install* while any is still new — a dependency being present does not make
+installing the entry a reinstall.
+
+**The caution is per state, and this is the part worth arguing.** The obvious version is one line:
+"reinstalling overwrites any local edits". That sentence is **false for the most common case**.
+`installed` means the copy matches its receipt — there are no local edits, by definition — so the
+warning would fire constantly while never being true, which is exactly how a warning stops being
+read. The three states get three answers:
+
+| State | What the panel says |
+| --- | --- |
+| `installed` | "Every copy already matches its source, so this only changes anything if the source has moved on since." |
+| `untracked` | "Put there by hand, so the tool has no record of what is in it. Reinstalling replaces it with the source's version." |
+| `drifted` | Nothing here — it already has the blocking acknowledgement from T3.1 |
+
+Pinned by a test asserting the clean case does **not** mention edits, so the tempting simplification
+fails rather than quietly shipping.
+
+**Back skipped a level.** From an entry's *Edit this entry in personal*, Back said "Catalogs",
+went to the registry, and only a *second* Back returned to the entry — a level the user had never
+visited, inserted into their way out. `Catalogs` now tracks whether it was **opened at** a catalog
+or **navigated to** one: opened at, Back belongs to whoever opened it; navigated to, Back is the
+registry. The flag clears inside `goTo`, so moving within the view hands ownership back, and it
+cannot be set in only some of the paths because `goTo` is the only place the open catalog changes.
+
+Worth naming as a class: this is the third navigation bug in this area (the Back *label* in T4.4a,
+the lost level in T4.4c), and all three came from a child view holding navigation state the parent
+also had an opinion about. Each was found by walking the app, none by the gate.

@@ -627,6 +627,62 @@ export function describePush(report: PushReport): PushOutcome {
   };
 }
 
+/** What the install button should say, and what it should warn about first. */
+export interface InstallAction {
+  label: string;
+  /** What this install would do to what is already at the destinations, or null. */
+  caution: string | null;
+}
+
+/**
+ * The install button, described by the plan rather than by "is it installed somewhere".
+ *
+ * "Install globally" over a destination the same panel has just labelled *already
+ * installed* is the page disagreeing with itself, which is what the badge fix was about
+ * one section up.
+ *
+ * The caution is deliberately **per state** rather than one blanket "this overwrites your
+ * edits", because that sentence is false for the most common case and crying wolf is how a
+ * warning stops being read:
+ *
+ * - `installed` — the copy matches its receipt, so there are no local edits to lose. Saying
+ *   otherwise would train people to click through a warning that never meant anything.
+ * - `untracked` — the tool has no record of what is in it, so it genuinely cannot promise
+ *   anything about what a reinstall replaces. This is the case that deserves the sentence.
+ * - `drifted` — handled by `blocked` and its acknowledgement (T3.1); not repeated here.
+ */
+export function describeInstallAction(plan: InstallPlan, scope: string): InstallAction {
+  const where = scope === "project" ? "into project" : "globally";
+  const present = plan.items.filter((item) => item.install.state !== "not_installed");
+  const untracked = plan.items.filter((item) => item.install.state === "untracked");
+
+  // Nothing is there yet: a plain install, and nothing to caution about.
+  if (!present.length) return { label: `Install ${where}`, caution: null };
+
+  const everything = present.length === plan.items.length;
+  const label = everything ? `Reinstall ${where}` : `Install ${where}`;
+
+  if (untracked.length) {
+    return {
+      label,
+      caution:
+        untracked.length === 1
+          ? "One copy was put there by hand, so the tool has no record of what is in it. Reinstalling replaces it with the source's version."
+          : `${untracked.length} copies were put there by hand, so the tool has no record of what is in them. Reinstalling replaces them with the source's version.`,
+    };
+  }
+
+  if (everything) {
+    return {
+      label,
+      caution:
+        "Every copy already matches its source, so this only changes anything if the source has moved on since.",
+    };
+  }
+
+  return { label, caution: null };
+}
+
 /**
  * A one-line summary of what an install changed, mirroring the CLI's own wording.
  *

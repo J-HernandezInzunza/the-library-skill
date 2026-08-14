@@ -2,7 +2,12 @@
 import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { describeDestState, installPlan, summarizeChanges } from "../catalog";
+import {
+  describeDestState,
+  describeInstallAction,
+  installPlan,
+  summarizeChanges,
+} from "../catalog";
 import { withActivity } from "../commandActivity";
 import { recentProjects, rememberProject } from "../recentProjects";
 import { describeAppError, type UsePreview, type UseReport } from "../types";
@@ -53,6 +58,13 @@ const plan = computed(() => {
   if (!preview.value) return null;
   return installPlan(preview.value, props.name);
 });
+
+/** What the button says and what it warns about, both derived from the plan. */
+const action = computed(() =>
+  plan.value
+    ? describeInstallAction(plan.value, scope.value)
+    : { label: "Install", caution: null },
+);
 
 /** The catalog `overrides` refers to — the requested entry's, never a dependency's. */
 const winningCatalog = computed(
@@ -117,135 +129,141 @@ watch([() => props.name, scope], () => {
     <h3 class="install-preview__heading">
       {{ installed ? "Install elsewhere, or refresh a copy" : "Install" }}
     </h3>
+    <div class="card">
 
-    <StatusBanner v-if="error" kind="error" :detail="error" />
+      <StatusBanner v-if="error" kind="error" :detail="error" />
 
-    <div class="install-preview__scopes">
-      <label><input v-model="scope" type="radio" value="global" /> Globally</label>
-      <label><input v-model="scope" type="radio" value="project" /> Into a project</label>
-    </div>
+      <div class="install-preview__scopes">
+        <label><input v-model="scope" type="radio" value="global" /> Globally</label>
+        <label><input v-model="scope" type="radio" value="project" /> Into a project</label>
+      </div>
 
-    <div v-if="scope === 'project'" class="install-preview__project">
-      <button
-        type="button"
-        :class="{ ghost: !needsDirectory }"
-        @click="pickDirectory()"
-      >
-        {{ projectDir ? "Choose another…" : "Choose a directory…" }}
-      </button>
-      <code v-if="projectDir" class="install-preview__dir">{{ projectDir }}</code>
-
-      <ul v-if="recents.length" class="install-preview__recents">
-        <li v-for="dir in recents" :key="dir">
-          <button
-            type="button"
-            class="install-preview__recent"
-            :class="{ 'install-preview__recent--current': dir === projectDir }"
-            @click="chooseDirectory(dir)"
-          >
-            {{ dir }}
-          </button>
-        </li>
-      </ul>
-    </div>
-
-    <button
-      type="button"
-      class="ghost"
-      :disabled="loading || needsDirectory"
-      @click="runPreview()"
-    >
-      {{ plan ? "Re-check" : "Preview install" }}
-    </button>
-    <!-- A disabled control with no stated reason reads as a broken one. -->
-    <p v-if="needsDirectory" class="install-preview__blocked">
-      Choose a directory first — a project install resolves against it, so there is no
-      destination to preview yet.
-    </p>
-
-    <Busy v-if="loading" inline label="Resolving the destination…" />
-
-    <template v-if="plan">
-      <p v-if="plan.blocked" class="install-preview__warning">
-        Installing overwrites local edits that the tool did not make. The edited copies
-        are marked below; they cannot be recovered afterwards.
-      </p>
-
-      <p class="install-preview__scope">
-        {{ preview?.scope }} · nothing has been written
-        <span v-if="preview?.overrides.length">
-          · installing the {{ winningCatalog }} copy, over {{ preview.overrides.join(", ") }}
-        </span>
-      </p>
-
-      <ul class="install-preview__plan fade-in">
-        <li
-          v-for="item in plan.items"
-          :key="item.install.dest"
-          class="install-preview__item"
-          :class="{ 'install-preview__item--drifted': item.drifted }"
+      <div v-if="scope === 'project'" class="install-preview__project">
+        <button
+          type="button"
+          :class="{ ghost: !needsDirectory }"
+          @click="pickDirectory()"
         >
-          <span class="install-preview__item-head">
-            <strong>{{ item.install.name }}</strong>
-            <span v-if="!item.target" class="install-preview__role">dependency</span>
-            <span
-              class="install-preview__state"
-              :class="{ 'install-preview__state--drifted': item.drifted }"
+          {{ projectDir ? "Choose another…" : "Choose a directory…" }}
+        </button>
+        <code v-if="projectDir" class="install-preview__dir">{{ projectDir }}</code>
+
+        <ul v-if="recents.length" class="install-preview__recents">
+          <li v-for="dir in recents" :key="dir">
+            <button
+              type="button"
+              class="install-preview__recent"
+              :class="{ 'install-preview__recent--current': dir === projectDir }"
+              @click="chooseDirectory(dir)"
             >
-              {{ describeDestState(item.install.state) }}
-            </span>
-          </span>
-          <code class="install-preview__dest">{{ item.install.dest }}</code>
-        </li>
-      </ul>
-
-      <label v-if="plan.blocked" class="install-preview__ack">
-        <input v-model="acknowledged" type="checkbox" />
-        Overwrite {{ plan.drifted.length }} locally edited
-        {{ plan.drifted.length === 1 ? "copy" : "copies" }}, discarding those edits.
-      </label>
+              {{ dir }}
+            </button>
+          </li>
+        </ul>
+      </div>
 
       <button
         type="button"
-        class="install-preview__go"
-        :disabled="!canInstall"
-        @click="install()"
+        class="ghost"
+        :disabled="loading || needsDirectory"
+        @click="runPreview()"
       >
-        {{ scope === "project" ? "Install into project" : "Install globally" }}
+        {{ plan ? "Re-check" : "Preview install" }}
       </button>
-      <Busy v-if="installing" inline label="Fetching and writing files…" />
-    </template>
-
-    <template v-if="report">
-      <p class="install-preview__done fade-in">
-        Installed {{ report.installed.length }}
-        {{ report.installed.length === 1 ? "item" : "items" }}.
+      <!-- A disabled control with no stated reason reads as a broken one. -->
+      <p v-if="needsDirectory" class="install-preview__blocked">
+        Choose a directory first — a project install resolves against it, so there is no
+        destination to preview yet.
       </p>
 
-      <p v-if="unverified.length" class="install-preview__warning">
-        {{ unverified.map((item) => item.name).join(", ") }} landed, but the main file the
-        catalog expects is not there. The copy is on disk; the catalog entry needs fixing.
-      </p>
+      <Busy v-if="loading" inline label="Resolving the destination…" />
 
-      <ul class="install-preview__plan fade-in">
-        <li
-          v-for="item in report.installed"
-          :key="item.dest"
-          class="install-preview__item"
-        >
-          <span class="install-preview__item-head">
-            <strong>{{ item.name }}</strong>
-            <span class="install-preview__state">{{ summarizeChanges(item.changes) }}</span>
+      <template v-if="plan">
+        <!-- Per state, not a blanket warning: "this overwrites your edits" is false for a
+             clean copy, and a warning that cries wolf stops being read. -->
+        <p v-if="action.caution" class="install-preview__caution">{{ action.caution }}</p>
+
+        <p v-if="plan.blocked" class="install-preview__warning">
+          Installing overwrites local edits that the tool did not make. The edited copies
+          are marked below; they cannot be recovered afterwards.
+        </p>
+
+        <p class="install-preview__scope">
+          {{ preview?.scope }} · nothing has been written
+          <span v-if="preview?.overrides.length">
+            · installing the {{ winningCatalog }} copy, over {{ preview.overrides.join(", ") }}
           </span>
-          <code class="install-preview__dest">{{ item.dest }}</code>
-          <ul v-if="!item.changes.new_install" class="install-preview__files">
-            <li v-for="file in item.changes.modified" :key="`~${file}`">~ {{ file }}</li>
-            <li v-for="file in item.changes.added" :key="`+${file}`">+ {{ file }}</li>
-            <li v-for="file in item.changes.removed" :key="`-${file}`">- {{ file }}</li>
-          </ul>
-        </li>
-      </ul>
-    </template>
+        </p>
+
+        <ul class="install-preview__plan fade-in">
+          <li
+            v-for="item in plan.items"
+            :key="item.install.dest"
+            class="install-preview__item"
+            :class="{ 'install-preview__item--drifted': item.drifted }"
+          >
+            <span class="install-preview__item-head">
+              <strong>{{ item.install.name }}</strong>
+              <span v-if="!item.target" class="install-preview__role">dependency</span>
+              <span
+                class="install-preview__state"
+                :class="{ 'install-preview__state--drifted': item.drifted }"
+              >
+                {{ describeDestState(item.install.state) }}
+              </span>
+            </span>
+            <code class="install-preview__dest">{{ item.install.dest }}</code>
+          </li>
+        </ul>
+
+        <label v-if="plan.blocked" class="install-preview__ack">
+          <input v-model="acknowledged" type="checkbox" />
+          Overwrite {{ plan.drifted.length }} locally edited
+          {{ plan.drifted.length === 1 ? "copy" : "copies" }}, discarding those edits.
+        </label>
+
+        <button
+          type="button"
+          class="install-preview__go"
+          :disabled="!canInstall"
+          @click="install()"
+        >
+          {{ action.label }}
+        </button>
+        <Busy v-if="installing" inline label="Fetching and writing files…" />
+      </template>
+
+      <template v-if="report">
+        <p class="install-preview__done fade-in">
+          Installed {{ report.installed.length }}
+          {{ report.installed.length === 1 ? "item" : "items" }}.
+        </p>
+
+        <p v-if="unverified.length" class="install-preview__warning">
+          {{ unverified.map((item) => item.name).join(", ") }} landed, but the main file the
+          catalog expects is not there. The copy is on disk; the catalog entry needs fixing.
+        </p>
+
+        <ul class="install-preview__plan fade-in">
+          <li
+            v-for="item in report.installed"
+            :key="item.dest"
+            class="install-preview__item"
+          >
+            <span class="install-preview__item-head">
+              <strong>{{ item.name }}</strong>
+              <span class="install-preview__state">{{ summarizeChanges(item.changes) }}</span>
+            </span>
+            <code class="install-preview__dest">{{ item.dest }}</code>
+            <ul v-if="!item.changes.new_install" class="install-preview__files">
+              <li v-for="file in item.changes.modified" :key="`~${file}`">~ {{ file }}</li>
+              <li v-for="file in item.changes.added" :key="`+${file}`">+ {{ file }}</li>
+              <li v-for="file in item.changes.removed" :key="`-${file}`">- {{ file }}</li>
+            </ul>
+          </li>
+        </ul>
+      </template>
+    </div>
   </section>
 </template>
 
@@ -259,6 +277,12 @@ watch([() => props.name, scope], () => {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   opacity: 0.5;
+}
+.install-preview__caution {
+  margin: 0.5rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  opacity: 0.75;
 }
 .install-preview__warning {
   margin: 0.75rem 0 0;

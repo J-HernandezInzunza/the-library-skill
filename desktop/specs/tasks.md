@@ -589,6 +589,21 @@ leaves the entry reinstallable, `remove` does not, so the same dependent list me
     `installedCopies` executed against a live `show` payload. Gate passes.
   - **Commit:** `feat(desktop): act on the copy you can see, not on a scope you re-pick`
 
+- [x] **T4.5b — Cards, an honest install button, and a back button that skipped a level**
+  - **Files:** `desktop/src/App.vue`, `desktop/src/catalog.ts`,
+    `desktop/src/components/{EntryDetail,InstallPreview,Catalogs}.vue`
+  - **Requirements:** D21
+  - **Do:** Give Source and Install the same `.card` surface every other section already had,
+    promoted to a global class. Replace the fixed "Install globally" with
+    `describeInstallAction`, which says *Reinstall* when every destination already holds a
+    copy and cautions **per state** rather than with one blanket overwrite warning that is
+    false for a clean copy. Fix the hand-off's Back: arriving at a catalog from an entry's
+    detail page made Back go to the registry the user never visited, and only the *second*
+    Back returned to the entry.
+  - **Verify:** A clean reinstall's caution does not mention edits; a hand-made copy's does.
+    Back from a handed-off edit form returns to the entry in one press. Gate passes.
+  - **Commit:** `feat(desktop): card every section, and stop back skipping a level`
+
 - [ ] **T4.6 — Registering and unregistering catalogs**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/components/Catalogs.vue`
   - **Requirements:** R4.7, D16, D18

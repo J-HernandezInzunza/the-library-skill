@@ -14,6 +14,7 @@ import {
   editableCatalogs,
   editableCopies,
   describeCatalog,
+  describeInstallAction,
   describePush,
   entryEdits,
   installedCopies,
@@ -236,28 +237,30 @@ describe("dependencies", () => {
   });
 });
 
+/** One destination in a plan. Shared, because two suites reason about the same payload. */
+function planned(overrides: Partial<PlannedInstall> = {}): PlannedInstall {
+  const name = overrides.name ?? "bug-investigator";
+  return {
+    type: "skill",
+    name,
+    catalog: "personal",
+    dest: `/Users/dev/.claude/skills/${name}`,
+    state: "not_installed",
+    ...overrides,
+  };
+}
+
+function preview(would_install: PlannedInstall[]): UsePreview {
+  return {
+    status: "OK",
+    scope: "global",
+    overrides: [],
+    overridden_by: null,
+    would_install,
+  };
+}
+
 describe("installPlan", () => {
-  function planned(overrides: Partial<PlannedInstall> = {}): PlannedInstall {
-    return {
-      type: "skill",
-      name: "bug-investigator",
-      catalog: "personal",
-      dest: "/Users/dev/.claude/skills/bug-investigator",
-      state: "not_installed",
-      ...overrides,
-    };
-  }
-
-  function preview(would_install: PlannedInstall[]): UsePreview {
-    return {
-      status: "OK",
-      scope: "global",
-      overrides: [],
-      overridden_by: null,
-      would_install,
-    };
-  }
-
   it("marks the requested entry apart from the dependencies it drags in", () => {
     const plan = installPlan(
       preview([planned(), planned({ name: "triage-bug", type: "prompt" })]),
@@ -901,5 +904,65 @@ describe("installedCopies", () => {
 
   it("reports nothing for an entry that is not installed", () => {
     expect(installedCopies([], [])).toEqual([]);
+  });
+});
+
+describe("describeInstallAction", () => {
+  /** A plan over destinations in the given states, target last as the CLI emits it. */
+  function planOf(...states: string[]) {
+    return installPlan(
+      preview(
+        states.map((state, i) =>
+          planned({ name: i === states.length - 1 ? "a-skill" : `dep-${i}`, state }),
+        ),
+      ),
+      "a-skill",
+    );
+  }
+
+  it("is a plain install when nothing is there yet", () => {
+    const action = describeInstallAction(planOf("not_installed"), "global");
+
+    expect(action.label).toBe("Install globally");
+    expect(action.caution).toBeNull();
+  });
+
+  it("says reinstall when every destination already holds a copy", () => {
+    // "Install globally" over a destination the same panel labels "already installed" is
+    // the page disagreeing with itself.
+    const action = describeInstallAction(planOf("installed"), "global");
+
+    expect(action.label).toBe("Reinstall globally");
+  });
+
+  it("does not claim a clean reinstall would lose local edits", () => {
+    // The blanket warning would be false here: `installed` means the copy matches its
+    // receipt, so there is nothing of the user's to lose. Crying wolf is how a warning
+    // stops being read.
+    const action = describeInstallAction(planOf("installed"), "global");
+
+    expect(action.caution).not.toContain("edits");
+    expect(action.caution).toContain("moved on");
+  });
+
+  it("warns about a hand-made copy, which is the case that deserves it", () => {
+    const action = describeInstallAction(planOf("untracked"), "global");
+
+    expect(action.caution).toContain("by hand");
+    expect(action.caution).toContain("replaces it");
+  });
+
+  it("stays an install while any destination is still new", () => {
+    // A dependency already present does not make installing the entry a reinstall.
+    const action = describeInstallAction(planOf("installed", "not_installed"), "global");
+
+    expect(action.label).toBe("Install globally");
+    expect(action.caution).toBeNull();
+  });
+
+  it("names the project scope in its label", () => {
+    expect(describeInstallAction(planOf("not_installed"), "project").label).toBe(
+      "Install into project",
+    );
   });
 });

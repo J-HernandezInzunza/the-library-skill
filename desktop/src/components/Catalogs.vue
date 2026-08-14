@@ -38,6 +38,17 @@ const emit = defineEmits<{
 type Panel = { name: string; mode: "edit" | "remove" };
 
 const openCatalog = ref<string | null>(props.atCatalog ?? null);
+
+/**
+ * True while the view is sitting on a catalog it was *opened at* rather than navigated to.
+ *
+ * Back has to mean "where I came from", and for a hand-off from an entry's detail page that
+ * is the entry — not the registry. Without this the entry page's "Edit this entry in …"
+ * button led to a form whose Back went to a list of catalogs the user had never visited,
+ * and only the *second* Back returned to the entry. A level the user did not walk through
+ * is not a level they should have to walk back out of.
+ */
+const arrivedHere = ref(!!props.atCatalog);
 /**
  * The single open panel.
  *
@@ -85,7 +96,16 @@ function isOpen(name: string, mode: Panel["mode"]): boolean {
 function goTo(id: string | null) {
   openCatalog.value = id;
   panel.value = null;
+  // Navigating within the view means the registry *is* now behind us, so Back stops
+  // belonging to whoever opened it.
+  arrivedHere.value = false;
   emit("navigate", id);
+}
+
+/** Back out of a catalog: to the caller when we were dropped here, else to the registry. */
+function leaveCatalog() {
+  if (arrivedHere.value) emit("close");
+  else goTo(null);
 }
 
 // A catalog that stops being available under us must not leave the view pointing at it.
@@ -181,7 +201,11 @@ watch(
 
     <!-- Level 2: one catalog's entries, each row carrying its own actions. -->
     <template v-else>
-      <PageHeader :title="openCatalog" back="Catalogs" @back="goTo(null)">
+      <PageHeader
+        :title="openCatalog"
+        :back="arrivedHere ? backTo : 'Catalogs'"
+        @back="leaveCatalog()"
+      >
         <template #actions>
           <button type="button" class="ghost" @click="emit('add', openCatalog)">
             Add an entry
