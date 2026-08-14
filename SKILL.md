@@ -113,6 +113,7 @@ Never say "PR opened" unless `mode == "pr"` **and** `method == "gh"`. Claiming a
 | `/library sync`             | Re-pull all installed items from source                                               |
 | `/library setup <name>`     | Report an installed skill's setup manifest + prerequisite state (never executes it)   |
 | `/library search <keyword>` | Find entries by keyword                                                               |
+| `/library suggest-source <path>` | The source URL teammates could use for a file on this machine (reads no catalog) |
 | `/library catalog <action>` | Manage the catalog registry: `list`, `add`, `init`, `remove`, `migrate`                |
 | `/library doctor`           | Validate config + catalog integrity (`--deep` checks sources)                          |
 
@@ -160,8 +161,10 @@ suggested when the file lives in a git repo), with `--allow-local` as the escape
 one to a **local** catalog needs no flag, because nobody else pulls that catalog. Don't offer
 `--allow-local` when the destination is local — there is nothing to override. When a user says
 "add this file" and the destination is the shared catalog, convert the path to its repo URL
-rather than recording a local path — see [cookbook/add.md](cookbook/add.md). `doctor` warns
-about local sources it finds in a remote catalog.
+rather than recording a local path: run `library suggest-source <path> --json`, which derives
+it from the file's own git remote and says why when it can't. Never assemble that URL from raw
+`git` calls yourself — see [cookbook/add.md](cookbook/add.md). `doctor` warns about local
+sources it finds in a remote catalog.
 
 ## Typed Dependencies
 

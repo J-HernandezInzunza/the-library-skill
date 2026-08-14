@@ -1280,31 +1280,53 @@ def _remote_web(clone_url: str) -> tuple[str, str, str] | None:
 def _suggest_remote_for_local(path: Path | None) -> str | None:
     """If *path* sits inside a git repo with a GitHub/Bitbucket origin, build the
     browser URL teammates could use as the source. Returns None if not derivable."""
+    return _remote_suggestion(path)[0]
+
+
+def _remote_suggestion(path: Path | None) -> tuple["str | None", str]:
+    """(browser URL, why not) for *path*, so a caller can explain a miss (R17.1).
+
+    Split out from `_suggest_remote_for_local` because a hint appended to an error
+    message needs only the URL, while `suggest-source` has to answer "why is there no
+    suggestion?" — the four misses below are different problems with different fixes,
+    and a bare None makes them all look like "not in a repo".
+
+    A directory resolves to the main file inside it: a URL naming a directory is a
+    `/tree/` link, not the `/blob/` link a source has to be, and pointing `add` at a
+    directory is already the mistake that installs the wrong tree.
+    """
     if path is None:
-        return None
-    d = path if path.is_dir() else path.parent
-    root = subprocess.run(["git", "-C", str(d), "rev-parse", "--show-toplevel"],
+        return None, "no path given"
+    if path.is_dir():
+        main = next((path / n for n in ("SKILL.md", "AGENT.md") if (path / n).is_file()), None)
+        if main is None:
+            return None, f"{path} is a directory with no SKILL.md or AGENT.md to point at"
+        path = main
+
+    root = subprocess.run(["git", "-C", str(path.parent), "rev-parse", "--show-toplevel"],
                           capture_output=True, text=True)
     if root.returncode != 0:
-        return None
+        return None, "not inside a git repository"
     repo_root = Path(root.stdout.strip())
     origin = subprocess.run(["git", "-C", str(repo_root), "remote", "get-url", "origin"],
                             capture_output=True, text=True)
-    web = _remote_web(origin.stdout.strip()) if origin.returncode == 0 else None
+    if origin.returncode != 0:
+        return None, f"{repo_root} has no 'origin' remote"
+    web = _remote_web(origin.stdout.strip())
     if not web:
-        return None
+        return None, f"origin is not a GitHub or Bitbucket remote ({origin.stdout.strip()})"
     host, owner, repo = web
     branch = subprocess.run(["git", "-C", str(repo_root), "rev-parse", "--abbrev-ref", "HEAD"],
                             capture_output=True, text=True).stdout.strip() or "main"
     try:
         rel = path.resolve().relative_to(repo_root.resolve()).as_posix()
     except ValueError:
-        return None
+        return None, f"{path} is outside {repo_root}"
     if host == "bitbucket.org":
-        return f"https://bitbucket.org/{owner}/{repo}/src/{branch}/{rel}"
+        return f"https://bitbucket.org/{owner}/{repo}/src/{branch}/{rel}", ""
     if host == "github.com":
-        return f"https://github.com/{owner}/{repo}/blob/{branch}/{rel}"
-    return None
+        return f"https://github.com/{owner}/{repo}/blob/{branch}/{rel}", ""
+    return None, f"no browser URL format known for {host}"
 
 
 # --------------------------------------------------------------------------- #
@@ -3240,6 +3262,44 @@ def _load_batch_file(path_str: str) -> list[dict[str, Any]]:
     return items
 
 
+def cmd_suggest_source(args: argparse.Namespace) -> int:
+    """Turn a path on this machine into the source URL a teammate could resolve.
+
+    The logic already existed, reachable only as a hint appended to the error that
+    refuses a local-path source. That is the wrong shape for two of the three front
+    doors: a GUI never sees stderr, and an agent should be able to ask the question
+    before proposing an `add` rather than after being refused.
+
+    No catalog is read and nothing is written — this only inspects the given path and
+    its git remote, so it works before any catalog is registered.
+    """
+    path = Path(args.path).expanduser()
+    if not path.exists():
+        die(f"no such path: {args.path}")
+
+    suggestion, reason = _remote_suggestion(path)
+    status = "OK" if suggestion else "NONE"
+
+    if args.json:
+        # Exit 0 either way: "this file is not in a GitHub repo" is an answer, not a
+        # failure, and a caller that got a straight answer should not have to branch on
+        # an exit code to read it.
+        print(json.dumps({
+            "status": status,
+            "path": str(path.resolve()),
+            "suggestion": suggestion,
+            "reason": reason or None,
+        }, indent=2))
+        return 0
+
+    if suggestion:
+        # The URL alone, so it can be piped straight into `add --source "$(...)"`.
+        print(suggestion)
+    else:
+        print(f"No source URL could be derived: {reason}")
+    return 0
+
+
 def cmd_add(args: argparse.Namespace) -> int:
     # Read the request before touching the catalog. Single-add is a batch of one, so both
     # paths share the same edit -> verify -> one write flow below.
@@ -4838,6 +4898,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-pull", action="store_true")
     add_catalog_flag(sp)
     sp.set_defaults(func=cmd_add)
+
+    sp = sub.add_parser("suggest-source",
+                        help="the source URL teammates could use for a path on this machine")
+    sp.add_argument("path", help="a file (or a skill directory) inside a git repo")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_suggest_source)
 
     sp = sub.add_parser("remove", help="remove an entry from the catalog (opens a PR)")
     sp.add_argument("name")

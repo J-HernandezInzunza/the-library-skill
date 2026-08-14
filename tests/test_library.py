@@ -1199,6 +1199,160 @@ class TestRemoteWeb(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
+# Source suggestion from a local path
+# --------------------------------------------------------------------------- #
+
+class TestRemoteSuggestion(unittest.TestCase):
+    """`_remote_suggestion` and the `suggest-source` command it backs.
+
+    Every repo here has a *local* bare origin, so the URL is derived from a real git
+    remote with no network involved.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.mkdtemp(prefix="library-suggest-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _repo(self, origin: str, *, branch: str = "main") -> TempGitRepo:
+        repo = TempGitRepo(self.tmp, name="work", branch=branch)
+        repo.git("remote", "set-url", "origin", origin)
+        return repo
+
+    def test_a_file_in_a_github_repo_gets_a_blob_url(self) -> None:
+        repo = self._repo("git@github.com:acme/tools.git")
+        repo.commit("skills/grilling/SKILL.md", "# Grilling\n")
+
+        url, reason = library._remote_suggestion(repo.work / "skills/grilling/SKILL.md")
+
+        self.assertEqual(
+            url, "https://github.com/acme/tools/blob/main/skills/grilling/SKILL.md")
+        self.assertEqual(reason, "")
+
+    def test_bitbucket_uses_src_rather_than_blob(self) -> None:
+        repo = self._repo("git@bitbucket.org:acme/tools.git")
+        repo.commit("prompts/triage.md", "# Triage\n")
+
+        url, _ = library._remote_suggestion(repo.work / "prompts/triage.md")
+
+        self.assertEqual(url, "https://bitbucket.org/acme/tools/src/main/prompts/triage.md")
+
+    def test_the_checked_out_branch_is_used_not_a_hardcoded_main(self) -> None:
+        repo = self._repo("git@github.com:acme/tools.git", branch="develop")
+        repo.commit("a.md", "x\n")
+
+        url, _ = library._remote_suggestion(repo.work / "a.md")
+
+        self.assertIn("/blob/develop/", url or "")
+
+    def test_a_skill_directory_resolves_to_the_file_inside_it(self) -> None:
+        # A URL naming a directory is a /tree/ link, which is not a source. Pointing at
+        # the folder is also the mistake that makes `use` install the wrong tree.
+        repo = self._repo("git@github.com:acme/tools.git")
+        repo.commit("skills/grilling/SKILL.md", "# Grilling\n")
+
+        url, _ = library._remote_suggestion(repo.work / "skills/grilling")
+
+        self.assertEqual(
+            url, "https://github.com/acme/tools/blob/main/skills/grilling/SKILL.md")
+
+    def test_a_directory_with_no_main_file_says_so(self) -> None:
+        repo = self._repo("git@github.com:acme/tools.git")
+        repo.commit("notes/a.md", "x\n")
+
+        url, reason = library._remote_suggestion(repo.work / "notes")
+
+        self.assertIsNone(url)
+        self.assertIn("no SKILL.md or AGENT.md", reason)
+
+    def test_a_path_outside_any_repo_says_which_problem_it_is(self) -> None:
+        loose = Path(self.tmp) / "loose.md"
+        loose.write_text("x\n")
+
+        url, reason = library._remote_suggestion(loose)
+
+        self.assertIsNone(url)
+        self.assertEqual(reason, "not inside a git repository")
+
+    def test_an_unsupported_host_is_a_different_miss_from_no_repo(self) -> None:
+        # The four misses have different fixes, which is the reason for the reason.
+        repo = self._repo("git@gitlab.com:acme/tools.git")
+        repo.commit("a.md", "x\n")
+
+        url, reason = library._remote_suggestion(repo.work / "a.md")
+
+        self.assertIsNone(url)
+        self.assertIn("gitlab.com", reason)
+
+    def test_the_hint_wrapper_still_returns_just_the_url(self) -> None:
+        # `_refuse_local_source` appends this to an error message and wants only the URL.
+        repo = self._repo("git@github.com:acme/tools.git")
+        repo.commit("a.md", "x\n")
+
+        self.assertEqual(library._suggest_remote_for_local(repo.work / "a.md"),
+                         "https://github.com/acme/tools/blob/main/a.md")
+        self.assertIsNone(library._suggest_remote_for_local(None))
+
+
+class TestSuggestSourceCommand(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.mkdtemp(prefix="library-suggest-cmd-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_json_reports_the_url_and_exits_zero(self) -> None:
+        repo = TempGitRepo(self.tmp, name="work")
+        repo.git("remote", "set-url", "origin", "git@github.com:acme/tools.git")
+        repo.commit("a.md", "x\n")
+
+        code, out, _ = run_cli("suggest-source", str(repo.work / "a.md"), "--json")
+        body = json.loads(out)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(body["status"], "OK")
+        self.assertEqual(body["suggestion"], "https://github.com/acme/tools/blob/main/a.md")
+        self.assertIsNone(body["reason"])
+
+    def test_no_suggestion_is_an_answer_not_a_failure(self) -> None:
+        # Exit 0 on purpose: a caller that got a straight answer should not have to
+        # branch on an exit code to read it.
+        loose = Path(self.tmp) / "loose.md"
+        loose.write_text("x\n")
+
+        code, out, _ = run_cli("suggest-source", str(loose), "--json")
+        body = json.loads(out)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(body["status"], "NONE")
+        self.assertIsNone(body["suggestion"])
+        self.assertEqual(body["reason"], "not inside a git repository")
+
+    def test_human_output_is_the_bare_url_so_it_can_be_piped(self) -> None:
+        repo = TempGitRepo(self.tmp, name="work")
+        repo.git("remote", "set-url", "origin", "git@github.com:acme/tools.git")
+        repo.commit("a.md", "x\n")
+
+        code, out, _ = run_cli("suggest-source", str(repo.work / "a.md"))
+
+        self.assertEqual(code, 0)
+        self.assertEqual(out.strip(), "https://github.com/acme/tools/blob/main/a.md")
+
+    def test_a_path_that_does_not_exist_is_an_error(self) -> None:
+        code, _, err = run_cli("suggest-source", str(Path(self.tmp) / "nope.md"), "--json")
+
+        self.assertEqual(code, 1)
+        self.assertIn("no such path", err)
+
+    def test_it_needs_no_catalog_and_reads_no_config(self) -> None:
+        # Deliberate: the question is answerable before `library init` has ever run.
+        loose = Path(self.tmp) / "loose.md"
+        loose.write_text("x\n")
+        with patch.object(library, "LOCAL_CONFIG_PATH", Path(self.tmp) / "absent.yaml"):
+            code, out, _ = run_cli("suggest-source", str(loose), "--json")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["status"], "NONE")
+
+
+# --------------------------------------------------------------------------- #
 # Dependency resolution (R18.3)
 # --------------------------------------------------------------------------- #
 

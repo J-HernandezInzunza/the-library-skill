@@ -174,6 +174,19 @@ You built a deploy skill in one of your repos. Register it:
   --source https://github.com/yourorg/infra-tools/blob/main/skills/deploy/SKILL.md
 ```
 
+The `--source` has to be a URL **other people can resolve**, not the path on your disk. If
+the file is already in a repo with a GitHub/Bitbucket origin, `library suggest-source`
+derives that URL for you:
+
+```bash
+./library suggest-source ~/dev/infra-tools/skills/deploy/SKILL.md
+# https://github.com/yourorg/infra-tools/blob/main/skills/deploy/SKILL.md
+```
+
+Point it at a skill's folder and it resolves to the `SKILL.md` inside — a source has to
+name a file, and pointing `add` at a directory installs the wrong tree. If it can't derive
+one it says why (no repo, no `origin`, an unsupported host) rather than staying silent.
+
 Adding to the **shared** catalog goes through review: the CLI creates a branch
 (`library/add-deploy-<ts>`), pushes it, and prints a PR URL (or auto-opens the PR if
 `autopush: true` on a GitHub catalog). Once the PR is merged, the entry is in the shared
@@ -249,6 +262,7 @@ Two ways to drive it, same result:
 | Install a skill (global) | "install the deploy skill from the library" | `./library use deploy` |
 | Install into this project | "install deploy just for this project" | `./library use deploy --project` |
 | Add an entry | "add this skill to the library: `<url>`" | `./library add --name … --source … --description …` |
+| Get the source URL for a local file | "what source URL should I use for this skill?" | `./library suggest-source ./skills/deploy/SKILL.md` |
 | Update an entry | "make session-retro also require backend-code-practices" | `./library update session-retro --add-requires skill:backend-code-practices` |
 | Push changes back | "push my deploy changes back to the library" | `./library push deploy` |
 | Uninstall a skill | "uninstall deploy from my machine" | `./library uninstall deploy` |

@@ -39,6 +39,10 @@ show name *args:
 search keyword *args:
     @{{lib}} search "{{keyword}}" {{args}}
 
+# The source URL teammates could use for a file on this machine (--json)
+suggest-source path *args:
+    @{{lib}} suggest-source "{{path}}" {{args}}
+
 # Pull a skill by exact name → ~/.claude/... (global, the default; --catalog <id>)
 use name *args:
     @{{lib}} use "{{name}}" {{args}}
