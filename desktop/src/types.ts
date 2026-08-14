@@ -1,3 +1,18 @@
+/** One `doctor` finding, attributed to a catalog or entry when it belongs to one. */
+export interface DoctorItem {
+  catalog: string | null;
+  entry: string | null;
+  message: string;
+}
+
+/** What `library doctor --json` found. `status` is `OK` or `PROBLEMS`. */
+export interface DoctorReport {
+  status: string;
+  entries: number;
+  errors: DoctorItem[];
+  warnings: DoctorItem[];
+}
+
 /** One catalog's copy of a name, with its place in the override order. */
 export interface CatalogCopy {
   catalog: string;

@@ -9,7 +9,7 @@ pub mod cli;
 pub mod error;
 pub mod events;
 
-use cli::{BootstrapReport, Catalog, Entry, EntryDetail};
+use cli::{BootstrapReport, Catalog, DoctorReport, Entry, EntryDetail};
 use error::AppError;
 
 /// The full catalog with install status — backs the list view.
@@ -26,6 +26,12 @@ fn library_list(app: tauri::AppHandle) -> Result<Vec<Entry>, AppError> {
 #[tauri::command]
 fn entry_show(app: tauri::AppHandle, name: String) -> Result<EntryDetail, AppError> {
     cli::show(&app, &name)
+}
+
+/// Catalog health, including the checks that reach the network when `deep`.
+#[tauri::command]
+fn catalog_doctor(app: tauri::AppHandle, deep: bool) -> Result<DoctorReport, AppError> {
+    cli::doctor(&app, deep)
 }
 
 /// The registered catalogs, for per-catalog browsing and origin display.
@@ -47,6 +53,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             library_list,
             entry_show,
+            catalog_doctor,
             registry_list,
             bootstrap_tool
         ])

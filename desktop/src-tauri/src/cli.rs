@@ -46,6 +46,28 @@ pub struct Entry {
     pub has_setup: bool,
 }
 
+/// What `doctor --json` found. `status` is `OK` or `PROBLEMS`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DoctorReport {
+    pub status: String,
+    #[serde(default)]
+    pub entries: u32,
+    #[serde(default)]
+    pub errors: Vec<DoctorItem>,
+    #[serde(default)]
+    pub warnings: Vec<DoctorItem>,
+}
+
+/// One finding, attributed to a catalog or an entry when it belongs to one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DoctorItem {
+    #[serde(default)]
+    pub catalog: Option<String>,
+    #[serde(default)]
+    pub entry: Option<String>,
+    pub message: String,
+}
+
 /// Everything `show <name> --json` knows about one name.
 ///
 /// Deliberately not reassembled from the `list` array: that cannot express the override
@@ -213,6 +235,44 @@ pub fn command(args: &[&str], cwd: &Path) -> Command {
 /// `args` is the subcommand plus its own flags (e.g. `["search", "jira"]`).
 /// `--json` is appended here so the caller can't forget it and get human text.
 pub fn run_json(sink: &dyn CommandSink, args: &[&str]) -> Result<serde_json::Value, AppError> {
+    let output = run_capture(sink, args)?;
+    let home = library_home();
+    settle(interpret(
+        &home,
+        output.status.code(),
+        &output.stdout,
+        &output.stderr,
+    ))
+}
+
+/// Run a subcommand whose non-zero exit is part of its report, not a failure.
+///
+/// `doctor` exits 1 when it finds errors while still printing a complete report, so
+/// the strict mapping would hide exactly the output the caller asked for. Any other
+/// failure — a missing wrapper, exit 2, exit 3, unparseable output — still surfaces
+/// as an error, so this widens one case rather than disabling the contract.
+fn run_report(sink: &dyn CommandSink, args: &[&str]) -> Result<serde_json::Value, AppError> {
+    let output = run_capture(sink, args)?;
+    let reported = matches!(output.status.code(), Some(0 | 1));
+    if reported {
+        if let Ok(body) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+            if body.get("status").is_some() {
+                return Ok(body);
+            }
+        }
+    }
+
+    let home = library_home();
+    settle(interpret(
+        &home,
+        output.status.code(),
+        &output.stdout,
+        &output.stderr,
+    ))
+}
+
+/// Resolve the wrapper and run it, or explain why that was impossible.
+fn run_capture(sink: &dyn CommandSink, args: &[&str]) -> Result<Output, AppError> {
     let wrapper = library_wrapper();
     if !wrapper.exists() {
         return Err(AppError::WrapperMissing {
@@ -221,30 +281,22 @@ pub fn run_json(sink: &dyn CommandSink, args: &[&str]) -> Result<serde_json::Val
     }
 
     let home = library_home();
-    let output = match spawn(sink, command(args, &home), &home) {
-        Ok(output) => output,
+    spawn(sink, command(args, &home), &home).map_err(|e| AppError::Cli {
         // The wrapper is on disk but would not execute (not executable, missing
         // interpreter). There is no exit status to report, so -1 stands in and the
         // io error becomes the stderr the UI shows.
-        Err(e) => {
-            return Err(AppError::Cli {
-                code: -1,
-                stderr: format!("failed to run {}: {e}", wrapper.display()),
-            })
-        }
-    };
+        code: -1,
+        stderr: format!("failed to run {}: {e}", wrapper.display()),
+    })
+}
 
-    let result = interpret(
-        &library_home(),
-        output.status.code(),
-        &output.stdout,
-        &output.stderr,
-    );
-
-    // An unconfigured tool fails every command with exit 1 and no structured marker,
-    // so the file itself is the signal. Checked only after a failure, and only for its
-    // absence, so a real error is never relabelled as a setup problem. Matching the
-    // CLI's stderr text instead would break the first time that sentence is reworded.
+/// Relabel a plain failure as a setup problem when the tool has no config.
+///
+/// An unconfigured tool fails every command with exit 1 and no structured marker, so
+/// the file itself is the signal. Checked only after a failure, and only for its
+/// absence, so a real error is never relabelled. Matching the CLI's stderr text
+/// instead would break the first time that sentence is reworded.
+fn settle(result: Result<serde_json::Value, AppError>) -> Result<serde_json::Value, AppError> {
     if matches!(result, Err(AppError::Cli { .. })) {
         let config = library_config();
         if !config.is_file() {
@@ -264,6 +316,15 @@ pub fn list(sink: &dyn CommandSink) -> Result<Vec<Entry>, AppError> {
 /// Everything known about one name (R2.1).
 pub fn show(sink: &dyn CommandSink, name: &str) -> Result<EntryDetail, AppError> {
     parse(run_json(sink, &["show", name])?)
+}
+
+/// Catalog health (R7.3). `deep` adds the checks that touch the network.
+pub fn doctor(sink: &dyn CommandSink, deep: bool) -> Result<DoctorReport, AppError> {
+    let mut args = vec!["doctor"];
+    if deep {
+        args.push("--deep");
+    }
+    parse(run_report(sink, &args)?)
 }
 
 /// The registered catalogs, highest precedence first.

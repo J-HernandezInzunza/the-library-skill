@@ -224,7 +224,7 @@ command in Phase 2 fails on that machine until this exists.
     two scopes lists both, each with its own catalog and commit. Gate passes.
   - **Commit:** `feat(desktop): add an entry detail view backed by library show`
 
-- [ ] **T2.4 — Doctor view**
+- [x] **T2.4 — Doctor view**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/components/Doctor.vue`
   - **Requirements:** R7.3
   - **Do:** `catalog_doctor` running `doctor --json`, with a `--deep` toggle. Render errors and

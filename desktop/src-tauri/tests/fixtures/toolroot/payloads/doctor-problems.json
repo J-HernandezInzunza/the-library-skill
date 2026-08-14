@@ -1,0 +1,18 @@
+{
+  "status": "PROBLEMS",
+  "entries": 42,
+  "errors": [
+    {
+      "catalog": "personal",
+      "entry": "session-retro",
+      "message": "requires 'vue-component-standards', which no catalog defines"
+    }
+  ],
+  "warnings": [
+    {
+      "catalog": null,
+      "entry": "grilling",
+      "message": "'grilling' is defined in 2 catalogs \u2014 'personal' overrides shared"
+    }
+  ]
+}

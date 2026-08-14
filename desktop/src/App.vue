@@ -14,6 +14,7 @@ const FirstRun = defineAsyncComponent(() => import("./components/FirstRun.vue"))
 
 // Only reached by clicking into an entry, so it stays out of the initial bundle.
 const EntryDetail = defineAsyncComponent(() => import("./components/EntryDetail.vue"));
+const Doctor = defineAsyncComponent(() => import("./components/Doctor.vue"));
 
 const entries = ref<Entry[]>([]);
 const catalogs = ref<Catalog[]>([]);
@@ -22,6 +23,7 @@ const activeCatalog = ref<string | null>(null);
 const query = ref("");
 /** The entry whose detail view is open, if any. */
 const openEntry = ref<string | null>(null);
+const showDoctor = ref(false);
 const loading = ref(false);
 /** Kept typed rather than stringified: a first-run state is recoverable, not an error. */
 const failure = ref<unknown>(null);
@@ -113,6 +115,8 @@ onMounted(load);
       @ready="load()"
     />
 
+    <Doctor v-else-if="showDoctor" @close="showDoctor = false" />
+
     <EntryDetail
       v-else-if="openEntry"
       :name="openEntry"
@@ -130,6 +134,7 @@ onMounted(load);
           placeholder="Search skills, agents, prompts…"
         />
         <button type="button" class="ghost" @click="load()">Refresh</button>
+        <button type="button" class="ghost" @click="showDoctor = true">Doctor</button>
       </form>
     </header>
 

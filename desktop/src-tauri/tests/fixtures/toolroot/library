@@ -11,6 +11,15 @@ case "$sub" in
   list)
     cat "$here/payloads/list.json"
     ;;
+  doctor)
+    # Healthy: report on stdout, exit 0.
+    cat "$here/payloads/doctor.json"
+    ;;
+  sick)
+    # `doctor` signals findings by exiting 1 while still printing the whole report.
+    cat "$here/payloads/doctor-problems.json"
+    exit 1
+    ;;
   show)
     cat "$here/payloads/show.json"
     ;;

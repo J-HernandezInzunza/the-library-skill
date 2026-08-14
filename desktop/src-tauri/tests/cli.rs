@@ -99,6 +99,46 @@ fn list_parses_the_recorded_catalog() {
 }
 
 #[test]
+fn doctor_returns_its_report_even_when_it_exits_one() {
+    // The whole point of the view: a run that found problems must render the problems,
+    // not "library exited 1".
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let healthy = cli::doctor(&log, false).expect("a clean report");
+    assert_eq!(healthy.status, "OK");
+    assert!(healthy.errors.is_empty());
+    assert!(!healthy.warnings.is_empty());
+
+    let report = cli::run_json(&log, &["sick"]);
+    assert!(report.is_err(), "run_json is strict; only doctor tolerates exit 1");
+}
+
+#[test]
+fn a_doctor_run_that_exits_one_still_renders_its_findings() {
+    let _guard = with_home(fixtures().join("sick"));
+    let report = cli::doctor(&Recorder::default(), false).expect("exit 1 is a report, not a failure");
+
+    assert_eq!(report.status, "PROBLEMS");
+    assert_eq!(report.errors.len(), 1);
+    assert!(report.errors[0].message.contains("no catalog defines"));
+    assert_eq!(report.errors[0].entry.as_deref(), Some("session-retro"));
+    // A finding with no catalog attribution stays renderable.
+    assert!(report.warnings[0].catalog.is_none());
+}
+
+#[test]
+fn deep_is_passed_through_only_when_asked_for() {
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    cli::doctor(&log, true).expect("a report");
+
+    let started = log.started.lock().unwrap();
+    assert_eq!(&started[0].argv[1..], ["doctor", "--deep", "--json"]);
+}
+
+#[test]
 fn show_reports_the_override_chain_in_both_directions() {
     let _guard = with_fixture_home();
     let detail = cli::show(&Recorder::default(), "grilling").expect("fixture show should parse");

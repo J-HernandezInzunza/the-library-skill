@@ -1,0 +1,47 @@
+{
+  "status": "OK",
+  "entries": 42,
+  "errors": [],
+  "warnings": [
+    {
+      "catalog": "shared",
+      "entry": null,
+      "message": "catalog declares default_dirs, which has no effect \u2014 install dirs come from the tool, overridable in /Users/tester/Projects/my-tools/the-library-skill/config.local.yaml. In effect: skills:project=.claude/skills/, skills:global=~/.claude/skills/, agents:project=.claude/agents/, agents:global=~/.claude/agents/, prompts:project=.claude/commands/, prompts:global=~/.claude/commands/"
+    },
+    {
+      "catalog": null,
+      "entry": "atlassian-toolkit",
+      "message": "'atlassian-toolkit' is defined in 2 catalogs \u2014 'personal' overrides shared"
+    },
+    {
+      "catalog": null,
+      "entry": "commit-and-push",
+      "message": "'commit-and-push' is defined in 2 catalogs \u2014 'personal' overrides shared"
+    },
+    {
+      "catalog": null,
+      "entry": "grilling",
+      "message": "'grilling' is defined in 2 catalogs \u2014 'personal' overrides shared"
+    },
+    {
+      "catalog": null,
+      "entry": "jira-ticket-drafter",
+      "message": "'jira-ticket-drafter' is defined in 2 catalogs \u2014 'personal' overrides shared"
+    },
+    {
+      "catalog": null,
+      "entry": "pr-and-notify",
+      "message": "'pr-and-notify' is defined in 2 catalogs \u2014 'personal' overrides shared"
+    },
+    {
+      "catalog": null,
+      "entry": "slack-toolkit",
+      "message": "'slack-toolkit' is defined in 2 catalogs \u2014 'personal' overrides shared"
+    },
+    {
+      "catalog": null,
+      "entry": "grill-me",
+      "message": "'grill-me' is defined in 2 catalogs \u2014 'personal' overrides shared"
+    }
+  ]
+}
