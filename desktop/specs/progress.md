@@ -322,3 +322,41 @@ return 0 and parse into the typed structs.
 
 **Still not visually verified:** `FirstRun`, `EntryDetail`, `Doctor`, and the command log have
 been type-checked and driven by fixtures, but only the catalog list has been seen rendered.
+
+---
+
+## T2.5 — dependencies, and why part of it went into the CLI
+
+Added after reviewing the detail view: `requires[]` was rendered, but as a flat list labelled
+"Requires". `show --json` returns the **transitive closure in install order** — `triage-bug`
+declares two dependencies and the view showed three, with no way to tell which it actually asks
+for.
+
+**Split app-side, because the payload already contains both halves.** `copies[].requires` carries
+the winning copy's raw `type:name` refs; `requires[]` is the resolved closure. Declared-vs-
+inherited is a join of two fields the CLI already returns, so it is presentation, not catalog
+logic. Install state per dependency is a second join, against the loaded `list`.
+
+**Unresolved refs went into `library.py` (new commit on the CLI).** `resolve_deps` skipped a ref
+it could not follow and `warn()`ed to stderr — which reaches a terminal and nothing else, so the
+payload just got shorter and a broken entry looked healthy. The app cannot reconstruct this: raw
+refs expose only the first level, while breakage can be transitive. `resolve_deps` now takes an
+optional `unresolved` list and records `{ref, required_by, reason}` with reason in
+`not_found` / `malformed` / `cycle`; `cmd_show` reports it as `unresolved_requires[]` and the
+human output grew an "Unresolved requires" section. Existing callers are unaffected — the
+parameter is optional, pinned by a test. 614 CLI tests pass, `just check` reports docs in sync.
+
+**A real bug caught by checking against live data rather than fixtures.** The install-state join
+was `new Map(catalog.map(e => [e.name, e.state]))`. `list` returns a row per catalog copy, and a
+`Map` keeps the *last* duplicate — the overridden one — so `atlassian-toolkit` rendered as
+`not_installed` when it was installed. Exactly the trap behind the original display bug, in new
+clothes. Fixed by filtering to winners, and pinned by a test.
+
+**Fixtures are recorded, not invented,** and split by purpose: no single entry in the catalog has
+both a two-catalog override chain and a dependency tree, so `show.json` (grilling) covers the
+former and `show-deps.json` (triage-bug) the latter, with `show-broken.json` adding unresolved
+refs.
+
+**Deliberately not built: reverse dependencies** ("what breaks if I remove this"). It needs a CLI
+change and its real consumer is T3.5's uninstall confirmation and T4.4's remove, not the detail
+view. Left for whoever picks those up.
