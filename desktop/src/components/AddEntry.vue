@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { contributedCatalogs, editableCatalogs, requirableRefs } from "../catalog";
 import { withActivity } from "../commandActivity";
 import {
@@ -35,6 +36,7 @@ const report = ref<AddReport | null>(null);
 
 const destinations = computed(() => editableCatalogs(props.catalogs));
 const contributed = computed(() => contributedCatalogs(props.catalogs));
+const contributedNames = computed(() => contributed.value.map((c) => c.id).join(", "));
 const catalogId = ref(destinations.value[0]?.id ?? "");
 
 /** Only this catalog's entries: a ref into another catalog would dangle. */
@@ -104,6 +106,21 @@ const filled = computed(
 );
 const canSubmit = computed(() => filled.value && !!catalogId.value && !submitting.value);
 
+/**
+ * Clear what described the entry just added, keep what describes the next one.
+ *
+ * Type and destination survive: registering several entries in a row is the normal use,
+ * and they are almost always the same kind going to the same catalog. Re-picking both
+ * every time would be the annoying half of a reset.
+ */
+function resetForm() {
+  name.value = "";
+  description.value = "";
+  source.value = "";
+  requires.value = [];
+  suggestion.value = null;
+}
+
 async function submit() {
   submitting.value = true;
   failure.value = "";
@@ -121,11 +138,27 @@ async function submit() {
         },
       }),
     );
+    resetForm();
     emit("added");
   } catch (e) {
     failure.value = describeAppError(e);
   } finally {
     submitting.value = false;
+  }
+}
+
+/**
+ * Show the catalog file in Finder.
+ *
+ * Revealing rather than opening: a `.yaml` opens in whatever the OS has registered for
+ * it, which could be anything, while "here is the file that changed" is the same answer
+ * on every machine. A failure is reported because the user asked for this one explicitly.
+ */
+async function reveal(path: string) {
+  try {
+    await revealItemInDir(path);
+  } catch (e) {
+    failure.value = `Could not show ${path}: ${e}`;
   }
 }
 </script>
@@ -136,6 +169,23 @@ async function submit() {
       <button type="button" class="ghost" @click="emit('close')">← Catalog</button>
       <h2 class="add-entry__title">Add an entry</h2>
     </header>
+
+    <div v-if="report" class="add-entry__added fade-in">
+      <p class="add-entry__added-line">
+        Added <strong>{{ report.added.name }}</strong> to
+        <strong>{{ report.catalog }}</strong>, under {{ report.added.section }}.
+      </p>
+      <p v-if="report.path" class="add-entry__added-where">
+        <button type="button" class="ghost" @click="reveal(report.path)">Show in Finder</button>
+        <code>{{ report.path }}</code>
+      </p>
+      <p v-if="report.pushed" class="add-entry__added-where">
+        Committed and pushed to {{ report.branch }}.
+      </p>
+      <p v-else-if="report.committed" class="add-entry__added-where">
+        Committed to {{ report.branch }}; the push did not happen.
+      </p>
+    </div>
 
     <p v-if="!destinations.length" class="add-entry__empty">
       You have no catalog of your own on this machine, so there is nowhere to add an entry yet.
@@ -194,6 +244,15 @@ async function submit() {
             {{ option.id }} · {{ option.write_mode }}
           </option>
         </select>
+        <span v-if="contributed.length" class="add-entry__hint">
+          {{ contributedNames }}
+          {{ contributed.length > 1 ? "are shared catalogs" : "is a shared catalog" }}, so entries
+          there are contributed through the repository itself rather than from here — that way the
+          change goes through the same review as any other.
+        </span>
+        <span v-for="shared in contributed" :key="shared.id" class="add-entry__where">
+          {{ shared.location }}
+        </span>
       </label>
 
       <fieldset v-if="available.length" class="add-entry__requires">
@@ -210,33 +269,7 @@ async function submit() {
       <Busy v-if="submitting" inline label="Writing the catalog…" />
     </form>
 
-    <p v-if="contributed.length" class="add-entry__deferred">
-      <template v-for="(shared, index) in contributed" :key="shared.id">
-        <span v-if="index">, </span><code>{{ shared.id }}</code>
-      </template>
-      {{ contributed.length > 1 ? "are shared catalogs" : "is a shared catalog" }}, so entries
-      there are contributed through the repository itself rather than from here — that way the
-      change goes through the same review as any other.
-      <span v-for="shared in contributed" :key="shared.id" class="add-entry__where">
-        {{ shared.location }}
-      </span>
-    </p>
-
     <pre v-if="failure" class="add-entry__failure">{{ failure }}</pre>
-
-    <div v-else-if="report" class="add-entry__result fade-in">
-      <p>
-        Added <strong>{{ report.added.name }}</strong> to <code>{{ report.catalog }}</code> under
-        <code>{{ report.added.section }}</code>.
-      </p>
-      <p v-if="report.path" class="add-entry__where">{{ report.path }}</p>
-      <p v-if="report.pushed" class="add-entry__where">
-        Committed and pushed to {{ report.branch }}.
-      </p>
-      <p v-else-if="report.committed" class="add-entry__where">
-        Committed to {{ report.branch }}; the push did not happen.
-      </p>
-    </div>
   </section>
 </template>
 
@@ -321,23 +354,35 @@ async function submit() {
   padding: 0.3rem 0.6rem;
   font-size: 0.75rem;
 }
-.add-entry__deferred {
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-  margin: 1.5rem 0 0;
-  padding: 0.75rem 0.9rem;
+.add-entry__added {
+  max-width: 34rem;
+  margin: 0 0 1.5rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid rgba(34, 197, 94, 0.35);
   border-radius: 8px;
-  background: rgba(128, 128, 128, 0.1);
-  font-size: 0.8rem;
-  line-height: 1.5;
-  opacity: 0.85;
+  background: rgba(34, 197, 94, 0.1);
 }
-.add-entry__deferred code {
-  font-size: 0.85em;
-  padding: 0.1rem 0.3rem;
-  border-radius: 4px;
-  background: rgba(128, 128, 128, 0.2);
+.add-entry__added-line {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.4;
+}
+.add-entry__added-where {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.6rem 0 0;
+  font-size: 0.75rem;
+  opacity: 0.75;
+}
+.add-entry__added-where code {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  overflow-wrap: anywhere;
+}
+.add-entry__added-where button {
+  flex: none;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.72rem;
 }
 .add-entry__check {
   display: flex;
@@ -368,8 +413,7 @@ async function submit() {
   max-height: 12rem;
   overflow-y: auto;
 }
-.add-entry__check code,
-.add-entry__result code {
+.add-entry__check code {
   font-size: 0.85em;
   padding: 0.1rem 0.3rem;
   border-radius: 4px;
@@ -383,14 +427,6 @@ async function submit() {
   white-space: pre-wrap;
   color: #dc2626;
   background: rgba(220, 38, 38, 0.08);
-}
-.add-entry__result {
-  margin-top: 1.25rem;
-  max-width: 34rem;
-  line-height: 1.5;
-}
-.add-entry__result p {
-  margin: 0 0 0.35rem;
 }
 .add-entry__where {
   font-family: ui-monospace, SFMono-Regular, monospace;
