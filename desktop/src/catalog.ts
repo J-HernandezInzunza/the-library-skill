@@ -1,5 +1,6 @@
 import type {
   Changes,
+  Dependent,
   Entry,
   EntryDetail,
   PlannedInstall,
@@ -164,18 +165,61 @@ export interface Dependency {
 export function dependencies(detail: EntryDetail, catalog: Entry[]): Dependency[] {
   const winner = detail.copies.find((copy) => copy.wins);
   const declared = new Set(winner?.requires.map(normalizeRef) ?? []);
-  // Winners only. `list` returns a row per catalog copy, and a Map keeps the last
-  // duplicate — which would be the overridden copy, reporting `not_installed` for a
-  // dependency that is installed.
-  const stateByName = new Map(
-    catalog.filter((entry) => !entry.overridden_by).map((entry) => [entry.name, entry.state]),
-  );
+  const stateByName = installStateByName(catalog);
 
   return detail.requires.map((entry) => ({
     entry,
     declared: declared.has(`${entry.type}:${entry.name}`),
     state: stateByName.get(entry.name) ?? "unknown",
   }));
+}
+
+/** A dependent as the detail view shows it. */
+export interface DependentView {
+  entry: Dependent;
+  /** Install state of the resolved copy, or `unknown` when the catalog isn't loaded. */
+  state: string;
+}
+
+/**
+ * The entries that break if this one is removed, with each one's install state.
+ *
+ * `dependents[]` is the CLI's answer and the app does not compute it — it needs every
+ * entry's transitive closure. All that happens here is the same install-state join
+ * `dependencies` does, because whether a dependent is *on disk* is what decides whether
+ * uninstalling this entry actually breaks anything today.
+ */
+export function dependents(detail: EntryDetail, catalog: Entry[]): DependentView[] {
+  const stateByName = installStateByName(catalog);
+  return detail.dependents.map((entry) => ({
+    entry,
+    state: stateByName.get(entry.name) ?? "unknown",
+  }));
+}
+
+/**
+ * True when a copy is present on disk, whatever the tool knows about it.
+ *
+ * `untracked` and `drifted` count: the files are there, so an entry depending on this one
+ * is satisfied today and would stop being satisfied if it were removed. `missing` does
+ * not — a receipt with nothing at its destination is already broken.
+ */
+export function isOnDisk(state: string): boolean {
+  return state === "installed" || state === "drifted" || state === "untracked";
+}
+
+/**
+ * Install state per name, from the winning copy only.
+ *
+ * `list` returns a row per catalog copy, and a `Map` keeps the last duplicate — which
+ * would be the overridden copy, reporting `not_installed` for something that is
+ * installed. This has caused two bugs; it is one function now so it can only be fixed
+ * in one place.
+ */
+function installStateByName(catalog: Entry[]): Map<string, string> {
+  return new Map(
+    catalog.filter((entry) => !entry.overridden_by).map((entry) => [entry.name, entry.state]),
+  );
 }
 
 /** One destination in a preview, with its place in the plan. */

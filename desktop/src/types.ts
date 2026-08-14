@@ -34,6 +34,20 @@ export interface UnresolvedRequire {
   reason: string;
 }
 
+/**
+ * An entry that would break if this one were removed.
+ *
+ * Transitive dependents are included, so `direct` distinguishes an entry that names this
+ * one from one that reaches it through another.
+ */
+export interface Dependent {
+  type: string;
+  name: string;
+  catalog: string;
+  description: string;
+  direct: boolean;
+}
+
 /** A dependency, resolved to the catalog entry it names. */
 export interface RequiredEntry {
   type: string;
@@ -61,6 +75,8 @@ export interface EntryDetail {
   copies: CatalogCopy[];
   requires: RequiredEntry[];
   unresolved_requires: UnresolvedRequire[];
+  /** What breaks if this entry is removed — the inverse of `requires`. */
+  dependents: Dependent[];
   /** Every install of this name, across scopes and custom directories. */
   installs: Receipt[];
   has_setup: boolean;

@@ -425,17 +425,16 @@ starting; these are the five that will bite otherwise.
 | Fixtures are recorded payloads, and the fake wrapper branches on argv | Add a case to `tests/fixtures/toolroot/library` rather than hand-writing a payload. Where a flag changes the meaning of the call, make the fixture *echo* the input (as `--project` does) so a mis-built argv fails rather than passes |
 | `installs[]` is receipt-driven, `entry.scopes` is disk-driven, and neither is a superset | T4.4's remove and any "what is installed" question must pick the right one deliberately. This already shaped T3.5 |
 
-**Decision needed before T4.4: reverse dependencies.** T4.4's remove wants "removing this breaks 3
-entries" and `show --json` has no `dependents[]`. This is not a gap to park — it changes what T4.4
-ships. Two options:
+**Reverse dependencies exist now, so T4.4 has no excuse.** `show --json` reports
+`dependents[] {type, name, catalog, description, direct}` — added to `library.py` rather than
+derived app-side, because it needs the transitive closure of every entry, which is exactly the
+catalog logic R1.1 keeps out. Scoped to the winner's own catalog, as `requires` is (D9), and
+transitive with `direct` flagged.
 
-1. **Add `dependents[]` to `library.py`** first, alongside `unresolved_requires[]` which T2.5 added
-   the same way. The terminal and the agent get the warning too, and the app stays a renderer.
-2. **Ship T4.4 without the warning**, and say so in the confirmation rather than implying the blast
-   radius is known.
-
-Deriving it app-side is the one option that is ruled out: it needs the transitive closure of every
-entry, which is exactly the catalog logic R1.1 keeps out of the app. Tracked as G5.
+The app already types it and renders it in both places Phase 3 wanted it: a "Required by" section in
+the detail view, and a line in the uninstall confirmation naming the installed entries that will be
+left incomplete. **T4.4's remove must use the same field**, and say the harder thing: `uninstall`
+leaves the entry reinstallable, `remove` does not, so the same dependent list means something worse.
 
 - [ ] **T4.1 — Add form**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/components/AddEntry.vue`
@@ -706,7 +705,7 @@ owns it and what would make it urgent, so a gap cannot quietly become folklore i
 | G2 | **`UninstallControl`'s `REFUSED` branch has never been clicked through in the GUI.** The path is proven against the real CLI and the panel renders; the two have not been joined | Desktop, manual | Next time a hand-installed copy exists on a dev machine |
 | G3 | **`entry_record` short-circuits to `("not_installed", None)` when `overridden_by` is set**, before `entry_install_state` runs. A losing copy installed under `--dir` — a destination the winner never occupies — is therefore invisible in `list` | `library.py` | Nobody has hit it. Real only once `--dir` installs are common |
 | G4 | **`uninstall_entry` considers only destinations the *current* scopes resolve to** (deliberately, so `uninstall alpha` cannot take out an unrelated `--dir` install). So a receipt whose dest no longer resolves is unreachable: the entry reads `missing` with `scopes: []` and the app renders no control | `library.py` | Hit once already, cleaning up a moved project directory. Recurs whenever a project install's directory is deleted |
-| G5 | **No `dependents[]` in `show --json`**, so nothing can say what breaks if an entry is removed | `library.py` | **Now** — it changes what T4.4 ships. See the Phase 4 preamble |
+| ~~G5~~ | ~~No `dependents[]` in `show --json`~~ | — | **Closed.** `resolve_dependents` added to `library.py`; `show --json` reports `dependents[] {type, name, catalog, description, direct}`. The app types it, renders a "Required by" section, and the uninstall confirmation names the installed entries it will leave incomplete. |
 | G6 | **`npm run check` fails in a non-login shell** because `cargo` is not on its `PATH` | T8.1 | Any CI attempt, or the first teammate who runs the gate from a non-login shell |
 | G7 | **`bootstrap()` resolves `python3` from `PATH`**, which is the shell's under `tauri dev` and a minimal one for a Finder-launched bundle. Holds today because macOS ships `/usr/bin/python3` | T8.1 | Only if D9 is revisited and the app ships as a bundle |
 

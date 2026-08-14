@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { catalogHue, dependencies } from "../catalog";
+import { catalogHue, dependencies, dependents, isOnDisk } from "../catalog";
 import { withActivity } from "../commandActivity";
 import { describeAppError, type Catalog, type Entry, type EntryDetail } from "../types";
 import Busy from "./Busy.vue";
@@ -43,6 +43,14 @@ const deps = computed(() => {
   if (!detail.value) return [];
   return dependencies(detail.value, props.entries);
 });
+
+/** The other direction: what breaks if this entry goes away. */
+const users = computed(() => {
+  if (!detail.value) return [];
+  return dependents(detail.value, props.entries);
+});
+/** Only a dependent that is actually on disk is broken by removing this copy today. */
+const affected = computed(() => users.value.filter((user) => isOnDisk(user.state)));
 
 /** How an unresolved ref failed, in words rather than an enum. */
 function brokenBecause(reason: string): string {
@@ -103,6 +111,7 @@ watch(() => props.name, load, { immediate: true });
         :name="detail.name"
         :scopes="detail.entry.scopes"
         :installs="detail.installs"
+        :affected="affected.map((user) => user.entry.name)"
         @uninstalled="afterWrite()"
       />
 
@@ -173,6 +182,29 @@ watch(() => props.name, load, { immediate: true });
                   {{ dep.state === "installed" ? "installed" : "not installed" }}
                 </span>
               </span>
+            </button>
+          </li>
+        </ul>
+      </template>
+
+      <template v-if="users.length">
+        <h3 class="entry-detail__section">Required by ({{ users.length }})</h3>
+        <ul class="entry-detail__requires">
+          <li v-for="user in users" :key="user.entry.name">
+            <button type="button" class="entry-detail__dep" @click="$emit('open', user.entry.name)">
+              <span class="entry-detail__dep-head">
+                <strong>{{ user.entry.name }}</strong>
+                <span v-if="!user.entry.direct" class="entry-detail__indirect">
+                  via another entry
+                </span>
+                <span
+                  class="entry-detail__dep-state"
+                  :class="{ 'entry-detail__dep-state--missing': !isOnDisk(user.state) }"
+                >
+                  {{ isOnDisk(user.state) ? "installed" : "not installed" }}
+                </span>
+              </span>
+              <span class="entry-detail__req-desc">{{ user.entry.description }}</span>
             </button>
           </li>
         </ul>
@@ -368,6 +400,12 @@ watch(() => props.name, load, { immediate: true });
   background: rgba(128, 128, 128, 0.2);
   color: inherit;
   opacity: 0.7;
+}
+.entry-detail__indirect {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  opacity: 0.5;
 }
 .entry-detail__section--broken {
   color: #dc2626;

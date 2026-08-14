@@ -250,7 +250,7 @@ Cross-referenced as G3/G4/G5 in [desktop/specs/tasks.md](../../desktop/specs/tas
 
 | Item | What it is | Priority |
 | --- | --- | --- |
-| `dependents[]` in `show --json` | Nothing can answer "what breaks if I remove this". The app cannot derive it: it needs the transitive closure of every entry, which is catalog logic. | **Wanted now** — the desktop plan's T4.4 (remove) and T3.5 (uninstall confirmation) both want to name the blast radius, and without it T4.4 either ships no warning or implies one it cannot back. |
+| ~~`dependents[]` in `show --json`~~ | The inverse of `requires`: what breaks if this entry is removed. | **Delivered.** `resolve_dependents`, scoped to the winner's own catalog exactly as `requires` is (D9), transitive with `direct` flagged. Reported as `dependents[]` and as a "Required by" section in the human output. 11 tests, verified by mutation. |
 | `entry_record` reports a losing copy as never installed | It short-circuits to `("not_installed", None)` when `overridden_by` is set, *before* `entry_install_state` runs. A losing copy installed under `--dir` — a destination the winner never occupies — is invisible in `list`. | Low. Narrow, and nobody has hit it. |
 | `uninstall_entry` cannot reach an unresolvable receipt | It considers only destinations the current scopes resolve to, which is deliberate (so `uninstall alpha` cannot delete an unrelated `--dir` install). The cost: a receipt whose dest no longer resolves is unreachable, and the entry reports `missing` with `scopes: []` forever. | Low, but hit once already while cleaning up a deleted project directory. Recurs whenever a project install's directory moves. |
 

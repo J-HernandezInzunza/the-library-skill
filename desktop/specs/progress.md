@@ -937,3 +937,60 @@ Two things changed status in the process:
   a name: there are **no component tests**. `vite.config.ts` has loaded the Vue plugin for
   them since Phase 1 and nothing was ever built on it. G1, and T6.4's walkthrough view is
   where it stops being cheap to skip.
+
+---
+
+## G5 closed: `dependents[]` in the CLI, rendered in both directions
+
+The register's one urgent gap. Added to `library.py` rather than derived app-side, because
+deriving it needs the transitive closure of *every* entry rather than one entry's refs —
+exactly the catalog logic R1.1 keeps out of the client.
+
+**`resolve_dependents` is the inverse of `resolve_deps`, and scoped identically.** Only the
+entries passed in are searched, which callers pass as the target's own catalog (D9). A ref
+in another catalog naming this target's name resolves to *that* catalog's copy, or dangles —
+either way it is not this entry's dependent, and counting it would overstate the blast
+radius across a boundary `use` never crosses. Symmetry with `resolve_deps` is the point:
+two functions answering opposite directions of one question should not disagree about
+scope.
+
+**Transitive dependents are included, with `direct` flagged.** `use P` installs P's whole
+closure, so an entry missing three levels down fails P's install as surely as its own.
+Reporting only direct dependents would understate the number the confirmation exists to
+show. Verified on the live catalog: `atlassian-toolkit` reports six direct dependents and
+`triage-bug` indirect — correct, since `triage-bug` requires `bug-investigator` and
+`bug-triager`, which require it.
+
+**Two deliberate asymmetries with `resolve_deps`:**
+
+- **Malformed refs are skipped silently.** A ref with no `:` cannot name anything, and the
+  entry that owns it already reports it as `unresolved_requires` when *it* is the subject.
+  Warning here would emit noise about an unrelated entry every time any entry is shown.
+- **No `unresolved` out-parameter.** There is nothing to report: a dangling ref is a defect
+  on the entry that declares it, and that entry's own `show` already says so.
+
+**Verified by mutation, three ways.** Reporting only direct dependents fails 3 tests;
+dropping the direct-first ordering fails 1; removing the visited check fails the
+nearest-relationship-wins case (an entry that names the target *and* reaches it through
+another is direct, not indirect). 628 CLI tests pass, `check_docs` in sync.
+
+**App side.** Typed with `#[serde(default)]` in Rust and mirrored in TS, per C-D8, so the
+app still runs against a CLI predating the key. Rendered as a "Required by" section
+mirroring "Requires", and as a line in the uninstall confirmation naming the installed
+entries that will be left incomplete.
+
+**Only dependents that are *on disk* are named in that warning.** An uninstalled dependent
+is not broken by removing this copy. That needed one shared predicate rather than an
+inline check: `isOnDisk` counts `installed`, `drifted`, and `untracked` — the files are
+there, so the dependent is satisfied today — and excludes `missing`, which is a receipt
+with nothing at its destination and therefore already broken by something else.
+
+**Removed a duplication while there.** `dependencies()` and the new `dependents()` both
+need install state per name from the *winning* copy only. That map has now caused two bugs
+on its own (a `Map` keyed by name keeps the last duplicate, which is the overridden copy
+reporting `not_installed`). It is one `installStateByName` function now, so it can only be
+got wrong in one place.
+
+**Fixtures stay recorded, not invented:** `show.json`'s `dependents` is the real
+`atlassian-toolkit` payload trimmed to two direct and one indirect so the split is
+visible, and `show-deps.json` keeps the empty list a leaf actually returns.

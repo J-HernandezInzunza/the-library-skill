@@ -80,5 +80,28 @@
       "git@github.com:example/my-engineering-library.git",
       "https://github.com/example/my-engineering-library.git"
     ]
-  }
+  },
+  "dependents": [
+    {
+      "type": "skill",
+      "name": "bug-investigator",
+      "catalog": "personal",
+      "description": "Investigate sparse Jira bug tickets and enrich them with a grounded root-cause theory. Fetch the ticket, trace code across repos (starting from any linked PRs the triager found), form a falsifiable theory, and append to Dev Notes or return a draft. Triggers on \"investigate this\", \"look at this bug\", \"trace down this bug\", or pasting a Jira bug key/URL.",
+      "direct": true
+    },
+    {
+      "type": "skill",
+      "name": "bug-triager",
+      "catalog": "personal",
+      "description": "Triage a Jira bug by searching Jira for related, duplicate, or previously-fixed tickets before code investigation. Ranks matches, captures their linked pull requests, optionally posts a related-tickets comment, and hands off to bug-investigator. Triggers on \"triage this\", \"has this been reported\", \"find related tickets\", \"check for duplicates\".",
+      "direct": true
+    },
+    {
+      "type": "prompt",
+      "name": "triage-bug",
+      "catalog": "personal",
+      "description": "Interactive bug-triage \u2192 investigation workflow as a pi prompt template. Invoke as `/triage-bug <TICKET-KEY>`. Asks before any Jira write. Enforces strict triage\u2192investigate handoff via triage-context.json. Headless counterpart lives at my-engineering-library/workflows/bug-triage/.",
+      "direct": false
+    }
+  ]
 }

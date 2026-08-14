@@ -83,6 +83,10 @@ pub struct EntryDetail {
     /// CLI that predates the key.
     #[serde(default)]
     pub unresolved_requires: Vec<UnresolvedRequire>,
+    /// What breaks if this entry is removed — the inverse of `requires`. Defaulted for
+    /// the same reason: the key postdates the first version of this struct.
+    #[serde(default)]
+    pub dependents: Vec<Dependent>,
     /// Every install of this name, across scopes and custom directories.
     pub installs: Vec<Receipt>,
     pub has_setup: bool,
@@ -114,6 +118,20 @@ pub struct UnresolvedRequire {
     pub required_by: String,
     /// `not_found`, `malformed`, or `cycle`. An open set, like `state`.
     pub reason: String,
+}
+
+/// An entry that would break if this one were removed.
+///
+/// Transitive dependents are included, so `direct` distinguishes an entry that names this
+/// one from one that reaches it through another. The CLI computes both because no caller
+/// can: it needs every entry's transitive closure, not one entry's refs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Dependent {
+    pub r#type: String,
+    pub name: String,
+    pub catalog: String,
+    pub description: String,
+    pub direct: bool,
 }
 
 /// A dependency, resolved to the catalog entry it names.

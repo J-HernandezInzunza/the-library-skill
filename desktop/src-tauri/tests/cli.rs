@@ -180,6 +180,40 @@ fn requires_is_the_transitive_closure_not_what_the_entry_declares() {
 }
 
 #[test]
+fn show_reports_what_breaks_if_the_entry_is_removed() {
+    // The inverse of `requires`, and the only source for it: no caller can derive the
+    // blast radius from a payload about one entry.
+    let _guard = with_fixture_home();
+    let detail = cli::show(&Recorder::default(), "grilling").expect("fixture show should parse");
+
+    let direct: Vec<&str> = detail
+        .dependents
+        .iter()
+        .filter(|d| d.direct)
+        .map(|d| d.name.as_str())
+        .collect();
+    let indirect: Vec<&str> = detail
+        .dependents
+        .iter()
+        .filter(|d| !d.direct)
+        .map(|d| d.name.as_str())
+        .collect();
+
+    assert_eq!(direct, ["bug-investigator", "bug-triager"]);
+    // Reaches this entry through another, so removing it still breaks the install — but
+    // saying it "requires" this entry would be wrong.
+    assert_eq!(indirect, ["triage-bug"]);
+}
+
+#[test]
+fn an_entry_nothing_depends_on_reports_an_empty_list_not_a_missing_key() {
+    let _guard = with_fixture_home();
+    let detail = cli::show(&Recorder::default(), "triage-bug").expect("fixture show should parse");
+
+    assert!(detail.dependents.is_empty());
+}
+
+#[test]
 fn a_dependency_the_catalog_cannot_follow_is_reported_not_dropped() {
     let _guard = with_fixture_home();
     let detail = cli::show(&Recorder::default(), "broken").expect("fixture show should parse");

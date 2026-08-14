@@ -91,5 +91,6 @@
       "git@github.com:example/my-engineering-library.git",
       "https://github.com/example/my-engineering-library.git"
     ]
-  }
+  },
+  "dependents": []
 }

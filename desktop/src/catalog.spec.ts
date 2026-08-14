@@ -4,11 +4,13 @@ import {
   catalogHue,
   catalogRows,
   dependencies,
+  dependents,
   installPlan,
+  isOnDisk,
   summarizeChanges,
   winningRows,
 } from "./catalog";
-import type { Changes, Entry, PlannedInstall, UsePreview } from "./types";
+import type { Changes, Entry, EntryDetail, PlannedInstall, UsePreview } from "./types";
 
 function entry(overrides: Partial<Entry> = {}): Entry {
   return {
@@ -166,6 +168,7 @@ describe("dependencies", () => {
       { type: "skill", name: "bug-triager", catalog: "personal", description: "" },
     ],
     unresolved_requires: [],
+    dependents: [],
     installs: [],
     has_setup: false,
     source: {
@@ -331,5 +334,80 @@ describe("summarizeChanges", () => {
 
   it("says so when a refresh changed nothing", () => {
     expect(summarizeChanges(changes())).toBe("no changes");
+  });
+});
+
+describe("dependents", () => {
+  const bare: EntryDetail = {
+    name: "grilling",
+    entry: entry({ name: "grilling" }),
+    copies: [],
+    requires: [],
+    unresolved_requires: [],
+    dependents: [],
+    installs: [],
+    has_setup: false,
+    source: {
+      raw: "",
+      kind: "github",
+      org: null,
+      repo: null,
+      branch: null,
+      file_path: null,
+      clone_urls: [],
+    },
+  };
+
+  /** Two direct dependents and one that reaches this entry through another. */
+  const withUsers: EntryDetail = {
+    ...bare,
+    dependents: [
+      { type: "skill", name: "bug-investigator", catalog: "personal", description: "", direct: true },
+      { type: "skill", name: "bug-triager", catalog: "personal", description: "", direct: true },
+      { type: "prompt", name: "triage-bug", catalog: "personal", description: "", direct: false },
+    ],
+  };
+
+  it("joins each dependent's install state from the loaded catalog", () => {
+    const catalog = [
+      entry({ name: "bug-investigator", state: "installed", installed: true }),
+      entry({ name: "bug-triager", state: "not_installed" }),
+    ];
+
+    expect(dependents(withUsers, catalog).map((d) => [d.entry.name, d.state])).toEqual([
+      ["bug-investigator", "installed"],
+      ["bug-triager", "not_installed"],
+      // Absent from the loaded catalog rather than absent from disk.
+      ["triage-bug", "unknown"],
+    ]);
+  });
+
+  it("reads state from the winning copy, not whichever copy came last", () => {
+    // Same trap as `dependencies`: `list` returns a row per copy and a Map keeps the
+    // last, which would be the overridden one reporting not_installed.
+    const catalog = [
+      entry({ name: "bug-triager", catalog: "personal", state: "installed", installed: true }),
+      entry({ name: "bug-triager", catalog: "shared", state: "not_installed",
+              overridden_by: "personal" }),
+    ];
+    const found = dependents(withUsers, catalog).find((d) => d.entry.name === "bug-triager");
+
+    expect(found?.state).toBe("installed");
+  });
+
+  it("returns nothing for an entry the CLI reports no dependents for", () => {
+    expect(dependents(bare, [])).toEqual([]);
+  });
+});
+
+describe("isOnDisk", () => {
+  it("counts a hand-installed or locally edited copy, because the files are there", () => {
+    // A dependent in either state is satisfied today and would stop being satisfied.
+    expect(["installed", "drifted", "untracked"].map(isOnDisk)).toEqual([true, true, true]);
+  });
+
+  it("does not count a receipt with nothing at its destination", () => {
+    // `missing` is already broken, so removing this entry is not what broke it.
+    expect(["missing", "not_installed", "unknown"].map(isOnDisk)).toEqual([false, false, false]);
   });
 });

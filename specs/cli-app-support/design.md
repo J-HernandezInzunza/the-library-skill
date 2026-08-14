@@ -109,6 +109,18 @@ directions, resolved `requires`, every install record for the name, `has_setup`,
 source (host, repo, branch, in-repo path). The app's detail view reconstructs a thinner version of
 this from the `list` array today; anything richer has nowhere to come from.
 
+Two keys were added after this plan landed, both because a GUI could see the consequence of their
+absence and a terminal could not:
+
+- **`unresolved_requires[]`** `{ref, required_by, reason}` — refs `resolve_deps` could not follow.
+  It only `warn()`ed to stderr, so a payload consumer just got a shorter list with no sign anything
+  was missing, which reads as "no problem here".
+- **`dependents[]`** `{type, name, catalog, description, direct}` — the inverse of `requires`: what
+  breaks if this entry is removed. Scoped to the winner's own catalog, exactly as `requires` is
+  (D9), and transitive with `direct` flagged, because `use` installs the whole closure so an entry
+  three levels down fails the top-level install too. No caller can derive this: it needs every
+  entry's transitive closure, not one entry's refs.
+
 ### 4.3 `library uninstall <name> [--scope global|project|all] [--dir path] [--json]` (C2)
 
 Deletes installed copies and drops their receipts. Does not touch the catalog. `remove --purge` is

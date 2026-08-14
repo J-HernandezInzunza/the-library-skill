@@ -11,6 +11,13 @@ const props = defineProps<{
   scopes: string[];
   /** Receipts, which cover only what the tool itself installed. */
   installs: Receipt[];
+  /**
+   * Installed entries that depend on this one, from the CLI's `dependents[]`.
+   *
+   * Removing the files leaves these satisfied on paper and broken on disk, which the
+   * confirmation could not say before the CLI could answer it.
+   */
+  affected: string[];
 }>();
 const emit = defineEmits<{ uninstalled: [] }>();
 
@@ -92,6 +99,11 @@ watch(() => props.name, () => {
       <ul v-if="confirmingPaths.length" class="uninstall__paths">
         <li v-for="path in confirmingPaths" :key="path"><code>{{ path }}</code></li>
       </ul>
+      <p v-if="affected.length" class="uninstall__affected">
+        {{ affected.length }} installed
+        {{ affected.length === 1 ? "entry depends" : "entries depend" }} on this and will be
+        left incomplete: {{ affected.join(", ") }}.
+      </p>
       <p class="uninstall__note">
         The catalog entry is untouched. Installing it again brings the files back.
       </p>
@@ -187,6 +199,15 @@ watch(() => props.name, () => {
   padding: 0;
   font-size: 0.78rem;
   overflow-wrap: anywhere;
+}
+.uninstall__affected {
+  margin: 0.5rem 0 0;
+  padding: 0.5rem 0.7rem;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.16);
 }
 .uninstall__note {
   margin: 0.5rem 0 0;
