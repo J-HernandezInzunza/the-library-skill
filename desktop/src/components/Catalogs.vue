@@ -17,7 +17,22 @@ const props = defineProps<{
   /** What leaving the view returns to, which is not always the catalog list. */
   backTo: string;
 }>();
-const emit = defineEmits<{ close: []; changed: [] }>();
+const emit = defineEmits<{
+  close: [];
+  changed: [];
+  /** Add an entry to the catalog currently being managed. */
+  add: [catalog: string];
+  /** `doctor` validates config and catalog integrity, which is this view's subject. */
+  doctor: [];
+  /**
+   * Which catalog is open, reported up as it changes.
+   *
+   * Opening the add form or the health report *unmounts* this view, so its own level would
+   * be lost and it would come back at the registry. The parent holds the position instead,
+   * and hands it back as `atCatalog` on the next mount.
+   */
+  navigate: [catalog: string | null];
+}>();
 
 /** Which form a row is showing. One row, one form, app-wide. */
 type Panel = { name: string; mode: "edit" | "remove" };
@@ -39,6 +54,9 @@ const editableIds = computed(
 );
 
 const catalog = computed(() => props.catalogs.find((c) => c.id === openCatalog.value) ?? null);
+
+/** True when nothing on this machine can be written to, which needs saying out loud. */
+const nothingEditable = computed(() => editableIds.value.size === 0);
 
 /**
  * The catalog's own inventory, overridden copies included.
@@ -63,9 +81,11 @@ function isOpen(name: string, mode: Panel["mode"]): boolean {
   return panel.value?.name === name && panel.value.mode === mode;
 }
 
-function openEntries(id: string) {
+/** The one place the open catalog changes, so the parent cannot be told about only some. */
+function goTo(id: string | null) {
   openCatalog.value = id;
   panel.value = null;
+  emit("navigate", id);
 }
 
 // A catalog that stops being available under us must not leave the view pointing at it.
@@ -73,8 +93,7 @@ watch(
   () => props.catalogs,
   () => {
     if (openCatalog.value && !props.catalogs.some((c) => c.id === openCatalog.value)) {
-      openCatalog.value = null;
-      panel.value = null;
+      goTo(null);
     }
   },
 );
@@ -114,10 +133,21 @@ watch(
   <section class="view">
     <!-- Level 1: the registry. -->
     <template v-if="!openCatalog">
-      <PageHeader title="Catalogs" :back="`Back to ${backTo}`" @back="emit('close')" />
+      <PageHeader title="Catalogs" :back="`Back to ${backTo}`" @back="emit('close')">
+        <!-- `doctor` validates config and catalog integrity, so this is its subject rather
+             than the install list it used to sit above. -->
+        <button type="button" class="ghost catalogs__health" @click="emit('doctor')">
+          Check health
+        </button>
+      </PageHeader>
       <p class="catalogs__lead">
         Where your entries come from, in precedence order: when two catalogs define the same
         name, the one nearer the top is the copy that installs.
+      </p>
+      <p v-if="nothingEditable" class="catalogs__lead">
+        None of these is a catalog you can edit from here. A catalog of your own is a
+        <code>library.yaml</code> file on this machine; register one and it appears in this list
+        with its entries editable.
       </p>
       <ul class="catalogs__list">
         <li
@@ -136,7 +166,7 @@ watch(
               v-if="editableIds.has(option.id)"
               type="button"
               class="ghost catalogs__manage"
-              @click="openEntries(option.id)"
+              @click="goTo(option.id)"
             >
               Manage entries
             </button>
@@ -149,10 +179,12 @@ watch(
 
     <!-- Level 2: one catalog's entries, each row carrying its own actions. -->
     <template v-else>
-      <PageHeader :title="openCatalog" back="All catalogs" @back="openCatalog = null" />
+      <PageHeader :title="openCatalog" back="All catalogs" @back="goTo(null)">
+        <button type="button" class="ghost" @click="emit('add', openCatalog)">Add an entry</button>
+      </PageHeader>
       <p class="catalogs__lead">{{ catalog?.location }}</p>
       <p v-if="!held.length" class="catalogs__lead">
-        This catalog has no entries yet. Add one from the catalog view.
+        This catalog has no entries yet.
       </p>
       <ul v-else class="catalogs__entries">
         <li
@@ -243,6 +275,9 @@ watch(
   flex: 1;
   font-size: 0.75rem;
   opacity: 0.7;
+}
+.catalogs__health {
+  margin-left: auto;
 }
 .catalogs__manage {
   padding: 0.3rem 0.6rem;

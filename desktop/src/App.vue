@@ -45,7 +45,8 @@ const openEntry = computed(() => trail.value.at(-1) ?? null);
 const previousEntry = computed(() => trail.value.at(-2) ?? null);
 const showDoctor = ref(false);
 const showSync = ref(false);
-const showAdd = ref(false);
+/** The catalog an add is destined for; `null` closes the form. */
+const addingTo = ref<string | null>(null);
 /**
  * The catalog manager, and where inside it to land.
  *
@@ -173,15 +174,22 @@ onMounted(async () => {
       @ready="load()"
     />
 
-    <Doctor v-else-if="showDoctor" @close="showDoctor = false" />
+    <!-- Ordered so a view opened *from* another sits above it: closing Doctor or the add
+         form falls back to whatever is still open underneath, with no state to restore. -->
+    <Doctor
+      v-else-if="showDoctor"
+      :back-to="manage ? 'Catalogs' : 'catalog'"
+      @close="showDoctor = false"
+    />
 
     <Sync v-else-if="showSync" @close="showSync = false" @synced="load()" />
 
     <AddEntry
-      v-else-if="showAdd"
+      v-else-if="addingTo"
+      :catalog-id="addingTo"
       :catalogs="catalogs"
       :entries="entries"
-      @close="showAdd = false"
+      @close="addingTo = null"
       @added="load()"
     />
 
@@ -194,6 +202,9 @@ onMounted(async () => {
       :back-to="openEntry ?? 'catalog'"
       @close="manage = null"
       @changed="load()"
+      @add="addingTo = $event"
+      @doctor="showDoctor = true"
+      @navigate="manage = { catalog: $event, entry: null }"
     />
 
     <EntryDetail
@@ -217,7 +228,9 @@ onMounted(async () => {
           type="search"
           placeholder="Search skills, agents, prompts…"
         />
-        <button type="button" class="ghost" @click="showAdd = true">Add</button>
+        <!-- What you do to this list, and where you go. Adding an entry and checking
+             catalog health both moved into Catalogs, which is their subject (D18). -->
+        <button type="button" class="ghost" @click="showSync = true">Sync</button>
         <button
           type="button"
           class="ghost"
@@ -226,8 +239,6 @@ onMounted(async () => {
           Catalogs
         </button>
         <button type="button" class="ghost" @click="load()">Refresh</button>
-        <button type="button" class="ghost" @click="showSync = true">Sync</button>
-        <button type="button" class="ghost" @click="showDoctor = true">Doctor</button>
       </form>
     </header>
 
@@ -268,6 +279,19 @@ onMounted(async () => {
   /* The sticky header composites over scrolling content, so it needs a surface of
      its own; a bare backdrop-filter leaves the text to overlap the list. */
   --app-bg-sticky: rgba(246, 246, 247, 0.95);
+}
+/* Reserve the scrollbar's width on every page, scrolling or not.
+
+   Without this the app visibly breathes: `.app` is centred with `margin: 0 auto`, so a
+   page long enough to scroll loses the scrollbar's width from the viewport and *both*
+   edges move inward by half of it. Every navigation between a long view (the catalog, a
+   catalog's entries) and a short one (Add, the registry) shifted the whole layout.
+
+   It is invisible on a Mac set to overlay scrollbars, which reserve no space — so this is
+   a defect that only some machines can see, which is the kind worth pinning rather than
+   eyeballing. */
+html {
+  scrollbar-gutter: stable;
 }
 body {
   margin: 0;

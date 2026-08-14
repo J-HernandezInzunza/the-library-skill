@@ -7,6 +7,8 @@ import Busy from "./Busy.vue";
 import StatusBanner from "./StatusBanner.vue";
 import PageHeader from "./PageHeader.vue";
 
+/** Reached from the catalog list and from the Catalogs view, so Back names where it goes. */
+defineProps<{ backTo: string }>();
 defineEmits<{ close: [] }>();
 
 const report = ref<DoctorReport | null>(null);
@@ -39,7 +41,7 @@ run();
 
 <template>
   <section class="view">
-    <PageHeader title="Catalog health" back="Back to catalog" @back="$emit('close')">
+    <PageHeader title="Catalog health" :back="`Back to ${backTo}`" @back="$emit('close')">
       <label class="doctor__deep">
         <input v-model="deep" type="checkbox" @change="run()" />
         Deep checks (reaches the network)

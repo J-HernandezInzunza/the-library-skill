@@ -529,6 +529,23 @@ leaves the entry reinstallable, `remove` does not, so the same dependent list me
     name. Gate passes.
   - **Commit:** `feat(desktop): act on entries in place, behind one page header`
 
+- [x] **T4.4c — The layout stops moving, and the toolbar loses two buttons**
+  - **Files:** `desktop/src/App.vue`, `desktop/src/components/{Catalogs,AddEntry,Doctor}.vue`,
+    `desktop/src/pageChrome.spec.ts`
+  - **Requirements:** R4.1, D20
+  - **Do:** Reserve the scrollbar's width (`scrollbar-gutter: stable`). `.app` is centred, so a
+    page long enough to scroll narrowed the viewport and moved **both** edges inward by half
+    the scrollbar width — every navigation between a long view and a short one shifted the
+    layout. Invisible on a Mac using overlay scrollbars, so it is pinned by a test.
+    Then move `add` and `doctor` off the catalog toolbar into the Catalogs view, which is
+    their subject (D20). Adding is reached from inside a catalog, so **the destination
+    dropdown is deleted** rather than defaulted — R4.1 amended. `contributedCatalogs` went
+    with it: `describeCatalog` already says why a shared catalog cannot be managed here.
+  - **Verify:** Navigating between the catalog, Add, and Catalogs moves nothing horizontally.
+    Opening the add form from a catalog and closing it returns to that catalog, not to the
+    registry. Gate passes.
+  - **Commit:** `feat(desktop): stop the layout shifting, and shorten the toolbar`
+
 - [ ] **T4.5 — Push, and surfacing the PR**
   - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/`
   - **Requirements:** R4.5

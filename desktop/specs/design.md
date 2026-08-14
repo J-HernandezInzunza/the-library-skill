@@ -449,11 +449,11 @@ unrepresentable.
 | Catalog | list + filter + install status/override badges, in either D15 mode | R2 |
 | Catalog tabs | switch between all-winners and a single catalog's inventory; surfaces precedence, write mode, and skip reasons | R2.4, R2.5 |
 | Entry detail | source, requires, catalogs holding the name, install/uninstall; hands off to Catalogs to edit | R2.1, R3 |
-| Add form | explicit fields; requires-multiselect; catalog dropdown from `registry_list` | R4.1–R4.3 |
+| Add form | explicit fields; requires-multiselect; destination is the catalog it was opened from | R4.1–R4.3 |
 | Catalogs | three levels: the registry, one catalog's entries, one entry's edit/remove forms (D18) | R4.4, R4.6a, R4.7 |
 | Command log | every command run + exit status | D5, R3.4 |
 | Walkthrough | chat transcript, tool activity, secure-input modal | R5, R6 |
-| Doctor | errors/warnings from `doctor --json` | R7.3 |
+| Doctor | errors/warnings from `doctor --json`, reached from Catalogs | R7.3 |
 
 ### 6.3 Command transparency (D5)
 
@@ -536,7 +536,27 @@ and a subcategory when it is actually "where it lives" and "what a change to it 
 now one sentence each, from `describeCatalog`, which also supplies the reason a shared catalog
 cannot be managed in the app — for a `pr` catalog those are the same fact.
 
-### 6.7 Machine-readable fields are not prose
+### 6.7 What belongs on the catalog toolbar (D20)
+
+Search and Refresh act on the list; Sync and Catalogs are where you go next. Nothing else.
+
+`add` and `doctor` moved into the Catalogs view because that is their subject, not to shorten the
+row. Adding an entry is a catalog write, which §6.5 already placed there — and the give-away was
+that the Catalogs empty state had to tell the user to go back to the toolbar to add one. `doctor`
+validates config and catalog integrity, which is what the Catalogs view is about; its install
+findings are a bonus rather than its subject.
+
+`sync` stayed. It acts on what is installed rather than on a catalog, and it is routine, so
+grouping it with `doctor` under one "maintenance" label would have buried the more frequent action
+behind the rarer one.
+
+**A view opened from another sits above it in the chain**, so closing it falls back to what was
+underneath with no state to restore. The exception is the position *inside* Catalogs: opening the
+add form unmounts it, so the open catalog is reported up with a `navigate` event and handed back as
+`atCatalog` on the next mount. One event from one function, so a new navigation path cannot report
+only some of its moves.
+
+### 6.8 Machine-readable fields are not prose
 
 Text inputs holding an entry name, a branch, a repo URL, or a file path bind `RAW_TEXT`
 (`autocapitalize`/`autocorrect` off, `spellcheck="false"`). macOS capitalises the first letter of a

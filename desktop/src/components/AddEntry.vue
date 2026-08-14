@@ -1,14 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import {
-  addConsequences,
-  contributedCatalogs,
-  editableCatalogs,
-  requirableRefs,
-} from "../catalog";
+import { addConsequences, requirableRefs } from "../catalog";
 import { withActivity } from "../commandActivity";
 import {
   describeAppError,
@@ -23,7 +18,15 @@ import StatusBanner from "./StatusBanner.vue";
 import PageHeader from "./PageHeader.vue";
 
 const props = defineProps<{
-  /** The registry, for the destination dropdown. */
+  /**
+   * The catalog being added to.
+   *
+   * A prop rather than a dropdown: this form is reached from inside a catalog, so the
+   * destination is already answered by where the user is. The dropdown existed only
+   * because the form used to open from the topbar, with no context at all.
+   */
+  catalogId: string;
+  /** The registry, for the precedence comparison behind the override warnings. */
   catalogs: Catalog[];
   /** The loaded catalog, for the requires picker. */
   entries: Entry[];
@@ -42,19 +45,8 @@ const suggestion = ref<SourceSuggestion | null>(null);
 const failure = ref("");
 const report = ref<AddReport | null>(null);
 
-const destinations = computed(() => editableCatalogs(props.catalogs));
-const contributed = computed(() => contributedCatalogs(props.catalogs));
-const contributedNames = computed(() => contributed.value.map((c) => c.id).join(", "));
-const catalogId = ref(destinations.value[0]?.id ?? "");
-
 /** Only this catalog's entries: a ref into another catalog would dangle. */
-const available = computed(() => requirableRefs(props.entries, catalogId.value));
-
-// Switching destination invalidates the picked refs, since they belong to the catalog
-// that was selected when they were picked.
-watch(catalogId, () => {
-  requires.value = [];
-});
+const available = computed(() => requirableRefs(props.entries, props.catalogId));
 
 /**
  * What the source has to point at, which differs by type.
@@ -117,22 +109,22 @@ function applySuggestion() {
  * command and the override does not surface at all.
  */
 const consequences = computed(() =>
-  addConsequences(props.entries, props.catalogs, name.value, catalogId.value),
+  addConsequences(props.entries, props.catalogs, name.value, props.catalogId),
 );
 
 const filled = computed(
   () => !!name.value.trim() && !!description.value.trim() && !!source.value.trim(),
 );
 const canSubmit = computed(
-  () => filled.value && !!catalogId.value && !consequences.value.blocked && !submitting.value,
+  () => filled.value && !consequences.value.blocked && !submitting.value,
 );
 
 /**
  * Clear what described the entry just added, keep what describes the next one.
  *
- * Type and destination survive: registering several entries in a row is the normal use,
- * and they are almost always the same kind going to the same catalog. Re-picking both
- * every time would be the annoying half of a reset.
+ * Type survives: registering several entries in a row is the normal use and they are
+ * almost always the same kind. The destination is not resettable at all any more — it is
+ * the catalog you are standing in.
  */
 function resetForm() {
   name.value = "";
@@ -155,7 +147,7 @@ async function submit() {
           description: description.value.trim(),
           source: source.value.trim(),
           requires: requires.value,
-          catalog: catalogId.value,
+          catalog: props.catalogId,
         },
       }),
     );
@@ -200,7 +192,7 @@ async function reveal(path: string) {
 
 <template>
   <section class="view">
-    <PageHeader title="Add an entry" back="Back to catalog" @back="emit('close')" />
+    <PageHeader :title="`Add an entry to ${catalogId}`" :back="catalogId" @back="emit('close')" />
 
     <StatusBanner v-if="failure" kind="error" :detail="failure" />
 
@@ -221,13 +213,7 @@ async function reveal(path: string) {
       </p>
     </StatusBanner>
 
-    <p v-if="!destinations.length" class="add-entry__empty">
-      You have no catalog of your own on this machine, so there is nowhere to add an entry yet.
-      A personal catalog is a <code>library.yaml</code> file you own; register one and it appears
-      here.
-    </p>
-
-    <form v-else class="add-entry__form" @submit.prevent="submit">
+    <form class="add-entry__form" @submit.prevent="submit">
       <label class="add-entry__field">
         <span>Name</span>
         <input
@@ -296,24 +282,6 @@ async function reveal(path: string) {
         <span v-else-if="suggestion" class="add-entry__hint">
           No shareable URL for this file: {{ suggestion.reason }}. That is fine for a catalog
           only you use.
-        </span>
-      </label>
-
-      <label class="add-entry__field">
-        <span>Destination catalog</span>
-        <select v-model="catalogId">
-          <option v-for="option in destinations" :key="option.id" :value="option.id">
-            {{ option.id }} · {{ option.write_mode }}
-          </option>
-        </select>
-        <span v-if="contributed.length" class="add-entry__hint">
-          {{ contributedNames }}
-          {{ contributed.length > 1 ? "are shared catalogs" : "is a shared catalog" }}, so entries
-          there are contributed through the repository itself rather than from here — that way the
-          change goes through the same review as any other.
-        </span>
-        <span v-for="shared in contributed" :key="shared.id" class="add-entry__where">
-          {{ shared.location }}
         </span>
       </label>
 

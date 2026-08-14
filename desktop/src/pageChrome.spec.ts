@@ -58,6 +58,16 @@ describe("page chrome", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("reserves the scrollbar's width so a long page does not move the layout", () => {
+    // `.app` is centred, so without a stable gutter a page long enough to scroll narrows
+    // the viewport and both edges move inward by half the scrollbar width. Invisible on a
+    // Mac using overlay scrollbars, which is why it survived several passes of looking at
+    // the app and is worth a check that does not depend on the machine.
+    const app = SOURCES["./App.vue"];
+
+    expect(app).toMatch(/html\s*\{[^}]*scrollbar-gutter:\s*stable/);
+  });
+
   it("finds the views it is meant to be guarding", () => {
     // Without this, a renamed component would make every check above pass by scanning
     // nothing — the trap the status-feedback guard hit first.

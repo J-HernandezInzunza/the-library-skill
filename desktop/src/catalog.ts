@@ -282,16 +282,6 @@ export function describeCatalog(catalog: Catalog): CatalogDescription {
 }
 
 /**
- * The catalogs the app deliberately will not write to.
- *
- * Rendered rather than silently omitted: a missing `shared` option reads as a bug, not
- * as a decision, and the person looking for it needs to be told where to go instead.
- */
-export function contributedCatalogs(catalogs: Catalog[]): Catalog[] {
-  return catalogs.filter((catalog) => catalog.kind !== "local");
-}
-
-/**
  * The dependency refs that would resolve for an entry stored in `catalogId`.
  *
  * Dependencies resolve within one catalog, so a ref naming another catalog's entry

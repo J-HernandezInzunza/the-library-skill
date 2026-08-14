@@ -6,7 +6,6 @@ import {
   catalogRows,
   dependencies,
   dependents,
-  contributedCatalogs,
   installPlan,
   isOnDisk,
   requirableRefs,
@@ -471,19 +470,6 @@ describe("editableCatalogs", () => {
     ]);
 
     expect(offered.map((c) => c.id)).toEqual(["personal"]);
-  });
-});
-
-describe("contributedCatalogs", () => {
-  it("names the remote catalogs, so their absence reads as a decision", () => {
-    const deferred = contributedCatalogs([
-      catalog({ id: "personal" }),
-      catalog({ id: "shared", kind: "remote" }),
-      // Unreadable, but still somewhere entries are contributed; it belongs on the list.
-      catalog({ id: "archived", kind: "remote", writable: false, skipped: "not cloned" }),
-    ]);
-
-    expect(deferred.map((c) => c.id)).toEqual(["shared", "archived"]);
   });
 });
 

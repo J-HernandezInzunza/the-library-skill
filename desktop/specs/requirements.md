@@ -71,6 +71,7 @@ implementation; changing one is a spec change, not an implementation choice.
 | D17 | Every Tauri command is `async` and runs its blocking work through `spawn_blocking`; no subprocess is ever awaited on the main thread. | Tauri runs a synchronous command on the thread that paints the window, so every command froze the whole UI for its duration — measured, not theorised. A bare `async fn` is not enough: these bodies block with no await points, so they would stall an async-runtime worker instead. Enforced by a source-level test because the defect passes every other check and only shows up as an unresponsive window. |
 | D18 | Catalog **management** (editing and removing entries, and later registering catalogs) lives in its own top-level **Catalogs** view, not on an entry's detail page. The detail page keeps a hand-off button, never a form. | The app already splits "what can I use?" from "what's in this catalog?" (D15); management is the second question's action surface. Leaving it on the detail page put *adding* an entry one click from the catalog and *editing* the same entry three clicks deep inside a view about installing it. The one real cost is discoverability — noticing a wrong description while reading an entry — which the hand-off covers without duplicating the form. |
 | D19 | Every full-screen view roots in a global `.view` class and renders its title through one `<PageHeader>`. No view draws its own back button or root padding. | Five views had each written their own: two put the back button above the title and three beside it, with three different paddings, so the control visibly jumped as you navigated. Each one type-checked and looked right alone — the defect existed only *between* screens. Guarded by a source-level test for the same reason D5 and R7.6 are: nothing else can see it. |
+| D20 | The catalog list's toolbar holds only what acts on that list (search, refresh) and where to go (Sync, Catalogs). Adding an entry and checking catalog health live inside the **Catalogs** view. | Six controls, three subjects. `add` writes a catalog entry, which is management (D18) — the tell was the Catalogs empty state pointing back out to the toolbar to add one. `doctor`'s own help text is "validate config + catalog integrity", which is the Catalogs view's subject. `sync` stays on the toolbar because it acts on installs, not catalogs, and is routine enough that burying it would cost more than the tidiness is worth. |
 | D13 | A collected secret is delivered per the skill's declared `delivery` mode: `config-file` (default), `env`, or `manual`. The app writes only to the skill's declared `config.path`. | `atlassian-toolkit`'s durable store is a config file, so env injection alone would not persist. Skills that want the human to type the credential themselves declare `manual`. |
 
 ## Requirements
@@ -123,9 +124,11 @@ implementation; changing one is a spec change, not an implementation choice.
 
 ### R4 — Add / update / remove (deterministic write, no agent)
 
-- R4.1 Adding an entry is a form: name, type, description, source, requires (multiselect from the
-  catalog), and destination catalog (dropdown from the registry). It invokes `library add` with
-  explicit flags; no agent, no prose inference.
+- R4.1 Adding an entry is a form: name, type, description, source, and requires (multiselect from
+  the destination catalog). It invokes `library add` with explicit flags; no agent, no prose
+  inference. The **destination is not a field**: the form is reached from inside the catalog being
+  added to, so where you are answers it (D20). The dropdown this requirement originally specified
+  existed only because the form opened from the toolbar with no context.
 - R4.2 The source field offers an auto-suggested browser URL when the local path sits inside a
   git repo with a GitHub/Bitbucket origin, reusing the CLI's existing suggestion logic.
 - R4.3 Override and conflict consequences are shown before submit, computed from the catalog
@@ -219,7 +222,7 @@ implementation; changing one is a spec change, not an implementation choice.
   to learn two locations for it (design.md §6.4).
 - R7.7 Fields holding machine-readable values — entry names, branches, URLs, paths — disable
   auto-capitalisation, auto-correction, and spellcheck. The CLI matches entry names exactly, so an
-  auto-capitalised name silently becomes a different entry (design.md §6.7).
+  auto-capitalised name silently becomes a different entry (design.md §6.8).
 
 ### R8 — Build and run from source
 

@@ -1547,3 +1547,66 @@ Recorded as **D19**, R4.6a/R4.6b, and design.md §6.6.
 from — the app reloads out of it — so there is no second screen for its header to disagree with.
 The guard keys on `<PageHeader>` rather than on a hardcoded list, so this is an absence by
 construction rather than an omission to remember.
+
+---
+
+## T4.4c — the layout was breathing, and the toolbar had three subjects on it
+
+### The shift was the scrollbar, and it was never about padding
+
+Reported twice. The first report read as padding and the second named it exactly: "items at the
+edge of the screen seem to kind of move inward or outward". That is horizontal, on both edges, and
+symmetric — which is a centred block in a viewport that changes width.
+
+`.app` is `max-width: 860px; margin: 0 auto`. A page long enough to scroll takes the scrollbar's
+width out of the viewport, so the centred block loses half of it on each side. Every navigation
+between a long view (the catalog's 42 rows, a catalog's 35 entries) and a short one (Add, the
+registry) moved the whole layout. `scrollbar-gutter: stable` on `html` reserves it always.
+
+**Worth recording as a class of bug:** it is invisible on a Mac set to overlay scrollbars, which
+reserve no space at all. So it is a defect only some machines can show, which is precisely why it
+survived a header rewrite that was *looking* for exactly this symptom. Pinned in
+`pageChrome.spec.ts` rather than left to whoever next opens the app on the right settings.
+
+### Six controls, three subjects
+
+The toolbar held search, Add, Catalogs, Refresh, Sync, and Doctor. Sorted by what they act on,
+those are three different things, and two were in the wrong place.
+
+**`add` was the structural one.** It writes a catalog entry, which D18 had already placed in the
+Catalogs view — and the proof was sitting in the code from the previous commit: the Catalogs
+level-2 empty state read *"Add one from the catalog view"*, pointing back out to the toolbar. A
+view that has to send you elsewhere to do its own subject's most basic action is describing a
+misplacement.
+
+Moving it **deleted a question rather than relocating one.** The destination dropdown, the
+`editableCatalogs` filter behind it, and the shared-catalog explanation next to it all existed
+because the form opened from the toolbar with no idea which catalog was meant. Opened from inside
+a catalog, the destination is answered by where you are. R4.1 is amended rather than merely
+reworded, since it specified that dropdown. `contributedCatalogs` went with it: it existed to
+explain why `shared` was absent from a list that no longer exists, and `describeCatalog` already
+says the same thing per catalog on the registry screen.
+
+**`doctor` matched its own help text.** "validate config + catalog integrity" is the Catalogs
+view's subject; its install findings are a bonus rather than what it is for. It is now **Check
+health** on the registry level.
+
+**`sync` stayed, deliberately.** The tidy move would have been to group it with `doctor` under
+"maintenance", but they are not the same kind of thing: `sync` acts on what is installed rather
+than on a catalog, and it is routine. Grouping them would have buried the frequent action behind
+the rare one, which is the mistake this whole pass exists to undo.
+
+### The flow bug the move created
+
+Opening the add form **unmounts** `Catalogs`, so its `openCatalog` — a plain ref — was gone, and
+closing the form would drop the user back at the registry rather than at the catalog they were
+adding to. Same shape as the Back-label and stale-trail bugs in T4.4a: found by tracing the
+navigation rather than by any check.
+
+Fixed by making the parent hold the position: `Catalogs` emits `navigate` and `App` hands it back
+as `atCatalog` on the next mount. Routed through one `goTo()` rather than emitted at each call
+site, so a navigation path added later cannot report only some of its moves — the same reasoning
+that put every subprocess through one `spawn()`.
+
+The view chain is now ordered so a view opened *from* another sits above it, which means closing
+Doctor or the add form falls back to whatever is still open underneath with no state to restore.
