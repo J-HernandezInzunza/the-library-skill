@@ -53,10 +53,11 @@ identical record. Client-side filtering stays because it is instant and offline,
 ## Phase 0 — Gate and de-risking (ships first)
 
 - [x] **T0.1 — Establish the check gate**
-  - **Files:** `desktop/package.json`, `desktop/src-tauri/Cargo.toml`
+  - **Files:** `desktop/package.json`, `desktop/src-tauri/Cargo.toml`, `desktop/vite.config.ts`
   - **Requirements:** R8.2
-  - **Do:** Add a single `npm run check` that runs `vue-tsc --noEmit`, `cargo check`, `cargo test`,
-    and `vite build`. This exists before any feature work so every later task has one verification
+  - **Do:** Add a single `npm run check` that runs `vue-tsc --noEmit`, `vitest run`, `cargo check`,
+    `cargo test`, and `vite build`. (Vitest was added in Phase 1, once `src/catalog.ts` gave the
+    frontend logic worth guarding; see [progress.md](progress.md).) This exists before any feature work so every later task has one verification
     command and no task invents its own.
   - **Verify:** `npm run check` passes clean on the current prototype.
   - **Commit:** `chore(desktop): add a single check gate for type, build, and tests`

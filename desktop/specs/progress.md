@@ -217,3 +217,20 @@ and `.app`'s top padding moved into the header so the gap above the title stays 
 - Two manual checks remain outside the gate: a renamed wrapper surfacing `WrapperMissing`, and
   every empty/error state, since only the populated path has been seen running.
 - `cargo` is not on a non-login shell's `PATH`, so `npm run check` fails there. Belongs in T8.1.
+
+---
+
+## Vitest closes the frontend half of the gate
+
+`npm run check` now runs `vitest run` between `vue-tsc` and the cargo steps. Config lives in
+`vite.config.ts` (importing `defineConfig` from `vitest/config`, a superset) rather than a second
+config file, so component tests later inherit the Vue plugin without further setup. Specs are
+colocated as `src/**/*.spec.ts`; `src-tauri` is excluded because cargo owns Rust tests.
+
+Eight tests cover `src/catalog.ts` — the winner-resolution and inventory logic that produced the
+original display bug and that the gate previously could not see.
+
+**Verified by mutation, not just by passing.** Deleting the override special-case from
+`catalogRows` made the suite fail with `expected 'not installed' to be 'overridden by personal'`
+— the exact contradiction first reported, reproduced from the test suite. The regression is now
+pinned rather than merely fixed.
