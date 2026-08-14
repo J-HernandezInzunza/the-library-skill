@@ -234,3 +234,51 @@ original display bug and that the gate previously could not see.
 `catalogRows` made the suite fail with `expected 'not installed' to be 'overridden by personal'`
 — the exact contradiction first reported, reproduced from the test suite. The regression is now
 pinned rather than merely fixed.
+
+---
+
+## Phase 1a — first run
+
+**T1a.1** maps exit 3 to `AppError::NotBootstrapped`. `interpret` gained the tool dir as a
+parameter so the error can name the directory to fix; it stays pure, so the exit-code semantics
+are still testable from recorded payloads.
+
+**T1a.2** adds `bootstrap_tool`, running `python3 bootstrap.py --json --dir <home>`. `--dir` is
+passed explicitly for the same reason `LIBRARY_CWD` is: the script would otherwise infer it, and
+an inferred path is the one that surprises you. On failure the script reports `problem` on
+*stdout* and leaves stderr empty, so reading stderr alone would have surfaced a blank error.
+
+Verified end to end on a real fresh clone (`git archive` into a temp dir, no `.venv`):
+`library list` exits 3, `bootstrap.py --json` returns `created_venv: true, installed_pyyaml:
+true`, and the catalog then loads 42 records — no restart. Re-running against the already-set-up
+repo returned `created_venv: false`, confirming idempotency.
+
+`FirstRun.vue` is lazy-loaded: it is shown only on a machine that has never run the tool, so it
+has no business in the bundle everyone else loads.
+
+**T1a.3 — detecting "no config" needed a decision.** An unconfigured tool fails *every* command
+with exit 1 and no structured marker; unlike the unbootstrapped case there is no reserved exit
+code. Matching the CLI's stderr text would break the first time that sentence is reworded, so
+instead `run_json` checks for the config file's **absence**, and only on a failure path. A real
+error is therefore never relabelled as a setup problem, which is pinned by a test
+(`a_real_failure_in_a_configured_tool_stays_a_failure`).
+
+This is the app knowing one fact about the tool's own layout — the config filename — which is the
+same class as knowing where the `library` wrapper lives. It is not catalog logic. If the CLI ever
+reserves an exit code for "not configured", this check should be deleted in favour of it.
+
+Bootstrapping and configuring are separate problems, so `FirstRun` advances to a second stage
+rather than reporting success: a bootstrap that returns `config_exists: false` shows the
+`library init` command instead of handing back an empty catalog. The app never writes that file.
+
+Verified on the fixture clone: with a venv and no config, the CLI exits 1 and the directory is
+byte-identical afterwards — no config was created.
+
+**Caught in the process:** the fixture `config.local.yaml` was matched by the root `.gitignore`,
+so the suite would have passed here and failed on any fresh clone, with every failing-command
+test flipping to `NotConfigured`. `.gitignore` now carries an explicit negation for the fixtures
+path.
+
+**Known risk, not addressed:** `bootstrap()` resolves `python3` from `PATH`. Under `tauri dev`
+that is the shell's PATH; a Finder-launched bundle gets a minimal one. macOS ships
+`/usr/bin/python3`, so this holds today, and D9 keeps the app running from source for now.
