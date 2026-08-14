@@ -2089,16 +2089,31 @@ def _dir_identical(a: Path, b: Path) -> bool:
     return all(_dir_identical(a / d, b / d) for d in cmp.common_dirs)
 
 
-def _push_local(src: Source, entry: Entry, local_path: Path) -> dict[str, Any]:
+def _local_push_plan(src: Source, entry: Entry, local_path: Path) -> tuple[Path, bool]:
+    """(destination, would_change) for pushing *local_path* to a local-path source.
+
+    Split out from `_push_local` so `--dry-run` can answer without copying. A preview
+    that writes is worse than no preview, and that is exactly what this used to be: the
+    dry-run check sat *after* the local branch returned, so `push --dry-run` overwrote
+    the source and reported OK.
+    """
     if entry.type == "skill":
         dest = src.path.parent  # type: ignore[union-attr]
-        if _dir_identical(local_path, dest):
-            return {"changed": False, "pushed": False, "dest": str(dest)}
+        return dest, not _dir_identical(local_path, dest)
+
+    dest = src.path  # type: ignore[assignment]
+    same = dest.exists() and filecmp.cmp(local_path, dest, shallow=False)  # type: ignore[arg-type]
+    return dest, not same
+
+
+def _push_local(src: Source, entry: Entry, local_path: Path) -> dict[str, Any]:
+    dest, changed = _local_push_plan(src, entry, local_path)
+    if not changed:
+        return {"changed": False, "pushed": False, "dest": str(dest)}
+
+    if entry.type == "skill":
         _copy_dir(local_path, dest)
     else:
-        dest = src.path  # type: ignore[assignment]
-        if dest.exists() and filecmp.cmp(local_path, dest, shallow=False):  # type: ignore[arg-type]
-            return {"changed": False, "pushed": False, "dest": str(dest)}
         _copy_file(local_path, dest)  # type: ignore[arg-type]
     return {"changed": True, "pushed": False, "dest": str(dest)}
 
@@ -3721,6 +3736,10 @@ def cmd_push(args: argparse.Namespace) -> int:
 
     # The local copy exists and is about to be pushed somewhere — say where, and say so
     # now if that destination was inferred rather than known.
+    #
+    # Reported on stderr *and* as `note` in every --json payload below. A warning that
+    # only reaches a terminal is invisible to the two front doors that cannot read one,
+    # and this is the warning whose cost is an edit landing in someone else's repo.
     note = push_source_warning(cfg, entry)
     if note:
         warn(note)
@@ -3730,10 +3749,26 @@ def cmd_push(args: argparse.Namespace) -> int:
 
     # Local-path sources: overwrite in place, no PR needed (Risk #6).
     if src.kind == "local":
+        if args.dry_run:
+            # Answer without writing. The old code ran the copy first and checked
+            # --dry-run only in the PR branch below, so a local-source preview
+            # overwrote the source and said OK.
+            dest, would_change = _local_push_plan(src, entry, local_path)
+            if args.json:
+                print(json.dumps({
+                    "status": "DRY_RUN", "would_change": would_change, "name": entry.name,
+                    "catalog": entry.catalog, "dest": str(dest), "note": note or None,
+                }, indent=2))
+            elif would_change:
+                print(f"[dry-run] would copy {entry.name} to local source: {dest}")
+            else:
+                print(f"No changes — local copy of {entry.name} matches source.")
+            return 0
+
         res = _push_local(src, entry, local_path)
         if args.json:
             print(json.dumps({"status": "OK", "name": entry.name,
-                              "catalog": entry.catalog, **res}, indent=2))
+                              "catalog": entry.catalog, "note": note or None, **res}, indent=2))
             return 0
         if not res.get("changed"):
             print(f"No changes — local copy of {entry.name} matches source.")
@@ -3782,7 +3817,8 @@ def cmd_push(args: argparse.Namespace) -> int:
         if diff_check.returncode == 0:
             if args.json:
                 print(json.dumps({"status": "OK", "name": entry.name,
-                                  "catalog": entry.catalog, "changed": False}, indent=2))
+                                  "catalog": entry.catalog, "changed": False,
+                                  "note": note or None}, indent=2))
             else:
                 print(f"No changes — local copy of {entry.name} matches source.")
             return 0
@@ -3798,6 +3834,7 @@ def cmd_push(args: argparse.Namespace) -> int:
                 print(json.dumps({
                     "status": "DRY_RUN", "would_change": True, "name": entry.name,
                     "catalog": entry.catalog, "branch": branch, "diff": diff_proc.stdout,
+                    "note": note or None,
                 }, indent=2))
             else:
                 print(f"[dry-run] would open PR: {branch}\n")
@@ -3814,7 +3851,7 @@ def cmd_push(args: argparse.Namespace) -> int:
 
         if args.json:
             print(json.dumps({"status": "OK", "name": entry.name, "catalog": entry.catalog,
-                              "changed": True, **pr_info}, indent=2))
+                              "changed": True, "note": note or None, **pr_info}, indent=2))
             return 0
 
         if pr_info.get("method") == "gh":
@@ -3828,7 +3865,8 @@ def cmd_push(args: argparse.Namespace) -> int:
     except LibraryError as ex:
         if args.json:
             print(json.dumps({"status": "ERROR", "name": entry.name,
-                              "catalog": entry.catalog, "reason": str(ex)}, indent=2))
+                              "catalog": entry.catalog, "reason": str(ex),
+                              "note": note or None}, indent=2))
         else:
             print(f"Failed to push {entry.name}: {ex}")
         return 1

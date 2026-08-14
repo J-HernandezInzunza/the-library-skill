@@ -2206,6 +2206,37 @@ library:
         self.assertEqual(code, 1)
         self.assertIn("not installed locally", err)
 
+    def test_dry_run_on_a_local_source_writes_nothing(self) -> None:
+        """R13.5 — a preview must not be the thing it is previewing.
+
+        `--dry-run` was only checked inside the PR flow, which the local-source branch
+        returned before ever reaching. So `push --dry-run` against a local path copied
+        the files and reported `status: OK` — indistinguishable from a real push, and
+        the source overwritten by the command that promised not to touch it.
+        """
+        self.install("global", "# edited copy\n")
+        report = self.push("--dry-run", "--from", "global")
+
+        self.assertEqual(report["status"], "DRY_RUN")
+        self.assertTrue(report["would_change"])
+        self.assertEqual(report["dest"], str(self.source_dir))
+        # The whole point: the source is untouched.
+        self.assertEqual((self.source_dir / "SKILL.md").read_text(), "# upstream copy\n")
+
+    def test_dry_run_reports_a_matching_copy_as_no_change(self) -> None:
+        self.install("global", "# upstream copy\n")
+        report = self.push("--dry-run", "--from", "global")
+
+        self.assertEqual(report["status"], "DRY_RUN")
+        self.assertFalse(report["would_change"])
+
+    def test_a_real_push_after_a_dry_run_still_writes(self) -> None:
+        # Guards the obvious over-correction: skipping the copy for every local push.
+        self.install("global", "# edited copy\n")
+        self.push("--dry-run", "--from", "global")
+        self.assertTrue(self.push("--from", "global")["changed"])
+        self.assertEqual((self.source_dir / "SKILL.md").read_text(), "# edited copy\n")
+
 
 # --------------------------------------------------------------------------- #
 # Catalog model (R4.6, R6.1, design §3)

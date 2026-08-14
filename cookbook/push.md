@@ -39,13 +39,19 @@ The warning fires **even when you pass `--catalog`**, because the flag settles t
 destination, not the provenance of the installed files. It is telling you the local copy
 might have come from the other catalog — still worth reading, not a bug.
 
-### 1. Preview the change (optional, remote sources only)
+### 1. Preview the change (optional)
 
 ```bash
 <tool-dir>/library push "<name>" [--from project|global|<path>] [--message "<msg>"] --dry-run
 ```
 
-`--dry-run` shows the exact diff the PR would contain without pushing anything.
+For a **remote source**, `--dry-run` shows the exact diff the PR would contain without
+pushing anything. For a **local-path source** it reports `would_change` and the destination
+directory without copying. Either way it writes nothing.
+
+Both report `status: DRY_RUN`, which is how a caller tells a preview from a real push. With
+`--json`, the multi-catalog warning above is also carried as `note` — `warn()` goes to stderr,
+which a GUI or an agent reading `--json` never sees.
 
 ### 2. Push via the CLI
 
