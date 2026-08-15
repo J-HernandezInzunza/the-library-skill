@@ -1842,3 +1842,45 @@ cannot be set in only some of the paths because `goTo` is the only place the ope
 Worth naming as a class: this is the third navigation bug in this area (the Back *label* in T4.4a,
 the lost level in T4.4c), and all three came from a child view holding navigation state the parent
 also had an opinion about. Each was found by walking the app, none by the gate.
+
+---
+
+## The push warning was answering a question receipts had already settled
+
+Reported from the running app: the multi-catalog warning fired on `grilling`, an entry whose
+provenance the app plainly knows — *"we do know what's installed, meaning the source that it came
+from."*
+
+Correct, and the receipt is the proof. `install_receipt` records `catalog` and `source` alongside
+`dest`, so `push_source_warning`'s claim that "nothing on disk records which copy was installed"
+was **stale**: it predates receipts and kept asserting it while the receipt beside it recorded
+exactly that. It therefore fired on every push of an overridden name, which on this machine is
+seven of thirty-five entries — the common case, warned through, which is how a warning stops being
+read.
+
+**One nuance worth separating**, because the reported reasoning also pointed at the *"resolves —
+this is what installs"* line on the same page: that is **precedence, not provenance**. It says what
+*would* install now, not what *did*. They agree here and diverge the moment you install while
+`shared` wins and later add a personal copy. The receipt is the authority; the copies list is not.
+
+**Three answers now, where there was one:**
+
+| Situation | Result |
+| --- | --- |
+| Receipt agrees with the catalog being pushed to | Silence |
+| Receipt names a *different* catalog | A sharper warning than ambiguity ever was — no longer a guess — naming `--catalog <id>` as the fix |
+| No receipt at all | The original precedence warning, correct for exactly this case and now the only one that reaches it |
+
+The middle row is the one this bought. Previously "you might be pushing to the wrong repo" and "you
+*are* pushing somewhere other than where these files came from" produced the identical sentence.
+
+Its wording also changed to say *why* the provenance is unknown — "no install receipt records which
+copy is on disk" — rather than asserting that nothing does.
+
+**Verified by mutation both ways:** ignoring the receipt fails two tests, and silencing a mismatched
+receipt fails another. 651 CLI tests pass. **Verified live** against the machine's own `grilling`,
+which is held by both catalogs and installed from `personal`: the receipt reports
+`catalog: personal`, and `push --from global --dry-run` now returns `note: null`.
+
+**No app change was needed** — `PushControl` already rendered `note` when present and nothing when
+absent. The fix belonged entirely in `library.py`, where the terminal and the agent get it too.
