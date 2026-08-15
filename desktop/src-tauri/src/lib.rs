@@ -16,9 +16,10 @@ pub mod error;
 pub mod events;
 
 use cli::{
-    AddReport, AddRequest, BootstrapReport, Catalog, DoctorReport, Entry, EntryDetail, InitReport,
-    PushPreview, PushReport, RemovePreview, RemoveReport, SourceSuggestion, SyncReport,
-    UninstallReport, UpdateReport, UpdateRequest, UsePreview, UseReport,
+    AddReport, AddRequest, BootstrapReport, Catalog, CatalogRequest, DoctorReport, Entry,
+    EntryDetail, InitReport, PushPreview, PushReport, RegistrationReport, RemovePreview,
+    RemoveReport, SourceSuggestion, SyncReport, UninstallReport, UnregisterReport, UpdateReport,
+    UpdateRequest, UsePreview, UseReport,
 };
 use error::AppError;
 
@@ -197,6 +198,25 @@ async fn catalog_init(
     off_thread(move || cli::init(&app, &repo, &branch)).await
 }
 
+/// Register a catalog, or scaffold and register an empty one (R4.7).
+#[tauri::command]
+async fn registry_add(
+    app: tauri::AppHandle,
+    request: CatalogRequest,
+) -> Result<RegistrationReport, AppError> {
+    off_thread(move || cli::registry_add(&app, &request)).await
+}
+
+/// Unregister a catalog, leaving its entries and their files alone (R4.7).
+#[tauri::command]
+async fn registry_remove(
+    app: tauri::AppHandle,
+    id: String,
+    purge_clone: bool,
+) -> Result<UnregisterReport, AppError> {
+    off_thread(move || cli::registry_remove(&app, &id, purge_clone)).await
+}
+
 /// The registered catalogs, for per-catalog browsing and origin display.
 #[tauri::command]
 async fn registry_list(app: tauri::AppHandle) -> Result<Vec<Catalog>, AppError> {
@@ -231,6 +251,8 @@ pub fn run() {
             catalog_doctor,
             catalog_init,
             registry_list,
+            registry_add,
+            registry_remove,
             bootstrap_tool
         ])
         .run(tauri::generate_context!())

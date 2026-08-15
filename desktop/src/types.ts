@@ -395,6 +395,54 @@ export interface BootstrapReport {
   python: string;
 }
 
+/**
+ * What `library catalog add` and `catalog init` report once a catalog is registered.
+ *
+ * One shape for both: they answer the same question and differ only in whether the file
+ * already existed, which `created` records.
+ */
+export interface RegistrationReport {
+  status: string;
+  id: string;
+  kind: string;
+  /** 1-based. Reported back rather than assumed — it is the point of the precedence choice. */
+  precedence: number;
+  registered: number;
+  write_mode: string;
+  writable: boolean;
+  entries: number;
+  location: string;
+  /** The file `catalog init` scaffolded; null when registering an existing catalog. */
+  created: string | null;
+  migrated: string[];
+}
+
+/** What `library catalog remove --json` reports. Entries and their files are untouched. */
+export interface UnregisterReport {
+  status: string;
+  id: string;
+  purged_clone: string | null;
+  /** Where a remote's clone was left, so the report can say what is still on disk. */
+  clone_kept_at: string | null;
+  migrated: string[];
+}
+
+/** The fields the registration form collects, sent as one value. */
+export interface CatalogRequest {
+  id: string;
+  /** A `library.yaml`, or a directory holding one. Exclusive with `repo`. */
+  path: string | null;
+  /** A clone URL. Exclusive with `path`. */
+  repo: string | null;
+  branch: string | null;
+  /** True when this catalog should win a name another also defines. */
+  wins: boolean;
+  /** Remote only: send writes through a pull request rather than a push. */
+  protected: boolean;
+  /** Scaffold an empty catalog at `path` rather than registering an existing one. */
+  create: boolean;
+}
+
 /** One registered catalog from `library catalog list --json`. */
 export interface Catalog {
   id: string;

@@ -604,25 +604,27 @@ leaves the entry reinstallable, `remove` does not, so the same dependent list me
     Back from a handed-off edit form returns to the entry in one press. Gate passes.
   - **Commit:** `feat(desktop): card every section, and stop back skipping a level`
 
-- [ ] **T4.6 — Registering and unregistering catalogs**
-  - **Files:** `desktop/src-tauri/src/lib.rs`, `desktop/src/components/Catalogs.vue`
-  - **Requirements:** R4.7, D16, D18
-  - **Note:** No longer a separate `CatalogSettings.vue`. T4.4a built the **Catalogs** view and
-    its first level is already the registry, so this task fills that level in rather than adding
-    a second surface for the same subject. Registering a catalog and managing what is in it are
-    two levels of one thing.
-  - **Do:** `registry_add` and `registry_remove` over `catalog add` / `catalog remove`, reached
-    from a settings surface rather than first run. A local catalog is chosen with a native
-    directory picker, labelled as the CLI defines it — a `library.yaml`, or a directory holding
-    one. Ask for the id explicitly; the CLI requires it and cannot infer it.
-    Present precedence in plain language ("this catalog wins when two define the same name"),
-    not as a `first`/`last` dropdown: the default is `first`, and getting it backwards silently
-    changes which copy installs. `catalog init` (scaffold an empty catalog) is the answer for a
-    teammate with no catalog of their own — offer it here or note it as deferred.
-  - **Verify:** Adding a local directory registers it and its entries appear with a new catalog
-    tab and colour. Removing it leaves the entries' files on disk untouched. A path with no
-    `library.yaml` is refused by the CLI and the message is surfaced. Gate passes.
-  - **Commit:** `feat(desktop): add and remove registered catalogs from settings`
+- [x] **T4.6 — Registering and unregistering catalogs**
+  - **Files:** `desktop/src-tauri/src/{cli,lib}.rs`,
+    `desktop/src/components/{RegisterCatalog,Catalogs}.vue`
+  - **Requirements:** R4.7, D16, D18, D20
+  - **Do:** `registry_add` over `catalog add` / `catalog init`, and `registry_remove` over
+    `catalog remove`, both on the Catalogs view's registry level. Three modes, because they
+    are three different acts: register an existing local catalog, **create** an empty one,
+    and add a shared repository. A local path comes from a native directory picker, which is
+    the one input that cannot be relative or missing — and `catalog init` treats a path that
+    is not an existing directory as a *file* to create, so the picker also keeps the app on
+    the branch its own hint describes.
+    Precedence is a plain-language checkbox ("when another catalog defines the same name, use
+    this catalog's copy"), never a `first`/`last` dropdown, and `--position` is always passed
+    rather than left to the CLI's default. Unregistering confirms and states plainly that the
+    catalog's entries and every file installed from them stay where they are; `--purge-clone`
+    is a separate tick, offered only for a remote.
+  - **Verify:** Creating into a picked directory scaffolds a `library.yaml` and registers it;
+    an entry added to it appears in `list`; unregistering leaves that file byte-identical; a
+    directory with no `library.yaml` is refused with the CLI's message, which says the config
+    was not modified. Gate passes.
+  - **Commit:** `feat(desktop): register and unregister catalogs from the Catalogs view`
 
 ---
 

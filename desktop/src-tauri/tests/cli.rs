@@ -811,6 +811,112 @@ fn a_push_that_failed_surfaces_its_reason_rather_than_an_empty_error() {
     }
 }
 
+/// The registration form's fields, with the two the caller under test cares about.
+fn registration(id: &str, wins: bool) -> cli::CatalogRequest {
+    cli::CatalogRequest {
+        id: id.into(),
+        path: Some("/Users/dev/catalogs/work".into()),
+        repo: None,
+        branch: None,
+        wins,
+        protected: false,
+        create: false,
+    }
+}
+
+#[test]
+fn a_catalog_that_should_win_is_registered_first() {
+    // `--position` is the flag whose two values silently decide which copy of a name
+    // installs, so it is always passed rather than left to the CLI's default. The fixture
+    // echoes it back, so a form that sent the wrong one fails here.
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let report = cli::registry_add(&log, &registration("work", true)).expect("should parse");
+
+    assert_eq!(
+        &log.started.lock().unwrap()[0].argv[1..],
+        ["catalog", "add", "--id", "work", "--position", "first", "--path",
+         "/Users/dev/catalogs/work", "--json"]
+    );
+    assert!(report.location.ends_with("position=first"));
+    // Reported back rather than assumed: precedence is the whole point of the choice.
+    assert_eq!(report.precedence, 1);
+    assert!(report.created.is_none());
+}
+
+#[test]
+fn a_catalog_that_should_lose_is_registered_last() {
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let report = cli::registry_add(&log, &registration("archive", false)).expect("should parse");
+
+    let argv = log.started.lock().unwrap()[0].argv[1..].to_vec();
+    assert!(argv.windows(2).any(|w| w == ["--position", "last"]), "argv: {argv:?}");
+    assert!(report.location.ends_with("position=last"));
+}
+
+#[test]
+fn scaffolding_a_catalog_uses_init_and_reports_what_it_created() {
+    // `catalog init` takes its path positionally and has no --path flag, so the two
+    // branches cannot share an argv even though they share a payload.
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let request = cli::CatalogRequest { create: true, ..registration("mine", true) };
+    let report = cli::registry_add(&log, &request).expect("should parse");
+
+    assert_eq!(
+        &log.started.lock().unwrap()[0].argv[1..],
+        ["catalog", "init", "/Users/dev/catalogs/work", "--id", "mine",
+         "--position", "first", "--json"]
+    );
+    // What distinguishes scaffolding from registering, and the only reason to say
+    // something different in the confirmation.
+    assert_eq!(report.created.as_deref(), Some("/Users/tester/new/library.yaml"));
+}
+
+#[test]
+fn unregistering_leaves_the_clone_unless_asked() {
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let report = cli::registry_remove(&log, "archive", false).expect("should parse");
+
+    let argv = log.started.lock().unwrap()[0].argv[1..].to_vec();
+    assert_eq!(argv, ["catalog", "remove", "archive", "--json"]);
+    assert!(!argv.iter().any(|a| a == "--purge-clone"), "argv: {argv:?}");
+    assert!(report.purged_clone.is_none());
+}
+
+#[test]
+fn purging_a_clone_is_only_ever_asked_for_explicitly() {
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    cli::registry_remove(&log, "archive", true).expect("should parse");
+
+    assert_eq!(
+        &log.started.lock().unwrap()[0].argv[1..],
+        ["catalog", "remove", "archive", "--purge-clone", "--json"]
+    );
+}
+
+#[test]
+fn unregistering_the_only_catalog_stays_a_failure() {
+    // The CLI refuses: the tool needs one catalog to read from. A GUI that swallowed this
+    // would show a registry that had not changed and no reason why.
+    let _guard = with_fixture_home();
+
+    let err = cli::registry_remove(&Recorder::default(), "personal", false).unwrap_err();
+
+    match err {
+        AppError::Cli { stderr, .. } => assert!(stderr.contains("only registered"), "{stderr}"),
+        other => panic!("expected the CLI's refusal, got {other:?}"),
+    }
+}
+
 #[test]
 fn a_source_suggestion_comes_back_with_the_path_it_was_asked_about() {
     let _guard = with_fixture_home();

@@ -209,8 +209,52 @@ case "$sub" in
     esac
     ;;
   catalog)
-    # `catalog list` — the subcommand arrives as "$1" after the shift.
-    cat "$here/payloads/catalogs.json"
+    # `catalog list`, `catalog add`, `catalog init`, `catalog remove` — the action arrives
+    # as "$1" after the shift.
+    action=$1
+    shift
+    case "$action" in
+      list)
+        cat "$here/payloads/catalogs.json"
+        ;;
+      add|init)
+        # The argv is echoed into the payload's `location`, because --position is the flag
+        # whose two values silently decide which copy of a name installs. A form that sent
+        # the wrong one would otherwise pass every test.
+        id=UNSET
+        position=UNSET
+        prev=
+        for a in "$@"; do
+          [ "$prev" = "--id" ] && id=$a
+          [ "$prev" = "--position" ] && position=$a
+          prev=$a
+        done
+        # `catalog init` scaffolds, so it reports what it created; `add` does not.
+        created=null
+        [ "$action" = "init" ] && created='"/Users/tester/new/library.yaml"'
+        printf '{"status":"OK","id":"%s","kind":"local","precedence":1,"registered":2,' "$id"
+        printf '"write_mode":"local","writable":true,"entries":0,'
+        printf '"location":"/Users/tester/new/library.yaml?position=%s","created":%s,' "$position" "$created"
+        printf '"migrated":[]}\n'
+        ;;
+      remove)
+        # Unregistering the only catalog is refused: the tool needs one to read from.
+        case "$1" in
+          personal)
+            echo "error: 'personal' is the only registered catalog" >&2
+            exit 1
+            ;;
+          *)
+            printf '{"status":"OK","id":"%s","purged_clone":null,' "$1"
+            printf '"clone_kept_at":null,"migrated":[]}\n'
+            ;;
+        esac
+        ;;
+      *)
+        echo "fixture has no catalog action: $action" >&2
+        exit 1
+        ;;
+    esac
     ;;
   probe)
     # Proves the layer's own contract reached the child: `--json` appended by

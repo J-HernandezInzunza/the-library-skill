@@ -1884,3 +1884,87 @@ which is held by both catalogs and installed from `personal`: the receipt report
 
 **No app change was needed** — `PushControl` already rendered `note` when present and nothing when
 absent. The fix belonged entirely in `library.py`, where the terminal and the agent get it too.
+
+---
+
+## T4.6 — registering catalogs, and Phase 4 closes
+
+The Catalogs view's registry level was built in T4.4a as a read-only list with the note that
+T4.6 would fill it in. It does, which is why this task added no new surface: **Add a catalog**
+sits in the header beside **Check catalog health**, and each row grew an **Unregister**.
+
+**Three modes, because they are three different acts** rather than one form with a switch:
+
+| Mode | CLI | Why it is its own choice |
+| --- | --- | --- |
+| Register an existing catalog | `catalog add --path` | The file is already there and already has entries |
+| Create a new empty one | `catalog init <path>` | The answer for a teammate with no catalog of their own, and what the registry's empty state now points at |
+| Add a shared repository | `catalog add --repo --branch` | Clones over the network, and the write mode is a decision |
+
+Building all three rather than only local: the alternative was printing a command for the remote
+case, which is the "go use a terminal" failure T1a.4 removed from first run. First run already
+registers a remote through the app; refusing to register a *second* one from the same app would be
+arbitrary.
+
+**The directory picker is load-bearing, not a convenience.** `cmd_catalog_init` treats a path that
+is not an existing directory as a **file** to create — so `catalog init ~/catalogs/mine` where
+`mine` does not exist writes a file called `mine`, not `mine/library.yaml`. Found by testing the
+terminal shape of the call. A native picker only ever returns an existing directory, so the app is
+always on the branch its own hint describes ("a `library.yaml` is written here"). Worth knowing
+before anyone replaces the picker with a text field.
+
+**Precedence is a sentence, not a dropdown.** `--position first` is the CLI's default and getting
+it backwards silently changes which copy of a name installs, so the form says what the choice
+*does* — "when another catalog defines the same name, use this catalog's copy" — and the flag is
+**always** passed rather than left to a default the form does not show. Verified by mutation twice:
+inverting the mapping fails three tests, and dropping the flag to rely on the CLI's default fails
+two.
+
+**Unregistering says what it does not do.** The confirmation states that the catalog's entries stay
+in their file and every copy installed from them stays on disk, because "remove" next to a list of
+catalogs reads like a delete. `--purge-clone` is a separate tick and only appears for a remote,
+since a local catalog has no clone to purge. The CLI's refusal to unregister the *last* catalog is
+mirrored app-side by not offering the button, and still surfaced if it fires.
+
+**Verified end to end against the real CLI**, in a scratch tool dir with its own config and its own
+copy of `library.py`:
+
+1. `catalog init <picked dir> --id scratch --position last` → scaffolded `library.yaml`, precedence
+   2 of 2.
+2. `add --catalog scratch` → the entry appears in `list` under `scratch`.
+3. `catalog add --path --position first` → registered ahead of it.
+4. `catalog remove scratch` → the catalog file is **byte-identical**, entry included.
+5. A directory with no `library.yaml` → refused, with the CLI's own message, which already ends
+   with "config.local.yaml was not modified".
+6. Unregistering the only catalog → refused with its reason.
+
+The developer's own registry was untouched throughout: `personal` (35) and `shared` (7), 42 records,
+35 installed.
+
+---
+
+## State of play at the end of Phase 4
+
+**Done:** T4.1–T4.6, plus the unplanned T4.4a–T4.4d and T4.5a–T4.5b that came out of using the app.
+
+**The gate:** `vue-tsc`, 92 Vitest cases, `cargo check`, 26 Rust unit + 60 integration + 3
+command-surface tests, `vite build`. The CLI's own suite is at 651.
+
+**Five `library.py` fixes came out of this phase**, all found by driving it from a GUI rather than
+by reading it:
+
+| Fix | Why the terminal had not caught it |
+| --- | --- |
+| `init` left a config behind when the clone failed | The recovery flag was in the error message, which a GUI never shows |
+| `dependents[]` added to `show` | Nothing computed the inverse of `requires` |
+| `suggest-source` given a `--json` surface | It existed only inside the text of an error |
+| `push --dry-run` **wrote** a local-path source | The dry-run check sat after the branch that returned first |
+| `push_source_warning` ignored install receipts | It predates them and kept asserting nothing recorded provenance |
+
+The pattern is worth stating: **a warning or a fix that lives only in stderr, or only in a message,
+is invisible to two of the three front doors.** Four of those five are that same defect.
+
+**Nine UI findings, none of which the gate could see**, and all from looking at the running app:
+the frozen window (T3a.3), the scrollbar gutter, five headers, the toolbar's three subjects, the
+detail page's three scope pickers, and three separate navigation-state bugs. That is the standing
+lesson of this phase: the gate proves the contracts, not that the app works.

@@ -565,6 +565,71 @@ pub struct Catalog {
     pub skipped: Option<String>,
 }
 
+/// What `catalog add` and `catalog init` report once a catalog is registered.
+///
+/// One shape for both, because they answer the same question — "what did I just get?" —
+/// and differ only in whether the file already existed. `created` is what distinguishes
+/// them, and it is absent for `add`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RegistrationReport {
+    pub status: String,
+    pub id: String,
+    pub kind: String,
+    /// 1-based, and the reason one copy of a name beats another. The whole point of the
+    /// precedence choice, so it is reported back rather than assumed.
+    pub precedence: u32,
+    pub registered: u32,
+    pub write_mode: String,
+    pub writable: bool,
+    pub entries: u32,
+    pub location: String,
+    /// The catalog file `catalog init` scaffolded. Absent when registering an existing one.
+    #[serde(default)]
+    pub created: Option<String>,
+    /// Legacy-config rewrites the CLI performed on the way through, if any.
+    #[serde(default)]
+    pub migrated: Vec<String>,
+}
+
+/// What `catalog remove --json` reports.
+///
+/// Unregistering never touches the catalog's entries or the files installed from them; the
+/// only thing it can delete is a remote's clone, and only when asked.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UnregisterReport {
+    pub status: String,
+    pub id: String,
+    #[serde(default)]
+    pub purged_clone: Option<String>,
+    /// Where the clone was left, so the report can say what is still on disk.
+    #[serde(default)]
+    pub clone_kept_at: Option<String>,
+    #[serde(default)]
+    pub migrated: Vec<String>,
+}
+
+/// The fields the registration form collects, as one value rather than seven arguments.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CatalogRequest {
+    pub id: String,
+    /// A `library.yaml`, or a directory holding one. Exclusive with `repo`.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// A clone URL. Exclusive with `path`.
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// True when this catalog should win a name another also defines.
+    pub wins: bool,
+    /// Remote only: send writes through a pull request rather than a push.
+    #[serde(default)]
+    pub protected: bool,
+    /// Scaffold an empty catalog at `path` instead of registering an existing one.
+    #[serde(default)]
+    pub create: bool,
+}
+
 /// The install receipt behind an entry's `state`, when the tool put the copy there.
 ///
 /// Absent for `untracked` and never-installed entries, so every field is optional
@@ -1068,6 +1133,66 @@ pub fn push(
 /// invisible to a GUI. Rebuilding the remote-URL logic here would be the R1.1 failure.
 pub fn suggest_source(sink: &dyn CommandSink, path: &str) -> Result<SourceSuggestion, AppError> {
     parse(run_json(sink, &["suggest-source", path])?)
+}
+
+/// Register a catalog, or scaffold and register one (R4.7).
+///
+/// `catalog init` and `catalog add` are one function because they are one intent with one
+/// payload; `create` selects between them. Strict about exit codes: both refuse a
+/// duplicate id or an unusable target with exit 1, and the CLI's message already says the
+/// config was not modified, so it is surfaced verbatim.
+///
+/// `wins` is the app's word for `--position`. The CLI's default is `first`, and getting it
+/// backwards silently changes which copy of a name installs — so it is always passed
+/// explicitly rather than left to a default the form does not show.
+pub fn registry_add(
+    sink: &dyn CommandSink,
+    request: &CatalogRequest,
+) -> Result<RegistrationReport, AppError> {
+    let position = if request.wins { "first" } else { "last" };
+
+    let mut args = vec!["catalog"];
+    if request.create {
+        // `catalog init` takes the path positionally and has no --repo: it scaffolds a
+        // file, which only makes sense on this machine.
+        let path = request.path.as_deref().unwrap_or_default();
+        args.extend(["init", path, "--id", &request.id, "--position", position]);
+        return parse(run_json(sink, &args)?);
+    }
+
+    args.extend(["add", "--id", &request.id, "--position", position]);
+    if let Some(path) = &request.path {
+        args.extend(["--path", path]);
+    }
+    if let Some(repo) = &request.repo {
+        args.extend(["--repo", repo]);
+    }
+    if let Some(branch) = &request.branch {
+        args.extend(["--branch", branch]);
+    }
+    if request.protected {
+        args.push("--protected");
+    }
+
+    parse(run_json(sink, &args)?)
+}
+
+/// Unregister a catalog (R4.7).
+///
+/// `purge_clone` deletes a remote's clone directory and is only ever passed from a
+/// confirmation that says so. The catalog's own entries are never touched by either: for a
+/// local catalog the file stays exactly where it is, which is what makes unregistering a
+/// reversible act rather than a deletion.
+pub fn registry_remove(
+    sink: &dyn CommandSink,
+    id: &str,
+    purge_clone: bool,
+) -> Result<UnregisterReport, AppError> {
+    let mut args = vec!["catalog", "remove", id];
+    if purge_clone {
+        args.push("--purge-clone");
+    }
+    parse(run_json(sink, &args)?)
 }
 
 /// The registered catalogs, highest precedence first.

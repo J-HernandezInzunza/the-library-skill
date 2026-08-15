@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import { catalogHue, describeCatalog, editableCatalogs } from "../catalog";
-import type { Catalog, Entry } from "../types";
+import { withActivity } from "../commandActivity";
+import { describeAppError, type Catalog, type Entry, type UnregisterReport } from "../types";
 import EntryEditor from "./EntryEditor.vue";
 import EntryRemove from "./EntryRemove.vue";
 import PageHeader from "./PageHeader.vue";
+import RegisterCatalog from "./RegisterCatalog.vue";
+import StatusBanner from "./StatusBanner.vue";
 
 const props = defineProps<{
   /** The registry, which decides what can be managed and in what order. */
@@ -68,6 +72,42 @@ const catalog = computed(() => props.catalogs.find((c) => c.id === openCatalog.v
 
 /** True when nothing on this machine can be written to, which needs saying out loud. */
 const nothingEditable = computed(() => editableIds.value.size === 0);
+
+const registering = ref(false);
+/** The catalog awaiting an unregister confirmation. */
+const unregistering = ref<Catalog | null>(null);
+const purgeClone = ref(false);
+const failure = ref("");
+const removed = ref<UnregisterReport | null>(null);
+
+/**
+ * The CLI refuses to unregister the last catalog, and the form should not offer it.
+ *
+ * Not a duplicated rule so much as the same fact stated where it is actionable: a button
+ * that always fails is worse than no button, and the refusal is still surfaced if the
+ * registry changes underneath.
+ */
+const canUnregister = computed(() => props.catalogs.length > 1);
+
+async function unregister() {
+  const target = unregistering.value;
+  if (!target) return;
+
+  failure.value = "";
+  try {
+    removed.value = await withActivity(`unregistering ${target.id}…`, () =>
+      invoke<UnregisterReport>("registry_remove", {
+        id: target.id,
+        purgeClone: purgeClone.value,
+      }),
+    );
+    unregistering.value = null;
+    purgeClone.value = false;
+    emit("changed");
+  } catch (e) {
+    failure.value = describeAppError(e);
+  }
+}
 
 /**
  * The catalog's own inventory, overridden copies included.
@@ -155,6 +195,9 @@ watch(
     <template v-if="!openCatalog">
       <PageHeader title="Catalogs" :back="backTo" @back="emit('close')">
         <template #actions>
+          <button type="button" class="ghost" @click="registering = !registering">
+            Add a catalog
+          </button>
           <!-- `doctor` validates config and catalog integrity, so this is its subject
                rather than the install list it used to sit above. -->
           <button type="button" class="ghost" @click="emit('doctor')">
@@ -162,14 +205,30 @@ watch(
           </button>
         </template>
       </PageHeader>
+
+      <StatusBanner v-if="failure" kind="error" :detail="failure" />
+      <StatusBanner v-else-if="removed" kind="success">
+        Unregistered {{ removed.id }}. Its entries and every file installed from them are
+        untouched<template v-if="removed.purged_clone">, and its clone was deleted</template
+        ><template v-else-if="removed.clone_kept_at">
+          , and its clone is still at {{ removed.clone_kept_at }}</template
+        >.
+      </StatusBanner>
+
+      <RegisterCatalog
+        v-if="registering"
+        :catalogs="catalogs"
+        @registered="emit('changed')"
+        @close="registering = false"
+      />
       <p class="catalogs__lead">
         Where your entries come from, in precedence order: when two catalogs define the same
         name, the one nearer the top is the copy that installs.
       </p>
       <p v-if="nothingEditable" class="catalogs__lead">
         None of these is a catalog you can edit from here. A catalog of your own is a
-        <code>library.yaml</code> file on this machine; register one and it appears in this list
-        with its entries editable.
+        <code>library.yaml</code> file on this machine — <strong>Add a catalog</strong> above
+        will create an empty one and register it.
       </p>
       <ul class="catalogs__list">
         <li
@@ -195,6 +254,32 @@ watch(
           </div>
           <p class="catalogs__where">{{ option.location }}</p>
           <p class="catalogs__why">{{ describeCatalog(option).note }}</p>
+
+          <button
+            v-if="canUnregister && unregistering?.id !== option.id"
+            type="button"
+            class="ghost danger catalogs__unregister"
+            @click="unregistering = option"
+          >
+            Unregister
+          </button>
+
+          <div v-if="unregistering?.id === option.id" class="catalogs__confirm fade-in">
+            <p class="catalogs__question">Stop reading from {{ option.id }}?</p>
+            <p class="catalogs__note">
+              Its entries stay in their catalog file and every copy installed from them stays
+              on disk. Only this machine's list of catalogs changes, and registering it again
+              brings it back.
+            </p>
+            <label v-if="option.kind !== 'local'" class="catalogs__purge">
+              <input v-model="purgeClone" type="checkbox" />
+              <span>Also delete the clone this machine keeps of that repository.</span>
+            </label>
+            <div class="catalogs__confirm-actions">
+              <button type="button" class="ghost" @click="unregistering = null">Cancel</button>
+              <button type="button" class="danger" @click="unregister()">Unregister</button>
+            </div>
+          </div>
         </li>
       </ul>
     </template>
@@ -322,6 +407,42 @@ watch(
   font-size: 0.74rem;
   line-height: 1.45;
   opacity: 0.65;
+}
+.catalogs__unregister {
+  margin-top: 0.5rem;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.72rem;
+}
+.catalogs__confirm {
+  margin-top: 0.6rem;
+  padding: 0.7rem;
+  border-radius: 8px;
+  background: rgba(220, 38, 38, 0.08);
+  border-left: 3px solid #dc2626;
+}
+.catalogs__question {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.catalogs__note {
+  margin: 0.4rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  opacity: 0.8;
+}
+.catalogs__purge {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+.catalogs__confirm-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
 }
 .catalogs__entry {
   border-radius: 8px;
