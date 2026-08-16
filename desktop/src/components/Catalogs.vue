@@ -220,11 +220,24 @@ watch(
 
 <template>
   <section class="view">
+    <!-- Its own level, not a panel dropped on top of the list: the list already has a
+         drill-in level for managing a catalog's entries, and a second navigation idiom
+         for "go do a focused thing, then come back" was the inconsistency, not the
+         inline form itself. -->
+    <template v-if="registering">
+      <PageHeader title="Add a catalog" back="Catalogs" @back="registering = false" />
+      <RegisterCatalog
+        :catalogs="catalogs"
+        @registered="emit('changed')"
+        @close="registering = false"
+      />
+    </template>
+
     <!-- Level 1: the registry. -->
-    <template v-if="!openCatalog">
+    <template v-else-if="!openCatalog">
       <PageHeader title="Catalogs" :back="backTo" @back="emit('close')">
         <template #actions>
-          <button type="button" class="ghost" @click="registering = !registering">
+          <button type="button" class="ghost" @click="registering = true">
             Add a catalog
           </button>
           <!-- `doctor` validates config and catalog integrity, so this is its subject
@@ -269,12 +282,6 @@ watch(
         </p>
       </StatusBanner>
 
-      <RegisterCatalog
-        v-if="registering"
-        :catalogs="catalogs"
-        @registered="emit('changed')"
-        @close="registering = false"
-      />
       <p class="catalogs__lead">
         Where your entries come from, in precedence order: when two catalogs define the same
         name, the one nearer the top is the copy that installs.

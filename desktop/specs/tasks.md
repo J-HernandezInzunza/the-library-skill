@@ -658,6 +658,37 @@ leaves the entry reinstallable, `remove` does not, so the same dependent list me
     not three. A batch dry run plans every requested entry and writes nothing. Gate passes.
   - **Commit:** `feat(desktop): install a selection from a catalog in one batch`
 
+- [ ] **T4.8 — Bulk uninstall the selection**
+  - **Files:** `library.py`, `desktop/src-tauri/src/{cli,lib}.rs`,
+    `desktop/src/components/BulkInstall.vue`
+  - **Requirements:** R3.6
+  - **Do:** The counterpart T4.7 left missing: selection can install a batch and cannot take
+    one back out. `uninstall` takes one name, the same shape `use` had, so it needs the same
+    `nargs="+"`. The selection panel becomes bulk *actions* rather than bulk install.
+    **Two things make it not a mirror of install**, and both need answering rather than
+    assuming: which **scope** a bulk uninstall targets, and what happens when some copies
+    come back `REFUSED` — the tool will not delete a destination it has no receipt for
+    (T3.5), so a batch can be part-done, and one blanket "delete anyway" over thirty copies
+    is exactly the escalation that rule exists to prevent.
+  - **Verify:** A selection uninstalls in one command; a batch containing a hand-made copy
+    reports it refused and deletes the rest. Gate passes.
+  - **Commit:** `feat(desktop): uninstall a selection in one batch`
+
+- [ ] **T4.9 — Bulk remove from a catalog**
+  - **Files:** `library.py`, `desktop/src-tauri/src/{cli,lib}.rs`,
+    `desktop/src/components/Catalogs.vue`
+  - **Requirements:** R4.4
+  - **Do:** Selection in the Catalogs manager's entry list, removing several entries in one
+    write. `remove` needs `nargs="+"` too.
+    **The risk is not symmetrical with the other two bulk actions and should shape the UI:**
+    a bulk install or uninstall is undone by installing again, while removing a catalog
+    entry is recoverable only from git — and not at all for a local catalog that is not a
+    repository. It also fires a dependents warning per entry and produces a diff per entry,
+    both of which need combining into one confirmation rather than N.
+  - **Verify:** Removing a selection writes the catalog once, names every dependent left
+    behind, and shows one combined diff. Gate passes.
+  - **Commit:** `feat(desktop): remove several catalog entries in one write`
+
 ---
 
 ## Phase 5 — Setup manifest
