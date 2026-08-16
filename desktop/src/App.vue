@@ -84,6 +84,23 @@ const pickedNames = computed(() =>
 function selectAll() {
   picked.value = new Set(selectable.value);
 }
+
+/** Enter or leave selection mode. Leaving discards the selection, which is its point. */
+function setSelecting(on: boolean) {
+  picked.value = on ? new Set() : null;
+}
+
+/**
+ * A finished install has consumed the selection, so it stops being selected.
+ *
+ * Selection mode stays on, because the list under it is still the one you were picking
+ * from — and because `BulkInstall` owns the success banner, unmounting it here would
+ * throw away the report of what just happened.
+ */
+function afterBulkInstall() {
+  picked.value = new Set();
+  load();
+}
 // True from the start: the app always loads on mount, and defaulting to false shows an
 // empty catalog for a frame before the first command has even been sent.
 const loading = ref(true);
@@ -278,11 +295,13 @@ onMounted(async () => {
     <CatalogTabs v-if="multiCatalog" v-model="activeCatalog" :catalogs="catalogs" />
     <CatalogSummary v-if="selectedCatalog" :catalog="selectedCatalog" />
 
+    <!-- Rendered for the whole of selection mode, not just while something is ticked: it
+         owns the success banner, and the install clears the selection that produced it. -->
     <BulkInstall
-      v-if="activeCatalog && pickedNames.length"
+      v-if="activeCatalog && picked"
       :names="pickedNames"
       :catalog-id="activeCatalog"
-      @installed="load()"
+      @installed="afterBulkInstall()"
       @clear="picked = new Set()"
     />
 
@@ -292,14 +311,34 @@ onMounted(async () => {
         <input v-model="hideOverridden" type="checkbox" />
         Hide overridden
       </label>
-      <button
-        v-if="activeCatalog && selectable.length"
-        type="button"
-        class="ghost summary__all"
-        @click="pickedNames.length === selectable.length ? (picked = new Set()) : selectAll()"
-      >
-        {{ pickedNames.length === selectable.length ? "Select none" : `Select all ${selectable.length}` }}
-      </button>
+      <!-- A missing control reads as a bug rather than a decision, so a tab where nothing
+           would install says so instead of just not offering it. -->
+      <span v-if="activeCatalog && !selectable.length && rows.length" class="summary__note">
+        Nothing here can be installed: every copy is overridden by a higher-precedence
+        catalog, so installing any of these names would fetch that catalog's copy instead.
+      </span>
+      <template v-if="activeCatalog && selectable.length">
+        <button
+          v-if="!picked"
+          type="button"
+          class="ghost summary__all"
+          @click="setSelecting(true)"
+        >
+          Select entries
+        </button>
+        <template v-else>
+          <button
+            type="button"
+            class="ghost summary__all"
+            @click="pickedNames.length === selectable.length ? (picked = new Set()) : selectAll()"
+          >
+            {{ pickedNames.length === selectable.length ? "Select none" : `Select all ${selectable.length}` }}
+          </button>
+          <button type="button" class="ghost summary__done" @click="setSelecting(false)">
+            Done
+          </button>
+        </template>
+      </template>
     </p>
 
     <Busy v-if="loading" label="Reading the catalog…" />
@@ -491,6 +530,16 @@ h1 {
   margin-left: auto;
   padding: 0.2rem 0.5rem;
   font-size: 0.75rem;
+}
+.summary__done {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.75rem;
+}
+.summary__note {
+  flex: 1;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  opacity: 0.75;
 }
 .state {
   padding: 2rem 0;

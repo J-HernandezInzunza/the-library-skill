@@ -17,16 +17,31 @@ const props = defineProps<{
   selected?: Set<string> | null;
 }>();
 
-defineEmits<{ select: [name: string]; toggle: [name: string] }>();
+const emit = defineEmits<{ select: [name: string]; toggle: [name: string] }>();
+
+/** True while the list is in selection mode at all. */
+const selecting = computed(() => props.selected !== null && props.selected !== undefined);
 
 /**
- * An overridden copy cannot be ticked, because `use` would not install it.
+ * An overridden copy cannot be picked, because `use` would not install it.
  *
- * It resolves to whichever catalog wins the name, so a checkbox here would promise this
+ * It resolves to whichever catalog wins the name, so picking it would promise this
  * catalog's copy and deliver another's. The row already says which catalog beats it.
  */
 function selectable(row: Row): boolean {
-  return !!props.selected && !row.entry.overridden_by;
+  return selecting.value && !row.entry.overridden_by;
+}
+
+/**
+ * One click handler, because the card is the hit target in both modes.
+ *
+ * A separate checkbox was a ~13px target beside a full-width card, and it needed a
+ * reserved gutter so rows stayed aligned — which showed as an empty column in a tab where
+ * nothing is selectable. Making the card itself the control removes both problems.
+ */
+function activate(row: Row) {
+  if (selecting.value) emit("toggle", row.entry.name);
+  else emit("select", row.entry.name);
 }
 
 const hueByCatalog = computed(
@@ -40,21 +55,19 @@ const hueByCatalog = computed(
       v-for="row in rows"
       :key="`${row.entry.catalog}:${row.entry.name}`"
       class="entry-list__row"
-      :class="{ 'entry-list__row--picked': selected?.has(row.entry.name) }"
     >
-      <label v-if="selectable(row)" class="entry-list__pick" @click.stop>
-        <input
-          type="checkbox"
-          :checked="selected?.has(row.entry.name)"
-          @change="$emit('toggle', row.entry.name)"
-        />
-      </label>
-      <span v-else-if="selected" class="entry-list__pick entry-list__pick--none" />
-
+      <!-- The card is the unit, and the button fills it. Controls sit beside the button
+           rather than inside it, so a future per-entry control can be a real interactive
+           element without nesting one button in another. -->
+      <div
+        class="entry-list__card"
+        :class="{ 'entry-list__card--picked': selected?.has(row.entry.name) }"
+      >
       <button
         type="button"
         class="entry-list__item"
-        @click="$emit('select', row.entry.name)"
+        :disabled="selecting && !selectable(row)"
+        @click="activate(row)"
       >
       <div class="entry-list__head">
         <span class="entry-list__name">{{ row.entry.name }}</span>
@@ -82,32 +95,52 @@ const hueByCatalog = computed(
         requires: {{ row.entry.requires.join(", ") }}
       </p>
       </button>
+
+      <!-- The slot that grows: a pick indicator today, an on/off control later. Rendered
+           only when it has something in it, so no row reserves space for nothing. -->
+      <span v-if="selectable(row)" class="entry-list__controls">
+        <span
+          class="entry-list__tick"
+          :class="{ 'entry-list__tick--on': selected?.has(row.entry.name) }"
+          aria-hidden="true"
+        />
+      </span>
+      </div>
     </li>
   </ul>
 </template>
 
 <style scoped>
-.entry-list__row {
+.entry-list__card {
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
+  align-items: stretch;
   border-radius: 10px;
+  transition: background 0.12s ease;
 }
-.entry-list__row--picked {
-  background: rgba(59, 130, 246, 0.12);
+.entry-list__card--picked {
+  background: rgba(59, 130, 246, 0.14);
 }
-.entry-list__row > .entry-list__item {
+.entry-list__card > .entry-list__item {
   flex: 1;
   min-width: 0;
 }
-.entry-list__pick {
+.entry-list__controls {
   display: flex;
   align-items: center;
-  padding-left: 0.6rem;
+  padding: 0 0.9rem 0 0.2rem;
 }
-.entry-list__pick--none {
-  /* Keeps every row's text on the same left edge whether or not it can be ticked. */
-  width: 1.1rem;
+.entry-list__tick {
+  width: 1.15rem;
+  height: 1.15rem;
+  border-radius: 50%;
+  border: 2px solid rgba(128, 128, 128, 0.5);
+}
+.entry-list__tick--on {
+  border-color: #3b82f6;
+  background: #3b82f6;
+  /* The check, drawn rather than a glyph, so it cannot pick up a font's baseline. */
+  background-image: linear-gradient(45deg, transparent 45%, #fff 45%, #fff 55%, transparent 55%),
+    linear-gradient(-45deg, transparent 60%, #fff 60%, #fff 72%, transparent 72%);
 }
 .entry-list {
   list-style: none;

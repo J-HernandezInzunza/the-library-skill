@@ -2169,3 +2169,45 @@ single-entry panel that still passes one name.
 
 **Verified against the live catalog**, writing nothing: eight uninstalled entries planned in 0.77s,
 eight destinations, all `not_installed`. 671 CLI tests, 96 Vitest cases, 93 Rust tests.
+
+---
+
+## T4.7a — the row becomes a card with a slot, because the next control is already known
+
+Feedback after using bulk install: the checkbox is small, the `shared` tab has a gap where the
+checkboxes would be, and — the part that shaped the answer — *"in the future I also want to explore
+toggling skills on and off; consider the UI will be expanding."*
+
+Three symptoms, one cause: the checkbox was a **sibling of the card**, so it needed a gutter, and
+the gutter had to be reserved on every row for alignment — including rows that can never be ticked,
+which is 100% of the `shared` tab on this machine.
+
+**The row is now a card containing a full-width button *plus a sibling controls slot*.** Each part
+of that earns its place:
+
+- **The card is the hit target.** A ~13px checkbox sat beside a 600px card making the same
+  decision. In selection mode the button *is* the toggle.
+- **The slot is not rendered when empty**, so nothing reserves space for a control it does not
+  have and the two tabs lay out identically.
+- **The slot is a sibling of the button, not inside it.** That is the future-proofing, and it is
+  the reason not to take the easier route: a per-entry on/off switch has to be a real interactive
+  element, and an interactive control nested inside a `<button>` is invalid HTML and fights the
+  button's own click. Putting the slot outside now costs nothing and means the switch is a drop-in
+  later; the main area stays a real `<button>`, so keyboard access is not traded away for it.
+
+**Selection became an explicit mode** rather than a permanently visible column, which is also what
+keeps room for the switch: a row cannot carry a permanent checkbox *and* a permanent toggle without
+becoming a control panel. Entering the mode turns every card into a toggle and reveals its
+indicator; leaving discards the selection.
+
+**A tab where nothing is selectable offers no Select control, and says why.** Silence would read as
+a bug — the same rule the shared-catalog note follows in the add form.
+
+**The reported bug in the same pass: a finished install left everything selected.** Clearing it
+naively would have unmounted `BulkInstall`, which owns the success banner — so the report of what
+just happened would have vanished at the moment it was earned. The panel is now rendered for the
+whole of selection mode rather than only while something is ticked, so the selection can be cleared
+and the result still shown. The empty bar says what to do next instead of showing two dead buttons.
+
+**The tick is drawn with gradients rather than a glyph**, so it cannot pick up a font's baseline
+and sit off-centre.

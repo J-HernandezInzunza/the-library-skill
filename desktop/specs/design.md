@@ -599,6 +599,24 @@ scope name, so a copy outside the anchor is pushed with `--from <parent of dest>
 directory picker and the `LIBRARY_CWD` anchoring in `push` are both gone — the receipt already
 knows where the copy is.
 
+### 6.6b Rows are cards with a controls slot (R3.6)
+
+A list row is a card containing a full-width `<button>` **plus a sibling controls slot**, rather
+than a bare button. Three reasons, and the third is the one that decided the shape:
+
+- **The card is the hit target.** A checkbox beside a full-width card is a ~13px target next to a
+  600px one, for the same decision.
+- **Nothing reserves space for a control it does not have.** The first version kept a gutter so
+  rows stayed aligned whether or not they could be ticked, which rendered as an empty column in a
+  tab where every copy is overridden. The slot is not rendered when it is empty.
+- **The slot is a sibling of the button, not inside it**, so a future per-entry control — a
+  skill on/off switch is the one asked for — can be a real interactive element. Nesting one inside
+  the button would be invalid and would fight the button's own click.
+
+Selection is an explicit mode rather than an always-present column: entering it turns every card
+into a toggle and reveals the indicator, leaving it discards the selection. A tab with nothing
+selectable offers no Select control and **says why**, since a missing control reads as a bug.
+
 ### 6.7 What belongs on the catalog toolbar (D20)
 
 Search and Refresh act on the list; Sync and Catalogs are where you go next. Nothing else.

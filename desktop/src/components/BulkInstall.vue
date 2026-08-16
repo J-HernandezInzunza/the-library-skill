@@ -92,17 +92,22 @@ watch(() => props.names, () => {
 
     <div class="bulk__bar">
       <span class="bulk__count">
-        {{ names.length }} selected
-        <template v-if="names.length">· from {{ catalogId }}</template>
+        <template v-if="names.length">
+          {{ names.length }} selected from {{ catalogId }}
+        </template>
+        <template v-else>
+          Pick the entries you want, or use <strong>Select all</strong> above.
+        </template>
       </span>
-      <button type="button" class="ghost" :disabled="!names.length" @click="emit('clear')">
+      <button
+        v-if="names.length"
+        type="button"
+        class="ghost"
+        @click="emit('clear')"
+      >
         Clear
       </button>
-      <button
-        type="button"
-        :disabled="!names.length || running"
-        @click="runPreview()"
-      >
+      <button v-if="names.length" type="button" :disabled="running" @click="runPreview()">
         {{ preview ? "Re-check" : "Preview install" }}
       </button>
     </div>
