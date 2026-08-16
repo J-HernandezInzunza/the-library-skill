@@ -96,6 +96,15 @@ const installedFrom = computed(() => {
 });
 const failure = ref("");
 const removed = ref<UnregisterReport | null>(null);
+/**
+ * Whether the finished unregister had been *asked* to delete copies.
+ *
+ * The report cannot say: an empty `purged_installs` means "none were deleted", which is
+ * the same payload whether you ticked the box or not. Reporting both as "untouched" made
+ * the confirmation look like it had ignored the checkbox — and in the case that produced
+ * this, it had matched nothing, which is a third outcome that deserves its own sentence.
+ */
+const askedToPurge = ref(false);
 
 /**
  * The CLI refuses to unregister the last catalog, and the form should not offer it.
@@ -111,6 +120,7 @@ async function unregister() {
   if (!target) return;
 
   failure.value = "";
+  askedToPurge.value = purgeInstalls.value;
   try {
     removed.value = await withActivity(`unregistering ${target.id}…`, () =>
       invoke<UnregisterReport>("registry_remove", {
@@ -229,13 +239,20 @@ watch(
       <StatusBanner v-else-if="removed" kind="success">
         <p class="catalogs__done">
           Unregistered {{ removed.id }}.
-          <template v-if="!removed.purged_installs.length">
-            Its entries and every file installed from them are untouched.
-          </template>
-          <template v-else>
+          <template v-if="removed.purged_installs.length">
             Deleted {{ removed.purged_installs.length }} installed
             {{ removed.purged_installs.length === 1 ? "copy" : "copies" }}. The catalog's own
             entries stay in its file.
+          </template>
+          <!-- The third outcome, and the one that made this banner look broken: the box
+               was ticked and nothing matched. Silence there reads as the tick being
+               ignored. -->
+          <template v-else-if="askedToPurge">
+            <strong>No copies were deleted.</strong> None of the installs on this machine
+            record having come from {{ removed.id }}, so nothing was attributable to it.
+          </template>
+          <template v-else>
+            Its entries and every file installed from them are untouched.
           </template>
           <template v-if="removed.purged_clone">Its clone was deleted.</template>
           <template v-else-if="removed.clone_kept_at">

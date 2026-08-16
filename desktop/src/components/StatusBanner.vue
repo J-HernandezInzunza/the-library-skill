@@ -35,7 +35,8 @@ defineProps<{
 
 <style scoped>
 .status-banner {
-  max-width: 34rem;
+  /* No max-width: it sits above full-width cards, and a narrower banner reads as a
+     misaligned box rather than as a measure. `.app` already caps the line length. */
   margin: 0 0 1.25rem;
   padding: 0.9rem 1rem;
   border: 1px solid transparent;
