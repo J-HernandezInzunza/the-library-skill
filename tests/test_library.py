@@ -7016,6 +7016,24 @@ library:
         # It names the flag that fixes it rather than only stating the problem.
         self.assertIn("--catalog shared", note)
 
+    def test_renaming_the_catalog_does_not_invent_a_provenance_mismatch(self) -> None:
+        """R15.12 — the same staleness, in the warning that must not cry wolf.
+
+        The receipt records the id it was installed under. Rename the catalog and a
+        comparison on that id reads as "these files came from somewhere else", which is
+        the one thing this warning exists to say truthfully.
+        """
+        code, _, err = run_cli("use", "session-retro", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+        raw = yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())
+        raw["catalogs"][0]["id"] = "renamed-since"
+        library.LOCAL_CONFIG_PATH.write_text(yaml.safe_dump(raw))
+
+        payload, err = self.push("session-retro", "--catalog", "renamed-since")
+        self.assertIsNone(payload["note"])
+        self.assertNotIn("was installed from", err)
+
     def test_the_warning_lists_every_other_catalog_holding_the_name(self) -> None:
         cfg = library.Config(catalogs=[
             local_catalog("personal"), local_catalog("work"), local_catalog("archive")])

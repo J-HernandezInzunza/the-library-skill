@@ -1028,7 +1028,13 @@ def push_source_warning(cfg: Config, entry: Entry, dest: "Path | None" = None) -
     receipt = load_receipts().get(str(dest)) if dest is not None else None
     came_from = (receipt or {}).get("catalog")
     if came_from:
-        if came_from == entry.catalog:
+        # Compare identities when the receipt has one: the id it also records is a
+        # nickname, so a renamed catalog would otherwise read as a *different* catalog and
+        # warn that the push is going somewhere the files did not come from — a false
+        # alarm about the one thing this warning exists to be trusted on (R15.12).
+        recorded_key = (receipt or {}).get("catalog_key")
+        here = catalog_key(cfg.by_id(entry.catalog)) if recorded_key else ""
+        if (recorded_key == here) if recorded_key else (came_from == entry.catalog):
             return ""
         return (f"this copy of '{entry.name}' was installed from '{came_from}' → "
                 f"{(receipt or {}).get('source')}, but this push targets '{entry.catalog}' "
