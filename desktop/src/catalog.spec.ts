@@ -250,12 +250,13 @@ function planned(overrides: Partial<PlannedInstall> = {}): PlannedInstall {
   };
 }
 
-function preview(would_install: PlannedInstall[]): UsePreview {
+function preview(would_install: PlannedInstall[], requested: string[] = []): UsePreview {
   return {
     status: "OK",
     scope: "global",
     overrides: [],
     overridden_by: null,
+    requested,
     would_install,
   };
 }
@@ -964,5 +965,57 @@ describe("describeInstallAction", () => {
     expect(describeInstallAction(planOf("not_installed"), "project").label).toBe(
       "Install into project",
     );
+  });
+});
+
+describe("installPlan with several requested entries", () => {
+  it("marks every requested entry, not just one", () => {
+    const plan = installPlan(
+      preview(
+        [planned({ name: "shared-dep" }), planned({ name: "alpha" }), planned({ name: "beta" })],
+        ["alpha", "beta"],
+      ),
+      ["alpha", "beta"],
+    );
+
+    expect(plan.items.filter((i) => i.target).map((i) => i.install.name)).toEqual([
+      "alpha",
+      "beta",
+    ]);
+    // The shared dependency appears once and is not something the user picked.
+    expect(plan.items.filter((i) => !i.target).map((i) => i.install.name)).toEqual([
+      "shared-dep",
+    ]);
+  });
+
+  it("prefers the CLI's own answer over the names the caller passed", () => {
+    // `requested` is what the command actually resolved; the argument is a fallback for
+    // a payload predating the key.
+    const plan = installPlan(
+      preview([planned({ name: "alpha" }), planned({ name: "beta" })], ["beta"]),
+      ["alpha"],
+    );
+
+    expect(plan.items.filter((i) => i.target).map((i) => i.install.name)).toEqual(["beta"]);
+  });
+
+  it("falls back to the passed name when the payload predates requested", () => {
+    const plan = installPlan(preview([planned({ name: "alpha" })]), "alpha");
+
+    expect(plan.items[0].target).toBe(true);
+  });
+
+  it("still blocks on drift anywhere in the batch", () => {
+    // One acknowledgement covering the whole selection is the reason this is one command.
+    const plan = installPlan(
+      preview(
+        [planned({ name: "alpha" }), planned({ name: "beta", state: "drifted" })],
+        ["alpha", "beta"],
+      ),
+      ["alpha", "beta"],
+    );
+
+    expect(plan.blocked).toBe(true);
+    expect(plan.drifted.map((i) => i.install.name)).toEqual(["beta"]);
   });
 });

@@ -66,20 +66,20 @@ async fn entry_show(app: tauri::AppHandle, name: String) -> Result<EntryDetail, 
 #[tauri::command]
 async fn entry_use_preview(
     app: tauri::AppHandle,
-    name: String,
+    names: Vec<String>,
     project: Option<String>,
 ) -> Result<UsePreview, AppError> {
-    off_thread(move || cli::use_preview(&app, &name, project.as_deref())).await
+    off_thread(move || cli::use_preview(&app, &names, project.as_deref())).await
 }
 
 /// Install an entry and its dependencies, globally or into a picked project (R3.1).
 #[tauri::command]
 async fn entry_use(
     app: tauri::AppHandle,
-    name: String,
+    names: Vec<String>,
     project: Option<String>,
 ) -> Result<UseReport, AppError> {
-    off_thread(move || cli::use_entry(&app, &name, project.as_deref())).await
+    off_thread(move || cli::use_entry(&app, &names, project.as_deref())).await
 }
 
 /// Delete an installed copy. The catalog entry is untouched (R3.1).

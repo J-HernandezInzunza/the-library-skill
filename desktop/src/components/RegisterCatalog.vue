@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { withActivity } from "../commandActivity";
@@ -26,14 +26,29 @@ const mode = ref<Mode>("existing");
 const id = ref("");
 const path = ref("");
 const repo = ref("");
-const branch = ref("main");
+const branch = ref("");
 const wins = ref(true);
 const protectedRemote = ref(true);
+/** Required only when `protectedRemote` is off — the deliberate second step for
+ * choosing a write mode with no review, not a checkbox that trades away review by
+ * itself. */
+const directPushAck = ref(false);
 const submitting = ref(false);
 const failure = ref("");
 const report = ref<RegistrationReport | null>(null);
+/** Whichever catalog held precedence 1 when submit was pressed, captured before the
+ * registry can change out from under it — used only to report a "wins" registration
+ * bumping it down, never to decide whether the registration itself is allowed. */
+const displacedTop = ref<Catalog | null>(null);
 
 const isRemote = computed(() => mode.value === "remote");
+const needsDirectPushAck = computed(() => isRemote.value && !protectedRemote.value);
+
+// Re-checking the PR box retracts the acknowledgment, so turning it off a second time
+// asks again rather than trading on a tick left over from earlier in the same visit.
+watch(protectedRemote, (on) => {
+  if (on) directPushAck.value = false;
+});
 
 /**
  * The CLI refuses a duplicate id, so the form says so first.
@@ -50,7 +65,9 @@ const filled = computed(() => {
   if (!id.value.trim()) return false;
   return isRemote.value ? !!repo.value.trim() && !!branch.value.trim() : !!path.value.trim();
 });
-const canSubmit = computed(() => filled.value && !takenId.value && !submitting.value);
+const canSubmit = computed(
+  () => filled.value && !takenId.value && !submitting.value && (!needsDirectPushAck.value || directPushAck.value),
+);
 
 /** A one-line description of what picking this mode means, since the bare radio
  * labels don't say what "existing" vs. "remote" cashes out to until you've already
@@ -88,13 +105,30 @@ const precedenceLine = computed(() => {
   return `checked ${ordinal(precedence)} of ${registered} catalogs — a catalog checked earlier wins on a name collision.`;
 });
 
+/**
+ * Says so when "wins" just bumped a previous front-runner down, since `precedenceLine`
+ * only describes the new catalog's own slot and a silent demotion is exactly the
+ * surprise a "which catalog wins" checkbox exists to prevent.
+ *
+ * `--position first` is a plain insert-at-0, no other tiebreak, so any catalog that
+ * held precedence 1 before this one registered is now one slot further back — this
+ * names it rather than leaving that to be discovered on the next collision.
+ */
+const displacementLine = computed(() => {
+  if (!report.value || !displacedTop.value) return "";
+  if (displacedTop.value.id === report.value.id) return "";
+  return `This also moved ${displacedTop.value.id} down to precedence 2.`;
+});
+
 /** Back to a blank form, for registering a second catalog without leaving the panel. */
 function registerAnother() {
   report.value = null;
+  displacedTop.value = null;
   id.value = "";
   path.value = "";
   repo.value = "";
-  branch.value = "main";
+  branch.value = "";
+  directPushAck.value = false;
 }
 
 async function pickPath() {
@@ -112,6 +146,7 @@ async function submit() {
   submitting.value = true;
   failure.value = "";
   report.value = null;
+  displacedTop.value = wins.value ? props.catalogs.find((c) => c.precedence === 1) ?? null : null;
   try {
     report.value = await withActivity(`registering ${id.value.trim()}…`, () =>
       invoke<RegistrationReport>("registry_add", {
@@ -148,6 +183,7 @@ async function submit() {
           <strong>{{ report.id }}</strong> — {{ report.entries }}
           {{ report.entries === 1 ? "entry" : "entries" }}, {{ precedenceLine }}
         </p>
+        <p v-if="displacementLine" class="register__done-displaced">{{ displacementLine }}</p>
         <p class="register__done-detail">{{ report.location }}</p>
       </StatusBanner>
       <div class="register__actions">
@@ -209,14 +245,26 @@ async function submit() {
           </label>
           <label class="register__field">
             <span>Branch</span>
-            <input v-model="branch" type="text" v-bind="RAW_TEXT" />
+            <input v-model="branch" type="text" placeholder="main" v-bind="RAW_TEXT" />
+            <span class="register__hint">
+              The repository's own default branch may not be called <code>main</code> —
+              check before typing it.
+            </span>
           </label>
           <label class="register__check">
             <input v-model="protectedRemote" type="checkbox" />
             <span>
               Changes to this catalog go through a pull request. Leave this on for anything your
               team shares; turning it off means a write commits straight to
-              {{ branch || "the branch" }}.
+              {{ branch || "the branch" }}, with no review.
+            </span>
+          </label>
+          <label v-if="needsDirectPushAck" class="register__check register__check--warn">
+            <input v-model="directPushAck" type="checkbox" />
+            <span>
+              I understand: with the box above unchecked, edits to this catalog push directly to
+              {{ branch || "the branch" }} — no pull request, no review step. This has to be
+              checked to register with direct pushes on.
             </span>
           </label>
           <span class="register__hint">
@@ -310,6 +358,12 @@ async function submit() {
   line-height: 1.45;
   opacity: 0.85;
 }
+.register__check--warn {
+  padding: 0.5rem 0.6rem;
+  border-radius: 6px;
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.12);
+}
 .register__conflict {
   margin-top: 0.3rem;
   padding: 0.45rem 0.6rem;
@@ -334,5 +388,11 @@ async function submit() {
   font-size: 0.75rem;
   opacity: 0.75;
   overflow-wrap: anywhere;
+}
+.register__done-displaced {
+  margin: 0.35rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  opacity: 0.8;
 }
 </style>

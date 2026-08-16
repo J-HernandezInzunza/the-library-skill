@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, defineAsyncComponent, onMounted } from "vue";
+import { ref, computed, defineAsyncComponent, onMounted, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { allRows, catalogRows, winningRows, type Row } from "./catalog";
 import { useCommandActivity, withActivity } from "./commandActivity";
@@ -22,6 +22,8 @@ const Doctor = defineAsyncComponent(() => import("./components/Doctor.vue"));
 const Sync = defineAsyncComponent(() => import("./components/Sync.vue"));
 const AddEntry = defineAsyncComponent(() => import("./components/AddEntry.vue"));
 const Catalogs = defineAsyncComponent(() => import("./components/Catalogs.vue"));
+// Only reachable inside a catalog tab, so it stays out of the initial bundle.
+const BulkInstall = defineAsyncComponent(() => import("./components/BulkInstall.vue"));
 
 // Attached here, at the earliest point in the app, so the command log and the activity
 // bar are subscribed before anything can run.
@@ -56,6 +58,32 @@ const addingTo = ref<string | null>(null);
 const manage = ref<{ catalog: string | null; entry: string | null } | null>(null);
 /** Collapse the catalog to just the copies that would actually install. */
 const hideOverridden = ref(false);
+/**
+ * Names ticked for a bulk install, or null when not selecting.
+ *
+ * Only offered inside a catalog tab: there, "these entries" is unambiguous. In the
+ * all-catalogs view a name can appear twice, and ticking the overridden copy would
+ * promise a copy `use` will not install.
+ */
+const picked = ref<Set<string> | null>(null);
+
+function togglePicked(name: string) {
+  const next = new Set(picked.value ?? []);
+  if (!next.delete(name)) next.add(name);
+  picked.value = next;
+}
+
+/** Every row in this tab that `use` would actually install. */
+const selectable = computed(() =>
+  filtered.value.filter((row) => !row.entry.overridden_by).map((row) => row.entry.name),
+);
+const pickedNames = computed(() =>
+  selectable.value.filter((name) => picked.value?.has(name)),
+);
+
+function selectAll() {
+  picked.value = new Set(selectable.value);
+}
 // True from the start: the app always loads on mount, and defaulting to false shows an
 // empty catalog for a frame before the first command has even been sent.
 const loading = ref(true);
@@ -124,6 +152,11 @@ const multiCatalog = computed(() => catalogs.value.length > 1);
 const selectedCatalog = computed(() => {
   const found = catalogs.value.find((catalog) => catalog.id === activeCatalog.value);
   return found ?? null;
+});
+
+// Leaving a catalog tab abandons a selection that was about that catalog's inventory.
+watch(activeCatalog, (catalogId) => {
+  picked.value = catalogId === null ? null : new Set();
 });
 
 const rows = computed<Row[]>(() => {
@@ -245,12 +278,28 @@ onMounted(async () => {
     <CatalogTabs v-if="multiCatalog" v-model="activeCatalog" :catalogs="catalogs" />
     <CatalogSummary v-if="selectedCatalog" :catalog="selectedCatalog" />
 
+    <BulkInstall
+      v-if="activeCatalog && pickedNames.length"
+      :names="pickedNames"
+      :catalog-id="activeCatalog"
+      @installed="load()"
+      @clear="picked = new Set()"
+    />
+
     <p v-if="!loading && !errorMessage" class="summary">
       {{ summary }}
       <label v-if="activeCatalog === null && overriddenCount" class="summary__toggle">
         <input v-model="hideOverridden" type="checkbox" />
         Hide overridden
       </label>
+      <button
+        v-if="activeCatalog && selectable.length"
+        type="button"
+        class="ghost summary__all"
+        @click="pickedNames.length === selectable.length ? (picked = new Set()) : selectAll()"
+      >
+        {{ pickedNames.length === selectable.length ? "Select none" : `Select all ${selectable.length}` }}
+      </button>
     </p>
 
     <Busy v-if="loading" label="Reading the catalog…" />
@@ -262,7 +311,9 @@ onMounted(async () => {
       :rows="filtered"
       :catalogs="catalogs"
       :show-origin="multiCatalog"
+      :selected="picked"
       @select="trail = [$event]"
+      @toggle="togglePicked($event)"
     />
     </template>
 
@@ -435,6 +486,11 @@ h1 {
   display: flex;
   align-items: center;
   gap: 0.3rem;
+}
+.summary__all {
+  margin-left: auto;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.75rem;
 }
 .state {
   padding: 2rem 0;

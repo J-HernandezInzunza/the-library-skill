@@ -642,6 +642,22 @@ leaves the entry reinstallable, `remove` does not, so the same dependent list me
     Gate passes.
   - **Commit:** `feat(desktop): offer to delete a catalog's installed copies when unregistering`
 
+- [x] **T4.7 — Bulk install from a catalog tab**
+  - **Files:** `library.py`, `desktop/src-tauri/src/{cli,lib}.rs`,
+    `desktop/src/components/{BulkInstall,EntryList}.vue`, `App.vue`
+  - **Requirements:** R3.6
+  - **Do:** Two CLI changes first, both measured rather than assumed. **`use` takes several
+    names**, resolving all of them before writing anything and merging their dependency
+    closures, so one plan and one drift acknowledgement cover the batch — N calls would have
+    meant N confirmations or none. **`fetch_remote` caches clones per repo+branch for a
+    run**: `remote_head` already memoized its `ls-remote` on exactly this reasoning while
+    the clone did not, and 36 of this machine's 42 entries come from one repository.
+    App side: checkboxes and select-all in a catalog tab, never in the all-catalogs view,
+    and never on an overridden copy.
+  - **Verify:** A three-entry closure clones once, not six times; a forced sync clones once,
+    not three. A batch dry run plans every requested entry and writes nothing. Gate passes.
+  - **Commit:** `feat(desktop): install a selection from a catalog in one batch`
+
 ---
 
 ## Phase 5 — Setup manifest

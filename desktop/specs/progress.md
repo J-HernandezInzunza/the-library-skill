@@ -2112,3 +2112,60 @@ fails the false-alarm case. 662 CLI tests.
   what was asked because the report cannot say.
 - **`StatusBanner` had `max-width: 34rem`**, which put a narrow box above full-width cards.
   `.app` already caps the line length.
+
+---
+
+## T4.7 — bulk install, and the clone that was never shared
+
+Asked after re-adding a catalog: could the catalog tab select entries and install them in bulk,
+"or just do whatever the CLI best supports". Measuring what it supported changed the answer.
+
+**`use` took exactly one name, and `fetch_remote` cloned into a fresh temp dir every call.** So
+installing 35 entries meant 35 subprocesses and — because **36 of this machine's 42 entries come
+from a single repository** — 35 clones of the same repo, at ~1.85s each. An app-side loop would
+also have produced 35 separate drift confirmations, or none.
+
+### The clone cache is the bigger win, and the CLI had already made the argument
+
+`remote_head` memoizes its `ls-remote` with the comment *"twenty skills from one repo is one round
+trip, not twenty."* The clone right beside it did not. The cheap call was shared and the expensive
+one was not — the reasoning was already written down and simply never applied where it mattered.
+
+`clone_cache` is a context manager the **caller owns**, mirroring `remote_head`'s caller-owned
+dict, so the lifetime is explicit and a command that wants no sharing passes nothing.
+`_clone_repo` returns the temp root *only when the call owns it*: handing back a cached one would
+invite a caller to delete a tree the other entries still need.
+
+It fixes `sync --force` too, which re-cloned the same repo once per installed entry.
+
+**Counted actual `git clone` invocations rather than `fetch_remote` calls**, because what got
+expensive is the network, not the function. Verified by mutation: disabling the cache turns 1 clone
+into 6 for a three-entry closure and 3 for a forced sync, and skipping cleanup leaves temp trees
+behind.
+
+### Why multi-name `use` and not an app-side loop
+
+The decisive argument is not speed, it is the **drift gate**. T3.1 made the acknowledgement
+per-plan, so ten entries as ten calls is ten confirmations — which nobody reads — or none, which
+is worse. One command means one plan, one acknowledgement, and shared dependencies installed once.
+
+**Every name resolves before anything is written**, so a typo in the last of five does not leave
+four installed and the request half-applied. The payload gains `requested`, naming what was asked
+for as against the dependencies that came with it; the single-name shape is untouched, including
+the top-level `overrides`/`overridden_by`, which describe *the* requested entry and have no single
+meaning for several.
+
+### The app side, and the one rule that needed stating
+
+Selection lives in a **catalog's own tab** and nowhere else. In the all-catalogs view a name
+appears once per copy, so a tick would be ambiguous. And **an overridden copy can never be
+ticked**: `use` resolves to whichever catalog wins the name, so a checkbox on `shared`'s copy would
+promise that copy and install `personal`'s. The row already says which catalog beats it; it now
+also has no checkbox, and the layout reserves the space so every row's text stays on one left edge.
+
+`installPlan` learned to take several names and to **prefer the CLI's own `requested`** over what
+the caller passed — the argument is a fallback for a payload predating the key, and for the
+single-entry panel that still passes one name.
+
+**Verified against the live catalog**, writing nothing: eight uninstalled entries planned in 0.77s,
+eight destinations, all `not_installed`. 671 CLI tests, 96 Vitest cases, 93 Rust tests.

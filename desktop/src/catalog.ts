@@ -485,10 +485,17 @@ export interface InstallPlan {
  * dependencies first, but a plan that silently mislabels which entry is being
  * installed is worse than one that labels none.
  */
-export function installPlan(preview: UsePreview, name: string): InstallPlan {
+export function installPlan(preview: UsePreview, names: string | string[]): InstallPlan {
+  // `requested` is the CLI's own answer and wins when it is there; the argument is the
+  // fallback for a payload predating it, and for the single-entry panel that passes one
+  // name. Matching by name rather than by position because a plan that mislabels which
+  // entry is being installed is worse than one that labels none.
+  const asked = new Set(
+    preview.requested?.length ? preview.requested : [names].flat(),
+  );
   const items = preview.would_install.map((install) => ({
     install,
-    target: install.name === name,
+    target: asked.has(install.name),
     drifted: install.state === "drifted",
   }));
   const drifted = items.filter((item) => item.drifted);

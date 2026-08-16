@@ -147,8 +147,8 @@ One Tauri command per operation (R1.2) — never a generic passthrough:
 | --- | --- | --- |
 | `library_list` | `list --json` | R2.1 |
 | `catalog_doctor` | `doctor --json` (+`--deep`) — tolerates exit 1 (§3.7) | R7.3 |
-| `entry_use_preview` | `use <name> --dry-run --json` (+scope/`--catalog`) | R3.2 |
-| `entry_use` | `use <name> --json` (+`--project`/`--dir`/`--catalog`) — tolerates exit 1 (§3.7) | R3.1 |
+| `entry_use_preview` | `use <name>… --dry-run --json` (+scope/`--catalog`) | R3.2, R3.6 |
+| `entry_use` | `use <name>… --json` (+`--project`/`--dir`/`--catalog`) — tolerates exit 1 (§3.7) | R3.1, R3.6 |
 | `catalog_sync` | `sync --json` (+`--force`) — tolerates exit 1 (§3.7) | R3.3 |
 | `entry_add` | `add --name … --type … --description … --source … [--requires]… [--catalog]` | R4.1 |
 | `entry_update` | `update <name> --catalog … [--set-description] [--set-source] [--set-requires]` | R4.4 |

@@ -178,7 +178,10 @@ pub struct UsePreview {
     pub overrides: Vec<String>,
     #[serde(default)]
     pub overridden_by: Option<String>,
-    /// Dependencies first, in install order, with the requested entry last.
+    /// The names asked for, as opposed to the dependencies that came with them.
+    #[serde(default)]
+    pub requested: Vec<String>,
+    /// Dependencies first, in install order, with the requested entries last.
     pub would_install: Vec<PlannedInstall>,
 }
 
@@ -198,7 +201,10 @@ pub struct PlannedInstall {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UseReport {
     pub status: String,
-    /// Dependencies first, in install order, with the requested entry last.
+    /// The names asked for, as opposed to the dependencies that came with them.
+    #[serde(default)]
+    pub requested: Vec<String>,
+    /// Dependencies first, in install order, with the requested entries last.
     pub installed: Vec<InstalledItem>,
     #[serde(default)]
     pub overrides: Vec<String>,
@@ -813,8 +819,15 @@ fn anchor(project: Option<&str>) -> PathBuf {
     project.map(PathBuf::from).unwrap_or_else(library_home)
 }
 
-fn use_args<'a>(name: &'a str, project: Option<&str>) -> Vec<&'a str> {
-    let mut args = vec!["use", name];
+/// The argv for installing one or more names, so a batch and a single install agree.
+///
+/// `use` resolves every name before writing anything and merges their dependency
+/// closures, so a selection installs a shared dependency once and a typo in the last name
+/// installs nothing at all. That is why bulk install is one call rather than N: the drift
+/// gate is per-plan, and N calls would mean N confirmations or none.
+fn use_args<'a>(names: &'a [String], project: Option<&str>) -> Vec<&'a str> {
+    let mut args = vec!["use"];
+    args.extend(names.iter().map(String::as_str));
     if project.is_some() {
         args.push("--project");
     }
@@ -824,10 +837,10 @@ fn use_args<'a>(name: &'a str, project: Option<&str>) -> Vec<&'a str> {
 /// Where `use <name>` would write, without writing it (R3.2).
 pub fn use_preview(
     sink: &dyn CommandSink,
-    name: &str,
+    names: &[String],
     project: Option<&str>,
 ) -> Result<UsePreview, AppError> {
-    let mut args = use_args(name, project);
+    let mut args = use_args(names, project);
     args.push("--dry-run");
     parse(run_json_at(sink, &args, &anchor(project))?)
 }
@@ -841,10 +854,10 @@ pub fn use_preview(
 /// a parseable body — `ERROR` and its `reason` — and must not be returned as a report.
 pub fn use_entry(
     sink: &dyn CommandSink,
-    name: &str,
+    names: &[String],
     project: Option<&str>,
 ) -> Result<UseReport, AppError> {
-    let body = run_report(sink, &use_args(name, project), &anchor(project))?;
+    let body = run_report(sink, &use_args(names, project), &anchor(project))?;
     if body.get("status").and_then(|s| s.as_str()) != Some("OK") {
         let reason = body
             .get("reason")

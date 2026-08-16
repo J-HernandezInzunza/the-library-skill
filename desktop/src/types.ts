@@ -103,7 +103,9 @@ export interface UsePreview {
   /** Catalogs the copy about to install beats, and the one that beats it. */
   overrides: string[];
   overridden_by: string | null;
-  /** Dependencies first, in install order, with the requested entry last. */
+  /** The names asked for, as opposed to the dependencies that came with them. */
+  requested: string[];
+  /** Dependencies first, in install order, with the requested entries last. */
   would_install: PlannedInstall[];
 }
 
@@ -137,7 +139,9 @@ export interface InstalledItem {
 /** What `library use <name> --json` reports after writing. */
 export interface UseReport {
   status: string;
-  /** Dependencies first, in install order, with the requested entry last. */
+  /** The names asked for, as opposed to the dependencies that came with them. */
+  requested: string[];
+  /** Dependencies first, in install order, with the requested entries last. */
   installed: InstalledItem[];
   overrides: string[];
   overridden_by: string | null;

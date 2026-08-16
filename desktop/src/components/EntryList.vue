@@ -8,9 +8,26 @@ const props = defineProps<{
   catalogs: Catalog[];
   /** Origin is only worth the space once more than one catalog is registered. */
   showOrigin: boolean;
+  /**
+   * Names ticked for a bulk install, or null when selection is off.
+   *
+   * Null rather than an empty array so "not selecting" and "selected nothing" stay
+   * different states: the first renders no checkboxes at all.
+   */
+  selected?: Set<string> | null;
 }>();
 
-defineEmits<{ select: [name: string] }>();
+defineEmits<{ select: [name: string]; toggle: [name: string] }>();
+
+/**
+ * An overridden copy cannot be ticked, because `use` would not install it.
+ *
+ * It resolves to whichever catalog wins the name, so a checkbox here would promise this
+ * catalog's copy and deliver another's. The row already says which catalog beats it.
+ */
+function selectable(row: Row): boolean {
+  return !!props.selected && !row.entry.overridden_by;
+}
 
 const hueByCatalog = computed(
   () => new Map(props.catalogs.map((catalog) => [catalog.id, catalogHue(catalog.precedence)])),
@@ -19,7 +36,21 @@ const hueByCatalog = computed(
 
 <template>
   <ul class="entry-list">
-    <li v-for="row in rows" :key="`${row.entry.catalog}:${row.entry.name}`">
+    <li
+      v-for="row in rows"
+      :key="`${row.entry.catalog}:${row.entry.name}`"
+      class="entry-list__row"
+      :class="{ 'entry-list__row--picked': selected?.has(row.entry.name) }"
+    >
+      <label v-if="selectable(row)" class="entry-list__pick" @click.stop>
+        <input
+          type="checkbox"
+          :checked="selected?.has(row.entry.name)"
+          @change="$emit('toggle', row.entry.name)"
+        />
+      </label>
+      <span v-else-if="selected" class="entry-list__pick entry-list__pick--none" />
+
       <button
         type="button"
         class="entry-list__item"
@@ -56,6 +87,28 @@ const hueByCatalog = computed(
 </template>
 
 <style scoped>
+.entry-list__row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: 10px;
+}
+.entry-list__row--picked {
+  background: rgba(59, 130, 246, 0.12);
+}
+.entry-list__row > .entry-list__item {
+  flex: 1;
+  min-width: 0;
+}
+.entry-list__pick {
+  display: flex;
+  align-items: center;
+  padding-left: 0.6rem;
+}
+.entry-list__pick--none {
+  /* Keeps every row's text on the same left edge whether or not it can be ticked. */
+  width: 1.1rem;
+}
 .entry-list {
   list-style: none;
   margin: 0;

@@ -233,7 +233,7 @@ fn a_preview_reports_every_destination_and_what_is_already_there() {
     let _guard = with_fixture_home();
     let log = Recorder::default();
 
-    let preview = cli::use_preview(&log, "triage-bug", None).expect("fixture preview should parse");
+    let preview = cli::use_preview(&log, &["triage-bug".into()], None).expect("fixture preview should parse");
 
     // --dry-run is the whole contract, so the argv is asserted rather than the result.
     assert_eq!(
@@ -261,7 +261,7 @@ fn a_preview_of_a_locally_edited_copy_reports_the_drift() {
     // The state the second confirmation exists for: installing overwrites edits the
     // tool did not make, and this payload is the only warning the user gets.
     let _guard = with_fixture_home();
-    let preview = cli::use_preview(&Recorder::default(), "grilling", None).expect("a preview");
+    let preview = cli::use_preview(&Recorder::default(), &["grilling".into()], None).expect("a preview");
 
     assert_eq!(preview.would_install[0].state, "drifted");
     // Not drift: a hand-installed copy the tool never wrote, which is normal.
@@ -284,7 +284,7 @@ fn an_install_reports_every_destination_and_what_changed_at_it() {
     let _guard = with_fixture_home();
     let log = Recorder::default();
 
-    let report = cli::use_entry(&log, "triage-bug", None).expect("fixture install should parse");
+    let report = cli::use_entry(&log, &["triage-bug".into()], None).expect("fixture install should parse");
 
     assert_eq!(
         &log.started.lock().unwrap()[0].argv[1..],
@@ -306,7 +306,7 @@ fn an_install_whose_main_file_is_missing_is_still_an_install() {
     // main file is absent. Treating that as a failure would deny an install that
     // demonstrably happened, and hide the warning that explains why.
     let _guard = with_fixture_home();
-    let report = cli::use_entry(&Recorder::default(), "grilling", None).expect("exit 1 is still a report");
+    let report = cli::use_entry(&Recorder::default(), &["grilling".into()], None).expect("exit 1 is still a report");
 
     assert_eq!(report.status, "OK");
     assert!(!report.installed[0].verified);
@@ -319,7 +319,7 @@ fn an_install_that_actually_failed_stays_a_failure() {
     // The other exit 1: a parseable body carrying `status`, which the tolerant path
     // would otherwise hand back as a successful report.
     let _guard = with_fixture_home();
-    let err = cli::use_entry(&Recorder::default(), "broken", None).unwrap_err();
+    let err = cli::use_entry(&Recorder::default(), &["broken".into()], None).unwrap_err();
 
     match err {
         AppError::Cli { stderr, .. } => assert!(stderr.contains("repository not found"), "{stderr}"),
@@ -335,7 +335,7 @@ fn a_project_install_is_anchored_at_the_picked_directory_not_the_tool_repo() {
     let log = Recorder::default();
 
     let preview =
-        cli::use_preview(&log, "grilling", Some("/tmp/some-project")).expect("a project preview");
+        cli::use_preview(&log, &["grilling".into()], Some("/tmp/some-project")).expect("a project preview");
 
     let started = log.started.lock().unwrap();
     assert_eq!(&started[0].argv[1..], ["use", "grilling", "--project", "--dry-run", "--json"]);
@@ -354,7 +354,7 @@ fn a_global_install_stays_anchored_at_the_tool_repo() {
     let _guard = with_fixture_home();
     let log = Recorder::default();
 
-    cli::use_preview(&log, "grilling", None).expect("a global preview");
+    cli::use_preview(&log, &["grilling".into()], None).expect("a global preview");
 
     let started = log.started.lock().unwrap();
     assert!(!started[0].argv.contains(&"--project".to_string()));
@@ -684,6 +684,35 @@ fn purging_deletes_the_installed_copies_and_says_which() {
         ["remove", "other", "--catalog", "personal", "--purge", "--json"]
     );
     assert_eq!(report.deleted, ["/Users/tester/.claude/prompts/other.md"]);
+}
+
+#[test]
+fn a_batch_install_is_one_command_with_every_name() {
+    // One call rather than N: the drift gate is per-plan, so N calls would mean N
+    // confirmations or none, and each would re-fetch the dependencies the others share.
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let names = vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()];
+    cli::use_preview(&log, &names, None).expect("the fixture preview should parse");
+
+    assert_eq!(
+        &log.started.lock().unwrap()[0].argv[1..],
+        ["use", "alpha", "beta", "gamma", "--dry-run", "--json"]
+    );
+}
+
+#[test]
+fn a_batch_install_into_a_project_still_anchors_at_the_picked_directory() {
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let names = vec!["alpha".to_string(), "beta".to_string()];
+    cli::use_preview(&log, &names, Some("/tmp/some-project")).expect("preview should parse");
+
+    let argv = log.started.lock().unwrap()[0].argv[1..].to_vec();
+    assert_eq!(argv, ["use", "alpha", "beta", "--project", "--dry-run", "--json"]);
+    assert_eq!(log.started.lock().unwrap()[0].cwd, "/tmp/some-project");
 }
 
 #[test]
