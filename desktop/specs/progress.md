@@ -2211,3 +2211,31 @@ and the result still shown. The empty bar says what to do next instead of showin
 
 **The tick is drawn with gradients rather than a glyph**, so it cannot pick up a font's baseline
 and sit off-centre.
+
+---
+
+## T4.7b — selection mode turned itself on, and the hint pointed the wrong way
+
+**The state bug was one character of meaning.** The tab watcher read:
+
+```ts
+picked.value = catalogId === null ? null : new Set();
+```
+
+An empty `Set` **is** selection mode — `null` is off. So switching to any catalog tab entered the
+mode without anyone asking. Written when selection was an always-on column, where an empty Set was
+the right reset, and left behind when T4.7a made the mode explicit. The fix is that changing tabs
+always leaves the mode: a selection was about the inventory you were looking at, and you are no
+longer looking at it.
+
+**Audited every assignment afterwards** rather than fixing the one that was reported: eight places
+touch `picked`, and only `setSelecting` may now turn the mode *on*. `togglePicked` gained a guard
+that is currently unreachable — the list only emits `toggle` while selecting — precisely because
+the invariant should hold in the parent rather than depend on a child continuing to behave.
+
+**The empty-state hint said "use Select all above" and Select all was below.** Both halves wrong:
+the panel rendered *before* the toolbar that drives it, and the sentence spent its space pointing
+at a control instead of explaining what the mode is for. The panel now sits under the toolbar,
+where a toolbar belongs, and the sentence says what selecting actually buys — one plan, one
+confirmation, and a shared dependency fetched once. The entry point reads **Select to install**
+rather than "Select entries", which named the gesture and not the outcome.

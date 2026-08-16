@@ -68,7 +68,12 @@ const hideOverridden = ref(false);
 const picked = ref<Set<string> | null>(null);
 
 function togglePicked(name: string) {
-  const next = new Set(picked.value ?? []);
+  // Never a way *into* the mode. The list only emits this while selecting, so today the
+  // guard is unreachable — which is exactly why it is worth having: the invariant should
+  // hold here rather than depend on a child continuing to behave.
+  if (!picked.value) return;
+
+  const next = new Set(picked.value);
   if (!next.delete(name)) next.add(name);
   picked.value = next;
 }
@@ -171,9 +176,15 @@ const selectedCatalog = computed(() => {
   return found ?? null;
 });
 
-// Leaving a catalog tab abandons a selection that was about that catalog's inventory.
-watch(activeCatalog, (catalogId) => {
-  picked.value = catalogId === null ? null : new Set();
+/**
+ * Changing tabs leaves selection mode entirely.
+ *
+ * `null`, not an empty Set: an empty Set *is* selection mode, so the earlier version
+ * turned it on for every catalog tab the moment you switched to one, without anyone
+ * asking. Mode is only ever entered by pressing the button that says so.
+ */
+watch(activeCatalog, () => {
+  picked.value = null;
 });
 
 const rows = computed<Row[]>(() => {
@@ -295,16 +306,6 @@ onMounted(async () => {
     <CatalogTabs v-if="multiCatalog" v-model="activeCatalog" :catalogs="catalogs" />
     <CatalogSummary v-if="selectedCatalog" :catalog="selectedCatalog" />
 
-    <!-- Rendered for the whole of selection mode, not just while something is ticked: it
-         owns the success banner, and the install clears the selection that produced it. -->
-    <BulkInstall
-      v-if="activeCatalog && picked"
-      :names="pickedNames"
-      :catalog-id="activeCatalog"
-      @installed="afterBulkInstall()"
-      @clear="picked = new Set()"
-    />
-
     <p v-if="!loading && !errorMessage" class="summary">
       {{ summary }}
       <label v-if="activeCatalog === null && overriddenCount" class="summary__toggle">
@@ -324,7 +325,7 @@ onMounted(async () => {
           class="ghost summary__all"
           @click="setSelecting(true)"
         >
-          Select entries
+          Select to install
         </button>
         <template v-else>
           <button
@@ -340,6 +341,16 @@ onMounted(async () => {
         </template>
       </template>
     </p>
+
+    <!-- Rendered for the whole of selection mode, not just while something is ticked: it
+         owns the success banner, and the install clears the selection that produced it. -->
+    <BulkInstall
+      v-if="activeCatalog && picked"
+      :names="pickedNames"
+      :catalog-id="activeCatalog"
+      @installed="afterBulkInstall()"
+      @clear="picked = new Set()"
+    />
 
     <Busy v-if="loading" label="Reading the catalog…" />
     <StatusBanner v-else-if="errorMessage" kind="error" :detail="errorMessage" />

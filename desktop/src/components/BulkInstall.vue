@@ -96,7 +96,10 @@ watch(() => props.names, () => {
           {{ names.length }} selected from {{ catalogId }}
         </template>
         <template v-else>
-          Pick the entries you want, or use <strong>Select all</strong> above.
+          <!-- The space says what the mode is for. It previously pointed at a button, and
+               pointed the wrong way. -->
+          Installing several at once: one plan, one confirmation, and a dependency two of
+          them share is fetched once. Tick the entries you want.
         </template>
       </span>
       <button
