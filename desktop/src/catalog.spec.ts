@@ -121,12 +121,16 @@ describe("allRows", () => {
 
     expect(rows.map((r) => [r.entry.name, r.entry.catalog, r.status])).toEqual([
       ["grilling", "personal", "installed · global"],
-      ["grilling", "shared", "overridden by personal"],
+      // The overridden copy now reports its own install state (top-right) as well as the
+      // catalog that beats it (left pill), rather than the override in place of it.
+      ["grilling", "shared", "not installed"],
       ["zebra", "personal", "installed · global"],
     ]);
     // The two rows point at each other rather than repeating the same claim.
     expect(rows[0].overrides).toEqual(["shared"]);
+    expect(rows[0].overriddenBy).toBeNull();
     expect(rows[1].overrides).toEqual([]);
+    expect(rows[1].overriddenBy).toBe("personal");
   });
 
   it("hides nothing that winningRows would collapse away", () => {
@@ -136,14 +140,16 @@ describe("allRows", () => {
 });
 
 describe("catalogRows", () => {
-  it("keeps an overridden copy, reporting the override in place of an install state", () => {
-    // The regression this whole split exists for: a losing copy must never render
-    // "not installed", which contradicts the override badge beside it.
+  it("keeps an overridden copy, reporting both its install state and what beats it", () => {
+    // The two facts are held apart and rendered in two places: "not installed"
+    // top-right, "overridden by personal" as a left pill. Collapsing them into one
+    // badge once hid, browsing an overridden catalog, that nothing there is installed.
     const rows = catalogRows(heldByBoth, "shared");
 
     expect(rows).toHaveLength(1);
-    expect(rows[0].status).toBe("overridden by personal");
-    expect(rows[0].tone).toBe("overridden");
+    expect(rows[0].status).toBe("not installed");
+    expect(rows[0].tone).toBe("absent");
+    expect(rows[0].overriddenBy).toBe("personal");
     expect(rows[0].overrides).toEqual([]);
   });
 

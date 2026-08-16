@@ -24,8 +24,11 @@ const report = ref<UninstallReport | null>(null);
 const running = ref(false);
 const error = ref("");
 
+/** This control removes exactly one copy, so the batch report has a single result. */
+const outcome = computed(() => report.value?.results[0] ?? null);
+
 /** The refusal awaiting its own, separate confirmation. */
-const refused = computed(() => report.value?.refused ?? []);
+const refused = computed(() => outcome.value?.refused ?? []);
 
 async function remove(force: boolean) {
   running.value = true;
@@ -33,13 +36,13 @@ async function remove(force: boolean) {
   try {
     const result = await withActivity(`removing the ${props.copy.scope} copy…`, () =>
       invoke<UninstallReport>("entry_uninstall", {
-        name: props.name,
+        names: [props.name],
         scope: props.copy.scope,
         force,
       }),
     );
     report.value = result;
-    if (result.deleted.length) emit("uninstalled");
+    if (result.results[0]?.deleted.length) emit("uninstalled");
   } catch (e) {
     error.value = describeAppError(e);
   } finally {
@@ -51,8 +54,8 @@ async function remove(force: boolean) {
 <template>
   <section class="uninstall">
     <StatusBanner v-if="error" kind="error" :detail="error" />
-    <StatusBanner v-else-if="report?.deleted.length" kind="success">
-      Removed {{ report.deleted.join(", ") }}. The catalog entry is still listed.
+    <StatusBanner v-else-if="outcome?.deleted.length" kind="success">
+      Removed {{ outcome.deleted.join(", ") }}. The catalog entry is still listed.
     </StatusBanner>
 
     <!-- A refusal is a second confirmation, never a retry: the CLI would not delete a

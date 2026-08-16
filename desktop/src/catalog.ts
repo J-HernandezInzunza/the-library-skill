@@ -13,11 +13,24 @@ import type {
   UsePreview,
 } from "./types";
 
-/** An entry as one rendered row, with the single status the CLI would print for it. */
+/**
+ * An entry as one rendered row.
+ *
+ * Two independent facts, rendered in two places, deliberately: `status`/`tone` is
+ * whether *this copy* is on the machine (top-right of the card), and `overriddenBy` is
+ * its place in catalog precedence (a left pill). They were once collapsed into one
+ * mutually-exclusive badge, so an overridden copy showed the override *instead of* an
+ * install state — which made it impossible to tell, browsing an overridden catalog, that
+ * nothing there is installed. Separated they read as cause and effect ("overridden by X"
+ * → "not installed") rather than as the contradiction the collapse was avoiding.
+ */
 export interface Row {
   entry: Entry;
+  /** Whether this copy is on disk, shown top-right. */
   status: string;
-  tone: "installed" | "absent" | "overridden" | "attention";
+  tone: "installed" | "absent" | "attention";
+  /** The catalog whose copy beats this one, or null. A left pill. */
+  overriddenBy: string | null;
   /** Catalogs whose copy of this name this row beats. Empty outside the winners view. */
   overrides: string[];
 }
@@ -97,23 +110,21 @@ function pickWinner(copies: Entry[]): Entry {
 }
 
 /**
- * One row with one status.
+ * One row carrying both facts about a copy: its install state and its precedence.
  *
- * Status is mutually exclusive, following the CLI's terminal column: an overridden copy
- * reports the override *instead of* an install state it cannot have. Rendering the two
- * as independent badges is what once produced "not installed" beside "overridden by
- * personal" for a skill that was installed.
+ * The install state comes from `installStatus`; an overridden copy resolves to
+ * `not_installed` from the CLI (it is never what `use` installs), so its top-right badge
+ * reads "not installed" while the left pill names the catalog that beats it. `overrides`
+ * is cleared for a copy that is itself overridden — it names catalogs *this* copy beats,
+ * which a loser never does.
  */
 function toRow(entry: Entry, overrides: string[] = []): Row {
-  if (entry.overridden_by) {
-    return {
-      entry,
-      status: `overridden by ${entry.overridden_by}`,
-      tone: "overridden",
-      overrides: [],
-    };
-  }
-  return { entry, ...installStatus(entry), overrides };
+  return {
+    entry,
+    ...installStatus(entry),
+    overriddenBy: entry.overridden_by ?? null,
+    overrides: entry.overridden_by ? [] : overrides,
+  };
 }
 
 /**

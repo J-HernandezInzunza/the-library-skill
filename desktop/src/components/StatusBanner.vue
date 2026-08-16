@@ -12,7 +12,7 @@
  * Never under the control that was clicked.
  */
 defineProps<{
-  kind: "success" | "error";
+  kind: "success" | "error" | "warning";
   /**
    * Preformatted text, for a CLI failure. Rendered verbatim in a `<pre>` because stderr
    * is surfaced as-is (R1.4) and its line breaks carry meaning.
@@ -47,6 +47,16 @@ defineProps<{
 .status-banner--success {
   border-color: rgba(34, 197, 94, 0.35);
   background: rgba(34, 197, 94, 0.1);
+}
+.status-banner--warning {
+  border-color: rgba(245, 158, 11, 0.4);
+  background: rgba(245, 158, 11, 0.14);
+  color: #b45309;
+}
+@media (prefers-color-scheme: dark) {
+  .status-banner--warning {
+    color: #fcd34d;
+  }
 }
 .status-banner--error {
   border-color: rgba(220, 38, 38, 0.3);

@@ -67,30 +67,46 @@ case "$sub" in
     esac
     ;;
   uninstall)
-    name=$1
-    case "$name" in
-      # A hand-made directory: no receipt, so the tool will not claim it put it there.
-      # Exit 2 with the whole report still printed.
-      handmade)
-        case " $* " in
-          *" --force "*)
-            echo '{"status":"OK","type":"skill","name":"handmade","deleted":["/Users/dev/.claude/skills/handmade"],"refused":[]}'
-            ;;
-          *)
-            echo '{"status":"REFUSED","type":"skill","name":"handmade","deleted":[],"refused":["/Users/dev/.claude/skills/handmade"]}'
-            exit 2
-            ;;
-        esac
-        ;;
-      # Installed in two scopes, one of them by hand: partly done, partly refused.
-      mixed)
-        echo '{"status":"REFUSED","type":"skill","name":"mixed","deleted":["/Users/dev/.claude/skills/mixed"],"refused":["/proj/.claude/skills/mixed"]}'
-        exit 2
-        ;;
-      *)
-        echo '{"status":"OK","type":"skill","name":"grilling","deleted":["/Users/dev/.claude/skills/grilling"],"refused":[]}'
-        ;;
-    esac
+    # `uninstall` takes one or more names. Collect the positional ones (everything
+    # before the first flag), then emit a result per name so a batch can be part-done:
+    # some copies deleted, others refused. `--force` (never passed in bulk) flips the
+    # hand-made copy from refused to deleted.
+    names=""
+    for a in "$@"; do
+      case "$a" in
+        --*) break ;;
+        *) names="$names $a" ;;
+      esac
+    done
+    force=""
+    case " $* " in *" --force "*) force=1 ;; esac
+    results=""
+    status="OK"
+    code=0
+    for name in $names; do
+      case "$name" in
+        # A hand-made directory: no receipt, so the tool will not claim it put it there.
+        handmade)
+          if [ -n "$force" ]; then
+            r='{"type":"skill","name":"handmade","deleted":["/Users/dev/.claude/skills/handmade"],"refused":[]}'
+          else
+            r='{"type":"skill","name":"handmade","deleted":[],"refused":["/Users/dev/.claude/skills/handmade"]}'
+            status="REFUSED"; code=2
+          fi
+          ;;
+        # Installed in two scopes, one of them by hand: partly done, partly refused.
+        mixed)
+          r='{"type":"skill","name":"mixed","deleted":["/Users/dev/.claude/skills/mixed"],"refused":["/proj/.claude/skills/mixed"]}'
+          status="REFUSED"; code=2
+          ;;
+        *)
+          r='{"type":"skill","name":"'"$name"'","deleted":["/Users/dev/.claude/skills/'"$name"'"],"refused":[]}'
+          ;;
+      esac
+      if [ -n "$results" ]; then results="$results,$r"; else results="$r"; fi
+    done
+    echo '{"status":"'"$status"'","results":['"$results"']}'
+    exit $code
     ;;
   sync)
     # Without --force sync skips items whose source and local copy both match the

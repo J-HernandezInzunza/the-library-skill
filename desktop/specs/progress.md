@@ -2239,3 +2239,114 @@ at a control instead of explaining what the mode is for. The panel now sits unde
 where a toolbar belongs, and the sentence says what selecting actually buys — one plan, one
 confirmation, and a shared dependency fetched once. The entry point reads **Select to install**
 rather than "Select entries", which named the gesture and not the outcome.
+
+---
+
+## T4.8 — bulk uninstall, and the CLI's uninstall payload made honest for a batch
+
+Selection could install a batch but not take one back out. The counterpart needed two things:
+`uninstall` had to accept several names, and the app's selection panel had to become bulk
+*actions* rather than bulk install.
+
+**The library was extended, not worked around.** The steer was explicit: make the core offer the
+functionality so the UI stays thin. So `uninstall` got `nargs="+"` and `cmd_uninstall` now resolves
+**every name before deleting anything** — the same guarantee `use` makes, so a typo in the fifth of
+five removes none of the first four. The payload changed shape to carry the batch honestly:
+
+```
+{ "status": "OK" | "REFUSED", "results": [ {type, name, deleted[], refused[]} ] }
+```
+
+One result per requested entry, because a batch can be **part-done** — some copies deleted, some
+refused — and a flat merged `deleted`/`refused` could not say which entry landed where. Single-copy
+uninstall now reads `results[0]`; the flat top-level `type/name/deleted/refused` is gone rather than
+kept as a redundant shim. This is a contract change to a "done" task (T3.5), taken deliberately: a
+compatibility shadow of the old shape is exactly the workaround the steer ruled out.
+
+### The two decisions the task flagged
+
+**Scope: global only.** The selection lives in a catalog tab and names *entries*, not per-copy
+scopes, so there is no per-name scope to honour. Global mirrors bulk install (which writes global),
+and leaves project installs — which are per-directory and picked individually — alone. Chosen with
+the user rather than assumed.
+
+**Refusal: no blanket force, ever.** The bulk command is run **without `--force`**. It deletes the
+copies the tool has receipts for and reports the rest as refused, by name, telling the user to open
+each and remove it individually — where the refusal gets its own confirmation (T3.5). A single
+"delete anyway" over thirty copies is the exact escalation the refusal exists to prevent, so `--force`
+stays a per-copy choice made from the refusal panel. The CLI still *accepts* `--force` (it applies to
+every name); the app simply never passes it in bulk.
+
+### App side
+
+`BulkInstall.vue` became a bulk-actions panel: the existing install flow plus an Uninstall button
+that opens a naming confirmation and then removes the global copies. The result banner is a third
+outcome beyond success/error — a **warning** tone when anything was refused, naming those entries.
+`StatusBanner` grew a `warning` kind for it. The entry-point button dropped from "Select to install"
+to "Select", since the mode now does both.
+
+**`UninstallControl` (single copy) went through the same command**, passing `[name]` and reading
+`results[0]`, so there is one uninstall path rather than a single and a bulk one that could drift.
+
+### Verified live, and the machine returned to its start
+
+- Two tool-tracked entries uninstalled in **one command**, both gone, `status: OK`.
+- A part-done batch — one tool-tracked, one hand-made — returned `status: REFUSED`, exit 2, with the
+  tracked copy deleted and the hand-made copy **refused and intact** with its contents.
+- Both reinstalled from source afterward, `diff -rq` byte-identical to the pre-test snapshots;
+  `list` reports 35 winners, all installed.
+
+Gate green: 674 CLI tests, 96 Vitest, 68 Rust tests, `vue-tsc` and `vite build` clean, docs in sync.
+
+**Left for T4.9:** bulk *remove* from a catalog, whose risk is not symmetrical — a removed catalog
+entry is recoverable only from git, and not at all for a non-repo local catalog.
+
+---
+
+## T4.9 — descoped, and Phase 4 closed
+
+Bulk remove from a catalog was dropped by the developer rather than built. It edits a catalog's
+`library.yaml` (catalog authoring), not installs, and single-entry remove already covers the need
+via the Catalogs manager and `remove --dry-run` (T4.4/T4.4a-b). Bulk removal is a convenience for
+trimming several entries out of an owned catalog in one commit, with asymmetric risk — a removed
+entry is recoverable only from git, and not at all for a non-repo local catalog — so it was not
+worth building on spec alone. Marked `[~]` in tasks.md with the rationale inline; revisit if bulk
+catalog authoring becomes a real workflow.
+
+**Phase 4 is complete.** T4.1–T4.8 plus the unplanned T4.4a–d, T4.5a/b, T4.6a, and T4.7a/b shipped;
+T4.9 is the single deliberate omission. Next up is Phase 5 (setup manifest, T5.1).
+
+---
+
+## Install state and precedence, split into two places (from using the app)
+
+Two reports from the running app, both about the entry list.
+
+**The list shifted vertically when switching between catalog tabs.** The region above the
+entries changes height: a fully-overridden catalog (this machine's `shared`, 100% shadowed)
+shows a two-line "nothing here can be installed" note where an installable catalog shows a
+one-line count and a Select button, so the list jumped as you toggled tabs. Fixed by reserving
+the tallest variant's height on `.summary` (`min-height`), so the content centres in a stable
+block rather than reflowing the list under it.
+
+**An overridden copy gave no install signal.** Browsing the `shared` tab, every entry read
+`shared · overridden by my-engineering-library` and nothing said whether that copy was on the
+machine — which, being overridden, it never is. The install state and the precedence relationship
+are now **two pills in two places**: install state (`installed · global`, `not installed`, …)
+top-right, catalog origin and `overridden by X` on the left.
+
+**This reverses a documented anti-bug decision, deliberately.** The original defect (Phase 1) was
+an overridden row rendering `not installed` beside `overridden by personal` for a skill that *was*
+installed, and the fix was one mutually-exclusive status per row: the override shown *instead of*
+an install state. A guarding test carried the comment "a losing copy must never render 'not
+installed', which contradicts the override badge beside it."
+
+The reversal is safe because the original bug was **contradiction in one spot**, not the presence
+of two facts. Separated spatially, they read as cause and effect: the left pill *"overridden by
+my-engineering-library"* explains the right pill *"not installed"* — this copy is shadowed, so it
+is not the one on disk; the winner is. In the all-catalogs winners view the overridden copy is not
+shown at all, so the two never sit adjacent there. The `Row` model now carries `status`/`tone`
+(this copy's install state, always computed) and `overriddenBy` (the precedence pill) as
+independent fields; `toRow` no longer collapses them. The two guarding Vitest cases were rewritten
+to assert the split rather than the collapse, with the reasoning in the comments so the next reader
+does not "restore" the old behaviour as a bugfix.

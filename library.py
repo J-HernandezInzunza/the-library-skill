@@ -3146,46 +3146,65 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     entries = resolved_entries(cfg, args)
     multi = multi_catalog(cfg)
 
-    entry = find_exact(entries, args.name)
-    if entry is None:
-        cands = fuzzy_candidates(entries, args.name)
-        payload = {
-            "status": "AMBIGUOUS" if cands else "NOT_FOUND",
-            "query": args.name,
-            "candidates": [{"type": c.type, "name": c.name, "description": c.description,
-                            "catalog": c.catalog} for c in cands],
-        }
-        if args.json:
-            print(json.dumps(payload, indent=2))
-        elif cands:
-            print(f'No exact match for "{args.name}". Did you mean:')
-            for c in cands:
-                print(f"  [{c.type}] {c.name}" + (f"  ({c.catalog})" if multi else ""))
-        else:
-            print(f'No match for "{args.name}". Try `library list`.')
-        return 2
+    # One name or many. Every name is resolved *before* anything is deleted, so a typo
+    # in the fifth of five does not remove the first four and leave the request
+    # half-applied — the same guarantee `use` makes for installs.
+    targets: list[Entry] = []
+    for name in args.name:
+        entry = find_exact(entries, name)
+        if entry is None:
+            cands = fuzzy_candidates(entries, name)
+            payload = {
+                "status": "AMBIGUOUS" if cands else "NOT_FOUND",
+                "query": name,
+                "candidates": [{"type": c.type, "name": c.name, "description": c.description,
+                                "catalog": c.catalog} for c in cands],
+            }
+            if args.json:
+                print(json.dumps(payload, indent=2))
+            elif cands:
+                print(f'No exact match for "{name}". Did you mean:')
+                for c in cands:
+                    print(f"  [{c.type}] {c.name}" + (f"  ({c.catalog})" if multi else ""))
+            else:
+                print(f'No match for "{name}". Try `library list`.')
+            return 2
+        targets.append(entry)
 
-    result = uninstall_entry(cfg.dirs, entry, args.scope, args.dir, args.force)
-    deleted, refused = result["deleted"], result["refused"]
+    # One result per requested entry, each carrying its own deleted/refused. A batch can
+    # be part-done — some copies deleted, others refused because the tool has no receipt
+    # for them — so the shape has to say which entry landed where. `--force` (never passed
+    # in bulk from the app) applies to every name, by design: a blanket force over a
+    # selection is exactly the escalation the refusal exists to prevent, so that choice
+    # stays per-copy in the caller.
+    results = []
+    for entry in targets:
+        outcome = uninstall_entry(cfg.dirs, entry, args.scope, args.dir, args.force)
+        results.append({"type": entry.type, "name": entry.name,
+                        "deleted": outcome["deleted"], "refused": outcome["refused"]})
+
+    any_refused = any(r["refused"] for r in results)
 
     if args.json:
-        print(json.dumps({"status": "REFUSED" if refused else "OK",
-                          "type": entry.type, "name": entry.name,
-                          "deleted": deleted, "refused": refused}, indent=2))
-        return 2 if refused else 0
+        print(json.dumps({"status": "REFUSED" if any_refused else "OK",
+                          "results": results}, indent=2))
+        return 2 if any_refused else 0
 
-    if deleted:
-        print(f"Uninstalled [{entry.type}] {entry.name}:")
-        for d in deleted:
-            print(f"  removed {d}")
-    elif not refused:
-        print(f"[{entry.type}] {entry.name} is not installed here — nothing to remove.")
-    for r in refused:
-        print(f"  refused {r}: no install receipt — this tool didn't install it. "
-              "Pass --force to delete it anyway.")
-    if deleted:
+    any_deleted = False
+    for r in results:
+        if r["deleted"]:
+            any_deleted = True
+            print(f"Uninstalled [{r['type']}] {r['name']}:")
+            for d in r["deleted"]:
+                print(f"  removed {d}")
+        elif not r["refused"]:
+            print(f"[{r['type']}] {r['name']} is not installed here — nothing to remove.")
+        for path in r["refused"]:
+            print(f"  refused {path}: no install receipt — this tool didn't install it. "
+                  "Pass --force to delete it anyway.")
+    if any_deleted:
         print("The catalog entry is untouched; `library use` reinstalls it.")
-    return 2 if refused else 0
+    return 2 if any_refused else 0
 
 
 def cmd_sync(args: argparse.Namespace) -> int:
@@ -5150,8 +5169,9 @@ def build_parser() -> argparse.ArgumentParser:
     add_catalog_flag(sp)
     sp.set_defaults(func=cmd_show)
 
-    sp = sub.add_parser("uninstall", help="delete an installed copy (the catalog entry is kept)")
-    sp.add_argument("name")
+    sp = sub.add_parser("uninstall", help="delete installed copies of one or more entries (the catalog entry is kept)")
+    sp.add_argument("name", nargs="+", metavar="name",
+                    help="one or more exact entry names to uninstall")
     sp.add_argument("--scope", choices=["global", "project", "all"], default="all",
                     help="which installed copies to delete (default: all)")
     sp.add_argument("--dir", help="delete the copy under a custom directory instead")

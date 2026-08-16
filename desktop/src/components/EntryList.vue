@@ -81,12 +81,21 @@ const hueByCatalog = computed(
           {{ row.entry.catalog }}
         </span>
 
-        <span class="entry-list__status" :class="`entry-list__status--${row.tone}`">
-          {{ row.status }}
+        <span v-if="row.overriddenBy" class="entry-list__overridden">
+          overridden by {{ row.overriddenBy }}
         </span>
 
         <span v-if="row.overrides.length" class="entry-list__overrides">
           overrides {{ row.overrides.join(", ") }}
+        </span>
+
+        <!-- Whether this copy is on the machine, held apart from the precedence pills so
+             an overridden copy can say both "overridden by X" and "not installed". -->
+        <span
+          class="entry-list__status"
+          :class="`entry-list__status--${row.tone}`"
+        >
+          {{ row.status }}
         </span>
       </div>
 
@@ -193,9 +202,12 @@ const hueByCatalog = computed(
   letter-spacing: 0.02em;
 }
 .entry-list__status {
+  /* Pushed to the card's top-right, apart from the precedence pills on the left. */
+  margin-left: auto;
   font-size: 0.7rem;
   padding: 0.1rem 0.45rem;
   border-radius: 999px;
+  white-space: nowrap;
 }
 .entry-list__status--installed {
   background: rgba(34, 197, 94, 0.18);
@@ -205,14 +217,17 @@ const hueByCatalog = computed(
   background: rgba(128, 128, 128, 0.18);
   opacity: 0.8;
 }
-.entry-list__status--overridden {
-  background: rgba(234, 179, 8, 0.18);
-  color: #b45309;
-}
 .entry-list__status--attention {
   background: rgba(245, 158, 11, 0.2);
   color: #b45309;
   font-weight: 600;
+}
+.entry-list__overridden {
+  font-size: 0.7rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(234, 179, 8, 0.18);
+  color: #b45309;
 }
 .entry-list__overrides {
   font-size: 0.7rem;

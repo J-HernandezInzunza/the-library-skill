@@ -658,7 +658,7 @@ leaves the entry reinstallable, `remove` does not, so the same dependent list me
     not three. A batch dry run plans every requested entry and writes nothing. Gate passes.
   - **Commit:** `feat(desktop): install a selection from a catalog in one batch`
 
-- [ ] **T4.8 — Bulk uninstall the selection**
+- [x] **T4.8 — Bulk uninstall the selection**
   - **Files:** `library.py`, `desktop/src-tauri/src/{cli,lib}.rs`,
     `desktop/src/components/BulkInstall.vue`
   - **Requirements:** R3.6
@@ -674,7 +674,14 @@ leaves the entry reinstallable, `remove` does not, so the same dependent list me
     reports it refused and deletes the rest. Gate passes.
   - **Commit:** `feat(desktop): uninstall a selection in one batch`
 
-- [ ] **T4.9 — Bulk remove from a catalog**
+- [~] **T4.9 — Bulk remove from a catalog** — *descoped*
+  - **Descoped** by the developer: bulk remove edits a catalog's `library.yaml` (catalog
+    authoring), not installs. Single-entry remove already exists (T4.4/T4.4a-b via the
+    Catalogs manager and `remove --dry-run`), which covers the need. Bulk removal is a
+    convenience for trimming several entries out of a catalog you own in one commit, and
+    carries asymmetric risk — a removed entry is recoverable only from git, and not at all
+    for a non-repo local catalog — so it is not worth building on spec alone. Revisit if
+    bulk catalog authoring becomes a real workflow.
   - **Files:** `library.py`, `desktop/src-tauri/src/{cli,lib}.rs`,
     `desktop/src/components/Catalogs.vue`
   - **Requirements:** R4.4

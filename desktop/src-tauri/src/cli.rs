@@ -281,13 +281,22 @@ pub struct SyncFailure {
     pub reason: String,
 }
 
-/// What `uninstall <name> --json` did, and what it would not do.
+/// What `uninstall <name>... --json` did, and what it would not do.
 ///
-/// `status` is `OK` or `REFUSED`. Both lists can be populated at once: a name installed
-/// in two scopes can have one copy deleted and the other refused.
+/// `status` is `OK` or `REFUSED`, aggregated across the batch: `REFUSED` if any
+/// requested entry had a copy the tool has no receipt for. One `results` entry per
+/// requested name, so a part-done batch — some deleted, some refused — says which entry
+/// landed where. A single-copy uninstall reads `results[0]`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UninstallReport {
     pub status: String,
+    #[serde(default)]
+    pub results: Vec<UninstallResult>,
+}
+
+/// What `uninstall` did to one requested entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UninstallResult {
     pub r#type: String,
     pub name: String,
     #[serde(default)]
@@ -895,22 +904,28 @@ pub fn sync(sink: &dyn CommandSink, force: bool) -> Result<SyncReport, AppError>
     parse(body)
 }
 
-/// Delete an installed copy, leaving the catalog entry alone (R3.1).
+/// Delete installed copies of one or more entries, leaving the catalog entries alone
+/// (R3.1, R3.6).
 ///
 /// Exit 2 with a `REFUSED` body is a report, not a failure: it names destinations with
 /// no install receipt and deletes nothing there. Handled here rather than in
 /// `run_report`, which tolerates only exit 1 — exit 2's other meaning is
 /// `AMBIGUOUS_CATALOG`, a choice, and widening the tolerance would swallow it.
 ///
-/// `force` deletes a destination the tool cannot prove it created. Only ever passed
-/// after a second, separate confirmation; never as a retry.
+/// `force` deletes destinations the tool cannot prove it created, and applies to every
+/// name. The app never passes it in bulk: a blanket force over a selection is exactly
+/// the escalation the refusal exists to prevent, so that stays a per-copy choice made
+/// from the refusal panel.
 pub fn uninstall(
     sink: &dyn CommandSink,
-    name: &str,
+    names: &[String],
     scope: &str,
     force: bool,
 ) -> Result<UninstallReport, AppError> {
-    let mut args = vec!["uninstall", name, "--scope", scope];
+    let mut args = vec!["uninstall"];
+    args.extend(names.iter().map(String::as_str));
+    args.push("--scope");
+    args.push(scope);
     if force {
         args.push("--force");
     }

@@ -148,13 +148,19 @@ export interface UseReport {
 }
 
 /**
- * What `library uninstall <name> --json` did, and what it would not do.
+ * What `library uninstall <name>... --json` did, and what it would not do.
  *
- * `status` is `OK` or `REFUSED`. Both lists can be populated at once: a name installed
- * in two scopes can have one copy deleted and the other refused.
+ * `status` is `OK` or `REFUSED`, aggregated across the batch. One `results` entry per
+ * requested name, so a part-done batch says which entry landed where. A single-copy
+ * uninstall reads `results[0]`.
  */
 export interface UninstallReport {
   status: string;
+  results: UninstallResult[];
+}
+
+/** What `library uninstall` did to one requested entry. */
+export interface UninstallResult {
   type: string;
   name: string;
   deleted: string[];

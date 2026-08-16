@@ -3,7 +3,12 @@ import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { describeDestState, installPlan } from "../catalog";
 import { withActivity } from "../commandActivity";
-import { describeAppError, type UsePreview, type UseReport } from "../types";
+import {
+  describeAppError,
+  type UninstallReport,
+  type UsePreview,
+  type UseReport,
+} from "../types";
 import Busy from "./Busy.vue";
 import StatusBanner from "./StatusBanner.vue";
 
@@ -13,13 +18,40 @@ const props = defineProps<{
   /** The catalog they were picked from, for the confirmation to name. */
   catalogId: string;
 }>();
-const emit = defineEmits<{ installed: []; clear: [] }>();
+const emit = defineEmits<{ installed: []; uninstalled: [] }>();
 
 const preview = ref<UsePreview | null>(null);
 const report = ref<UseReport | null>(null);
 const acknowledged = ref(false);
 const running = ref(false);
 const failure = ref("");
+
+/**
+ * The uninstall side of the panel.
+ *
+ * `confirming` gates the delete behind a naming confirmation, the same shape the
+ * single-copy control uses. A bulk uninstall targets the **global** scope, mirroring
+ * bulk install: the selection lives in a catalog tab and names entries, not per-copy
+ * scopes, so there is one honest scope to act on.
+ */
+const confirming = ref(false);
+const uninstallReport = ref<UninstallReport | null>(null);
+
+/**
+ * Entries the tool would not delete because it has no receipt for them.
+ *
+ * Surfaced by name so each can be removed from its own page, where the refusal gets its
+ * own confirmation. There is deliberately no blanket "delete anyway" over the batch: a
+ * single force over a whole selection is exactly the escalation the refusal exists to
+ * prevent (T3.5).
+ */
+const refused = computed(() =>
+  (uninstallReport.value?.results ?? []).filter((r) => r.refused.length),
+);
+/** Entries whose copies were actually removed. */
+const removed = computed(() =>
+  (uninstallReport.value?.results ?? []).filter((r) => r.deleted.length),
+);
 
 /**
  * One plan for the whole selection, which is why this is one command rather than N.
@@ -36,11 +68,23 @@ const canInstall = computed(
   () => !!plan.value && !running.value && (!plan.value.blocked || acknowledged.value),
 );
 
+/** Switch the panel to its uninstall confirmation, clearing any install plan. */
+function startUninstall() {
+  preview.value = null;
+  report.value = null;
+  acknowledged.value = false;
+  uninstallReport.value = null;
+  failure.value = "";
+  confirming.value = true;
+}
+
 async function runPreview() {
   running.value = true;
   failure.value = "";
   report.value = null;
   acknowledged.value = false;
+  confirming.value = false;
+  uninstallReport.value = null;
   try {
     preview.value = await withActivity(`planning ${props.names.length} installs…`, () =>
       invoke<UsePreview>("entry_use_preview", { names: props.names }),
@@ -68,11 +112,36 @@ async function install() {
   }
 }
 
-// A changed selection describes a different install, so the plan built from the previous
-// one is not stale so much as about something else.
+async function uninstall() {
+  running.value = true;
+  failure.value = "";
+  try {
+    uninstallReport.value = await withActivity(
+      `removing ${props.names.length} ${props.names.length === 1 ? "entry" : "entries"}…`,
+      () =>
+        // No --force: the tool deletes the copies it has receipts for and refuses the
+        // rest, which are then handled one at a time.
+        invoke<UninstallReport>("entry_uninstall", {
+          names: props.names,
+          scope: "global",
+          force: false,
+        }),
+    );
+    confirming.value = false;
+    emit("uninstalled");
+  } catch (e) {
+    failure.value = describeAppError(e);
+  } finally {
+    running.value = false;
+  }
+}
+
+// A changed selection describes a different action, so a plan or confirmation built from
+// the previous one is not stale so much as about something else.
 watch(() => props.names, () => {
   preview.value = null;
   acknowledged.value = false;
+  confirming.value = false;
 });
 </script>
 
@@ -89,6 +158,26 @@ watch(() => props.names, () => {
         >.
       </p>
     </StatusBanner>
+    <StatusBanner v-else-if="uninstallReport" :kind="refused.length ? 'warning' : 'success'">
+      <p class="bulk__done">
+        <template v-if="removed.length">
+          Removed {{ removed.length }}
+          {{ removed.length === 1 ? "entry" : "entries" }} from this machine.
+        </template>
+        <template v-else-if="!refused.length">
+          None of the selected entries were installed — nothing to remove.
+        </template>
+        <template v-if="refused.length">
+          {{ refused.length }}
+          {{ refused.length === 1 ? "entry was" : "entries were" }} left in place because
+          the tool has no record of installing
+          {{ refused.length === 1 ? "it" : "them" }}:
+          {{ refused.map((r) => r.name).join(", ") }}. Open
+          {{ refused.length === 1 ? "it" : "each" }} to remove
+          {{ refused.length === 1 ? "it" : "them" }} individually.
+        </template>
+      </p>
+    </StatusBanner>
 
     <div class="bulk__bar">
       <span class="bulk__count">
@@ -98,21 +187,43 @@ watch(() => props.names, () => {
         <template v-else>
           <!-- The space says what the mode is for. It previously pointed at a button, and
                pointed the wrong way. -->
-          Installing several at once: one plan, one confirmation, and a dependency two of
-          them share is fetched once. Tick the entries you want.
+          Act on several at once: install a selection as one plan with shared dependencies
+          fetched once, or remove them together. Tick the entries you want.
         </template>
       </span>
       <button
         v-if="names.length"
         type="button"
-        class="ghost"
-        @click="emit('clear')"
+        class="ghost danger"
+        :disabled="running"
+        @click="startUninstall()"
       >
-        Clear
+        Uninstall
       </button>
       <button v-if="names.length" type="button" :disabled="running" @click="runPreview()">
         {{ preview ? "Re-check" : "Preview install" }}
       </button>
+    </div>
+
+    <div v-if="confirming" class="bulk__confirm fade-in">
+      <p class="bulk__confirm-q">
+        Remove the global copies of {{ names.length }} selected
+        {{ names.length === 1 ? "entry" : "entries" }}?
+      </p>
+      <p class="bulk__confirm-note">
+        Entries that are not installed are skipped, and a copy the tool has no receipt for
+        is refused rather than force-deleted. The catalog entries are untouched —
+        installing again brings the files back.
+      </p>
+      <div class="bulk__confirm-actions">
+        <button type="button" class="ghost" :disabled="running" @click="confirming = false">
+          Cancel
+        </button>
+        <button type="button" class="danger" :disabled="running" @click="uninstall()">
+          Remove {{ names.length }}
+        </button>
+      </div>
+      <Busy v-if="running" inline label="Removing files…" />
     </div>
 
     <Busy v-if="running && !preview" inline label="Resolving destinations…" />
@@ -246,5 +357,29 @@ watch(() => props.names, () => {
   margin: 0;
   font-size: 0.95rem;
   line-height: 1.4;
+}
+.bulk__confirm {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border-radius: 8px;
+  background: rgba(220, 38, 38, 0.08);
+  border-left: 3px solid #dc2626;
+}
+.bulk__confirm-q {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.bulk__confirm-note {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  opacity: 0.8;
+}
+.bulk__confirm-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
 }
 </style>

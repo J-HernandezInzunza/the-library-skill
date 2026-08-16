@@ -96,13 +96,13 @@ function setSelecting(on: boolean) {
 }
 
 /**
- * A finished install has consumed the selection, so it stops being selected.
+ * A finished bulk action has consumed the selection, so it stops being selected.
  *
  * Selection mode stays on, because the list under it is still the one you were picking
- * from — and because `BulkInstall` owns the success banner, unmounting it here would
+ * from — and because `BulkInstall` owns the result banner, unmounting it here would
  * throw away the report of what just happened.
  */
-function afterBulkInstall() {
+function afterBulkAction() {
   picked.value = new Set();
   load();
 }
@@ -211,7 +211,7 @@ const filtered = computed(() => {
 
 const summary = computed(() => {
   const installed = filtered.value.filter(({ tone }) => tone === "installed").length;
-  const overridden = filtered.value.filter(({ tone }) => tone === "overridden").length;
+  const overridden = filtered.value.filter(({ overriddenBy }) => overriddenBy !== null).length;
 
   const parts = [`${filtered.value.length} of ${rows.value.length} entries`, `${installed} installed`];
   if (overridden) parts.push(`${overridden} overridden`);
@@ -325,7 +325,7 @@ onMounted(async () => {
           class="ghost summary__all"
           @click="setSelecting(true)"
         >
-          Select to install
+          Select
         </button>
         <template v-else>
           <button
@@ -335,8 +335,16 @@ onMounted(async () => {
           >
             {{ pickedNames.length === selectable.length ? "Select none" : `Select all ${selectable.length}` }}
           </button>
+          <button
+            v-if="pickedNames.length"
+            type="button"
+            class="ghost summary__clear"
+            @click="picked = new Set()"
+          >
+            Clear
+          </button>
           <button type="button" class="ghost summary__done" @click="setSelecting(false)">
-            Done
+            Stop selecting
           </button>
         </template>
       </template>
@@ -348,8 +356,8 @@ onMounted(async () => {
       v-if="activeCatalog && picked"
       :names="pickedNames"
       :catalog-id="activeCatalog"
-      @installed="afterBulkInstall()"
-      @clear="picked = new Set()"
+      @installed="afterBulkAction()"
+      @uninstalled="afterBulkAction()"
     />
 
     <Busy v-if="loading" label="Reading the catalog…" />
@@ -531,8 +539,15 @@ h1 {
   font-size: 0.85rem;
   opacity: 0.7;
   margin: 0.5rem 0 1rem;
+  /* Reserve the height of the tallest variant — the two-line "nothing can be installed"
+     note on a fully-overridden catalog — so switching tabs does not shift the list up
+     and down under it. Content stays vertically centred in the reserved space. */
+  min-height: 2.5rem;
 }
 .summary__toggle {
+  /* Pinned right so it stays put when the counts text changes width on toggle — it
+     otherwise scooted left as "7 overridden" appeared and disappeared. */
+  margin-left: auto;
   display: flex;
   align-items: center;
   gap: 0.3rem;
@@ -542,6 +557,7 @@ h1 {
   padding: 0.2rem 0.5rem;
   font-size: 0.75rem;
 }
+.summary__clear,
 .summary__done {
   padding: 0.2rem 0.5rem;
   font-size: 0.75rem;

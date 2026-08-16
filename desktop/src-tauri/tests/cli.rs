@@ -401,7 +401,7 @@ fn an_uninstall_names_what_it_deleted() {
     let _guard = with_fixture_home();
     let log = Recorder::default();
 
-    let report = cli::uninstall(&log, "grilling", "global", false).expect("a report");
+    let report = cli::uninstall(&log, &["grilling".into()], "global", false).expect("a report");
 
     // --force is never passed unless the caller asked for it.
     assert_eq!(
@@ -409,8 +409,31 @@ fn an_uninstall_names_what_it_deleted() {
         ["uninstall", "grilling", "--scope", "global", "--json"]
     );
     assert_eq!(report.status, "OK");
-    assert_eq!(report.deleted, ["/Users/dev/.claude/skills/grilling"]);
-    assert!(report.refused.is_empty());
+    assert_eq!(report.results[0].deleted, ["/Users/dev/.claude/skills/grilling"]);
+    assert!(report.results[0].refused.is_empty());
+}
+
+#[test]
+fn a_batch_uninstall_deletes_what_it_can_and_refuses_the_rest() {
+    // The whole point of bulk uninstall: one command, one result per name, and a copy
+    // the tool never wrote (`handmade`) refused while the tracked ones are deleted. No
+    // blanket --force over the selection.
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let names = ["grilling".into(), "handmade".into()];
+    let report = cli::uninstall(&log, &names, "global", false).expect("a report");
+
+    assert_eq!(
+        &log.started.lock().unwrap()[0].argv[1..],
+        ["uninstall", "grilling", "handmade", "--scope", "global", "--json"]
+    );
+    assert_eq!(report.status, "REFUSED");
+    let by_name = |n: &str| report.results.iter().find(|r| r.name == n).unwrap();
+    assert_eq!(by_name("grilling").deleted, ["/Users/dev/.claude/skills/grilling"]);
+    assert!(by_name("grilling").refused.is_empty());
+    assert!(by_name("handmade").deleted.is_empty());
+    assert_eq!(by_name("handmade").refused, ["/Users/dev/.claude/skills/handmade"]);
 }
 
 #[test]
@@ -419,23 +442,23 @@ fn a_refusal_names_the_path_instead_of_reading_as_a_failed_command() {
     // to name the path to offer the escalation. Under the strict mapping it would have
     // surfaced as "library exited 2" with no path at all.
     let _guard = with_fixture_home();
-    let report = cli::uninstall(&Recorder::default(), "handmade", "all", false)
+    let report = cli::uninstall(&Recorder::default(), &["handmade".into()], "all", false)
         .expect("a refusal is a report");
 
     assert_eq!(report.status, "REFUSED");
-    assert!(report.deleted.is_empty());
-    assert_eq!(report.refused, ["/Users/dev/.claude/skills/handmade"]);
+    assert!(report.results[0].deleted.is_empty());
+    assert_eq!(report.results[0].refused, ["/Users/dev/.claude/skills/handmade"]);
 }
 
 #[test]
 fn a_partial_refusal_reports_both_halves() {
     // The case a boolean "did it work" would get wrong: one copy gone, one left alone.
     let _guard = with_fixture_home();
-    let report = cli::uninstall(&Recorder::default(), "mixed", "all", false).expect("a report");
+    let report = cli::uninstall(&Recorder::default(), &["mixed".into()], "all", false).expect("a report");
 
     assert_eq!(report.status, "REFUSED");
-    assert_eq!(report.deleted, ["/Users/dev/.claude/skills/mixed"]);
-    assert_eq!(report.refused, ["/proj/.claude/skills/mixed"]);
+    assert_eq!(report.results[0].deleted, ["/Users/dev/.claude/skills/mixed"]);
+    assert_eq!(report.results[0].refused, ["/proj/.claude/skills/mixed"]);
 }
 
 #[test]
@@ -443,11 +466,11 @@ fn force_is_passed_only_when_the_caller_asked_for_it() {
     let _guard = with_fixture_home();
     let log = Recorder::default();
 
-    let report = cli::uninstall(&log, "handmade", "all", true).expect("a report");
+    let report = cli::uninstall(&log, &["handmade".into()], "all", true).expect("a report");
 
     assert!(log.started.lock().unwrap()[0].argv.contains(&"--force".to_string()));
     assert_eq!(report.status, "OK");
-    assert_eq!(report.deleted, ["/Users/dev/.claude/skills/handmade"]);
+    assert_eq!(report.results[0].deleted, ["/Users/dev/.claude/skills/handmade"]);
 }
 
 #[test]

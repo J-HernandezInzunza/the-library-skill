@@ -82,18 +82,20 @@ async fn entry_use(
     off_thread(move || cli::use_entry(&app, &names, project.as_deref())).await
 }
 
-/// Delete an installed copy. The catalog entry is untouched (R3.1).
+/// Delete installed copies of one or more entries. The catalog entries are untouched
+/// (R3.1, R3.6).
 ///
-/// `force` deletes a destination with no install receipt, and is only ever passed after
-/// the user confirmed that specific refusal.
+/// A single-copy uninstall passes one name; a bulk uninstall from a catalog tab passes
+/// the selection. `force` deletes a destination with no install receipt, and is only
+/// ever passed after the user confirmed that specific refusal — never in bulk.
 #[tauri::command]
 async fn entry_uninstall(
     app: tauri::AppHandle,
-    name: String,
+    names: Vec<String>,
     scope: String,
     force: bool,
 ) -> Result<UninstallReport, AppError> {
-    off_thread(move || cli::uninstall(&app, &name, &scope, force)).await
+    off_thread(move || cli::uninstall(&app, &names, &scope, force)).await
 }
 
 /// Re-pull every installed entry (R3.3). `force` re-fetches even unchanged ones.

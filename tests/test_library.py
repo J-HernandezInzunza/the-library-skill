@@ -5520,7 +5520,14 @@ library:
     def uninstall(self, *argv: str, expect: int = 0) -> dict[str, Any]:
         code, out, err = run_cli("uninstall", *argv, "--no-pull", "--json")
         self.assertEqual(code, expect, err or out)
-        return json.loads(out)
+        payload = json.loads(out)
+        # `uninstall` now reports one result per requested entry. These are all
+        # single-name calls, so flatten the sole result up next to `status` to keep the
+        # assertions reading against `deleted`/`refused` directly. A resolution failure
+        # (NOT_FOUND/AMBIGUOUS) carries no `results`, so it passes through unchanged.
+        if payload.get("results"):
+            return {**payload, **payload["results"][0]}
+        return payload
 
     @property
     def global_dest(self) -> Path:
@@ -5608,6 +5615,43 @@ library:
         code, out, _ = run_cli("uninstall", "alpha", "--no-pull")
         self.assertEqual(code, 2)
         self.assertIn("--force", out)
+
+    def test_several_names_uninstall_in_one_command(self) -> None:
+        self.use("alpha")
+        self.use("beta")
+        code, out, err = run_cli("uninstall", "alpha", "beta", "--scope", "global",
+                                 "--no-pull", "--json")
+        self.assertEqual(code, 0, err or out)
+        payload = json.loads(out)
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual([r["name"] for r in payload["results"]], ["alpha", "beta"])
+        self.assertFalse((self.tool.home / ".claude/skills/alpha").exists())
+        self.assertFalse((self.tool.home / ".claude/skills/beta").exists())
+
+    def test_a_batch_deletes_what_it_can_and_refuses_the_rest(self) -> None:
+        # A part-done batch: `beta` was installed by the tool, `alpha` was put here by
+        # hand, so the batch removes `beta` and refuses `alpha` rather than forcing both.
+        self.use("beta")
+        self.global_dest.mkdir(parents=True)
+        (self.global_dest / "SKILL.md").write_text("# hand written\n")
+        code, out, _ = run_cli("uninstall", "alpha", "beta", "--scope", "global",
+                               "--no-pull", "--json")
+        self.assertEqual(code, 2)
+        payload = json.loads(out)
+        self.assertEqual(payload["status"], "REFUSED")
+        by_name = {r["name"]: r for r in payload["results"]}
+        self.assertEqual(by_name["alpha"]["refused"], [str(self.global_dest)])
+        self.assertEqual(by_name["beta"]["deleted"],
+                         [str(self.tool.home / ".claude/skills/beta")])
+        self.assertTrue(self.global_dest.exists())  # the hand-made copy survives
+
+    def test_a_typo_in_a_batch_deletes_nothing(self) -> None:
+        self.use("alpha")
+        code, out, _ = run_cli("uninstall", "alpha", "nope", "--scope", "global",
+                               "--no-pull", "--json")
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(out)["status"], "NOT_FOUND")
+        self.assertTrue(self.global_dest.exists())  # alpha was not touched
 
 
 class TestWriteTarget(unittest.TestCase):
