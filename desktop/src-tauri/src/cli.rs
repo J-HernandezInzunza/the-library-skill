@@ -1288,7 +1288,9 @@ pub fn bootstrap(sink: &dyn CommandSink) -> Result<BootstrapReport, AppError> {
     })?)
 }
 
-fn parse<T: serde::de::DeserializeOwned>(payload: serde_json::Value) -> Result<T, AppError> {
+pub(crate) fn parse<T: serde::de::DeserializeOwned>(
+    payload: serde_json::Value,
+) -> Result<T, AppError> {
     serde_json::from_value(payload).map_err(|e| AppError::Json {
         detail: e.to_string(),
     })

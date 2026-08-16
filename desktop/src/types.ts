@@ -515,6 +515,68 @@ export interface Entry {
 }
 
 /**
+ * One value a walkthrough will ask for, from the manifest's `secrets[]`.
+ *
+ * `guidance` and `url` are the skill author's own instructions for obtaining the
+ * credential and are rendered verbatim — a paraphrased scope list is a support ticket.
+ */
+export interface Secret {
+  key: string;
+  label: string | null;
+  guidance: string | null;
+  url: string | null;
+  /**
+   * `config-file` | `env` | `manual` — how the value reaches the skill, and whether
+   * the app ever sees it. Typed as `string` for the same reason as `Entry.state`.
+   */
+  delivery: string;
+  optional: boolean;
+}
+
+/** The parts of `setup.yaml` this phase shows. The rest is Phase 6's to type. */
+export interface SetupManifest {
+  /** Not a number: an unrecognized version is a reported problem, not a parse error. */
+  version: unknown;
+  summary: string | null;
+  secrets: Secret[];
+}
+
+/** One declared prerequisite, as the CLI checked it. */
+export interface Prerequisite {
+  /** `node` | `sibling-skill` | `env` | `binary`, or null when the manifest declared none. */
+  kind: string | null;
+  /** The declared value. `node: 20` is a number in YAML, so this is not a string. */
+  value: unknown;
+  met: boolean;
+  /** Why, in the CLI's words. The only text that says what to do about an unmet one. */
+  detail: string;
+}
+
+/**
+ * What `library setup <name> --json` reports, mirrored from `src-tauri/src/setup.rs`.
+ *
+ * Every judgement here is the CLI's. The app renders it and does not recompute it: a
+ * second validator in Rust or TS would be two implementations of one schema (C-D7).
+ *
+ * `has_setup` and `problems` vary independently — a `setup.yaml` that exists but will
+ * not parse reports `has_setup: false` *with* a problem — so "nothing to do" is never
+ * `has_setup === false` on its own.
+ */
+export interface SetupReport {
+  status: string;
+  name: string;
+  type: string;
+  catalog: string;
+  installed: boolean;
+  dest: string | null;
+  has_setup: boolean;
+  manifest: SetupManifest | null;
+  problems: string[];
+  prerequisites: Prerequisite[];
+  ready: boolean;
+}
+
+/**
  * The backend contract, mirrored from `src-tauri/src/error.rs`.
  *
  * Errors arrive as a tagged union so the UI can act on them rather than dump a

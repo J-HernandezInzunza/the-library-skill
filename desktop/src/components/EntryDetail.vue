@@ -17,6 +17,7 @@ import StatusBanner from "./StatusBanner.vue";
 import InstallPreview from "./InstallPreview.vue";
 import InstalledCopies from "./InstalledCopies.vue";
 import PageHeader from "./PageHeader.vue";
+import SetupReadiness from "./SetupReadiness.vue";
 
 const props = defineProps<{
   name: string;
@@ -167,6 +168,11 @@ watch(() => props.name, load, { immediate: true });
         :affected="affected.map((user) => user.entry.name)"
         @changed="afterWrite()"
       />
+
+      <!-- Directly under the install panel, because "it is installed" and "it still
+           needs a token before it works" are one thought, and the second is the half
+           that a chip in the header cannot carry. -->
+      <SetupReadiness :name="detail.name" :installed="copies.length > 0" />
 
       <InstallPreview
         :name="detail.name"

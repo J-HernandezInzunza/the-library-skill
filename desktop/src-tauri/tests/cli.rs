@@ -11,6 +11,7 @@ use std::sync::{Mutex, MutexGuard};
 use desktop_lib::cli::{self, Catalog, Entry};
 use desktop_lib::error::AppError;
 use desktop_lib::events::{CommandFinished, CommandSink, CommandStarted};
+use desktop_lib::setup;
 
 /// Captures what the command log would show, so D5's transparency is assertable
 /// rather than assumed.
@@ -1139,4 +1140,146 @@ fn a_missing_wrapper_names_the_path_it_looked_at() {
             path: missing.join("library").display().to_string()
         }
     );
+}
+
+// --- setup readiness (T5.1) ------------------------------------------------
+//
+// Each case is one of the states the readiness panel has to tell apart. They are
+// separate tests rather than one table because the point of each is a *different*
+// combination of has_setup / problems / ready, and a table would report "the setup
+// tests failed" where these report which distinction broke.
+
+#[test]
+fn a_ready_manifest_reports_its_summary_secrets_and_met_prerequisites() {
+    let _guard = with_fixture_home();
+    let report = setup::setup(&Recorder::default(), "ready-skill").expect("a ready report");
+
+    assert!(report.ready);
+    assert!(report.has_setup);
+    assert!(report.problems.is_empty());
+
+    let manifest = report.manifest.expect("a ready report carries its manifest");
+    assert_eq!(
+        manifest.summary.as_deref(),
+        Some("Connect the toolkit to your Atlassian account.")
+    );
+
+    // Three secrets, and the two fields that must reach the screen unaltered.
+    assert_eq!(manifest.secrets.len(), 3);
+    let token = &manifest.secrets[1];
+    assert_eq!(token.key, "account.api_token");
+    assert_eq!(token.guidance.as_deref(), Some("Create this token WITHOUT scopes."));
+    assert_eq!(
+        token.url.as_deref(),
+        Some("https://id.atlassian.com/manage-profile/security/api-tokens")
+    );
+    assert!(!token.optional);
+    assert!(manifest.secrets[2].optional);
+
+    // The first secret declares no `delivery`; the schema's default stands in, so the
+    // view never has to know what an absent delivery means.
+    assert_eq!(manifest.secrets[0].delivery, "config-file");
+
+    assert!(report.prerequisites.iter().all(|p| p.met));
+    assert_eq!(report.prerequisites[1].kind.as_deref(), Some("sibling-skill"));
+    assert_eq!(report.prerequisites[1].detail, "installed (global)");
+}
+
+#[test]
+fn an_unmet_prerequisite_is_reported_with_the_reason_the_cli_gave() {
+    let _guard = with_fixture_home();
+    let report = setup::setup(&Recorder::default(), "blocked-skill").expect("a blocked report");
+
+    // A valid manifest — this is not a defect in the skill, it is work to do first.
+    assert!(report.has_setup);
+    assert!(report.problems.is_empty());
+    assert!(!report.ready);
+
+    let unmet: Vec<&str> = report
+        .prerequisites
+        .iter()
+        .filter(|p| !p.met)
+        .map(|p| p.detail.as_str())
+        .collect();
+    assert_eq!(unmet, ["not installed", "not set"]);
+}
+
+#[test]
+fn an_unknown_schema_version_is_a_defect_in_the_skill_not_an_absent_manifest() {
+    // The manifest still parses and still comes back, so a view that tested
+    // `manifest == null` for "nothing to do" would offer a walkthrough over it.
+    let _guard = with_fixture_home();
+    let report = setup::setup(&Recorder::default(), "future-skill").expect("an invalid report");
+
+    assert!(report.has_setup);
+    assert!(report.manifest.is_some());
+    assert!(!report.ready);
+    assert_eq!(report.problems.len(), 1);
+    assert!(report.problems[0].contains("unknown setup version 2"));
+}
+
+#[test]
+fn a_manifest_that_will_not_parse_reports_no_manifest_and_a_problem() {
+    // The pairing that catches a has_setup-keyed view: false, but not "nothing to do".
+    let _guard = with_fixture_home();
+    let report = setup::setup(&Recorder::default(), "unreadable-skill").expect("a report");
+
+    assert!(!report.has_setup);
+    assert!(report.manifest.is_none());
+    assert!(!report.ready);
+    assert_eq!(report.problems.len(), 1);
+    assert!(report.problems[0].contains("unreadable (ScannerError)"));
+}
+
+#[test]
+fn no_manifest_is_the_common_case_and_carries_no_problems() {
+    let _guard = with_fixture_home();
+    let report = setup::setup(&Recorder::default(), "plain-skill").expect("a report");
+
+    assert!(report.installed);
+    assert!(!report.has_setup);
+    assert!(report.problems.is_empty());
+    assert!(report.prerequisites.is_empty());
+    // `ready` is false here too, which is why the panel cannot render on `ready` alone.
+    assert!(!report.ready);
+}
+
+#[test]
+fn an_entry_that_was_never_installed_has_nothing_to_report_yet() {
+    // The manifest belongs to the installed copy, so this is "not knowable yet",
+    // which is a different answer from "this skill needs no setup".
+    let _guard = with_fixture_home();
+    let report = setup::setup(&Recorder::default(), "absent-skill").expect("a report");
+
+    assert!(!report.installed);
+    assert_eq!(report.dest, None);
+    assert!(!report.has_setup);
+    assert!(report.problems.is_empty());
+}
+
+#[test]
+fn a_name_no_catalog_defines_any_more_fails_with_a_message() {
+    // `setup` exits 2 with its report on stdout and *nothing* on stderr, so the
+    // generic mapping would surface an error with an empty message.
+    let _guard = with_fixture_home();
+    let err = setup::setup(&Recorder::default(), "gone-skill").unwrap_err();
+
+    match err {
+        AppError::Cli { code, stderr } => {
+            assert_eq!(code, 2);
+            assert!(stderr.contains("gone-skill"), "got {stderr:?}");
+        }
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn reading_setup_is_reported_to_the_command_log() {
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    setup::setup(&log, "ready-skill").expect("a report");
+
+    let started = log.started.lock().unwrap();
+    assert_eq!(&started[0].argv[1..], ["setup", "ready-skill", "--json"]);
 }

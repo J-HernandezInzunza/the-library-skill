@@ -14,6 +14,7 @@
 pub mod cli;
 pub mod error;
 pub mod events;
+pub mod setup;
 
 use cli::{
     AddReport, AddRequest, BootstrapReport, Catalog, CatalogRequest, DoctorReport, Entry,
@@ -22,6 +23,7 @@ use cli::{
     UpdateRequest, UsePreview, UseReport,
 };
 use error::AppError;
+use setup::SetupReport;
 
 /// Run a blocking CLI call off the UI thread.
 ///
@@ -226,6 +228,15 @@ async fn registry_list(app: tauri::AppHandle) -> Result<Vec<Catalog>, AppError> 
     off_thread(move || cli::registry(&app)).await
 }
 
+/// What an entry needs before its setup walkthrough can start (R5.1).
+///
+/// Every judgement in the payload — valid manifest, prerequisite met, ready — is the
+/// CLI's. The app renders it and does not second-guess it (C-D7).
+#[tauri::command]
+async fn entry_setup(app: tauri::AppHandle, name: String) -> Result<SetupReport, AppError> {
+    off_thread(move || setup::setup(&app, &name)).await
+}
+
 /// Prepare a tool directory that has never been bootstrapped.
 #[tauri::command]
 async fn bootstrap_tool(app: tauri::AppHandle) -> Result<BootstrapReport, AppError> {
@@ -256,6 +267,7 @@ pub fn run() {
             registry_list,
             registry_add,
             registry_remove,
+            entry_setup,
             bootstrap_tool
         ])
         .run(tauri::generate_context!())

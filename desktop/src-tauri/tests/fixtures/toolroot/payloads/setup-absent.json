@@ -1,0 +1,13 @@
+{
+  "status": "OK",
+  "name": "absent-skill",
+  "type": "skill",
+  "catalog": "fixture",
+  "installed": false,
+  "dest": null,
+  "has_setup": false,
+  "manifest": null,
+  "problems": [],
+  "prerequisites": [],
+  "ready": false
+}

@@ -710,7 +710,7 @@ belongs where the receipts are. Re-implementing the schema in Rust would be the 
 catalog logic" failure R1.1 exists to prevent, and would give two validators to keep in sync as
 the schema versions. **The app renders and executes; it does not parse or validate.**
 
-- [ ] **T5.1 — Setup readiness from `library setup --json`**
+- [x] **T5.1 — Setup readiness from `library setup --json`**
   - **Files:** `desktop/src-tauri/src/setup.rs`, `desktop/src/components/SetupReadiness.vue`
   - **Requirements:** R5.1, R5.1a, R1.1
   - **Do:** Add `entry_setup` running `setup <name> --json`, and type its payload: `has_setup`,

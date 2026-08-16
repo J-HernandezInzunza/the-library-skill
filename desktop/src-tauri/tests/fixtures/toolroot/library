@@ -117,6 +117,29 @@ case "$sub" in
       *)             cat "$here/payloads/sync-clean.json" ;;
     esac
     ;;
+  setup)
+    # Readiness is the CLI's verdict, so each payload here is a different verdict
+    # rather than a different manifest. All six were recorded from real runs against
+    # six real skills in a throwaway tool root; only the install paths were normalised.
+    #
+    # `has_setup` and `problems` vary *independently*, which is the pairing a view
+    # gets wrong: unreadable reports has_setup false **with** a problem, so keying
+    # "no setup needed" off has_setup alone silently hides a broken manifest.
+    case "$1" in
+      ready-skill)      cat "$here/payloads/setup-ready.json" ;;
+      blocked-skill)    cat "$here/payloads/setup-blocked.json" ;;
+      future-skill)     cat "$here/payloads/setup-future.json" ;;
+      unreadable-skill) cat "$here/payloads/setup-unreadable.json" ;;
+      # The manifest belongs to the installed copy, so an entry never installed has
+      # nothing to report — not "no setup needed", which is a different answer.
+      absent-skill)     cat "$here/payloads/setup-absent.json" ;;
+      # Removed from every catalog since the list was loaded: a JSON report on stdout,
+      # nothing on stderr, exit 2.
+      gone-skill)       cat "$here/payloads/setup-not-found.json"; exit 2 ;;
+      # No manifest at all: the common case, and never an error.
+      *)                cat "$here/payloads/setup-plain.json" ;;
+    esac
+    ;;
   suggest-source)
     # Echoes the path back, so a call that lost or mangled its argument fails rather than
     # matching a canned payload. Two answers, both exit 0: a derivable URL, and the miss

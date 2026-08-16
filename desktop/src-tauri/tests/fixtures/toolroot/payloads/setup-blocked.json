@@ -1,0 +1,53 @@
+{
+  "status": "OK",
+  "name": "blocked-skill",
+  "type": "skill",
+  "catalog": "fixture",
+  "installed": true,
+  "dest": "/Users/tester/.claude/skills/blocked-skill",
+  "has_setup": true,
+  "manifest": {
+    "version": 1,
+    "summary": "Point the investigator at your Jira instance.",
+    "prerequisites": [
+      {
+        "sibling-skill": "atlassian-toolkit"
+      },
+      {
+        "binary": "git"
+      },
+      {
+        "env": "LIBRARY_FIXTURE_UNSET"
+      }
+    ],
+    "commands": {
+      "check": {
+        "run": "bin/setup.sh check",
+        "description": "Report readiness"
+      }
+    },
+    "verify": "check"
+  },
+  "problems": [],
+  "prerequisites": [
+    {
+      "kind": "sibling-skill",
+      "value": "atlassian-toolkit",
+      "met": false,
+      "detail": "not installed"
+    },
+    {
+      "kind": "binary",
+      "value": "git",
+      "met": true,
+      "detail": "/usr/bin/git"
+    },
+    {
+      "kind": "env",
+      "value": "LIBRARY_FIXTURE_UNSET",
+      "met": false,
+      "detail": "not set"
+    }
+  ],
+  "ready": false
+}

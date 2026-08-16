@@ -2350,3 +2350,80 @@ shown at all, so the two never sit adjacent there. The `Row` model now carries `
 independent fields; `toRow` no longer collapses them. The two guarding Vitest cases were rewritten
 to assert the split rather than the collapse, with the reasoning in the comments so the next reader
 does not "restore" the old behaviour as a bugfix.
+
+---
+
+## T5.1 — setup readiness, and the field pairing that decides the whole view
+
+**`ready: false` is four different answers, and only one of them is a problem the user
+can act on.** A skill with no manifest needs nothing; a skill that was never installed
+cannot be assessed at all; an invalid manifest is a defect in the skill; an unmet
+prerequisite is work to do. Rendering "not ready" over all four would be wrong three
+times, so `describeSetup` in `src/setup.ts` returns a named state and the panel keys off
+that, never off `ready` directly. `ready` itself is passed through untouched — it is the
+CLI's verdict (C-D7), and re-deriving it from the same fields would be a second validator.
+
+**`has_setup` and `problems` vary independently, and the order of the tests is the whole
+function.** A `setup.yaml` that exists and will not parse comes back `has_setup: false`
+**with** a problem, because `load_setup` returns `(None, [reason])` for unreadable YAML
+while `validate_setup` returns the parsed dict for a merely invalid one. So:
+
+| case | `has_setup` | `manifest` | `problems` |
+| --- | --- | --- | --- |
+| no `setup.yaml` | false | null | empty |
+| unreadable `setup.yaml` | **false** | null | **one** |
+| unknown `version` | true | **present** | one |
+
+Testing `has_setup` first announces "No setup needed" over a broken manifest and hides the
+only thing worth saying; testing `manifest == null` for "nothing to do" offers a
+walkthrough over an unknown schema version. `problems` is therefore checked before both.
+Recorded in the fixtures and pinned by a test in each layer.
+
+**The fixtures were recorded, not written, and recording them found two things.** A
+throwaway tool root with six real skills, a local catalog, and `default_dirs` pointed at a
+sandbox produced all seven payloads from real `library setup --json` runs; only the
+install paths and `git`'s location were normalised. Two mistakes on the way there are
+worth writing down because both fail *silently*:
+
+- **The install-dir override key is `default_dirs`, not `dirs`**, and it takes a list of
+  single-key mappings per section, not a mapping. A wrong key is not an error — the tool
+  falls back to `BUILTIN_DEFAULT_DIRS` and installs into the real `~/.claude/skills`. It
+  did, and was cleaned up with `library uninstall`. The recording script now refuses to
+  run unless `use --dry-run` names a path inside the sandbox.
+- **A local skill source points at the skill's `SKILL.md`, not at its directory.** The
+  tool takes the parent of the source path as the skill dir (`content_hash(src.path.parent)`),
+  so a directory source installs that directory's *parent* — six skills nested inside one.
+
+**The panel stays quiet when there is nothing to say.** `none` renders nothing at all: it
+is the common case by a wide margin, and a "No setup needed" card on every entry page
+trains you to skip the section on the entries where it matters. It also loads nothing when
+the entry is not installed — the manifest belongs to the installed copy, so there is
+nothing to ask about and asking costs a subprocess.
+
+**`guidance` and `url` reach the screen verbatim.** They are the skill author's own
+instructions for obtaining a credential, and a paraphrased token-scope list is a support
+ticket. `delivery` does *not* reach the screen verbatim: `config-file` / `env` / `manual`
+are the schema's words for what happens to the value, so the panel says what they mean —
+saved to the config file, used for this walkthrough only, or never seen by the app.
+
+**`setup` exits 2 with its report on stdout and nothing on stderr**, which the generic
+mapping turns into an error with an empty message. Reachable when an entry is removed
+between the list loading and the page opening. Handled in `setup.rs` rather than by
+widening `run_report`, which tolerates only exit 1 — exit 2's other meaning is
+`AMBIGUOUS_CATALOG`, a choice, and widening the tolerance would swallow it (§3.7).
+
+**Typed thin on purpose.** `SetupManifest` mirrors `summary` and `secrets[]` and ignores
+`commands`, `config`, and `verify`. They are Phase 6's to type, when there is something
+that runs them; typing them now would be schema knowledge the app cannot yet use, and
+`version` is `serde_json::Value` rather than an integer because an unrecognized version is
+a *reported problem* — a strict parse would turn the case the panel exists to explain into
+a parse error.
+
+**Verified live for the CLI half, not visually for the Vue half.** The seven payloads are
+real output from the real CLI, and both layers' tests run against those exact bytes. The
+rendered panel has not been seen in a running window.
+
+**Found while reading, not fixed here:** `InstallPreview.vue` invokes `entry_use_preview`
+and `entry_use` with `{ name: props.name }`, but T4.7 changed both commands to take
+`names: Vec<String>`. Single-entry install from the detail page cannot be reaching the
+backend. It belongs to T4.7, not here.

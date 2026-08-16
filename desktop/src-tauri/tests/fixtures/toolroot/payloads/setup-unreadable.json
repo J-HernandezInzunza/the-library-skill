@@ -1,0 +1,15 @@
+{
+  "status": "OK",
+  "name": "unreadable-skill",
+  "type": "skill",
+  "catalog": "fixture",
+  "installed": true,
+  "dest": "/Users/tester/.claude/skills/unreadable-skill",
+  "has_setup": false,
+  "manifest": null,
+  "problems": [
+    "/Users/tester/.claude/skills/unreadable-skill/setup.yaml: unreadable (ScannerError)"
+  ],
+  "prerequisites": [],
+  "ready": false
+}

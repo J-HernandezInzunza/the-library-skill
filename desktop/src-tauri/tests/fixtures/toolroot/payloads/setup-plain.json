@@ -1,0 +1,13 @@
+{
+  "status": "OK",
+  "name": "plain-skill",
+  "type": "skill",
+  "catalog": "fixture",
+  "installed": true,
+  "dest": "/Users/tester/.claude/skills/plain-skill",
+  "has_setup": false,
+  "manifest": null,
+  "problems": [],
+  "prerequisites": [],
+  "ready": false
+}
