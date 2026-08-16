@@ -2030,3 +2030,85 @@ happened, including "this one was already missing".
 from another catalog (kept), one hand-made with no receipt (kept), and both the catalog file and
 the entry's source untouched. Without the flag, nothing is deleted — the previous behaviour,
 unchanged by default.
+
+---
+
+## The purge deleted nothing, because a catalog id is a nickname
+
+Reported after trying it: the files were all still there, and the banner said "untouched".
+
+**The banner was honest and the command was correct.** The cause was in the data: the
+machine's catalog is registered as `my-engineering-library`, and all 35 install receipts
+record `catalog: "personal"`. The catalog had been re-registered under a new id at some
+point, so `--purge-installs my-engineering-library` matched **zero** receipts.
+
+**An id is a nickname the user picks and can change**, so it cannot be what a record *means*
+when it says where a copy came from. That is the whole defect, and it was latent in two
+places at once — the purge, and the push provenance warning shipped the day before, which
+would have started falsely claiming "installed from 'personal', but this push targets
+'my-engineering-library'" the moment the personal catalog was re-registered.
+
+### What identity is, and why not the alternatives
+
+**Where a catalog lives is what makes it that catalog**, so `catalog_key` is the resolved
+catalog file for a local one and `repo#yaml_path@branch` for a remote. Deliberately *not*
+`catalog_location`, which is a display string built for humans and free to be reworded —
+this one is compared and never shown.
+
+The suggestion on the table was a metadata file inside each installed skill directory.
+Rejected, and worth writing down why, because it is a reasonable idea that this codebase
+specifically cannot afford:
+
+| Cost | Cause |
+| --- | --- |
+| Every install instantly reads as `drifted` | `content_hash(dest)` hashes the directory |
+| `push` would copy our file **into the user's source repo** | It sends the installed directory back wholesale |
+| `sync`/`use` would delete it every refresh | They overwrite the directory from source |
+| `_dir_identical` comparisons break | Same reason as the hash |
+
+All four are fixable by teaching those functions to ignore the file, which is four places
+that must agree forever and a leak into someone's repository if one is missed. A sidecar
+*outside* the skill directory avoids all four but adds a second record that can disagree
+with `.installs.json` — two sources of truth, which is the opposite of the determinism the
+question was asking for.
+
+We did not lack metadata. We keyed it on the wrong field.
+
+### The matching rule, and why it is not two competing heuristics
+
+**The exact key wins whenever a receipt has one, and nothing else is consulted.** A receipt
+naming a *different* catalog's identity must not then be caught by a looser rule — that is
+how an approximate fallback quietly becomes the rule.
+
+The fallbacks exist only for receipts written before the key did, which is every receipt on
+every existing machine:
+
+1. the recorded **id**, correct until someone renames the catalog;
+2. the recorded **source**, matched against the sources the catalog lists — which survives a
+   rename, and is what rescues the 35 receipts that started this.
+
+The source fallback is approximate on purpose and its inaccuracy is **bounded**: it can
+over-reach only when two catalogs list an identical source URL, and it stops being consulted
+for a receipt the moment normal use rewrites it with a key. So the fuzzy path shrinks to
+nothing as the machine is used, rather than being a permanent second rule.
+
+**Found while fixing it:** `_catalog_from_raw` builds a `Catalog` with no parsed YAML, so
+the source set was silently empty and the fallback matched nothing. The unregister path is
+the one caller that builds a catalog straight from the raw registry item, which is exactly
+the caller that needs this. Hydrated explicitly, with a comment saying why.
+
+**Verified live, both paths:** a receipt carrying the key survives a rename and is purged; a
+legacy receipt with a stale id and no key is rescued by its source. **Verified by mutation
+three ways:** dropping the source fallback fails the rename case, letting the fallback
+override an exact key fails the attribution case, and comparing ids in the push warning
+fails the false-alarm case. 662 CLI tests.
+
+### Two UI bugs from the same screenshot
+
+- **The success banner did not correlate with the checkbox.** An empty `purged_installs` is
+  the same payload whether the box was ticked or not, so "asked and nothing matched" —
+  precisely what happened — rendered as "untouched", reading as though the tick had been
+  ignored. It is now a third outcome with its own sentence, and the component remembers
+  what was asked because the report cannot say.
+- **`StatusBanner` had `max-width: 34rem`**, which put a narrow box above full-width cards.
+  `.app` already caps the line length.
