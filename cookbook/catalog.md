@@ -139,6 +139,12 @@ is a trap: `uninstall` resolves its target through the catalog, so once a catalo
 unregistered its installed copies are invisible to `list` *and* refused by `uninstall` as
 `NOT_FOUND`. Nothing can then remove them but deleting the folders by hand.
 
+Which copies get deleted is decided by **install receipts**, matched on the catalog's
+identity — where it lives — rather than on its id. An id is a nickname the user picks and
+can change, and renaming a catalog used to orphan every receipt that named the old one, so
+a purge matched nothing and silently deleted nothing. Receipts written before that key
+existed fall back to the recorded id, then to the recorded source.
+
 Which copies get deleted is decided by **install receipts**, not by the catalog's entries.
 That is the only correct source: a copy whose entry was later removed from the catalog file
 is still on disk, a copy the catalog defines today may have been installed from a different

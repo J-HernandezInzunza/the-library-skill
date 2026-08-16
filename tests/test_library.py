@@ -3070,6 +3070,7 @@ def make_receipt(dest: str, **kw: Any) -> dict[str, Any]:
         "name": Path(dest).name,
         "type": "skill",
         "catalog": "shared",
+        "catalog_key": "git@github.com:org/repo.git#library.yaml@main",
         "scope": "global",
         "source": "https://github.com/org/repo/blob/main/x/SKILL.md",
         "commit": "a" * 40,
@@ -3086,6 +3087,21 @@ class TestReceiptStore(unittest.TestCase):
     def setUp(self) -> None:
         self.tool = TempTool()
         self.addCleanup(self.tool.stop)
+
+    def test_a_receipt_written_before_catalog_key_still_loads(self) -> None:
+        """C-D3, R15.12 — every receipt on every existing machine predates this key.
+
+        It reads back as None rather than failing, which is what lets the purge matcher
+        fall back to the recorded id and source for exactly those records.
+        """
+        rec = make_receipt(str(self.tool.home / ".claude/skills/alpha"))
+        legacy = {k: v for k, v in rec.items() if k != "catalog_key"}
+        self.tool.receipts_path.write_text(
+            json.dumps({"version": 1, "installs": [legacy]}) + "\n")
+
+        loaded = library.load_receipts()[rec["dest"]]
+        self.assertIsNone(loaded["catalog_key"])
+        self.assertEqual(loaded["catalog"], "shared")
 
     def test_round_trips_a_receipt(self) -> None:
         rec = make_receipt(str(self.tool.home / ".claude/skills/alpha"))
@@ -6592,12 +6608,17 @@ class TestCatalogRemove(unittest.TestCase):
         self.assertTrue(personal.is_file())  # unregistering is not deleting
 
     # ── purging what was installed from it (R15.11) ─────────────────────
-    def receipt_for(self, dest: Path, catalog: str, name: str = "alpha") -> None:
-        """Record an install the way `use` would, without needing a real one."""
+    def receipt_for(self, dest: Path, catalog: str, name: str = "alpha",
+                    key: str = "", source: str = "/src/x/SKILL.md") -> None:
+        """Record an install the way `use` would, without needing a real one.
+
+        `key` defaults to empty so these read as *legacy* receipts unless a test says
+        otherwise — which is the state every existing machine is in.
+        """
         receipts = library.load_receipts()
         receipts[str(dest)] = {
             "dest": str(dest), "name": name, "type": "skill", "catalog": catalog,
-            "scope": "global", "source": "/src/x/SKILL.md", "commit": None,
+            "catalog_key": key, "scope": "global", "source": source, "commit": None,
             "content_hash": "sha256:x", "installed_at": "2026-01-01T00:00:00Z",
         }
         library.save_receipts(receipts)
@@ -6666,6 +6687,59 @@ class TestCatalogRemove(unittest.TestCase):
         self.assertEqual(payload["purged_installs"], [])
         self.assertEqual(payload["cleared_receipts"], [str(gone)])
         self.assertIsNone(library.load_receipts().get(str(gone)))
+
+    def test_a_renamed_catalog_still_finds_what_it_installed(self) -> None:
+        """R15.12 — the bug that made all of this necessary.
+
+        An id is a nickname the user picks and can change. A machine that re-registered
+        its personal catalog under a new name had 35 receipts naming an id no longer
+        registered, so a purge matched nothing and silently deleted nothing. The recorded
+        source is what rescues those receipts: it did not change when the id did.
+        """
+        personal = self.tool.root / "personal" / "library.yaml"
+        entry_source = yaml.safe_load(personal.read_text())["library"]["skills"][0]["source"]
+        dest = self.installed_copy("alpha")
+        # Written under the *old* id, which no longer matches anything registered.
+        self.receipt_for(dest, "some-old-name", source=entry_source)
+
+        payload = self.remove("personal", "--purge-installs")
+
+        self.assertEqual(payload["purged_installs"], [str(dest)])
+        self.assertFalse(dest.exists())
+
+    def test_an_exact_key_is_not_overridden_by_the_source_fallback(self) -> None:
+        """A receipt that names a different catalog's identity is that catalog's, full stop.
+
+        Otherwise the loose fallback would claw back copies the exact record had already
+        attributed elsewhere, which is how an approximate rule quietly becomes the rule.
+        """
+        personal = self.tool.root / "personal" / "library.yaml"
+        entry_source = yaml.safe_load(personal.read_text())["library"]["skills"][0]["source"]
+        dest = self.installed_copy("alpha")
+        # Same source personal lists, but explicitly recorded as another catalog's copy.
+        self.receipt_for(dest, "elsewhere", key="/somewhere/else/library.yaml",
+                         source=entry_source)
+
+        payload = self.remove("personal", "--purge-installs")
+
+        self.assertEqual(payload["purged_installs"], [])
+        self.assertTrue(dest.is_dir())
+
+    def test_an_install_records_the_catalogs_identity_not_just_its_name(self) -> None:
+        """Going forward there is nothing to infer: the key is recorded at install time."""
+        cfg = library.load_config()
+        entry = cfg.resolve("scratch-thing")
+
+        self.assertEqual(entry.catalog, "personal")
+        self.assertEqual(library.entry_catalog_key(cfg, entry),
+                         str((self.tool.root / "personal" / "library.yaml").resolve()))
+
+    def test_a_catalog_key_survives_the_rename_an_id_does_not(self) -> None:
+        cat = library.load_config().catalogs[0]
+        before = library.catalog_key(cat)
+        cat.id = "renamed-since"
+
+        self.assertEqual(library.catalog_key(cat), before)
 
     def test_removing_from_a_legacy_config_migrates_first(self) -> None:
         self.tool.stop()

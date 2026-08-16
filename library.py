@@ -148,7 +148,7 @@ def write_machine_file(path: Path, text: str) -> None:
 
 RECEIPTS_VERSION = 1
 SETUP_FILE = "setup.yaml"  # a skill's optional setup manifest, inside its installed dir
-RECEIPT_KEYS = ("dest", "name", "type", "catalog", "scope", "source",
+RECEIPT_KEYS = ("dest", "name", "type", "catalog", "catalog_key", "scope", "source",
                 "commit", "content_hash", "installed_at")
 
 
@@ -208,7 +208,8 @@ def save_receipts(receipts: dict[str, dict[str, Any]]) -> None:
     write_machine_file(RECEIPTS_PATH, json.dumps(payload, indent=2) + "\n")
 
 
-def record_install(entry: "Entry", dest: Path, scope: str, commit: "str | None") -> dict[str, Any]:
+def record_install(entry: "Entry", dest: Path, scope: str, commit: "str | None",
+                   catalog_key: str = "") -> dict[str, Any]:
     """Record what was just installed at *dest*, replacing any earlier receipt for it.
 
     Keyed by dest (not name + scope), because `--dir` allows arbitrary destinations and
@@ -222,7 +223,11 @@ def record_install(entry: "Entry", dest: Path, scope: str, commit: "str | None")
         "dest": str(dest),
         "name": entry.name,
         "type": entry.type,
+        # Both, because they answer different questions: `catalog` is the nickname to
+        # show, `catalog_key` is the identity to compare. Renaming a catalog changes the
+        # first and not the second (R15.12).
         "catalog": entry.catalog,
+        "catalog_key": catalog_key,
         "scope": scope,
         "source": entry.source,
         "commit": commit,
@@ -2528,12 +2533,13 @@ def _install_one(
     entry: Entry,
     scope: str,
     custom: str | None,
+    catalog_key: str = "",
 ) -> dict[str, Any]:
     base = resolve_target_base(dirs, entry, scope, custom)
     dest, changes, commit = fetch(entry, base)
     main = main_file_for(entry, dest)
     ok = main.exists()
-    record_install(entry, dest, scope, commit)
+    record_install(entry, dest, scope, commit, catalog_key)
     return {"type": entry.type, "name": entry.name, "catalog": entry.catalog,
             "dest": str(dest), "verified": ok, "changes": changes}
 
@@ -2883,7 +2889,8 @@ def cmd_use(args: argparse.Namespace) -> int:
         return 0
 
     try:
-        results = [_install_one(dirs, e, scope, args.dir) for e in order]
+        results = [_install_one(dirs, e, scope, args.dir, entry_catalog_key(cfg, e))
+                   for e in order]
     except LibraryError as ex:
         if args.json:
             print(json.dumps({"status": "ERROR", "name": entry.name, "reason": str(ex)}, indent=2))
@@ -3153,7 +3160,8 @@ def cmd_sync(args: argparse.Namespace) -> int:
                                                 "removed": [], "modified": []},
                                     "up_to_date": True})
                 else:
-                    results.append(_install_one(dirs, dep, scope, None))
+                    results.append(_install_one(dirs, dep, scope, None,
+                                                entry_catalog_key(cfg, dep)))
             synced.append({"type": e.type, "name": e.name, "catalog": e.catalog,
                            "scope": scope, "state": state, "changes": results[-1]["changes"],
                            "up_to_date": results[-1].get("up_to_date", False)})
@@ -4073,6 +4081,35 @@ def catalog_location(cat: Catalog) -> str:
     return str(cat.yaml_file)
 
 
+def entry_catalog_key(cfg: "Config", entry: "Entry") -> str:
+    """The identity of the catalog *entry* resolved from, or '' if it is unknown.
+
+    Empty rather than a guess: a receipt with no key falls back to the older matchers,
+    which is exactly what should happen when we cannot say for certain.
+    """
+    for cat in cfg.catalogs:
+        if cat.id == entry.catalog:
+            return catalog_key(cat)
+    return ""
+
+
+def catalog_key(cat: Catalog) -> str:
+    """A catalog's **identity**, stable across renaming it (R15.12).
+
+    `id` is a nickname the user picks and can change, so it cannot be what a record
+    *means* when it says where a copy came from: re-registering the same catalog under a
+    new id silently orphans every receipt that named the old one — measured, on a machine
+    whose 35 receipts pointed at a catalog id that no longer existed.
+
+    Where the catalog lives is the thing that makes it that catalog, so that is the key.
+    Deliberately **not** `catalog_location`, which is a display string built for humans and
+    free to be reworded; this one is parsed by nothing and compared by everything.
+    """
+    if cat.is_remote:
+        return f"{cat.repo}#{cat.yaml_path}@{cat.branch}"
+    return str(cat.yaml_file.resolve())
+
+
 def cmd_catalog_list(args: argparse.Namespace) -> int:
     """Show the registry as configured (R15.2).
 
@@ -4255,7 +4292,33 @@ def cmd_catalog_init(args: argparse.Namespace) -> int:
     return 0
 
 
-def purge_catalog_installs(cid: str) -> dict[str, list[str]]:
+def _receipt_belongs_to(rec: dict[str, Any], cid: str, key: str, sources: set) -> bool:
+    """Whether one receipt records a copy that came from this catalog (R15.11, R15.12).
+
+    **The exact key wins whenever it is present**, and nothing else is consulted. A
+    receipt written by a current CLI names the catalog's identity, so matching it is a
+    comparison rather than an inference, and a receipt that names a *different* catalog
+    must not then be caught by a looser rule.
+
+    The two fallbacks apply only to receipts written before that key existed, where the
+    alternative is to strand the files:
+
+    - the recorded **id**, which is right until someone renames the catalog;
+    - the recorded **source**, matched against the sources this catalog currently lists,
+      which survives a rename and is what rescued the machine that found this bug — 35
+      receipts naming an id no longer registered.
+
+    The source fallback is approximate on purpose and its inaccuracy is bounded: it can
+    over-reach only when two catalogs list the identical source URL for an entry, and it
+    stops being consulted for a receipt the moment normal use rewrites it with a key.
+    """
+    recorded = rec.get("catalog_key")
+    if recorded:
+        return recorded == key
+    return rec.get("catalog") == cid or rec.get("source") in sources
+
+
+def purge_catalog_installs(cid: str, cat: "Catalog | None" = None) -> dict[str, list[str]]:
     """Delete every copy an install receipt attributes to catalog *cid* (R15.11).
 
     **Receipt-driven, and that is the point rather than an implementation detail.**
@@ -4278,7 +4341,19 @@ def purge_catalog_installs(cid: str) -> dict[str, list[str]]:
     delete things is owed an account of what happened, including "nothing was there".
     """
     receipts = load_receipts()
-    mine = [dest for dest, rec in receipts.items() if rec.get("catalog") == cid]
+    key = catalog_key(cat) if cat is not None else ""
+    # Only needed for the legacy fallback, and a catalog that cannot be read contributes
+    # none — which is correct: an unreadable catalog cannot vouch for anything.
+    sources: set = set()
+    if cat is not None:
+        # Hydrate explicitly: the caller unregistering a catalog builds it straight from
+        # the raw registry item, which carries no parsed YAML, so without this the source
+        # set is silently empty and the legacy fallback matches nothing.
+        _hydrate_one(cat)
+        sources = {e.source for e in iter_catalog_entries(cat)}
+
+    mine = [dest for dest, rec in receipts.items()
+            if _receipt_belongs_to(rec, cid, key, sources)]
 
     deleted: list[str] = []
     cleared: list[str] = []
@@ -4319,7 +4394,7 @@ def cmd_catalog_remove(args: argparse.Namespace) -> int:
     # from is. Both run after the config for the same reason it is written first.
     installs = {"deleted": [], "cleared": []}
     if getattr(args, "purge_installs", False):
-        installs = purge_catalog_installs(args.id)
+        installs = purge_catalog_installs(args.id, cat)
 
     purged = None
     if getattr(args, "purge_clone", False) and cat.clone_dir and cat.clone_dir.exists():
