@@ -2115,6 +2115,89 @@ class TestRemovePurgeScopes(unittest.TestCase):
             self.assertTrue(target.exists(), f"{target} was deleted without --purge")
 
 
+class TestOneClonePerRepoPerRun(unittest.TestCase):
+    """R18.7 — entries sharing a repository share its checkout.
+
+    `remote_head` already memoized its `ls-remote` because "twenty skills from one repo is
+    one round trip, not twenty". The clone did not: every `fetch_remote` made its own temp
+    dir, so a run touching N entries from one repository cloned it N times. Measured on a
+    real machine at 36 entries from a single repo.
+
+    Counts actual `git clone` invocations rather than calls to `fetch_remote`, because the
+    thing that got expensive is the network, not the function.
+    """
+
+    REMOTE_SOURCE = "https://github.com/acme/agentics/blob/main/skills/{}/SKILL.md"
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.repo = TempGitRepo(self.tool.root, name="agentics")
+        for name in ("one", "two", "three"):
+            self.repo.commit(f"skills/{name}/SKILL.md", f"# {name}\n")
+        self.repo.push()
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: one
+      description: Shares a repo
+      source: {self.REMOTE_SOURCE.format("one")}
+      requires: ["skill:two"]
+    - name: two
+      description: Shares the same repo
+      source: {self.REMOTE_SOURCE.format("two")}
+      requires: ["skill:three"]
+    - name: three
+      description: And so does this
+      source: {self.REMOTE_SOURCE.format("three")}
+  agents: []
+  prompts: []
+""")
+
+    @contextlib.contextmanager
+    def counted_git_clones(self) -> Any:
+        """Count `git clone` calls, letting every other git command through."""
+        clones: list[str] = []
+        real = subprocess.run
+
+        def counting(cmd, *a, **kw):
+            if isinstance(cmd, list) and cmd[:2] == ["git", "clone"]:
+                clones.append(cmd[-1])
+            return real(cmd, *a, **kw)
+
+        remote = str(self.repo.remote)
+        with patch.object(library.Source, "clone_urls", lambda _self: [remote]), \
+             patch.object(library.subprocess, "run", counting):
+            yield clones
+
+    def test_installing_a_closure_clones_the_shared_repo_once(self) -> None:
+        # `one` drags in `two` and `three`, all from the same repository.
+        with self.counted_git_clones() as clones:
+            code, out, err = run_cli("use", "one", "--no-pull", "--json")
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(json.loads(out)["installed"]), 3)
+        self.assertEqual(len(clones), 1, f"cloned {len(clones)} times: {clones}")
+
+    def test_a_forced_sync_clones_the_shared_repo_once(self) -> None:
+        with self.counted_git_clones():
+            run_cli("use", "one", "--no-pull", "--json")
+
+        with self.counted_git_clones() as clones:
+            code, _, err = run_cli("sync", "--force", "--no-pull", "--json")
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(clones), 1, f"cloned {len(clones)} times: {clones}")
+
+    def test_the_cached_clone_is_cleaned_up_afterwards(self) -> None:
+        # A shared checkout that outlives the run is a temp dir nobody deletes.
+        before = set(Path(tempfile.gettempdir()).glob("library-*"))
+        with self.counted_git_clones():
+            run_cli("use", "one", "--no-pull", "--json")
+
+        self.assertEqual(set(Path(tempfile.gettempdir()).glob("library-*")), before)
+
+
 class TestPushToARemoteSource(unittest.TestCase):
     """R13.5 — pushing to a remote source previews without writing and never touches the base.
 
@@ -4693,9 +4776,9 @@ library:
         calls: list[str] = []
         real = library.fetch_remote
 
-        def counting(src, entry, target_base):
+        def counting(src, entry, target_base, clones=None):
             calls.append(entry.name)
-            return real(src, entry, target_base)
+            return real(src, entry, target_base, clones)
 
         with patch.object(library, "fetch_remote", counting):
             yield calls

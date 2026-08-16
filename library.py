@@ -16,6 +16,7 @@ JSON mode (`--json`) emits machine-readable output for the agent fallback path.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import difflib
 import fcntl
@@ -1761,28 +1762,65 @@ def fetch_local(src: Source, entry: Entry, target_base: Path) -> tuple[Path, dic
     return dest, _copy_file(ref, dest), None
 
 
-def fetch_remote(src: Source, entry: Entry, target_base: Path) -> tuple[Path, dict[str, Any], "str | None"]:
-    tmp = Path(tempfile.mkdtemp(prefix="library-"))
+@contextlib.contextmanager
+def clone_cache():
+    """One checkout per repo+branch for the duration of a run (R18.7).
+
+    `remote_head` already memoizes its `ls-remote` on the reasoning that "twenty skills
+    from one repo is one round trip, not twenty" — and then the same run cloned that repo
+    twenty times, once per entry, because every `fetch_remote` made its own temp dir. The
+    cheap call was shared and the expensive one was not. On a real machine that is 36
+    entries from a single repository: 36 clones of the same tree to copy 36 folders out.
+
+    Owned by the caller, like `remote_head`'s cache, so the lifetime is explicit and a
+    command that wants no sharing simply passes nothing.
+    """
+    roots: dict[str, Path] = {}
     try:
-        cloned = False
-        last_err = ""
-        for url in src.clone_urls():
-            proc = subprocess.run(
-                ["git", "clone", "--depth", "1", "--branch", src.branch, url, str(tmp / "repo")],
-                capture_output=True, text=True,
-            )
-            if proc.returncode == 0:
-                cloned = True
-                break
-            last_err = _git_error_summary(proc.stderr)
-        if not cloned:
-            raise LibraryError(f"clone failed for {src.org}/{src.repo}: {last_err or 'unknown error'}")
-        repo = tmp / "repo"
+        yield roots
+    finally:
+        for root in roots.values():
+            shutil.rmtree(root, ignore_errors=True)
+
+
+def _clone_repo(src: Source, clones: "dict[str, Path] | None") -> tuple[Path, "Path | None"]:
+    """(repo dir, temp root this call owns) for *src*, reusing a cached clone when offered.
+
+    The second element is None for a cached clone: its lifetime belongs to the cache, and
+    handing it back would invite a caller to delete a tree other entries still need.
+    """
+    # The same key `remote_head` uses, so "same checkout" means one thing in this file.
+    key = f"{src.kind}:{src.org}/{src.repo}@{src.branch}"
+    if clones is not None and key in clones:
+        return clones[key] / "repo", None
+
+    root = Path(tempfile.mkdtemp(prefix="library-"))
+    last_err = ""
+    for url in src.clone_urls():
+        proc = subprocess.run(
+            ["git", "clone", "--depth", "1", "--branch", src.branch, url, str(root / "repo")],
+            capture_output=True, text=True,
+        )
+        if proc.returncode == 0:
+            if clones is None:
+                return root / "repo", root
+            clones[key] = root
+            return root / "repo", None
+        last_err = _git_error_summary(proc.stderr)
+
+    shutil.rmtree(root, ignore_errors=True)
+    raise LibraryError(f"clone failed for {src.org}/{src.repo}: {last_err or 'unknown error'}")
+
+
+def fetch_remote(src: Source, entry: Entry, target_base: Path,
+                 clones: "dict[str, Path] | None" = None) -> tuple[Path, dict[str, Any], "str | None"]:
+    repo, owned = _clone_repo(src, clones)
+    try:
         ref = repo / src.file_path
         if not ref.exists():
             raise LibraryError(f"referenced file missing in repo: {src.file_path}")
-        # The clone is already on disk, so the sha it came from is free here and
-        # impossible to recover later: the tree is deleted on the way out.
+        # The clone is on disk, so the sha it came from is free here and impossible to
+        # recover later, once the tree is gone.
         head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
                               capture_output=True, text=True)
         commit = head.stdout.strip() if head.returncode == 0 else None
@@ -1791,7 +1829,9 @@ def fetch_remote(src: Source, entry: Entry, target_base: Path) -> tuple[Path, di
             return dest, _copy_dir(ref.parent, dest), commit
         return dest, _copy_file(ref, dest), commit
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        # Only what this call created: a cached clone outlives it by design.
+        if owned is not None:
+            shutil.rmtree(owned, ignore_errors=True)
 
 
 def remote_head(src: Source, cache: dict[str, "str | None"]) -> "str | None":
@@ -1842,12 +1882,13 @@ def source_unchanged(entry: Entry, dest: Path, receipt: "dict[str, Any] | None",
     return bool(head) and head == receipt.get("commit")
 
 
-def fetch(entry: Entry, target_base: Path) -> tuple[Path, dict[str, Any], "str | None"]:
+def fetch(entry: Entry, target_base: Path,
+          clones: "dict[str, Path] | None" = None) -> tuple[Path, dict[str, Any], "str | None"]:
     """Install *entry* under *target_base*; returns (dest, diff, source commit or None)."""
     src = parse_source(entry.source)
     if src.kind == "local":
         return fetch_local(src, entry, target_base)
-    return fetch_remote(src, entry, target_base)
+    return fetch_remote(src, entry, target_base, clones)
 
 
 def main_file_for(entry: Entry, dest: Path) -> Path:
@@ -2540,9 +2581,10 @@ def _install_one(
     scope: str,
     custom: str | None,
     catalog_key: str = "",
+    clones: "dict[str, Path] | None" = None,
 ) -> dict[str, Any]:
     base = resolve_target_base(dirs, entry, scope, custom)
-    dest, changes, commit = fetch(entry, base)
+    dest, changes, commit = fetch(entry, base, clones)
     main = main_file_for(entry, dest)
     ok = main.exists()
     record_install(entry, dest, scope, commit, catalog_key)
@@ -2895,8 +2937,11 @@ def cmd_use(args: argparse.Namespace) -> int:
         return 0
 
     try:
-        results = [_install_one(dirs, e, scope, args.dir, entry_catalog_key(cfg, e))
-                   for e in order]
+        # One checkout per repo for the whole install: an entry and its dependency closure
+        # very often come from the same repository.
+        with clone_cache() as clones:
+            results = [_install_one(dirs, e, scope, args.dir, entry_catalog_key(cfg, e), clones)
+                       for e in order]
     except LibraryError as ex:
         if args.json:
             print(json.dumps({"status": "ERROR", "name": entry.name, "reason": str(ex)}, indent=2))
@@ -3148,32 +3193,37 @@ def cmd_sync(args: argparse.Namespace) -> int:
     receipts = load_receipts()
     heads: dict[str, str | None] = {}  # one ls-remote per repo+branch, not per entry
     synced, failed = [], []
-    for e, scope in installed:
-        # Read the state before refreshing: afterwards the copy matches its source and
-        # any local edit is gone, so this is the last moment drift is observable (C-D4).
-        dest = install_dest(e, resolve_target_base(dirs, e, scope, None))
-        state = dest_state(dest, receipts.get(str(dest)))
-        # Dependencies come from the item's own catalog, as in `use` (D9).
-        try:
-            results = []
-            for dep in resolve_deps(cfg.entries_of(e.catalog), e):
-                dep_dest = install_dest(dep, resolve_target_base(dirs, dep, scope, None))
-                if not args.force and source_unchanged(dep, dep_dest,
-                                                       receipts.get(str(dep_dest)), heads):
-                    results.append({"type": dep.type, "name": dep.name, "catalog": dep.catalog,
-                                    "dest": str(dep_dest), "verified": True,
-                                    "changes": {"new_install": False, "added": [],
-                                                "removed": [], "modified": []},
-                                    "up_to_date": True})
-                else:
-                    results.append(_install_one(dirs, dep, scope, None,
-                                                entry_catalog_key(cfg, dep)))
-            synced.append({"type": e.type, "name": e.name, "catalog": e.catalog,
-                           "scope": scope, "state": state, "changes": results[-1]["changes"],
-                           "up_to_date": results[-1].get("up_to_date", False)})
-        except LibraryError as ex:
-            failed.append({"type": e.type, "name": e.name, "catalog": e.catalog,
-                           "reason": str(ex)})
+    # And one clone per repo+branch, for the same reason. `--force` re-fetches every item,
+    # which on a machine whose entries share a repository was that many clones of it.
+    with clone_cache() as clones:
+        for e, scope in installed:
+            # Read the state before refreshing: afterwards the copy matches its source and
+            # any local edit is gone, so this is the last moment drift is observable (C-D4).
+            dest = install_dest(e, resolve_target_base(dirs, e, scope, None))
+            state = dest_state(dest, receipts.get(str(dest)))
+            # Dependencies come from the item's own catalog, as in `use` (D9).
+            try:
+                results = []
+                for dep in resolve_deps(cfg.entries_of(e.catalog), e):
+                    dep_dest = install_dest(dep, resolve_target_base(dirs, dep, scope, None))
+                    if not args.force and source_unchanged(dep, dep_dest,
+                                                           receipts.get(str(dep_dest)), heads):
+                        results.append({"type": dep.type, "name": dep.name,
+                                        "catalog": dep.catalog,
+                                        "dest": str(dep_dest), "verified": True,
+                                        "changes": {"new_install": False, "added": [],
+                                                    "removed": [], "modified": []},
+                                        "up_to_date": True})
+                    else:
+                        results.append(_install_one(dirs, dep, scope, None,
+                                                    entry_catalog_key(cfg, dep), clones))
+                synced.append({"type": e.type, "name": e.name, "catalog": e.catalog,
+                               "scope": scope, "state": state,
+                               "changes": results[-1]["changes"],
+                               "up_to_date": results[-1].get("up_to_date", False)})
+            except LibraryError as ex:
+                failed.append({"type": e.type, "name": e.name, "catalog": e.catalog,
+                               "reason": str(ex)})
 
     if args.json:
         status = "PARTIAL" if failed else "OK"
