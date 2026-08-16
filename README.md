@@ -152,6 +152,7 @@ If your catalog already has entries. Pull one into your project:
 ```bash
 # ⌨ Or run the CLI. Bare `use` installs globally — ~/.claude/, cwd-independent:
 ./library use deploy                  # → ~/.claude/skills/deploy/
+./library use deploy triage-bug      # → several at once, shared deps installed once
 ./library use deploy --project        # → .claude/skills/deploy/ in the dir you run from
 ./library use deploy --dir <path>     # → an explicit location
 ```

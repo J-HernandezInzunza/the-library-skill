@@ -2198,6 +2198,94 @@ library:
         self.assertEqual(set(Path(tempfile.gettempdir()).glob("library-*")), before)
 
 
+class TestUseWithSeveralNames(unittest.TestCase):
+    """R3.6 — install a selection in one command, one plan, one confirmation.
+
+    The app's bulk install needs one plan for the whole batch rather than N separate ones:
+    the drift gate is per-plan, so N calls would mean N confirmations or none. Merging the
+    closures also means a dependency two selections share is installed once.
+    """
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in ("alpha", "beta", "shared-dep"):
+            (self.src / name).mkdir(parents=True)
+            (self.src / name / "SKILL.md").write_text(f"# {name}\n")
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: alpha
+      description: Needs the shared dep
+      source: {self.src}/alpha/SKILL.md
+      requires: ["skill:shared-dep"]
+    - name: beta
+      description: Needs it too
+      source: {self.src}/beta/SKILL.md
+      requires: ["skill:shared-dep"]
+    - name: shared-dep
+      description: Required by both
+      source: {self.src}/shared-dep/SKILL.md
+  agents: []
+  prompts: []
+""")
+
+    def use(self, *argv: str, expect: int = 0) -> dict[str, Any]:
+        code, out, err = run_cli("use", *argv, "--no-pull", "--json")
+        self.assertEqual(code, expect, err or out)
+        return json.loads(out) if out else {}
+
+    def installed(self, name: str) -> Path:
+        return self.tool.home / ".claude" / "skills" / name
+
+    def test_a_shared_dependency_is_installed_once(self) -> None:
+        payload = self.use("alpha", "beta")
+
+        names = [r["name"] for r in payload["installed"]]
+        self.assertEqual(names.count("shared-dep"), 1, names)
+        self.assertEqual(sorted(names), ["alpha", "beta", "shared-dep"])
+        for name in ("alpha", "beta", "shared-dep"):
+            self.assertTrue(self.installed(name).is_dir())
+
+    def test_dependencies_still_come_before_what_needs_them(self) -> None:
+        names = [r["name"] for r in self.use("alpha", "beta")["installed"]]
+
+        self.assertLess(names.index("shared-dep"), names.index("alpha"))
+        self.assertLess(names.index("shared-dep"), names.index("beta"))
+
+    def test_it_reports_which_names_were_asked_for(self) -> None:
+        # The installed list mixes requested entries with dependencies, so a caller that
+        # wants to say "these are the ones you picked" needs this.
+        self.assertEqual(self.use("alpha", "beta")["requested"], ["alpha", "beta"])
+
+    def test_a_dry_run_plans_the_whole_batch_and_writes_nothing(self) -> None:
+        payload = self.use("alpha", "beta", "--dry-run")
+
+        self.assertTrue(payload["dry_run"])
+        self.assertEqual(payload["requested"], ["alpha", "beta"])
+        self.assertEqual(len(payload["would_install"]), 3)
+        self.assertFalse(self.installed("alpha").exists())
+
+    def test_one_bad_name_installs_nothing_at_all(self) -> None:
+        """Resolution happens before any install, so a typo cannot half-apply the batch."""
+        payload = self.use("alpha", "nope-not-real", expect=2)
+
+        self.assertEqual(payload["status"], "NOT_FOUND")
+        self.assertEqual(payload["query"], "nope-not-real")
+        self.assertFalse(self.installed("alpha").exists())
+
+    def test_a_single_name_behaves_exactly_as_before(self) -> None:
+        # The contract every existing caller depends on (C-D8).
+        payload = self.use("alpha")
+
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual(payload["requested"], ["alpha"])
+        self.assertIn("overrides", payload)
+        self.assertIn("overridden_by", payload)
+        self.assertEqual(payload["installed"][-1]["name"], "alpha")
+
+
 class TestPushToARemoteSource(unittest.TestCase):
     """R13.5 — pushing to a remote source previews without writing and never touches the base.
 

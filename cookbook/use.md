@@ -68,6 +68,13 @@ install to the tool dir instead of the user's project):
 <tool-dir>/library use "<name>" --json
 ```
 
+**Several names install as one batch:** `library use "<a>" "<b>" "<c>"`. Every name is
+resolved before anything is written, so a typo in the last one installs nothing; the
+dependency closures are merged and de-duplicated, so a dependency two of them share is
+installed once; and one clone is taken per source repository rather than one per entry.
+The payload gains `requested` (the names asked for, as opposed to the dependencies that
+came with them). With a single name the output is unchanged.
+
 Optional flags:
 - `--project` → install into the project's `.claude/` instead of the global default.
 - `--global` → explicit form of the default (`~/.claude/...`).

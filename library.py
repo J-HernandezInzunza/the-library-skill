@@ -2884,30 +2884,45 @@ def cmd_use(args: argparse.Namespace) -> int:
     dirs = cfg.dirs
 
     multi = multi_catalog(cfg)
-    entry = find_exact(entries, args.name)
-    if entry is None:
-        cands = fuzzy_candidates(entries, args.name)
-        payload = {
-            "status": "AMBIGUOUS" if cands else "NOT_FOUND",
-            "query": args.name,
-            "candidates": [{"type": c.type, "name": c.name, "description": c.description,
-                            "catalog": c.catalog} for c in cands],
-        }
-        if args.json:
-            print(json.dumps(payload, indent=2))
-        elif cands:
-            print(f'No exact match for "{args.name}". Did you mean:')
-            for c in cands:
-                print(f"  [{c.type}] {c.name}" + (f"  ({c.catalog})" if multi else ""))
-        else:
-            print(f'No match for "{args.name}". Try `library search`.')
-        return 2
+    # One name or many. Every name is resolved *before* anything is installed, so a typo
+    # in the fifth of five does not leave four installed and the request half-done.
+    requested: list[Entry] = []
+    for name in args.name:
+        found = find_exact(entries, name)
+        if found is None:
+            cands = fuzzy_candidates(entries, name)
+            payload = {
+                "status": "AMBIGUOUS" if cands else "NOT_FOUND",
+                "query": name,
+                "candidates": [{"type": c.type, "name": c.name, "description": c.description,
+                                "catalog": c.catalog} for c in cands],
+            }
+            if args.json:
+                print(json.dumps(payload, indent=2))
+            elif cands:
+                print(f'No exact match for "{name}". Did you mean:')
+                for c in cands:
+                    print(f"  [{c.type}] {c.name}" + (f"  ({c.catalog})" if multi else ""))
+            else:
+                print(f'No match for "{name}". Try `library search`.')
+            return 2
+        requested.append(found)
 
+    entry = requested[-1]  # the one whose provenance the single-name payload describes
     scope = "project" if args.project else "global"
-    # Dependencies resolve within the resolved entry's OWN catalog, never the merged
+    # Dependencies resolve within each resolved entry's OWN catalog, never the merged
     # list: a `requires` ref that names an entry in another catalog is simply dangling,
     # which is the error users already understand.
-    order = resolve_deps(cfg.entries_of(entry.catalog), entry)
+    #
+    # Closures are merged and de-duplicated across the request, so a dependency two
+    # selected entries share is installed once rather than once each.
+    order: list[Entry] = []
+    seen: set[tuple[str, str]] = set()
+    for target_entry in requested:
+        for e in resolve_deps(cfg.entries_of(target_entry.catalog), target_entry):
+            if (e.type, e.name) not in seen:
+                seen.add((e.type, e.name))
+                order.append(e)
     note = override_note(cfg, entry)
 
     if args.dry_run:
@@ -2924,6 +2939,7 @@ def cmd_use(args: argparse.Namespace) -> int:
         if args.json:
             overrides, overridden_by = override_split(cfg, entry)
             print(json.dumps({"status": "OK", "dry_run": True, "scope": scope,
+                              "requested": [e.name for e in requested],
                               "overrides": overrides,
                               "overridden_by": overridden_by[0] if overridden_by else None,
                               "would_install": plan}, indent=2))
@@ -2936,40 +2952,50 @@ def cmd_use(args: argparse.Namespace) -> int:
                 print(f"  {entry.name} {note}")
         return 0
 
+    failing = entry.name
     try:
         # One checkout per repo for the whole install: an entry and its dependency closure
-        # very often come from the same repository.
+        # very often come from the same repository, and so do entries selected together.
+        results = []
         with clone_cache() as clones:
-            results = [_install_one(dirs, e, scope, args.dir, entry_catalog_key(cfg, e), clones)
-                       for e in order]
+            for e in order:
+                failing = e.name
+                results.append(
+                    _install_one(dirs, e, scope, args.dir, entry_catalog_key(cfg, e), clones))
     except LibraryError as ex:
         if args.json:
-            print(json.dumps({"status": "ERROR", "name": entry.name, "reason": str(ex)}, indent=2))
+            print(json.dumps({"status": "ERROR", "name": failing, "reason": str(ex)}, indent=2))
         else:
-            print(f"Failed to install {entry.name}: {ex}")
+            print(f"Failed to install {failing}: {ex}")
         return 1
 
     if args.json:
         overrides, overridden_by = override_split(cfg, entry)
-        print(json.dumps({"status": "OK", "installed": results, "overrides": overrides,
+        print(json.dumps({"status": "OK", "installed": results,
+                          "requested": [e.name for e in requested],
+                          "overrides": overrides,
                           "overridden_by": overridden_by[0] if overridden_by else None}, indent=2))
         return 0
 
-    deps = results[:-1]
-    target = results[-1]
+    asked = {(e.type, e.name) for e in requested}
+    deps = [r for r in results if (r["type"], r["name"]) not in asked]
+    targets = [r for r in results if (r["type"], r["name"]) in asked]
     if deps:
         print("Dependencies installed:")
         for r in deps:
             print(f"  [{r['type']}] {r['name']} → {r['dest']}")
-    flag = "" if target["verified"] else "  (warning: main file not found)"
-    summary = _summarize_changes(target["changes"])
-    provenance = ""
-    if multi:
-        provenance = f" (from {entry.catalog}{', ' + note if note else ''})"
-    print(f"Installed [{target['type']}] {target['name']} → {target['dest']} · "
-          f"{summary}{provenance}{flag}")
-    for line in _change_detail_lines(target["changes"]):
-        print(line)
+    for target in targets:
+        flag = "" if target["verified"] else "  (warning: main file not found)"
+        summary = _summarize_changes(target["changes"])
+        provenance = ""
+        if multi:
+            extra = f", {note}" if note and len(targets) == 1 else ""
+            provenance = f" (from {target['catalog']}{extra})"
+        print(f"Installed [{target['type']}] {target['name']} → {target['dest']} · "
+              f"{summary}{provenance}{flag}")
+        if len(targets) == 1:
+            for line in _change_detail_lines(target["changes"]):
+                print(line)
     return 0 if all(r["verified"] for r in results) else 1
 
 
@@ -5097,8 +5123,9 @@ def build_parser() -> argparse.ArgumentParser:
     add_catalog_flag(sp)
     sp.set_defaults(func=cmd_search)
 
-    sp = sub.add_parser("use", help="install or refresh an entry (exact name)")
-    sp.add_argument("name")
+    sp = sub.add_parser("use", help="install or refresh one or more entries (exact names)")
+    sp.add_argument("name", nargs="+", metavar="name",
+                    help="one or more exact entry names; shared dependencies install once")
     grp = sp.add_mutually_exclusive_group()
     grp.add_argument("--global", dest="glob", action="store_true",
                      help="install to the global dir (~/.claude/…) — the default")
