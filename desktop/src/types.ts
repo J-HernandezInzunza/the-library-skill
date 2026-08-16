@@ -424,6 +424,10 @@ export interface UnregisterReport {
   purged_clone: string | null;
   /** Where a remote's clone was left, so the report can say what is still on disk. */
   clone_kept_at: string | null;
+  /** Copies deleted because a receipt attributed them to this catalog. */
+  purged_installs: string[];
+  /** Receipts dropped whose destination was already gone. */
+  cleared_receipts: string[];
   migrated: string[];
 }
 

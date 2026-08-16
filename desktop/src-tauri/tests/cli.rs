@@ -882,7 +882,7 @@ fn unregistering_leaves_the_clone_unless_asked() {
     let _guard = with_fixture_home();
     let log = Recorder::default();
 
-    let report = cli::registry_remove(&log, "archive", false).expect("should parse");
+    let report = cli::registry_remove(&log, "archive", false, false).expect("should parse");
 
     let argv = log.started.lock().unwrap()[0].argv[1..].to_vec();
     assert_eq!(argv, ["catalog", "remove", "archive", "--json"]);
@@ -895,7 +895,7 @@ fn purging_a_clone_is_only_ever_asked_for_explicitly() {
     let _guard = with_fixture_home();
     let log = Recorder::default();
 
-    cli::registry_remove(&log, "archive", true).expect("should parse");
+    cli::registry_remove(&log, "archive", true, false).expect("should parse");
 
     assert_eq!(
         &log.started.lock().unwrap()[0].argv[1..],
@@ -904,12 +904,38 @@ fn purging_a_clone_is_only_ever_asked_for_explicitly() {
 }
 
 #[test]
+fn purging_installs_is_a_separate_ask_from_purging_the_clone() {
+    // Two different things get deleted, so they are two flags and two ticks. Bundling
+    // them would mean one confirmation standing in for two irreversible acts.
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    cli::registry_remove(&log, "archive", false, true).expect("should parse");
+
+    let argv = log.started.lock().unwrap()[0].argv[1..].to_vec();
+    assert_eq!(argv, ["catalog", "remove", "archive", "--purge-installs", "--json"]);
+    assert!(!argv.iter().any(|a| a == "--purge-clone"), "argv: {argv:?}");
+}
+
+#[test]
+fn a_purge_reports_every_copy_it_deleted() {
+    // The report is the only account of a bulk deletion, so it has to name what went.
+    let _guard = with_fixture_home();
+
+    let report = cli::registry_remove(&Recorder::default(), "purged", false, true)
+        .expect("should parse");
+
+    assert_eq!(report.purged_installs, ["/Users/tester/.claude/skills/alpha"]);
+    assert_eq!(report.cleared_receipts, ["/Users/tester/.claude/skills/already-gone"]);
+}
+
+#[test]
 fn unregistering_the_only_catalog_stays_a_failure() {
     // The CLI refuses: the tool needs one catalog to read from. A GUI that swallowed this
     // would show a registry that had not changed and no reason why.
     let _guard = with_fixture_home();
 
-    let err = cli::registry_remove(&Recorder::default(), "personal", false).unwrap_err();
+    let err = cli::registry_remove(&Recorder::default(), "personal", false, false).unwrap_err();
 
     match err {
         AppError::Cli { stderr, .. } => assert!(stderr.contains("only registered"), "{stderr}"),

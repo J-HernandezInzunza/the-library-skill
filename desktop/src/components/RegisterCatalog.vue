@@ -52,6 +52,51 @@ const filled = computed(() => {
 });
 const canSubmit = computed(() => filled.value && !takenId.value && !submitting.value);
 
+/** A one-line description of what picking this mode means, since the bare radio
+ * labels don't say what "existing" vs. "remote" cashes out to until you've already
+ * committed to one and seen the fields change underneath it. */
+const modeHint = computed(() => {
+  switch (mode.value) {
+    case "existing":
+      return "Point at a library.yaml already on this machine — usually a repo you already have cloned.";
+    case "create":
+      return "Scaffold an empty library.yaml at a location you choose, then register it.";
+    case "remote":
+      return "Clone a git repository this machine doesn't have yet — how you add a team's shared catalog.";
+    default:
+      return "";
+  }
+});
+
+/** 1st / 2nd / 3rd / 4th…, only ever applied to small counts (the number of
+ * registered catalogs), so no locale-aware pluralization is warranted. */
+function ordinal(n: number): string {
+  const suffixes = ["th", "st", "nd", "rd"];
+  const mod100 = n % 100;
+  return `${n}${suffixes[(mod100 - 20) % 10] ?? suffixes[mod100] ?? suffixes[0]}`;
+}
+
+/** Precedence in plain language, same reasoning as the "wins" checkbox above it:
+ * "precedence 1 of 2" means nothing without already knowing what precedence controls. */
+const precedenceLine = computed(() => {
+  if (!report.value) return "";
+  const { precedence, registered } = report.value;
+  if (registered <= 1) return "the only catalog registered — nothing else for it to collide with.";
+  if (precedence === 1) {
+    return `checked first of ${registered} catalogs — its copies win if another catalog defines the same name.`;
+  }
+  return `checked ${ordinal(precedence)} of ${registered} catalogs — a catalog checked earlier wins on a name collision.`;
+});
+
+/** Back to a blank form, for registering a second catalog without leaving the panel. */
+function registerAnother() {
+  report.value = null;
+  id.value = "";
+  path.value = "";
+  repo.value = "";
+  branch.value = "main";
+}
+
 async function pickPath() {
   const picked = await open({
     directory: true,
@@ -92,100 +137,112 @@ async function submit() {
 
 <template>
   <section class="register card">
-    <StatusBanner v-if="failure" kind="error" :detail="failure" />
-    <StatusBanner v-else-if="report" kind="success">
-      <p class="register__done">
-        <template v-if="report.created">Created and registered</template>
-        <template v-else>Registered</template>
-        <strong>{{ report.id }}</strong> — {{ report.entries }}
-        {{ report.entries === 1 ? "entry" : "entries" }}, precedence {{ report.precedence }} of
-        {{ report.registered }}.
-      </p>
-      <p class="register__done-detail">{{ report.location }}</p>
-    </StatusBanner>
-
-    <div class="register__modes">
-      <label><input v-model="mode" type="radio" value="existing" /> Register an existing catalog</label>
-      <label><input v-model="mode" type="radio" value="create" /> Create a new empty one</label>
-      <label><input v-model="mode" type="radio" value="remote" /> Add a shared repository</label>
-    </div>
-
-    <form class="register__form" @submit.prevent="submit">
-      <label class="register__field">
-        <span>Id — how you refer to this catalog</span>
-        <input v-model="id" type="text" placeholder="work" v-bind="RAW_TEXT" />
-        <span v-if="takenId" class="register__conflict">
-          <code>{{ id.trim() }}</code> is already registered. Ids have to be unique, and the
-          CLI refuses a duplicate.
-        </span>
-      </label>
-
-      <template v-if="!isRemote">
-        <div class="register__field">
-          <span>{{ mode === "create" ? "Where to create it" : "Where it is" }}</span>
-          <div class="register__row">
-            <code v-if="path" class="register__path">{{ path }}</code>
-            <button type="button" :class="{ ghost: !!path }" @click="pickPath">
-              {{ path ? "Change…" : "Choose directory…" }}
-            </button>
-          </div>
-          <span class="register__hint">
-            <template v-if="mode === 'create'">
-              A <code>library.yaml</code> is written here, with empty skill, agent, and prompt
-              sections. The CLI refuses to overwrite one that already exists.
-            </template>
-            <template v-else>
-              A <code>library.yaml</code>, or a directory holding one.
-            </template>
-          </span>
-        </div>
-      </template>
-
-      <template v-else>
-        <label class="register__field">
-          <span>Clone URL</span>
-          <input
-            v-model="repo"
-            type="text"
-            placeholder="git@github.com:acme/agentics.git"
-            v-bind="RAW_TEXT"
-          />
-        </label>
-        <label class="register__field">
-          <span>Branch</span>
-          <input v-model="branch" type="text" v-bind="RAW_TEXT" />
-        </label>
-        <label class="register__check">
-          <input v-model="protectedRemote" type="checkbox" />
-          <span>
-            Changes to this catalog go through a pull request. Leave this on for anything your
-            team shares; turning it off means a write commits straight to
-            {{ branch || "the branch" }}.
-          </span>
-        </label>
-        <span class="register__hint">
-          Registering clones the repository, so this one needs the network.
-        </span>
-      </template>
-
-      <!-- Precedence in plain language. `--position first` is the CLI's default and gets it
-           backwards silently, so the form states the consequence rather than the flag. -->
-      <label class="register__check">
-        <input v-model="wins" type="checkbox" />
-        <span>
-          When another catalog defines the same name, use this catalog's copy. That is
-          usually right for a catalog of your own and wrong for one you are only reading.
-        </span>
-      </label>
-
+    <!-- A successful register collapses to just the outcome. Leaving the form visible
+         and re-validated against its own submitted values is what produced the "already
+         registered" error appearing right next to the success banner it was reporting. -->
+    <template v-if="report">
+      <StatusBanner kind="success">
+        <p class="register__done">
+          <template v-if="report.created">Created and registered </template>
+          <template v-else>Registered </template>
+          <strong>{{ report.id }}</strong> — {{ report.entries }}
+          {{ report.entries === 1 ? "entry" : "entries" }}, {{ precedenceLine }}
+        </p>
+        <p class="register__done-detail">{{ report.location }}</p>
+      </StatusBanner>
       <div class="register__actions">
-        <button type="submit" :disabled="!canSubmit">
-          {{ mode === "create" ? "Create and register" : "Register" }}
-        </button>
+        <button type="button" @click="registerAnother">Register another…</button>
         <button type="button" class="ghost" @click="emit('close')">Done</button>
       </div>
-      <Busy v-if="submitting" inline label="Checking the catalog is usable…" />
-    </form>
+    </template>
+
+    <template v-else>
+      <StatusBanner v-if="failure" kind="error" :detail="failure" />
+
+      <div class="register__modes">
+        <label><input v-model="mode" type="radio" value="existing" /> Register an existing catalog</label>
+        <label><input v-model="mode" type="radio" value="create" /> Create a new empty one</label>
+        <label><input v-model="mode" type="radio" value="remote" /> Add a shared repository</label>
+      </div>
+      <p class="register__hint register__mode-hint">{{ modeHint }}</p>
+
+      <form class="register__form" @submit.prevent="submit">
+        <label class="register__field">
+          <span>Id — how you refer to this catalog</span>
+          <input v-model="id" type="text" placeholder="work" v-bind="RAW_TEXT" />
+          <span v-if="takenId" class="register__conflict">
+            <code>{{ id.trim() }}</code> is already registered. Ids have to be unique, and the
+            CLI refuses a duplicate.
+          </span>
+        </label>
+
+        <template v-if="!isRemote">
+          <div class="register__field">
+            <span>{{ mode === "create" ? "Where to create it" : "Where it is" }}</span>
+            <div class="register__row">
+              <code v-if="path" class="register__path">{{ path }}</code>
+              <button type="button" :class="{ ghost: !!path }" @click="pickPath">
+                {{ path ? "Change…" : "Choose directory…" }}
+              </button>
+            </div>
+            <span class="register__hint">
+              <template v-if="mode === 'create'">
+                A <code>library.yaml</code> is written here, with empty skill, agent, and prompt
+                sections. The CLI refuses to overwrite one that already exists.
+              </template>
+              <template v-else>
+                A <code>library.yaml</code>, or a directory holding one.
+              </template>
+            </span>
+          </div>
+        </template>
+
+        <template v-else>
+          <label class="register__field">
+            <span>Clone URL</span>
+            <input
+              v-model="repo"
+              type="text"
+              placeholder="git@github.com:acme/agentics.git"
+              v-bind="RAW_TEXT"
+            />
+          </label>
+          <label class="register__field">
+            <span>Branch</span>
+            <input v-model="branch" type="text" v-bind="RAW_TEXT" />
+          </label>
+          <label class="register__check">
+            <input v-model="protectedRemote" type="checkbox" />
+            <span>
+              Changes to this catalog go through a pull request. Leave this on for anything your
+              team shares; turning it off means a write commits straight to
+              {{ branch || "the branch" }}.
+            </span>
+          </label>
+          <span class="register__hint">
+            Registering clones the repository, so this one needs the network.
+          </span>
+        </template>
+
+        <!-- Precedence in plain language. `--position first` is the CLI's default and gets it
+             backwards silently, so the form states the consequence rather than the flag. -->
+        <label class="register__check">
+          <input v-model="wins" type="checkbox" />
+          <span>
+            When another catalog defines the same name, use this catalog's copy. That is
+            usually right for a catalog of your own and wrong for one you are only reading.
+          </span>
+        </label>
+
+        <div class="register__actions">
+          <button type="submit" :disabled="!canSubmit">
+            {{ mode === "create" ? "Create and register" : "Register" }}
+          </button>
+          <button type="button" class="ghost" @click="emit('close')">Done</button>
+        </div>
+        <Busy v-if="submitting" inline label="Checking the catalog is usable…" />
+      </form>
+    </template>
   </section>
 </template>
 
@@ -204,6 +261,9 @@ async function submit() {
   display: flex;
   align-items: center;
   gap: 0.3rem;
+}
+.register__mode-hint {
+  margin: -0.5rem 0 0.9rem;
 }
 .register__form {
   display: flex;

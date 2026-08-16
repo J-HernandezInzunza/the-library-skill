@@ -213,8 +213,9 @@ async fn registry_remove(
     app: tauri::AppHandle,
     id: String,
     purge_clone: bool,
+    purge_installs: bool,
 ) -> Result<UnregisterReport, AppError> {
-    off_thread(move || cli::registry_remove(&app, &id, purge_clone)).await
+    off_thread(move || cli::registry_remove(&app, &id, purge_clone, purge_installs)).await
 }
 
 /// The registered catalogs, for per-catalog browsing and origin display.

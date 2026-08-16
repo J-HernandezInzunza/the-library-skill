@@ -6591,6 +6591,82 @@ class TestCatalogRemove(unittest.TestCase):
         self.assertIsNone(payload["purged_clone"])
         self.assertTrue(personal.is_file())  # unregistering is not deleting
 
+    # ── purging what was installed from it (R15.11) ─────────────────────
+    def receipt_for(self, dest: Path, catalog: str, name: str = "alpha") -> None:
+        """Record an install the way `use` would, without needing a real one."""
+        receipts = library.load_receipts()
+        receipts[str(dest)] = {
+            "dest": str(dest), "name": name, "type": "skill", "catalog": catalog,
+            "scope": "global", "source": "/src/x/SKILL.md", "commit": None,
+            "content_hash": "sha256:x", "installed_at": "2026-01-01T00:00:00Z",
+        }
+        library.save_receipts(receipts)
+
+    def installed_copy(self, name: str) -> Path:
+        dest = self.tool.home / ".claude" / "skills" / name
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "SKILL.md").write_text(f"# {name}\n")
+        return dest
+
+    def test_installs_are_kept_unless_asked_for(self) -> None:
+        dest = self.installed_copy("alpha")
+        self.receipt_for(dest, "personal")
+
+        payload = self.remove("personal")
+
+        self.assertEqual(payload["purged_installs"], [])
+        self.assertTrue(dest.is_dir())
+
+    def test_purge_installs_deletes_what_the_receipts_attribute_to_it(self) -> None:
+        """The trap this closes: `uninstall` resolves through the catalog, so once the
+        catalog is unregistered its installed copies cannot be removed by any command —
+        they are invisible to `list` and refused by `uninstall` as NOT_FOUND."""
+        mine = self.installed_copy("alpha")
+        theirs = self.installed_copy("beta")
+        self.receipt_for(mine, "personal")
+        self.receipt_for(theirs, library.SHARED_ID, name="beta")
+
+        payload = self.remove("personal", "--purge-installs")
+
+        self.assertEqual(payload["purged_installs"], [str(mine)])
+        self.assertFalse(mine.exists())
+        # Another catalog's copy is none of this catalog's business.
+        self.assertTrue(theirs.is_dir())
+        self.assertIsNone(library.load_receipts().get(str(mine)))
+
+    def test_a_copy_with_no_receipt_is_left_alone(self) -> None:
+        """Nothing attributes it to any catalog, so it is not this catalog's to delete —
+        the same line `uninstall_entry` draws by refusing a dest it cannot prove it made."""
+        handmade = self.installed_copy("handmade")
+
+        payload = self.remove("personal", "--purge-installs")
+
+        self.assertEqual(payload["purged_installs"], [])
+        self.assertTrue(handmade.is_dir())
+
+    def test_it_purges_a_copy_the_catalog_no_longer_lists(self) -> None:
+        """Receipt-driven, not list-driven, and this is one of the cases that proves it:
+        the entry was removed from the catalog file after being installed, so enumerating
+        the catalog's current entries would miss a copy that is plainly still on disk."""
+        orphan = self.installed_copy("since-removed")
+        self.receipt_for(orphan, "personal", name="since-removed")
+        # The catalog never had this entry, which is the point.
+
+        payload = self.remove("personal", "--purge-installs")
+
+        self.assertEqual(payload["purged_installs"], [str(orphan)])
+        self.assertFalse(orphan.exists())
+
+    def test_a_stale_receipt_is_cleared_rather_than_reported_as_deleted(self) -> None:
+        gone = self.tool.home / ".claude" / "skills" / "already-gone"
+        self.receipt_for(gone, "personal", name="already-gone")
+
+        payload = self.remove("personal", "--purge-installs")
+
+        self.assertEqual(payload["purged_installs"], [])
+        self.assertEqual(payload["cleared_receipts"], [str(gone)])
+        self.assertIsNone(library.load_receipts().get(str(gone)))
+
     def test_removing_from_a_legacy_config_migrates_first(self) -> None:
         self.tool.stop()
         legacy = TempTool()

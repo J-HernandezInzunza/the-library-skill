@@ -4255,6 +4255,50 @@ def cmd_catalog_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def purge_catalog_installs(cid: str) -> dict[str, list[str]]:
+    """Delete every copy an install receipt attributes to catalog *cid* (R15.11).
+
+    **Receipt-driven, and that is the point rather than an implementation detail.**
+    "Everything installed from this catalog" is a question only receipts can answer, and
+    enumerating the catalog's current entries gets it wrong three ways:
+
+    - an entry installed from *cid* but since removed from its catalog file is still on
+      disk, and the catalog no longer mentions it;
+    - an entry *cid* defines today may have been installed from a different catalog,
+      before precedence changed — the receipt records which one it really was;
+    - and the caller that needs this most has *just unregistered* the catalog, so there
+      are no entries left to enumerate at all.
+
+    A copy with **no receipt** is left alone. Nothing attributes it to any catalog, so it
+    is not this catalog's to delete — the same line `uninstall_entry` draws by refusing a
+    destination it cannot prove it created.
+
+    Returns the paths deleted and the stale receipts cleared (destinations that were
+    already gone). Both are reported rather than one being silent: a caller that asked to
+    delete things is owed an account of what happened, including "nothing was there".
+    """
+    receipts = load_receipts()
+    mine = [dest for dest, rec in receipts.items() if rec.get("catalog") == cid]
+
+    deleted: list[str] = []
+    cleared: list[str] = []
+    for dest in sorted(mine):
+        target = Path(dest)
+        if target.is_dir():
+            shutil.rmtree(target, ignore_errors=True)
+            deleted.append(dest)
+        elif target.exists():
+            target.unlink()
+            deleted.append(dest)
+        else:
+            cleared.append(dest)
+        receipts.pop(dest, None)
+
+    if mine:
+        save_receipts(receipts)
+    return {"deleted": deleted, "cleared": cleared}
+
+
 def cmd_catalog_remove(args: argparse.Namespace) -> int:
     """Unregister a catalog, leaving its clone unless asked (R15.6)."""
     raw, notes = canonical_raw_config()
@@ -4271,6 +4315,12 @@ def cmd_catalog_remove(args: argparse.Namespace) -> int:
     cat = _catalog_from_raw(removed)
     write_config(raw)  # config first: a failed purge must not leave a stale registration
 
+    # Installs before the clone, so a remote's files are gone before the clone they came
+    # from is. Both run after the config for the same reason it is written first.
+    installs = {"deleted": [], "cleared": []}
+    if getattr(args, "purge_installs", False):
+        installs = purge_catalog_installs(args.id)
+
     purged = None
     if getattr(args, "purge_clone", False) and cat.clone_dir and cat.clone_dir.exists():
         shutil.rmtree(cat.clone_dir, ignore_errors=True)
@@ -4280,12 +4330,18 @@ def cmd_catalog_remove(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps({"status": "OK", "id": args.id, "purged_clone": purged,
                           "clone_kept_at": str(kept) if kept else None,
+                          "purged_installs": installs["deleted"],
+                          "cleared_receipts": installs["cleared"],
                           "migrated": notes}, indent=2))
         return 0
 
     for note in notes:
         print(f"  migrated config: {note}")
     print(f"Unregistered {args.id}.")
+    for dest in installs["deleted"]:
+        print(f"  deleted install: {dest}")
+    if installs["cleared"]:
+        print(f"  cleared {len(installs['cleared'])} stale receipt(s)")
     if purged:
         print(f"  removed clone: {purged}")
     elif kept:
@@ -5056,6 +5112,9 @@ def build_parser() -> argparse.ArgumentParser:
     cat_rm.add_argument("id", help="id of the catalog to unregister")
     cat_rm.add_argument("--purge-clone", dest="purge_clone", action="store_true",
                         help="also delete its clone directory")
+    cat_rm.add_argument("--purge-installs", dest="purge_installs", action="store_true",
+                        help="also delete every copy installed from it (receipts decide "
+                             "which; copies the tool did not place are left alone)")
     cat_rm.add_argument("--json", action="store_true", help="machine-readable output")
     cat_rm.set_defaults(func=cmd_catalog_remove)
 

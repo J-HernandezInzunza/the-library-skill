@@ -604,6 +604,13 @@ pub struct UnregisterReport {
     /// Where the clone was left, so the report can say what is still on disk.
     #[serde(default)]
     pub clone_kept_at: Option<String>,
+    /// Copies deleted because a receipt attributed them to this catalog.
+    #[serde(default)]
+    pub purged_installs: Vec<String>,
+    /// Receipts dropped whose destination was already gone. Reported rather than
+    /// silent: a caller that asked to delete things is owed an account of what happened.
+    #[serde(default)]
+    pub cleared_receipts: Vec<String>,
     #[serde(default)]
     pub migrated: Vec<String>,
 }
@@ -1179,18 +1186,27 @@ pub fn registry_add(
 
 /// Unregister a catalog (R4.7).
 ///
-/// `purge_clone` deletes a remote's clone directory and is only ever passed from a
-/// confirmation that says so. The catalog's own entries are never touched by either: for a
-/// local catalog the file stays exactly where it is, which is what makes unregistering a
-/// reversible act rather than a deletion.
+/// `purge_clone` deletes a remote's clone directory, and `purge_installs` deletes every
+/// copy an install **receipt** attributes to this catalog. Both are separate ticks on the
+/// confirmation, and neither happens by default: unregistering on its own is reversible,
+/// which is the property that makes it safe to offer at all.
+///
+/// `purge_installs` closes a real trap rather than adding a convenience. `uninstall`
+/// resolves its target through the catalog, so a copy whose catalog has been unregistered
+/// is invisible to `list` **and** refused by `uninstall` as `NOT_FOUND` — measured, not
+/// assumed. Without this the only way to remove those files is by hand.
 pub fn registry_remove(
     sink: &dyn CommandSink,
     id: &str,
     purge_clone: bool,
+    purge_installs: bool,
 ) -> Result<UnregisterReport, AppError> {
     let mut args = vec!["catalog", "remove", id];
     if purge_clone {
         args.push("--purge-clone");
+    }
+    if purge_installs {
+        args.push("--purge-installs");
     }
     parse(run_json(sink, &args)?)
 }

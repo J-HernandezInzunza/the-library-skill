@@ -77,6 +77,23 @@ const registering = ref(false);
 /** The catalog awaiting an unregister confirmation. */
 const unregistering = ref<Catalog | null>(null);
 const purgeClone = ref(false);
+const purgeInstalls = ref(false);
+
+/**
+ * Roughly how many installed copies a purge would delete, for the confirmation to name.
+ *
+ * **An estimate, and labelled as one.** The authority is the install receipt, which
+ * records the catalog a copy actually came from; this counts the catalog's *current*
+ * entries that are installed, which is a different set — it misses a copy whose entry has
+ * since been removed from the catalog file, and over-counts one whose installed copy came
+ * from elsewhere. Deriving the real answer here is not possible: `list` cannot see either
+ * case, which is exactly why the deletion itself is receipt-driven and lives in the CLI.
+ */
+const installedFrom = computed(() => {
+  const id = unregistering.value?.id;
+  if (!id) return 0;
+  return props.entries.filter((entry) => entry.catalog === id && entry.installed).length;
+});
 const failure = ref("");
 const removed = ref<UnregisterReport | null>(null);
 
@@ -99,10 +116,12 @@ async function unregister() {
       invoke<UnregisterReport>("registry_remove", {
         id: target.id,
         purgeClone: purgeClone.value,
+        purgeInstalls: purgeInstalls.value,
       }),
     );
     unregistering.value = null;
     purgeClone.value = false;
+    purgeInstalls.value = false;
     emit("changed");
   } catch (e) {
     failure.value = describeAppError(e);
@@ -208,11 +227,29 @@ watch(
 
       <StatusBanner v-if="failure" kind="error" :detail="failure" />
       <StatusBanner v-else-if="removed" kind="success">
-        Unregistered {{ removed.id }}. Its entries and every file installed from them are
-        untouched<template v-if="removed.purged_clone">, and its clone was deleted</template
-        ><template v-else-if="removed.clone_kept_at">
-          , and its clone is still at {{ removed.clone_kept_at }}</template
-        >.
+        <p class="catalogs__done">
+          Unregistered {{ removed.id }}.
+          <template v-if="!removed.purged_installs.length">
+            Its entries and every file installed from them are untouched.
+          </template>
+          <template v-else>
+            Deleted {{ removed.purged_installs.length }} installed
+            {{ removed.purged_installs.length === 1 ? "copy" : "copies" }}. The catalog's own
+            entries stay in its file.
+          </template>
+          <template v-if="removed.purged_clone">Its clone was deleted.</template>
+          <template v-else-if="removed.clone_kept_at">
+            Its clone is still at {{ removed.clone_kept_at }}.
+          </template>
+        </p>
+        <ul v-if="removed.purged_installs.length" class="catalogs__deleted">
+          <li v-for="path in removed.purged_installs" :key="path"><code>{{ path }}</code></li>
+        </ul>
+        <p v-if="removed.cleared_receipts.length" class="catalogs__done-detail">
+          Also cleared {{ removed.cleared_receipts.length }} stale
+          {{ removed.cleared_receipts.length === 1 ? "receipt" : "receipts" }} for copies that
+          were already gone.
+        </p>
       </StatusBanner>
 
       <RegisterCatalog
@@ -271,13 +308,28 @@ watch(
               on disk. Only this machine's list of catalogs changes, and registering it again
               brings it back.
             </p>
+            <!-- Not a convenience: `uninstall` resolves through the catalog, so once this
+                 is unregistered its installed copies are invisible to the app and refused
+                 by the CLI. Without this tick, removing them means doing it by hand. -->
+            <label class="catalogs__purge">
+              <input v-model="purgeInstalls" type="checkbox" />
+              <span>
+                Also delete the copies installed from it<template v-if="installedFrom">
+                  — around {{ installedFrom }}</template
+                >. Otherwise they stay on disk with no catalog left to remove them through,
+                and only deleting the folders by hand will clear them. Copies you put there
+                yourself are never touched.
+              </span>
+            </label>
             <label v-if="option.kind !== 'local'" class="catalogs__purge">
               <input v-model="purgeClone" type="checkbox" />
               <span>Also delete the clone this machine keeps of that repository.</span>
             </label>
             <div class="catalogs__confirm-actions">
               <button type="button" class="ghost" @click="unregistering = null">Cancel</button>
-              <button type="button" class="danger" @click="unregister()">Unregister</button>
+              <button type="button" class="danger" @click="unregister()">
+                {{ purgeInstalls ? "Unregister and delete the copies" : "Unregister" }}
+              </button>
             </div>
           </div>
         </li>
@@ -443,6 +495,27 @@ watch(
   display: flex;
   gap: 0.5rem;
   margin-top: 0.6rem;
+}
+.catalogs__done {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.45;
+}
+.catalogs__done-detail {
+  margin: 0.4rem 0 0;
+  font-size: 0.78rem;
+  opacity: 0.8;
+}
+.catalogs__deleted {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  max-height: 10rem;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.72rem;
+  opacity: 0.8;
+  overflow-wrap: anywhere;
 }
 .catalogs__entry {
   border-radius: 8px;

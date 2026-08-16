@@ -123,7 +123,7 @@ left behind — so a failure is safe to retry after fixing the URL or the path.
 ## catalog remove
 
 ```bash
-<tool-dir>/library catalog remove <id> [--purge-clone]
+<tool-dir>/library catalog remove <id> [--purge-clone] [--purge-installs]
 ```
 
 Unregisters the catalog. **It never deletes a local catalog's file** — that is the user's
@@ -132,7 +132,22 @@ deletes the *clone directory* of a remote catalog, which the tool created and ca
 
 Removing a catalog changes what resolves: any name it was winning now falls through to the
 next catalog that defines it, or disappears. Say which, using `list` before and after if it
-isn't obvious. Installed files on disk are untouched either way.
+isn't obvious.
+
+**`--purge-installs` deletes the copies installed from it**, and exists because leaving them
+is a trap: `uninstall` resolves its target through the catalog, so once a catalog is
+unregistered its installed copies are invisible to `list` *and* refused by `uninstall` as
+`NOT_FOUND`. Nothing can then remove them but deleting the folders by hand.
+
+Which copies get deleted is decided by **install receipts**, not by the catalog's entries.
+That is the only correct source: a copy whose entry was later removed from the catalog file
+is still on disk, a copy the catalog defines today may have been installed from a different
+catalog before precedence changed, and after unregistering there are no entries left to
+enumerate. A copy with **no receipt** is never deleted — nothing attributes it to any
+catalog, so it is not this catalog's to remove.
+
+Without the flag, installed files on disk are untouched. Offer it explicitly rather than
+assuming; it is the only irreversible part of unregistering.
 
 ## catalog migrate
 

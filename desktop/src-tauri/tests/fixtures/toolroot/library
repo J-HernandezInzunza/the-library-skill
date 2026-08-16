@@ -244,9 +244,18 @@ case "$sub" in
             echo "error: 'personal' is the only registered catalog" >&2
             exit 1
             ;;
+          purged)
+            # A purge names what it deleted, and separately the receipts it cleared for
+            # destinations that were already gone.
+            printf '{"status":"OK","id":"%s","purged_clone":null,"clone_kept_at":null,' "$1"
+            printf '"purged_installs":["/Users/tester/.claude/skills/alpha"],'
+            printf '"cleared_receipts":["/Users/tester/.claude/skills/already-gone"],'
+            printf '"migrated":[]}\n'
+            ;;
           *)
             printf '{"status":"OK","id":"%s","purged_clone":null,' "$1"
-            printf '"clone_kept_at":null,"migrated":[]}\n'
+            printf '"clone_kept_at":null,"purged_installs":[],"cleared_receipts":[],'
+            printf '"migrated":[]}\n'
             ;;
         esac
         ;;
