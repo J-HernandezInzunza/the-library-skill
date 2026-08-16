@@ -162,7 +162,7 @@ One Tauri command per operation (R1.2) — never a generic passthrough:
 | `bootstrap_tool` | `python3 bootstrap.py --json --dir <home>` | R7.1 |
 | `catalog_init` | `init --repo … --branch …` | R4.6 |
 | `registry_add` | `catalog add --id … --position … (--path … \| --repo … --branch … [--protected])`, or `catalog init <path> --id … --position …` | R4.7 |
-| `registry_remove` | `catalog remove <id> [--purge-clone]` | R4.7 |
+| `registry_remove` | `catalog remove <id> [--purge-clone] [--purge-installs]` | R4.7 |
 
 Search is deliberately absent, but no longer for the original reason. `search --json` used to
 return a leaner record than `list --json`; on this base the two are identical. R2.2 filters the

@@ -626,6 +626,22 @@ leaves the entry reinstallable, `remove` does not, so the same dependent list me
     was not modified. Gate passes.
   - **Commit:** `feat(desktop): register and unregister catalogs from the Catalogs view`
 
+- [x] **T4.6a — Unregistering no longer strands what it installed**
+  - **Files:** `library.py`, `desktop/src-tauri/src/{cli,lib}.rs`,
+    `desktop/src/components/Catalogs.vue`
+  - **Requirements:** R4.7
+  - **Do:** `catalog remove --purge-installs`, and a second tick on the unregister
+    confirmation. Measured trap: after unregistering, the installed copies stay on disk,
+    `list` cannot see them, and `uninstall` refuses them as `NOT_FOUND` — nothing but
+    `rm -rf` clears them. **Receipt-driven, not list-driven**, which is the load-bearing
+    decision: a copy whose entry was later removed is still on disk, a copy the catalog
+    defines today may have come from another catalog, and after unregistering there is
+    nothing left to enumerate. A copy with no receipt is never deleted.
+  - **Verify:** Live, with three copies: one from the catalog (deleted), one from another
+    catalog (kept), one hand-made (kept), with the catalog file and the source untouched.
+    Gate passes.
+  - **Commit:** `feat(desktop): offer to delete a catalog's installed copies when unregistering`
+
 ---
 
 ## Phase 5 — Setup manifest

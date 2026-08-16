@@ -1968,3 +1968,65 @@ is invisible to two of the three front doors.** Four of those five are that same
 the frozen window (T3a.3), the scrollbar gutter, five headers, the toolbar's three subjects, the
 detail page's three scope pickers, and three separate navigation-state bugs. That is the standing
 lesson of this phase: the gate proves the contracts, not that the app works.
+
+---
+
+## T4.6a — unregistering stranded everything it had installed
+
+Asked while looking at the unregister confirmation: could there be a checkbox to delete the
+catalog's installed skills, and does the CLI support it?
+
+It did not, and the gap was worse than a missing convenience. **Measured, in a scratch tool:**
+
+| After `catalog remove cata` | |
+| --- | --- |
+| The installed files | Still on disk |
+| `library uninstall alpha` | **`NOT_FOUND`** — `uninstall` resolves through the catalog |
+| Visible in the app | No: not in any catalog, so not in `list` |
+| The install receipt | Still there, still claiming `catalog: "cata"` |
+| `doctor` | `OK`. Silent |
+
+So the copies were **permanently stranded** — invisible, unremovable by any command, still
+claimed by a receipt. Cleaning up after the test needed `rm -rf` by hand. It is the same orphan
+trap `remove --purge` has, at catalog scale: unregistering this machine's personal catalog would
+strand all 35 installed skills.
+
+### Receipt-driven, and that is the whole decision
+
+The obvious implementation is "uninstall every installed entry this catalog lists". It is wrong
+three ways, and the third makes it impossible rather than merely inaccurate:
+
+- An entry installed from the catalog but **since removed from its file** is still on disk, and
+  the catalog no longer mentions it.
+- An entry the catalog defines **today** may have been installed from a different one, before
+  precedence changed. The receipt records which it really was — the same fact that fixed the push
+  provenance warning.
+- The caller that needs this has **just unregistered the catalog**, so there are no entries left
+  to enumerate at all.
+
+Which is why the deletion lives in `library.py` and not in an app-side loop: the app cannot compute
+the set, in principle. `purge_catalog_installs` walks receipts, not catalogs.
+
+**A copy with no receipt is never deleted.** Nothing attributes it to any catalog, so it is not
+this catalog's to remove — the same line `uninstall_entry` draws by refusing a destination it
+cannot prove it created.
+
+**Verified by mutation both ways:** making the selection list-driven fails two tests, and dropping
+the receipt filter so it deletes every recorded install fails another. 656 CLI tests pass.
+
+### The app side, and one honest label
+
+The confirmation names roughly how many copies would go, and **says "around"** — because the count
+is derived from `list` (the catalog's current entries that are installed) while the deletion is
+driven by receipts. Those are different sets, for the reasons above. The alternative was showing no
+number, or showing a confident wrong one; the estimate is labelled instead. The report afterwards
+names every path actually deleted, which is the account that matters.
+
+Stale receipts — destinations already gone — are cleared too and reported separately rather than
+folded into the deleted list. A caller that asked to delete things is owed an account of what
+happened, including "this one was already missing".
+
+**Verified end to end with three copies present:** one installed from the catalog (deleted), one
+from another catalog (kept), one hand-made with no receipt (kept), and both the catalog file and
+the entry's source untouched. Without the flag, nothing is deleted — the previous behaviour,
+unchanged by default.

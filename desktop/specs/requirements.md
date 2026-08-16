@@ -160,7 +160,9 @@ implementation; changing one is a spec change, not an implementation choice.
 - R4.6b A catalog is described in plain language — what it is, and what a change to it costs —
   never as the CLI's raw `kind` and `write_mode` values.
 - R4.7 Registered catalogs can be added and removed after first run, from the first level of that
-  same view.
+  same view. Unregistering states what it does *not* touch, and offers deleting the copies
+  installed from that catalog as a separate, explicit tick — without it those copies are stranded,
+  since `uninstall` resolves its target through the catalog that no longer exists.
   Adding a local catalog uses a native directory picker; the CLI defines a local catalog as a
   `library.yaml` or a directory holding one. Precedence is presented in plain language, because
   the default (`--position first`) silently decides which copy of a name installs.
