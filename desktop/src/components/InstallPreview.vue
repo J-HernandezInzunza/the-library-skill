@@ -85,7 +85,7 @@ async function runPreview() {
   report.value = null;
   try {
     preview.value = await withActivity("resolving the destination…", () =>
-      invoke<UsePreview>("entry_use_preview", { name: props.name, project: project.value }),
+      invoke<UsePreview>("entry_use_preview", { names: [props.name], project: project.value }),
     );
   } catch (e) {
     error.value = describeAppError(e);
@@ -100,7 +100,7 @@ async function install() {
   error.value = "";
   try {
     report.value = await withActivity(`installing ${props.name}…`, () =>
-      invoke<UseReport>("entry_use", { name: props.name, project: project.value }),
+      invoke<UseReport>("entry_use", { names: [props.name], project: project.value }),
     );
     // The plan described the disk as it was before the write, so it is now a lie.
     preview.value = null;
