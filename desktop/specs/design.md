@@ -683,8 +683,12 @@ Consequences that fall out of this and must hold:
   ack names the key and the next step, e.g. `SECRET_RECEIVED: the user submitted
   ATLASSIAN_API_TOKEN via the app's secure field. Do not ask for it. Continue with
   run_skill_setup.`
-- The value lives in backend memory for the walkthrough and is zeroized after
-  `run_skill_setup` completes.
+- The value lives in backend memory for the walkthrough and is zeroized when the walkthrough
+  ends. **Not** after the first `run_skill_setup`, which is what an earlier draft of this line
+  said: an `env`-delivery value exists only in memory, so clearing it after one command would
+  make the second command in the same walkthrough — typically `check`, right after
+  `config-init` — run without the credential it is checking. Requirements R6 and T7.5 both say
+  "at walkthrough end"; this line was the outlier.
 - Persistence follows the skill's declared `delivery` mode (`config-file` by default, or `env` /
   `manual`). For `config-file` the app runs the skill's scaffold command, writes the value at the
   declared key, and chmods to `0600`. The app writes only to the skill's declared `config.path`

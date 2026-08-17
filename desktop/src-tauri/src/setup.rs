@@ -6,9 +6,9 @@
 // validator in Rust would be two implementations of one schema to keep in step, and
 // the `sibling-skill` check needs install receipts, which live on the CLI side.
 //
-// So the types below are deliberately thin. They mirror the keys this phase renders
-// and ignore the rest of the manifest: the walkthrough's `commands`, `config`, and
-// `verify` are Phase 6's to type, when there is something that runs them.
+// So the types below mirror the keys the app renders or acts on, and ignore the rest.
+// `commands` and `config` joined them in T7.3, when `run_skill_setup` became the thing that
+// runs a declared command and writes a value into a declared file.
 
 use serde::{Deserialize, Serialize};
 
@@ -90,6 +90,34 @@ pub struct SetupManifest {
     pub summary: Option<String>,
     #[serde(default)]
     pub secrets: Vec<Secret>,
+    /// The one file the app will write for this skill (schema §3.1). Absent when nothing is
+    /// delivered as `config-file`.
+    #[serde(default)]
+    pub config: Option<ConfigFile>,
+    /// The commands the skill declares, by id. The agent may run one of these by id and
+    /// nothing else, which is what keeps "what can run" a property of the skill rather than
+    /// of model output (design §5.2).
+    #[serde(default)]
+    pub commands: std::collections::BTreeMap<String, SetupCommand>,
+}
+
+/// Where a skill keeps its own configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConfigFile {
+    /// Absolute or `~`-prefixed, per schema §3.1. Expanded by the app at write time, since
+    /// `~` is not a path component to anything but a shell.
+    pub path: String,
+}
+
+/// One command a walkthrough may run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetupCommand {
+    /// Argv relative to the installed skill directory — never a shell line (schema §5).
+    pub run: String,
+    /// Shown before it runs. Required by the schema's linter, because it is what the user
+    /// reads when deciding whether to let it happen.
+    #[serde(default)]
+    pub description: String,
 }
 
 /// One value the walkthrough will ask for.
@@ -111,6 +139,18 @@ pub struct Secret {
     pub delivery: String,
     #[serde(default)]
     pub optional: bool,
+    /// Whether the value is sensitive. Defaults **true**, matching the schema: a manifest that
+    /// forgets the field gets the careful behaviour, and only an explicit `secret: false`
+    /// (an email, an account name) makes a value loggable.
+    #[serde(default = "yes")]
+    pub secret: bool,
+    /// An env var that overrides the file for this value, if the skill declares one.
+    #[serde(default)]
+    pub env_override: Option<String>,
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn config_file() -> String {

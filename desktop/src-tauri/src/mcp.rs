@@ -19,6 +19,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::process::Stdio;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -40,7 +41,8 @@ pub const ALLOWED_SUBCOMMANDS: [&str; 4] = ["list", "search", "doctor", "use"];
 
 /// What the tools are called on the wire. `mcp__library__` is prepended by Claude Code from
 /// the server's name in `--mcp-config`, and the hook allows exactly that prefix.
-pub const TOOLS: [&str; 3] = ["library_cmd", "read_skill_doc", "request_secret"];
+pub const TOOLS: [&str; 4] =
+    ["library_cmd", "read_skill_doc", "request_secret", "run_skill_setup"];
 
 /// The app's one tool endpoint, and the tokens currently allowed to use it.
 ///
@@ -420,6 +422,28 @@ fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "run_skill_setup",
+            "description":
+                "Run one command the skill itself declares in its setup manifest, by id. You \
+                 cannot compose a command: only ids the manifest lists will run. Any values the \
+                 user has submitted are written into the skill's own config file first, so a \
+                 'check' command sees them. Returns the command's output, with any collected \
+                 values redacted.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "skill": { "type": "string" },
+                    "command_id": {
+                        "type": "string",
+                        "description":
+                            "An id from the manifest's commands. 'config-init' creates the \
+                             config file; 'check' decides whether setup succeeded."
+                    }
+                },
+                "required": ["skill", "command_id"]
+            }
+        }),
+        json!({
             "name": "read_skill_doc",
             "description":
                 "Read a file from inside an installed skill's own directory — its SKILL.md, \
@@ -446,6 +470,7 @@ fn call(params: &Value, host: &dyn Host) -> Result<Value, String> {
         "library_cmd" => library_cmd(arguments, host)?,
         "read_skill_doc" => read_skill_doc(arguments, host)?,
         "request_secret" => request_secret(arguments, host)?,
+        "run_skill_setup" => run_skill_setup(arguments, host)?,
         // Named tools only. A prefix or pattern match here is how a tool nobody reviewed
         // becomes reachable.
         other => return Err(format!("'{other}' is not one of this app's tools")),
@@ -526,6 +551,174 @@ fn request_secret(arguments: &Value, host: &dyn Host) -> Result<String, String> 
              cannot do without it."
         )),
     }
+}
+
+/// Run one command the skill itself declared, delivering collected values first (R6.4, R6.5).
+///
+/// **The agent passes a `command_id`, never a command** (design §5.2). If it could pass a string,
+/// the whitelist would be decorative and this tool would be `Bash` with extra steps. The skill
+/// declares what may run; the agent picks from that list by name.
+fn run_skill_setup(arguments: &Value, host: &dyn Host) -> Result<String, String> {
+    let skill = arguments["skill"].as_str().unwrap_or_default();
+    let id = arguments["command_id"].as_str().unwrap_or_default();
+
+    // The manifest as `library setup --json` already validated it (schema §7). Not re-read and
+    // not re-validated here: two validators for one schema is the R1.1 failure, and this one
+    // would be the copy that drifts.
+    let report = setup::setup(host.sink(), skill)
+        .map_err(|e| format!("'{skill}' could not be read: {}", refusal_text(&e)))?;
+    if !report.problems.is_empty() {
+        return Err(format!(
+            "'{skill}''s setup manifest is invalid, so nothing from it will run: {}",
+            report.problems.join("; ")
+        ));
+    }
+    let Some(manifest) = report.manifest.as_ref() else {
+        return Err(format!("'{skill}' declares no setup, so it has no commands."));
+    };
+    let Some(dest) = report.dest.as_ref().filter(|_| report.installed) else {
+        return Err(format!("'{skill}' is not installed, so nothing of it can run."));
+    };
+
+    let Some(command) = manifest.commands.get(id) else {
+        return Err(format!(
+            "'{skill}' declares no command '{id}'. It declares: {}.",
+            if manifest.commands.is_empty() {
+                "none".to_string()
+            } else {
+                manifest.commands.keys().cloned().collect::<Vec<_>>().join(", ")
+            }
+        ));
+    };
+
+    // Values are delivered before the command runs, so a `check` sees the file it is checking.
+    // Deliberately every time rather than once: a re-run after the user corrected a value has to
+    // write the corrected one, and writing the same bytes twice costs nothing.
+    let delivered = deliver(manifest, host)?;
+
+    let root = std::fs::canonicalize(dest)
+        .map_err(|e| format!("'{skill}' is recorded at {dest}, which could not be read: {e}"))?;
+    let output = run_declared(&root, &command.run, &env_delivery(manifest, host))?;
+
+    // Redacted on the way out, not trusted to be clean. The realistic leak is a skill's own setup
+    // command echoing the config file it just wrote, on failure, into text we hand to the agent.
+    let text = host.secrets().redact(&output.text);
+    if output.code == 0 {
+        Ok(format!("{delivered}{text}"))
+    } else {
+        Err(format!(
+            "{delivered}'{id}' exited {}: {text}",
+            output.code
+        ))
+    }
+}
+
+/// Write every collected `config-file` value into the skill's own config file.
+///
+/// Returns a line naming what was written, for the agent's benefit — the *keys*, never the
+/// values. `env` values are not written anywhere (schema §6, invariant 6) and `manual` ones never
+/// reached the app at all.
+fn deliver(manifest: &setup::SetupManifest, host: &dyn Host) -> Result<String, String> {
+    let written: Vec<&str> = manifest
+        .secrets
+        .iter()
+        .filter(|secret| secret.delivery == "config-file" && host.secrets().holds(&secret.key))
+        .map(|secret| secret.key.as_str())
+        .collect();
+    if written.is_empty() {
+        return Ok(String::new());
+    }
+
+    let Some(config) = manifest.config.as_ref() else {
+        return Err(
+            "the manifest delivers a value to a config file but declares no config.path".to_string(),
+        );
+    };
+    let path = crate::secrets::expand_home(&config.path);
+    for key in &written {
+        host.secrets().write_to_config(key, &path)?;
+    }
+
+    Ok(format!(
+        "WROTE {} into {} (0600). ",
+        written.join(", "),
+        path.display()
+    ))
+}
+
+/// The `env`-delivery values, as variables for the child process.
+fn env_delivery(manifest: &setup::SetupManifest, host: &dyn Host) -> Vec<(String, String)> {
+    let keys: Vec<String> = manifest
+        .secrets
+        .iter()
+        .filter(|secret| secret.delivery == "env")
+        .map(|secret| secret.key.clone())
+        .collect();
+    host.secrets().env_for(&keys)
+}
+
+/// What a declared command produced.
+#[derive(Debug)]
+struct Ran {
+    code: i32,
+    text: String,
+}
+
+/// Run a declared command, per the schema's execution contract (§5).
+///
+/// `run` is parsed as **argv**, and no shell is invoked — so `&&`, `|`, backticks and `$(…)` are
+/// inert here rather than dangerous, whatever validation did or did not catch upstream.
+/// `argv[0]` is resolved inside the skill directory and canonicalized, on the same reasoning as
+/// `read_skill_doc`: a `..` or a symlink out of the skill dir would make "the skill's own command"
+/// mean any executable on the machine.
+fn run_declared(
+    root: &Path,
+    run: &str,
+    env: &[(String, String)],
+) -> Result<Ran, String> {
+    let mut argv = run.split_whitespace();
+    let Some(program) = argv.next() else {
+        return Err("the declared command is empty".to_string());
+    };
+
+    let resolved = std::fs::canonicalize(root.join(program))
+        .map_err(|_| format!("'{program}' does not exist inside the skill"))?;
+    if !resolved.starts_with(root) {
+        return Err(format!(
+            "'{program}' resolves outside the skill's own directory, so it was not run"
+        ));
+    }
+
+    let mut command = std::process::Command::new(&resolved);
+    command
+        .args(argv)
+        // cwd is the skill directory, so a command's own relative paths mean what its author
+        // meant by them.
+        .current_dir(root)
+        .stdin(Stdio::null());
+    for (name, value) in env {
+        command.env(name, value);
+    }
+
+    let output = command
+        .output()
+        .map_err(|e| format!("'{run}' could not be started: {e}"))?;
+    // Both streams, because a setup command's useful half is stderr about as often as stdout, and
+    // the agent's job here is to explain a failure.
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.trim().is_empty() {
+        text.push_str(stderr.trim());
+    }
+
+    Ok(Ran {
+        code: output.status.code().unwrap_or(-1),
+        text: if text.trim().is_empty() {
+            "(no output)".to_string()
+        } else {
+            text
+        },
+    })
 }
 
 /// A file from inside one installed skill's directory.
@@ -898,6 +1091,238 @@ mod tests {
         assert!(read_within(&root, "no-such-file.md").is_err());
 
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// A skill directory with one executable command in it, as an install would leave it.
+    fn skill_with_command() -> PathBuf {
+        let base = skill_dir();
+        let bin = base.join("skill/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        // Echoes its own arguments and the one env var the tests care about, so a test can see
+        // exactly what the child was given.
+        std::fs::write(
+            bin.join("setup.sh"),
+            "#!/bin/sh\necho \"args:$*\"\necho \"env:${WEBHOOK_SECRET:-unset}\"\n\
+             if [ \"$1\" = fail ]; then echo 'it went wrong' >&2; exit 3; fi\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            bin.join("setup.sh"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        base
+    }
+
+    #[test]
+    fn a_declared_command_runs_inside_the_skill_with_its_arguments() {
+        let base = skill_with_command();
+        let root = std::fs::canonicalize(base.join("skill")).unwrap();
+
+        let ran = run_declared(&root, "bin/setup.sh check", &[]).unwrap();
+
+        assert_eq!(ran.code, 0);
+        assert!(ran.text.contains("args:check"), "{}", ran.text);
+        assert!(ran.text.contains("env:unset"), "{}", ran.text);
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// The schema forbids shell metacharacters at validation time (§5), but the reason this app is
+    /// safe is that it never invokes a shell at all: `&&` arrives as an *argument*. So even a
+    /// manifest that slipped past validation cannot chain a second command.
+    #[test]
+    fn a_declared_command_is_argv_and_never_a_shell_line() {
+        let base = skill_with_command();
+        let root = std::fs::canonicalize(base.join("skill")).unwrap();
+        let sentinel = base.join("pwned");
+
+        let ran = run_declared(
+            &root,
+            &format!("bin/setup.sh check && touch {}", sentinel.display()),
+            &[],
+        )
+        .unwrap();
+
+        assert!(ran.text.contains("&&"), "the shell metacharacter was an argument");
+        assert!(!sentinel.exists(), "a second command ran");
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// Same containment rule as `read_skill_doc`, and for a sharper reason: outside the skill
+    /// directory, "the command the skill declared" would mean any executable on the machine.
+    #[test]
+    fn a_command_outside_the_skill_is_refused() {
+        let base = skill_with_command();
+        let root = std::fs::canonicalize(base.join("skill")).unwrap();
+        std::os::unix::fs::symlink("/bin/sh", root.join("bin/innocent.sh")).unwrap();
+
+        for escape in ["../../../bin/sh", "/bin/sh", "bin/innocent.sh"] {
+            let refusal = run_declared(&root, escape, &[]).unwrap_err();
+            assert!(refusal.contains(escape), "{refusal}");
+        }
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn a_command_that_is_not_there_says_so_rather_than_running_something_else() {
+        let base = skill_with_command();
+        let root = std::fs::canonicalize(base.join("skill")).unwrap();
+
+        assert!(run_declared(&root, "bin/absent.sh", &[]).is_err());
+        assert!(run_declared(&root, "", &[]).is_err());
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// `env` delivery, at the point where it reaches the skill.
+    #[test]
+    fn env_delivery_values_reach_the_child_process() {
+        let base = skill_with_command();
+        let root = std::fs::canonicalize(base.join("skill")).unwrap();
+
+        let ran = run_declared(
+            &root,
+            "bin/setup.sh check",
+            &[("WEBHOOK_SECRET".to_string(), "whsec-123456".to_string())],
+        )
+        .unwrap();
+
+        assert!(ran.text.contains("env:whsec-123456"), "{}", ran.text);
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// A failure is reported with its exit code and both streams: the agent's job at that point is
+    /// to explain what went wrong, and a setup command's useful half is stderr about as often as
+    /// it is stdout.
+    #[test]
+    fn a_failed_command_reports_its_code_and_its_stderr() {
+        let base = skill_with_command();
+        let root = std::fs::canonicalize(base.join("skill")).unwrap();
+
+        let ran = run_declared(&root, "bin/setup.sh fail", &[]).unwrap();
+
+        assert_eq!(ran.code, 3);
+        assert!(ran.text.contains("it went wrong"), "{}", ran.text);
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// A manifest, built rather than fetched: the CLI's job is to validate it, and these tests
+    /// are about what the app does with one that is already valid.
+    fn manifest(config: Option<&str>, secrets: Vec<(&str, &str)>) -> setup::SetupManifest {
+        setup::SetupManifest {
+            version: Some(json!(1)),
+            summary: None,
+            secrets: secrets
+                .into_iter()
+                .map(|(key, delivery)| setup::Secret {
+                    key: key.to_string(),
+                    label: None,
+                    guidance: None,
+                    url: None,
+                    delivery: delivery.to_string(),
+                    optional: false,
+                    secret: true,
+                    env_override: None,
+                })
+                .collect(),
+            config: config.map(|path| setup::ConfigFile {
+                path: path.to_string(),
+            }),
+            commands: Default::default(),
+        }
+    }
+
+    /// The delivery step names the keys it wrote, so the agent can say what happened — and the
+    /// values are not in it, which is the half that matters.
+    #[test]
+    fn delivery_reports_the_keys_it_wrote_and_never_the_values() {
+        let base = skill_dir();
+        let config = base.join("config.json");
+        std::fs::write(&config, r#"{"version": 1}"#).unwrap();
+
+        let host = Silent::default();
+        collect(&host, "account.api_token", b"ATATT-the-token");
+        let manifest = manifest(
+            Some(config.to_str().unwrap()),
+            vec![("account.api_token", "config-file")],
+        );
+
+        let reported = deliver(&manifest, &host).unwrap();
+
+        assert!(reported.contains("account.api_token"), "{reported}");
+        assert!(!reported.contains("ATATT-the-token"), "{reported}");
+        assert!(reported.contains("0600"), "{reported}");
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// Nothing collected means nothing written — a `check` re-run after the values are already in
+    /// place must not rewrite a file it has no values for.
+    #[test]
+    fn delivery_with_nothing_collected_writes_nothing() {
+        let host = Silent::default();
+        let manifest = manifest(Some("/nowhere/config.json"), vec![("account.api_token", "config-file")]);
+
+        assert_eq!(deliver(&manifest, &host).unwrap(), "");
+    }
+
+    /// An `env` secret has no business reaching the delivery step: it is handed to the child
+    /// process and written nowhere (schema §6, invariant 6).
+    #[test]
+    fn delivery_ignores_env_secrets_even_with_a_config_path_declared() {
+        let host = Silent::default();
+        collect(&host, "WEBHOOK_SECRET", b"whsec-123456");
+        let manifest = manifest(Some("/nowhere/config.json"), vec![("WEBHOOK_SECRET", "env")]);
+
+        // No config path is touched, so a nonexistent one is not an error here.
+        assert_eq!(deliver(&manifest, &host).unwrap(), "");
+        assert_eq!(
+            env_delivery(&manifest, &host),
+            [("WEBHOOK_SECRET".to_string(), "whsec-123456".to_string())]
+        );
+    }
+
+    /// A `manual` secret never reaches the app at all, so there is nothing to deliver even when
+    /// the user has typed something for another key.
+    #[test]
+    fn delivery_ignores_manual_secrets() {
+        let host = Silent::default();
+        let manifest = manifest(Some("/nowhere/config.json"), vec![("personal.note", "manual")]);
+
+        assert_eq!(deliver(&manifest, &host).unwrap(), "");
+    }
+
+    #[test]
+    fn delivery_without_a_config_path_is_a_refusal_naming_what_is_missing() {
+        let host = Silent::default();
+        collect(&host, "account.api_token", b"ATATT-the-token");
+        let manifest = manifest(None, vec![("account.api_token", "config-file")]);
+
+        let refusal = deliver(&manifest, &host).unwrap_err();
+
+        assert!(refusal.contains("config.path"), "{refusal}");
+    }
+
+    /// Put a value in the host's store without the ask/answer dance.
+    fn collect(host: &Silent, key: &str, value: &[u8]) {
+        let store = &host.secrets;
+        let ask = Ask {
+            key: key.to_string(),
+            guidance: String::new(),
+            url: None,
+        };
+        std::thread::scope(|scope| {
+            scope.spawn(|| store.request(ask).expect("the ask should open"));
+            while store.pending().is_none() {
+                std::thread::yield_now();
+            }
+            store.submit(key, value.to_vec()).expect("the open ask");
+        });
     }
 
     #[test]

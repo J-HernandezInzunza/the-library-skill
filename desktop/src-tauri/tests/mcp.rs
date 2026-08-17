@@ -84,6 +84,20 @@ fn payload(response: &str) -> serde_json::Value {
     serde_json::from_str(body).expect("a JSON body")
 }
 
+/// Point the CLI layer at the fixture tool root for the duration of the returned guard.
+///
+/// `LIBRARY_HOME` is process-global, so the tests that set it take turns. Only this file's
+/// `run_skill_setup` tests need it — the rest never reach the CLI.
+fn with_fixture_home() -> std::sync::MutexGuard<'static, ()> {
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::set_var(
+        "LIBRARY_HOME",
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/toolroot"),
+    );
+    guard
+}
+
 fn served() -> mcp::Server {
     mcp::start(Arc::new(Quiet::new())).expect("the endpoint should start")
 }
@@ -288,6 +302,67 @@ fn declining_reaches_the_agent_as_an_error_that_says_not_to_ask_again() {
     let text = result["content"][0]["text"].as_str().expect("a reason");
     assert!(text.contains("declined"), "{text}");
     assert!(text.contains("Do not ask again"), "{text}");
+}
+
+/// **The `command_id` whitelist, end to end.** The agent may not compose a command, so the only
+/// thing it can get wrong is naming one that does not exist — and the refusal has to list what
+/// does, or the agent guesses again. Driven through the fixture CLI, so the manifest is a real
+/// recorded `library setup --json` payload rather than one this test invented.
+#[test]
+fn a_command_id_the_manifest_does_not_declare_is_refused_by_name() {
+    let _guard = with_fixture_home();
+    let (server, token, _host) = served_with_host();
+
+    let response = post(
+        server.port(),
+        Some(&token),
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {
+                "name": "run_skill_setup",
+                "arguments": { "skill": "ready-skill", "command_id": "rm-rf" }
+            }
+        }),
+    );
+
+    let result = &payload(&response)["result"];
+    assert_eq!(result["isError"], true);
+    let text = result["content"][0]["text"].as_str().expect("a reason");
+    assert!(text.contains("rm-rf"), "{text}");
+    // The fixture manifest declares exactly one command, and the refusal names it so the agent
+    // can pick a real one instead of trying a second guess.
+    assert!(text.contains("check"), "{text}");
+}
+
+/// A manifest with problems takes its whole walkthrough offline, so nothing it declares runs
+/// either — including a command that would have been fine.
+#[test]
+fn a_skill_whose_manifest_is_invalid_runs_nothing() {
+    let _guard = with_fixture_home();
+    let (server, token, _host) = served_with_host();
+
+    let response = post(
+        server.port(),
+        Some(&token),
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {
+                "name": "run_skill_setup",
+                "arguments": { "skill": "future-skill", "command_id": "check" }
+            }
+        }),
+    );
+
+    let result = &payload(&response)["result"];
+    assert_eq!(result["isError"], true);
+    assert!(result["content"][0]["text"]
+        .as_str()
+        .expect("a reason")
+        .contains("invalid"));
 }
 
 /// A body larger than the endpoint will read must not be the way to make the app allocate until

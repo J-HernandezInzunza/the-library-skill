@@ -2992,3 +2992,69 @@ that matters — that `submit_secret` is the *only* call any part of the payload
 
 Not yet placed in the app: T6.4 decides where the walkthrough's chrome goes, and a credential
 field mounted somewhere nothing can ask for a value would be decoration.
+
+---
+
+## T7.3 — the command the skill declared, and the file only the skill owns
+
+Two halves: `run_skill_setup` in `mcp.rs` decides *what may run*, and the delivery functions in
+`secrets.rs` decide *where a value may go*. Both are narrow on purpose, and each one's narrowness
+is the security property.
+
+**The manifest is not re-read or re-validated here.** `library setup --json` already validated it
+against schema §7, and a second validator in Rust is the R1.1 failure — two implementations of
+one schema, of which this would be the copy that drifts. `SetupManifest` gained `config` and
+`commands` (T5.1 deliberately left them untyped until something ran them), and `Secret` gained
+`secret`, defaulting to **true**: a manifest that forgets the field gets the careful behaviour.
+
+**The no-shell property is what actually makes this safe.** The schema rejects `&&`, `|`,
+backticks and `$(…)` at validation time, but validation is upstream and fallible. Here `run` is
+split into argv and handed to `Command` directly, so a manifest that slipped past validation gets
+`&&` delivered as an *argument*. The test asserts exactly that: it runs
+`bin/setup.sh check && touch <sentinel>` and checks both that the metacharacter arrived as an
+argument and that the sentinel does not exist.
+
+`argv[0]` is canonicalized inside the skill directory, same as `read_skill_doc` and for a sharper
+reason: outside it, "the command the skill declared" would mean any executable on the machine.
+The test covers `../../../bin/sh`, an absolute `/bin/sh`, and a symlink named `innocent.sh`
+pointing at `/bin/sh`.
+
+**Delivery happens before the command runs, and every time.** A `check` has to see the file it is
+checking. Every time rather than once, because a re-run after the user corrected a value must
+write the corrected one, and writing identical bytes twice costs nothing.
+
+Four decisions in the write path:
+
+- **The mode is set on the handle before the bytes are written**, not chmod'd afterwards. A
+  `write` then `set_permissions` leaves a window in which the credential is on disk
+  world-readable, which is the entire thing this is preventing. The existing file is tightened
+  too, since `mode` on `OpenOptions` applies only at creation — and the test starts from a
+  deliberately `0644` file, because that is what a scaffold command that never thought about it
+  leaves behind.
+- **A missing config file is a refusal that names `config-init`,** not a file this code creates.
+  The skill's template carries defaults and the version marker its own migrate step keys off,
+  which a bare `{}` does not have (schema §3.2).
+- **A file that is not JSON is left alone,** reported as an unknown shape. Guessing means writing
+  something the skill cannot read back, and the test asserts the file is byte-identical after the
+  refusal.
+- **A dotted key whose parent holds a scalar is refused.** Overwriting it would destroy something
+  that belongs to the skill, and the app has no basis for deciding that is what the user meant.
+
+**Redaction is applied to the tool's own return value already**, rather than left entirely to
+T7.4. The realistic leak here is not the app printing a secret on purpose; it is a skill's setup
+command echoing the config file it just wrote, on failure, into text we hand straight to the
+agent. Longest value first, so a value containing another cannot leave a fragment; values under
+four bytes are skipped, since turning the whole text into asterisks tells the reader nothing and
+nothing that short is a credential.
+
+**One spec correction.** Design §7 said values are zeroized "after `run_skill_setup` completes".
+That is wrong for a walkthrough with two commands: an `env`-delivery value exists only in memory,
+so clearing it after `config-init` would make the `check` that follows run without the credential
+it is checking. R6 and T7.5 both say "at walkthrough end"; §7 was the outlier and now says the
+same thing, with the reason.
+
+**Not done here, and named rather than skipped:** `delivery: manual` (schema §4) needs the app to
+run `config-init` and then *reveal* `config.path` for the user to edit by hand. That is a UI
+action — `opener.revealItemInDir` — so it belongs with T6.4's walkthrough chrome, not in a
+tool handler. `env_override` is likewise still unused: the file write covers the config-file case,
+and injecting the override name as well would be a second source of truth for the same value.

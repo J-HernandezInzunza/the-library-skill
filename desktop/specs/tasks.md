@@ -890,8 +890,8 @@ The security-critical phase. Every task here is a place where a mistake leaks a 
     Gate passes.
   - **Commit:** `feat(desktop/secrets): collect secrets in a native field, never in chat`
 
-- [ ] **T7.3 — `run_skill_setup` and config-file delivery**
-  - **Files:** `desktop/src-tauri/src/{mcp,secrets}.rs`
+- [x] **T7.3 — `run_skill_setup` and config-file delivery**
+  - **Files:** `desktop/src-tauri/src/{mcp,secrets,setup}.rs`, `desktop/src-tauri/tests/mcp.rs`
   - **Requirements:** R6.4, R6.5, skill-setup-schema.md §4, §5
   - **Do:** Accept only a `command_id` present in the manifest — never a command string, which would
     make the whitelist decorative. The manifest is the one T5.1 fetched from `library setup --json`,

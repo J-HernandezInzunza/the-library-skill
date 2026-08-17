@@ -15,6 +15,7 @@
 // IPC layer and serde on its way here, and those copies are not ours to zero. What this module
 // guarantees is that the app's *own* copy does not outlive the walkthrough.
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -229,6 +230,63 @@ impl Secrets {
             .collect()
     }
 
+    /// Write the value held for *key* into *config* at its dotted path, `0600` (R6.4, R6.5).
+    ///
+    /// The value leaves this module here and only here, and it goes to exactly one place: the
+    /// `config.path` the skill declared. There is no app-owned store to keep a second copy in,
+    /// because two stores means one of them is stale (design §7).
+    pub fn write_to_config(&self, key: &str, config: &Path) -> Result<(), String> {
+        let state = self.state.lock().expect("the secret store");
+        let Some((_, value)) = state.collected.iter().find(|(held, _)| held == key) else {
+            return Err(format!("no value has been collected for '{key}'"));
+        };
+        let text = std::str::from_utf8(&value.0)
+            .map_err(|_| format!("the value for '{key}' is not text"))?;
+
+        write_config_value(config, key, text)
+    }
+
+    /// The `env`-delivery values, as variables for a subprocess.
+    ///
+    /// Never written anywhere (R6, invariant 6): they exist for the lifetime of the child
+    /// process and the walkthrough, and that is the entire point of the mode.
+    pub fn env_for(&self, keys: &[String]) -> Vec<(String, String)> {
+        let state = self.state.lock().expect("the secret store");
+        keys.iter()
+            .filter_map(|key| {
+                let (_, value) = state.collected.iter().find(|(held, _)| held == key)?;
+                Some((key.clone(), String::from_utf8_lossy(&value.0).into_owned()))
+            })
+            .collect()
+    }
+
+    /// Replace every held value in *text* with `***` (R6.6).
+    ///
+    /// Applied to anything on its way out of the backend — a command's stdout, a failure's
+    /// stderr, a log line. The realistic leak is not the app printing a secret on purpose; it is
+    /// a skill's own setup command echoing the config file it just wrote, on failure, into text
+    /// the app then hands to the agent.
+    ///
+    /// Longest first, so a value that contains another one cannot leave a fragment behind.
+    pub fn redact(&self, text: &str) -> String {
+        let state = self.state.lock().expect("the secret store");
+        let mut values: Vec<&Vec<u8>> = state.collected.iter().map(|(_, value)| &value.0).collect();
+        values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+
+        let mut text = text.to_string();
+        for value in values {
+            // A one- or two-character value would turn the whole text into asterisks and tell
+            // the reader nothing; nothing that short is a credential.
+            if value.len() < 4 {
+                continue;
+            }
+            if let Ok(value) = std::str::from_utf8(value) {
+                text = text.replace(value, "***");
+            }
+        }
+        text
+    }
+
     /// Forget every value, zeroing each one on the way out (R6, D7).
     ///
     /// Called when a walkthrough ends. `Value`'s `Drop` does the zeroing, so this cannot be
@@ -246,6 +304,93 @@ impl Pending {
     fn key(&self) -> &str {
         &self.ask.key
     }
+}
+
+/// Expand a `~`-prefixed config path (schema §3.1).
+///
+/// `~` is not a path component to anything but a shell, and this app never invokes one — so an
+/// unexpanded `~/.config/x` would create a directory literally named `~` in the cwd.
+pub fn expand_home(path: &str) -> PathBuf {
+    match path.strip_prefix("~/") {
+        Some(rest) => match std::env::var_os("HOME") {
+            Some(home) => PathBuf::from(home).join(rest),
+            None => PathBuf::from(path),
+        },
+        None => PathBuf::from(path),
+    }
+}
+
+/// Set *dotted* to *value* in the JSON file at *config*, preserving everything else.
+///
+/// **The file the skill created is the authority on its own shape** (schema §3.2). The app writes
+/// into what `config-init` produced rather than inventing a document: the skill's template carries
+/// defaults and the shape its own migrate step keys off, which a bare `{}` does not have. So a
+/// missing file is a refusal — "run config-init first" — not something to create here.
+///
+/// JSON only. A file that does not parse as JSON is reported as an unknown shape rather than
+/// guessed at, because guessing means writing something the skill cannot read back (§10.3).
+fn write_config_value(config: &Path, dotted: &str, value: &str) -> Result<(), String> {
+    let text = std::fs::read_to_string(config).map_err(|e| {
+        format!(
+            "{} could not be read ({e}) — run the skill's config-init command first",
+            config.display()
+        )
+    })?;
+    let mut document: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("{} is not JSON, so the app will not write to it: {e}", config.display()))?;
+
+    let mut cursor = &mut document;
+    let path: Vec<&str> = dotted.split('.').collect();
+    let (last, parents) = path.split_last().expect("a key has at least one segment");
+    for segment in parents {
+        // A segment holding something that is not an object would be overwritten silently, and
+        // that something belongs to the skill.
+        if !cursor[*segment].is_object() && !cursor[*segment].is_null() {
+            return Err(format!(
+                "'{dotted}' cannot be written: '{segment}' already holds a value that is not an object"
+            ));
+        }
+        if cursor[*segment].is_null() {
+            cursor[*segment] = serde_json::json!({});
+        }
+        cursor = &mut cursor[*segment];
+    }
+    if !cursor.is_object() {
+        return Err(format!("'{dotted}' cannot be written into {}", config.display()));
+    }
+    cursor[*last] = serde_json::Value::String(value.to_string());
+
+    write_private(config, &format!("{document:#}\n"))
+}
+
+/// Write *contents* to *path* with mode `0600`, and only mode `0600` (R6.5).
+///
+/// Not configurable, per schema §6: a file holding a credential has no other sane mode, and
+/// `atlassian-toolkit`'s own loader refuses anything with group or other bits set — so a looser
+/// mode would have the app break the skill on the skill's behalf.
+///
+/// The mode is set on the handle **before** the bytes are written, rather than chmod'd after: a
+/// `write` then `set_permissions` leaves a window in which the credential is on disk
+/// world-readable, and that window is the whole thing this is trying to prevent.
+fn write_private(path: &Path, contents: &str) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .create(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| format!("{} could not be opened for writing: {e}", path.display()))?;
+
+    // `mode` applies only when the file is created, so an existing one — the usual case, since
+    // `config-init` made it — is tightened explicitly.
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600))
+        .map_err(|e| format!("{} could not be made private: {e}", path.display()))?;
+
+    file.write_all(contents.as_bytes())
+        .map_err(|e| format!("{} could not be written: {e}", path.display()))
 }
 
 #[cfg(test)]
@@ -400,6 +545,231 @@ mod tests {
         }
 
         assert_eq!(store.keys(), ["account.api_token"]);
+    }
+
+    /// A store holding *value* at *key*, without the ask/answer dance — for the delivery tests,
+    /// whose subject is what happens to a value after it has been collected.
+    fn holding(key: &str, value: &[u8]) -> Arc<Secrets> {
+        let (store, _) = store();
+        let waiting = open_ask(
+            &store,
+            Ask {
+                key: key.to_string(),
+                guidance: String::new(),
+                url: None,
+            },
+        );
+        store.submit(key, value.to_vec()).unwrap();
+        waiting.join().unwrap().unwrap();
+        store
+    }
+
+    /// A config file as `config-init` would have left it: the skill's own template, with defaults.
+    fn scaffolded() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "library-secrets-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"version": 2, "account": {"email": "someone@example.com"}}"#,
+        )
+        .unwrap();
+        path
+    }
+
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn a_value_is_written_at_its_dotted_key_and_nothing_else_moves() {
+        let config = scaffolded();
+        let store = holding("account.api_token", b"ATATT-the-token");
+
+        store.write_to_config("account.api_token", &config).unwrap();
+
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        assert_eq!(written["account"]["api_token"], "ATATT-the-token");
+        // The skill's own template survives: its version marker and the sibling key it already
+        // held. The app writes *into* the skill's file, it does not replace it.
+        assert_eq!(written["version"], 2);
+        assert_eq!(written["account"]["email"], "someone@example.com");
+
+        std::fs::remove_dir_all(config.parent().unwrap()).ok();
+    }
+
+    /// R6.5, and not configurable: `atlassian-toolkit`'s own loader refuses a file with group or
+    /// other bits set, so a looser mode would have the app break the skill on its behalf.
+    #[test]
+    fn the_written_file_is_private() {
+        let config = scaffolded();
+        // Deliberately world-readable first, which is what a scaffold command that did not think
+        // about it leaves behind.
+        std::fs::set_permissions(
+            &config,
+            std::os::unix::fs::PermissionsExt::from_mode(0o644),
+        )
+        .unwrap();
+        let store = holding("account.api_token", b"ATATT-the-token");
+
+        store.write_to_config("account.api_token", &config).unwrap();
+
+        assert_eq!(mode(&config), 0o600);
+
+        std::fs::remove_dir_all(config.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn a_nested_key_creates_only_the_objects_it_needs() {
+        let config = scaffolded();
+        let store = holding("bitbucket.tokens.write", b"scoped-token");
+
+        store.write_to_config("bitbucket.tokens.write", &config).unwrap();
+
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        assert_eq!(written["bitbucket"]["tokens"]["write"], "scoped-token");
+        assert_eq!(written["account"]["email"], "someone@example.com");
+
+        std::fs::remove_dir_all(config.parent().unwrap()).ok();
+    }
+
+    /// The file the skill created is the authority on its own shape (schema §3.2), so a missing
+    /// one is "run config-init first" rather than something to invent here: a bare `{}` lacks the
+    /// defaults and the version marker the skill's own migrate step keys off.
+    #[test]
+    fn a_missing_config_file_is_a_refusal_that_names_the_fix() {
+        let store = holding("account.api_token", b"ATATT-the-token");
+
+        let refusal = store
+            .write_to_config("account.api_token", Path::new("/tmp/nothing-here/config.json"))
+            .unwrap_err();
+
+        assert!(refusal.contains("config-init"), "{refusal}");
+    }
+
+    #[test]
+    fn a_config_file_that_is_not_json_is_left_alone() {
+        let config = scaffolded();
+        std::fs::write(&config, "email = someone@example.com\n").unwrap();
+        let store = holding("account.api_token", b"ATATT-the-token");
+
+        let refusal = store
+            .write_to_config("account.api_token", &config)
+            .unwrap_err();
+
+        assert!(refusal.contains("not JSON"), "{refusal}");
+        // Unchanged, rather than half-converted into a shape the skill cannot read back.
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            "email = someone@example.com\n"
+        );
+
+        std::fs::remove_dir_all(config.parent().unwrap()).ok();
+    }
+
+    /// Overwriting a scalar the skill put there would silently destroy something that belongs to
+    /// the skill, and the app has no basis for deciding that is what the user meant.
+    #[test]
+    fn a_key_whose_parent_is_not_an_object_is_refused() {
+        let config = scaffolded();
+        let store = holding("version.token", b"ATATT-the-token");
+
+        let refusal = store.write_to_config("version.token", &config).unwrap_err();
+
+        assert!(refusal.contains("not an object"), "{refusal}");
+
+        std::fs::remove_dir_all(config.parent().unwrap()).ok();
+    }
+
+    /// Invariant 6: an `env`-delivery value is handed to a subprocess and written nowhere.
+    #[test]
+    fn env_delivery_hands_over_a_variable_and_writes_nothing() {
+        let config = scaffolded();
+        let before = std::fs::read_to_string(&config).unwrap();
+        let store = holding("WEBHOOK_SECRET", b"whsec-123456");
+
+        let env = store.env_for(&["WEBHOOK_SECRET".to_string()]);
+
+        assert_eq!(env, [("WEBHOOK_SECRET".to_string(), "whsec-123456".to_string())]);
+        // Asking for the env pairs must not have written the value anywhere on the way.
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
+
+        std::fs::remove_dir_all(config.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn env_delivery_skips_keys_with_nothing_collected() {
+        let store = holding("WEBHOOK_SECRET", b"whsec-123456");
+
+        let env = store.env_for(&["WEBHOOK_SECRET".to_string(), "OTHER_TOKEN".to_string()]);
+
+        assert_eq!(env.len(), 1);
+    }
+
+    /// R6.6. The realistic leak is a skill's own setup command echoing the config file it just
+    /// wrote, on failure, into text the app hands to the agent.
+    #[test]
+    fn redaction_removes_every_held_value() {
+        let store = holding("account.api_token", b"ATATT-the-token");
+
+        let redacted = store.redact("config check failed: api_token=ATATT-the-token is invalid");
+
+        assert!(!redacted.contains("ATATT-the-token"));
+        assert!(redacted.contains("***"));
+        // The surrounding text survives, because it is what explains the failure.
+        assert!(redacted.contains("config check failed"));
+    }
+
+    /// A value that contains another one must not leave a fragment behind, which is what happens
+    /// when the shorter is replaced first.
+    #[test]
+    fn redaction_takes_the_longest_value_first() {
+        let store = holding("account.api_token", b"secret-token-long");
+        let waiting = open_ask(
+            &store,
+            Ask {
+                key: "account.other".to_string(),
+                guidance: String::new(),
+                url: None,
+            },
+        );
+        store.submit("account.other", b"secret-token".to_vec()).unwrap();
+        waiting.join().unwrap().unwrap();
+
+        let redacted = store.redact("saw secret-token-long in the output");
+
+        assert_eq!(redacted, "saw *** in the output");
+    }
+
+    #[test]
+    fn a_cleared_store_redacts_nothing_and_hands_over_nothing() {
+        let store = holding("account.api_token", b"ATATT-the-token");
+
+        store.clear();
+
+        assert_eq!(store.redact("ATATT-the-token"), "ATATT-the-token");
+        assert!(store.env_for(&["account.api_token".to_string()]).is_empty());
+    }
+
+    #[test]
+    fn a_tilde_path_expands_to_the_home_directory() {
+        let home = std::env::var("HOME").expect("a home directory");
+
+        assert_eq!(
+            expand_home("~/.config/atlassian-toolkit/config.json"),
+            PathBuf::from(&home).join(".config/atlassian-toolkit/config.json")
+        );
+        // An absolute path is left exactly as declared.
+        assert_eq!(expand_home("/etc/thing.json"), PathBuf::from("/etc/thing.json"));
     }
 
     #[test]
