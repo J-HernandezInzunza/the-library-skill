@@ -238,6 +238,16 @@ async fn entry_setup(app: tauri::AppHandle, name: String) -> Result<SetupReport,
     off_thread(move || setup::setup(&app, &name)).await
 }
 
+/// Whether guided walkthroughs can be offered at all (R7.2).
+///
+/// Returns a `bool` rather than failing when `claude` is absent: the agent is an
+/// enhancement, and a missing one is a fact the UI states next to a disabled control, not an
+/// error interrupting whatever the user was doing in the catalog.
+#[tauri::command]
+async fn agent_available() -> Result<bool, AppError> {
+    off_thread(move || Ok(agent::available())).await
+}
+
 /// Prepare a tool directory that has never been bootstrapped.
 #[tauri::command]
 async fn bootstrap_tool(app: tauri::AppHandle) -> Result<BootstrapReport, AppError> {
@@ -269,6 +279,7 @@ pub fn run() {
             registry_add,
             registry_remove,
             entry_setup,
+            agent_available,
             bootstrap_tool
         ])
         .run(tauri::generate_context!())

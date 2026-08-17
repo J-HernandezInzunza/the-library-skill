@@ -817,8 +817,8 @@ D10/D11/D14 were revised to match. The tasks below assume the revised text, not 
     surfaces as an errored `tool_result`. Gate passes.
   - **Commit:** `feat(desktop/agent): enforce the tool whitelist with a deny-by-default hook`
 
-- [ ] **T6.2 — Session capture and resume**
-  - **Files:** `desktop/src-tauri/src/agent.rs`
+- [x] **T6.2 — Session capture and resume**
+  - **Files:** `desktop/src-tauri/src/agent.rs`, `desktop/src-tauri/tests/agent.rs`
   - **Requirements:** R5.4, D8
   - **Do:** Capture `session_id` from `system/init`; continue with `--resume <id>`. Use the explicit
     id, never `--continue`, which would attach to whichever conversation was most recent and cross
@@ -826,8 +826,10 @@ D10/D11/D14 were revised to match. The tasks below assume the revised text, not 
   - **Verify:** Fixture test asserting turn 2 includes `--resume` with the captured id. Gate passes.
   - **Commit:** `feat(desktop/agent): resume a walkthrough by explicit session id`
 
-- [ ] **T6.3 — Preconditions and MCP load failure**
-  - **Files:** `desktop/src-tauri/src/agent.rs`
+- [x] **T6.3 — Preconditions and MCP load failure**
+  - **Files:** `desktop/src-tauri/src/agent.rs`, `desktop/src-tauri/src/lib.rs`,
+    `desktop/src-tauri/tests/agent.rs`,
+    `desktop/src-tauri/tests/fixtures/record_agent_stream.py`
   - **Requirements:** R7.2, R7.2a, design.md §4.3.1
   - **Do:** If `claude` is absent, disable walkthroughs with an explanation and leave every
     deterministic feature working — the agent is an enhancement, never a dependency. Gate the

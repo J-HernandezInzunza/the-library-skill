@@ -2830,3 +2830,53 @@ The recorder's settings JSON mirrors `agent::settings` rather than being generat
 If they diverge the recorded denial stops being a denial, and the test that reads the
 fixture says so at the next re-record — a cheaper coupling than a second flag on the binary
 whose only purpose is printing a config file.
+
+---
+
+## T6.2 and T6.3 — the session id, and a gate that fails closed
+
+**The turn returns the session id rather than the caller remembering one.** `pump` takes it
+from `init` and confirms it against `result`, and `run` hands it back; `None` is a real
+answer, meaning a turn that produced nothing to continue. `--continue` is asserted *absent*
+alongside `--bare`: it attaches to whichever conversation on the machine was most recent,
+so with two walkthroughs open it is a credential collected for one skill answering a
+question about another.
+
+**The preflight gate lives in `pump`, which reorganised the tests.** The gate is not
+optional behaviour the caller opts into — a session without our MCP server has no
+`request_secret`, and the agent's fallback is to ask for the token in chat — so it runs
+wherever the stream is read. Three of the five recordings were deliberately made without our
+server, so the suite now asks two separate questions with two helpers: `parsed()` for what
+the parser makes of bytes, `replay()` for what a walkthrough does with them. That reads as
+extra ceremony until you notice it is the difference between testing the parser and testing
+the policy.
+
+**`mcp-failed.jsonl` is the fixture that justifies the whole design.** Our server pointed at
+a command that does not exist, recorded live:
+
+    mcp_servers: [{"name": "library", "status": "failed"}]
+    mcp_server_errors: null
+    tools: no mcp__ entries at all
+    result: is_error false        ← the run *succeeded*
+
+The original gate read `mcp_server_errors`, which is `null` here. It would have passed this
+session, and the T0.2 spike watched the model fabricate a plausible result for a tool it
+never called. So the test asserts both halves: that the recording really has those values,
+and that the app refuses it anyway. A gate whose justification is only in a comment is one
+someone simplifies away.
+
+The two refusals are distinguished in the message, because they need different fixes: no
+server named `library` (its command is wrong, or `--mcp-config` never arrived) versus
+connected but not advertising `request_secret` (the server is up and lying about itself).
+The second is the worse one — everything looks healthy, and the missing capability is
+precisely the one the agent invents an answer for — and it is constructed rather than
+recorded, since provoking it needs a server built to misreport its own tools.
+
+**A refused session still emits its `init`.** The event goes to the UI before the gate
+returns, so the transcript shows the session that was refused rather than going blank on the
+one occasion the user most needs to know what happened.
+
+`agent_available` is a `bool`, not a failure. `claude` missing disables one control and
+nothing else (R7.2); raising an error for it would interrupt whatever the user was doing in
+the catalog to tell them about a feature they had not asked for. The "rename `claude` and
+watch the catalog keep working" check still wants doing by hand once T6.4 has UI to disable.

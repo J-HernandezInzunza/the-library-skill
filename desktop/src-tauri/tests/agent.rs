@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use desktop_lib::agent::{self, AgentEvent, AgentSink};
+use desktop_lib::error::AppError;
 
 #[derive(Default)]
 struct Transcript {
@@ -23,22 +24,39 @@ impl AgentSink for Transcript {
     }
 }
 
-/// Replay one fixture through the same loop the app runs.
-fn replay(name: &str) -> Vec<AgentEvent> {
+fn fixture(name: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/agent")
         .join(name);
-    let stream = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{} should be readable: {e}", path.display()));
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{} should be readable: {e}", path.display()))
+}
 
+/// Everything the parser makes of a fixture, with no preflight gate applied.
+///
+/// Three of the recordings were made without the app's MCP server — deliberately, since
+/// each exists to capture something else — and `pump` refuses such a session outright.
+/// Parsing and gating are separate questions, so the tests ask them separately: this reads
+/// bytes, `replay` runs a walkthrough's actual read path.
+fn parsed(name: &str) -> Vec<AgentEvent> {
+    fixture(name).lines().flat_map(agent::classify).collect()
+}
+
+/// Replay one fixture through the loop the app runs, gate included.
+fn replay(name: &str) -> Vec<AgentEvent> {
+    replayed(name).expect("this fixture is a session a walkthrough may run in").0
+}
+
+/// The same, keeping the session id and surfacing a refused session.
+fn replayed(name: &str) -> Result<(Vec<AgentEvent>, Option<String>), AppError> {
     let sink = Transcript::default();
-    agent::pump(&sink, Cursor::new(stream)).expect("a fixture stream should read cleanly");
-    sink.events.into_inner().unwrap()
+    let session = agent::pump(&sink, Cursor::new(fixture(name)))?;
+    Ok((sink.events.into_inner().unwrap(), session))
 }
 
 #[test]
 fn a_text_only_turn_yields_init_text_and_done() {
-    let events = replay("text-only.jsonl");
+    let events = parsed("text-only.jsonl");
 
     let AgentEvent::Init { session_id, .. } = &events[0] else {
         panic!("the first event of a run is its init: {:?}", events[0]);
@@ -63,12 +81,43 @@ fn a_text_only_turn_yields_init_text_and_done() {
     assert_eq!(result.as_deref(), Some("READY"));
 }
 
+/// What turn 2 resumes (R5.4). Taken from the stream rather than remembered by the caller,
+/// because the caller has no other way to learn it — and a turn with no id is a turn with
+/// nothing to continue, which has to be visible rather than inferred.
+#[test]
+fn a_turn_reports_the_session_a_later_turn_resumes() {
+    let (events, session) =
+        replayed("tool-call.jsonl").expect("the recorded session passes the gate");
+    let session = session.expect("a completed run has a session");
+
+    let AgentEvent::Init { session_id, .. } = &events[0] else {
+        panic!("the first event of a run is its init");
+    };
+    assert_eq!(&session, session_id);
+    // `result` reports the same id, and disagreement here would mean resuming a session
+    // that is not the one whose transcript the user just read.
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentEvent::Done { session_id: done, .. } if done == &session
+    )));
+}
+
+/// A stream that never got as far as `init` has no session, and says so.
+#[test]
+fn a_run_that_never_started_reports_no_session() {
+    let sink = Transcript::default();
+    let session = agent::pump(&sink, Cursor::new("not json\n{\"type\":\"assistant\"}\n"))
+        .expect("a truncated stream still reads");
+
+    assert_eq!(session, None);
+}
+
 /// The hook events in this recording (`hook_started`, `hook_response`, from the recorder's
 /// own machine) and every other unlisted subtype have to fall through silently, or a
 /// Claude Code release that adds one breaks the walkthrough.
 #[test]
 fn only_the_events_the_ui_renders_come_through() {
-    let events = replay("text-only.jsonl");
+    let events = parsed("text-only.jsonl");
 
     let inits = events
         .iter()
@@ -88,7 +137,7 @@ fn a_tool_call_yields_the_command_and_its_result() {
     else {
         unreachable!()
     };
-    assert_eq!(name, "mcp__library__ping");
+    assert_eq!(name, "mcp__library__library_cmd");
 
     let AgentEvent::ToolResult {
         tool_use_id,
@@ -106,7 +155,7 @@ fn a_tool_call_yields_the_command_and_its_result() {
     // than under whichever command happened to be last.
     assert_eq!(tool_use_id, id);
     assert!(!is_error);
-    assert_eq!(text, "pong from the fixture server");
+    assert_eq!(text, "3 entries in the fixture catalog");
 }
 
 /// The same `assistant` message carries the text and the `tool_use` in this recording.
@@ -139,7 +188,7 @@ fn both_blocks_of_one_message_survive() {
 /// the boundary and this recording is what proves it holds (§4.1a, D11).
 #[test]
 fn a_tool_outside_the_whitelist_is_denied_by_the_hook() {
-    let events = replay("tool-denied.jsonl");
+    let events = parsed("tool-denied.jsonl");
 
     // The agent did try — the denial is enforcement, not the model declining.
     assert!(events.iter().any(|event| matches!(
@@ -163,7 +212,7 @@ fn a_tool_outside_the_whitelist_is_denied_by_the_hook() {
 /// remove the tool and let the model invent a substitute.
 #[test]
 fn a_denied_call_does_not_end_the_turn() {
-    let events = replay("tool-denied.jsonl");
+    let events = parsed("tool-denied.jsonl");
 
     let AgentEvent::Done { is_error, .. } = events.last().expect("the run ends") else {
         panic!("the last event of a run is its result");
@@ -204,7 +253,7 @@ fn a_tool_result_reads_whether_its_content_is_a_string_or_blocks() {
 
 #[test]
 fn a_rate_limit_warning_reports_its_status() {
-    let events = replay("synthetic.jsonl");
+    let events = parsed("synthetic.jsonl");
 
     let AgentEvent::RateLimit {
         status,
@@ -227,7 +276,7 @@ fn a_rate_limit_warning_reports_its_status() {
 /// train the user to ignore the one that matters.
 #[test]
 fn a_healthy_run_also_reports_a_rate_limit_and_it_says_allowed() {
-    let events = replay("text-only.jsonl");
+    let events = parsed("text-only.jsonl");
 
     assert!(events.iter().any(|event| matches!(
         event,
@@ -237,7 +286,7 @@ fn a_healthy_run_also_reports_a_rate_limit_and_it_says_allowed() {
 
 #[test]
 fn a_subagents_message_is_flagged_rather_than_interleaved() {
-    let events = replay("synthetic.jsonl");
+    let events = parsed("synthetic.jsonl");
 
     assert!(events.iter().any(|event| matches!(
         event,
@@ -249,32 +298,123 @@ fn a_subagents_message_is_flagged_rather_than_interleaved() {
 /// synthetic fixture; neither may produce an event or an error.
 #[test]
 fn an_unknown_event_type_is_ignored() {
-    let events = replay("synthetic.jsonl");
+    let events = parsed("synthetic.jsonl");
 
     // Exactly the rate limit and the subagent text — the other two lines vanish.
     assert_eq!(events.len(), 2, "unexpected events: {events:#?}");
+}
+
+/// A session with our server connected and all four tools advertised is the one shape a
+/// walkthrough may run in, and this recording is it.
+#[test]
+fn a_session_with_the_server_and_its_tools_is_accepted() {
+    let events = replay("tool-call.jsonl");
+
+    let AgentEvent::Init {
+        tools, mcp_servers, ..
+    } = &events[0]
+    else {
+        panic!("the first event is init");
+    };
+    assert_eq!(mcp_servers[0].status, "connected");
+    assert_eq!(
+        tools
+            .iter()
+            .filter(|tool| tool.starts_with("mcp__library__"))
+            .count(),
+        4
+    );
+}
+
+/// The failure the gate exists for, recorded rather than argued about: our server pointed
+/// at a command that does not exist. `mcp_server_errors` is **null**, `init.tools` has no
+/// `mcp__` entries, and the run went on to *succeed* — the model answered for a tool it
+/// never called. A negative gate on `mcp_server_errors` would have passed this (§4.3.1).
+#[test]
+fn a_failed_server_stops_the_walkthrough_even_though_the_run_succeeds() {
+    // What the recording itself shows, so the reason for the gate is pinned too.
+    let recorded = parsed("mcp-failed.jsonl");
+    let AgentEvent::Init {
+        mcp_servers,
+        mcp_server_errors,
+        tools,
+        ..
+    } = &recorded[0]
+    else {
+        panic!("the first event is init");
+    };
+    assert_eq!(mcp_servers[0].status, "failed");
+    assert_eq!(*mcp_server_errors, None, "the key the old gate read is null");
+    assert!(!tools.iter().any(|tool| tool.starts_with("mcp__")));
+    assert!(matches!(
+        recorded.last(),
+        Some(AgentEvent::Done { is_error: false, .. })
+    ));
+
+    // And what the app does with it.
+    let Err(AppError::McpNotLoaded { detail }) = replayed("mcp-failed.jsonl") else {
+        panic!("a failed server has to stop the walkthrough");
+    };
+    assert!(detail.contains("failed"), "{detail}");
+}
+
+/// The gate names our server rather than asking whether any server failed. This recording
+/// was made without `--strict-mcp-config`, so it carries seven of the recorder's own
+/// servers — one `failed`, one `needs-auth`, one `pending` — and none of them is ours.
+#[test]
+fn a_session_without_our_server_is_refused_whatever_else_loaded() {
+    let Err(AppError::McpNotLoaded { detail }) = replayed("text-only.jsonl") else {
+        panic!("a session without our server has no request_secret");
+    };
+    assert!(detail.contains("no 'library' server"), "{detail}");
+}
+
+/// The worse of the two failures: everything looks healthy, and the missing capability is
+/// the one the agent invents an answer for. Constructed rather than recorded — provoking it
+/// needs a server built to lie about its own tools, and the line below is that lie.
+#[test]
+fn a_connected_server_missing_a_tool_is_refused() {
+    // Built rather than written as a literal: the stream is newline-delimited, so a
+    // pretty-printed line would arrive as fragments and parse as nothing at all.
+    let init = serde_json::json!({
+        "type": "system",
+        "subtype": "init",
+        "session_id": "s",
+        "tools": [
+            "mcp__library__library_cmd",
+            "mcp__library__read_skill_doc",
+            "mcp__library__run_skill_setup",
+        ],
+        "mcp_servers": [{ "name": "library", "status": "connected" }],
+    })
+    .to_string();
+
+    let sink = Transcript::default();
+    let Err(AppError::McpNotLoaded { detail }) = agent::pump(&sink, Cursor::new(init)) else {
+        panic!("a server that connected without request_secret is not usable");
+    };
+    assert!(detail.contains("mcp__library__request_secret"), "{detail}");
+    // The init still reached the UI: the transcript should show the session that was
+    // refused rather than going blank.
+    assert_eq!(sink.events.into_inner().unwrap().len(), 1);
 }
 
 /// The channel is part of the contract with the frontend: a renamed channel is a view
 /// that silently stops updating, which no type checker catches across the IPC boundary.
 #[test]
 fn every_event_goes_out_on_its_own_channel() {
-    let mut channels: Vec<&str> = replay("tool-call.jsonl")
-        .iter()
-        .map(AgentEvent::channel)
-        .collect();
-    channels.dedup();
-
-    assert_eq!(
-        channels,
-        [
-            "agent://init",
-            "agent://text",
-            "agent://tool",
-            "agent://rate_limit",
-            "agent://tool_result",
-            "agent://text",
-            "agent://done",
-        ]
-    );
+    // Keyed by kind rather than by position: what a given run happens to contain shifts
+    // with every re-recording, and a test that pins the sequence would fail for that
+    // instead of for a renamed channel.
+    for event in replay("tool-call.jsonl").iter().chain(parsed("synthetic.jsonl").iter()) {
+        let expected = match event {
+            AgentEvent::Init { .. } => "agent://init",
+            AgentEvent::Text { .. } => "agent://text",
+            AgentEvent::Tool { .. } => "agent://tool",
+            AgentEvent::ToolResult { .. } => "agent://tool_result",
+            AgentEvent::RateLimit { .. } => "agent://rate_limit",
+            AgentEvent::Done { .. } => "agent://done",
+        };
+        assert_eq!(event.channel(), expected, "{event:?}");
+    }
 }

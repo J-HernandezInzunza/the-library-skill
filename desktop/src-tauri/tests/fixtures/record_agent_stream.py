@@ -28,6 +28,10 @@ Two runs are recorded live:
                           the boundary is a hook and a hook that silently stops working
                           fails open. It needs the app binary built:
                           `cargo build --manifest-path desktop/src-tauri/Cargo.toml`.
+  agent/mcp-failed.jsonl  our server pointed at a command that does not exist. The run
+                          still *succeeds* — the spike watched the model fabricate a tool
+                          result for a tool it never called — which is the whole reason the
+                          preflight gate is positive and fails closed (§4.3.1).
 
 Two event kinds cannot be provoked on demand — an event type a future release adds, and a
 subagent message — so `agent/synthetic.jsonl` is generated from the literals below. They
@@ -58,11 +62,17 @@ HOME_PLACEHOLDER = "/Users/tester"
 MCP_SERVER = '''\
 import json, sys
 
-TOOL = {
-    "name": "ping",
-    "description": "Return a fixed string. Exists so a run has a tool call in it.",
-    "inputSchema": {"type": "object", "properties": {}, "required": []},
-}
+# The four tools of the real surface (design §5), so a recorded `init` is one the app's
+# preflight gate accepts: it requires every expected tool to be advertised, and a fixture
+# server offering a stand-in name would make every recording a gate failure.
+TOOLS = [
+    {
+        "name": name,
+        "description": "Fixture stand-in. Exists so a run has a tool call in it.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    }
+    for name in ["library_cmd", "read_skill_doc", "request_secret", "run_skill_setup"]
+]
 
 def reply(id, result):
     sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": id, "result": result}) + "\\n")
@@ -81,9 +91,9 @@ for line in sys.stdin:
             "serverInfo": {"name": "library", "version": "0.0.0-fixture"},
         })
     elif method == "tools/list":
-        reply(id, {"tools": [TOOL]})
+        reply(id, {"tools": TOOLS})
     elif method == "tools/call":
-        reply(id, {"content": [{"type": "text", "text": "pong from the fixture server"}]})
+        reply(id, {"content": [{"type": "text", "text": "3 entries in the fixture catalog"}]})
     elif id is not None:
         reply(id, {})
 '''
@@ -128,8 +138,8 @@ DENIED_PROMPT = (
 )
 
 TOOL_PROMPT = (
-    "Call the mcp__library__ping tool once with no arguments, then reply with exactly "
-    "the word DONE and nothing else."
+    "Call the mcp__library__library_cmd tool once with no arguments, then reply with "
+    "exactly the word DONE and nothing else."
 )
 
 
@@ -162,7 +172,8 @@ def run(
             str(mcp_config),
             "--strict-mcp-config",
             "--allowedTools",
-            "mcp__library__ping",
+            "mcp__library__library_cmd,mcp__library__read_skill_doc,"
+            "mcp__library__request_secret,mcp__library__run_skill_setup",
         ]
     if settings is not None:
         argv += ["--settings", str(settings)]
@@ -270,6 +281,18 @@ def record_live() -> None:
             "tool-denied.jsonl",
             normalise(run(DENIED_PROMPT, workdir, None, settings)),
         )
+
+        broken = workdir / "mcp-broken.json"
+        broken.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "library": {"command": str(workdir / "no-such-server"), "args": []}
+                    }
+                }
+            )
+        )
+        write("mcp-failed.jsonl", normalise(run(TOOL_PROMPT, workdir, broken)))
 
 
 if __name__ == "__main__":

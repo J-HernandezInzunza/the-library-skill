@@ -52,6 +52,12 @@ pub struct Launch {
     pub mcp_config: PathBuf,
     /// The `PreToolUse` deny-by-default hook (§4.1a).
     pub settings: PathBuf,
+    /// The session to continue, for turns 2..n (R5.4, D8). `None` starts one.
+    ///
+    /// An explicit id rather than `--continue`: the app can have several walkthroughs open,
+    /// and `--continue` attaches to whichever conversation was most recent — which is how
+    /// the agent ends up answering one skill's setup with another's context.
+    pub resume: Option<String>,
 }
 
 /// The exact invocation, per design §4.1.
@@ -85,11 +91,96 @@ pub fn command(launch: &Launch) -> Command {
         .arg("--permission-mode")
         .arg("dontAsk")
         .current_dir(&launch.cwd);
+    if let Some(session) = &launch.resume {
+        cmd.arg("--resume").arg(session);
+    }
     cmd
 }
 
 /// Every tool the agent may call. The hook denies everything else by name.
 pub const TOOL_PREFIX: &str = "mcp__library__";
+
+/// What our MCP server is called in `--mcp-config`, and therefore in `init.mcp_servers`.
+pub const SERVER_NAME: &str = "library";
+
+/// Whether a walkthrough can be offered at all (R7.2).
+///
+/// `claude` is an enhancement, never a dependency: with it absent every deterministic
+/// feature keeps working and only the walkthrough is disabled, which is why this is a
+/// question the UI asks rather than an error a walkthrough discovers.
+pub fn available() -> bool {
+    Command::new("claude")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Whether the session the agent just opened is one a walkthrough may run in (R7.2a).
+///
+/// **The gate is positive.** An earlier draft asked whether `mcp_server_errors` was
+/// non-empty; the spike measured that as `null` with the server dead, `init.tools` carrying
+/// no `mcp__` entries — and the run then *succeeded*, with the model fabricating a
+/// plausible result for a tool it never called. So this asks for our server `connected` and
+/// every expected tool advertised, and treats anything else as a stop.
+///
+/// The stakes are why it fails closed: without `request_secret` the agent falls back to
+/// asking for the credential in chat, which is the leak D7 exists to prevent.
+pub fn preflight(event: &AgentEvent) -> Result<(), AppError> {
+    let AgentEvent::Init {
+        tools,
+        mcp_servers,
+        mcp_server_errors,
+        ..
+    } = event
+    else {
+        return Ok(());
+    };
+
+    // `mcp_server_errors` appears only as a suffix: a diagnostic worth showing, never the
+    // condition being tested.
+    let diagnostic = match mcp_server_errors {
+        Some(errors) => format!(" (reported: {errors})"),
+        None => String::new(),
+    };
+
+    match mcp_servers.iter().find(|server| server.name == SERVER_NAME) {
+        None => {
+            return Err(AppError::McpNotLoaded {
+                detail: format!(
+                    "the agent session has no '{SERVER_NAME}' server at all{diagnostic}"
+                ),
+            })
+        }
+        // `needs-auth` and `pending` are both real statuses, both observed, and neither is
+        // a session the walkthrough may proceed in.
+        Some(server) if server.status != "connected" => {
+            return Err(AppError::McpNotLoaded {
+                detail: format!("the '{SERVER_NAME}' server is {}{diagnostic}", server.status),
+            })
+        }
+        Some(_) => {}
+    }
+
+    let missing: Vec<&str> = ALLOWED_TOOLS
+        .split(',')
+        .filter(|expected| !tools.iter().any(|tool| tool == expected))
+        .collect();
+    if !missing.is_empty() {
+        // A connected server that advertises the wrong tools is the worse failure of the
+        // two: everything looks healthy, and the first thing to go missing is whichever
+        // capability the agent then invents an answer for.
+        return Err(AppError::McpNotLoaded {
+            detail: format!(
+                "the '{SERVER_NAME}' server connected but did not advertise {}{diagnostic}",
+                missing.join(", ")
+            ),
+        });
+    }
+    Ok(())
+}
 
 /// The argument that turns this binary into the `PreToolUse` hook (§4.1a).
 ///
@@ -415,20 +506,41 @@ fn strings(value: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Read a stream to its end, emitting as it goes.
+/// Read a stream to its end, emitting as it goes, and report the session it belonged to.
 ///
 /// Takes a reader rather than a child process so the recorded transcripts can be replayed
 /// through the same loop the app runs.
-pub fn pump<R: BufRead>(sink: &dyn AgentSink, reader: R) -> std::io::Result<()> {
+///
+/// The session id is taken from `init` and confirmed by `result`, because that is what the
+/// next turn resumes (R5.4). A turn that produced no id is a turn with nothing to continue,
+/// which the caller has to know about rather than infer.
+///
+/// `init` is also where the preflight gate runs, and a failed gate stops the read
+/// immediately (R7.2a). The event is emitted first: the transcript should show the session
+/// the walkthrough refused, not go blank.
+pub fn pump<R: BufRead>(sink: &dyn AgentSink, reader: R) -> Result<Option<String>, AppError> {
+    let mut session = None;
     for line in reader.lines() {
-        for event in classify(&line?) {
+        let line = line.map_err(|e| AppError::AgentStream {
+            detail: format!("its output stopped mid-stream: {e}"),
+        })?;
+        for event in classify(&line) {
+            match &event {
+                AgentEvent::Init { session_id, .. } | AgentEvent::Done { session_id, .. }
+                    if !session_id.is_empty() =>
+                {
+                    session = Some(session_id.clone());
+                }
+                _ => {}
+            }
             sink.event(&event);
+            preflight(&event)?;
         }
     }
-    Ok(())
+    Ok(session)
 }
 
-/// Run one turn: spawn `claude`, stream its events, and report how it ended.
+/// Run one turn: spawn `claude`, stream its events, and return the session to resume.
 ///
 /// The command log gets the invocation too (`log`), on the same reasoning as the CLI
 /// layer: there is no per-action approval gate in this app, so showing what ran is the
@@ -437,7 +549,7 @@ pub fn run(
     sink: &dyn AgentSink,
     log: &dyn CommandSink,
     launch: &Launch,
-) -> Result<(), AppError> {
+) -> Result<Option<String>, AppError> {
     let mut cmd = command(launch);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
@@ -476,6 +588,12 @@ pub fn run(
     let stderr = drain_stderr(&mut child);
     let stdout = child.stdout.take().expect("stdout was piped");
     let pumped = pump(sink, BufReader::new(stdout));
+    if pumped.is_err() {
+        // A stopped read means the turn must not continue — a failed preflight above all,
+        // where every further second is one the agent might spend asking for the credential
+        // in chat. Kill it rather than waiting for a run nobody will be shown.
+        let _ = child.kill();
+    }
 
     let status = child.wait();
     let code = status.as_ref().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
@@ -486,6 +604,10 @@ pub fn run(
     });
 
     let stderr = stderr.join().unwrap_or_default();
+    // The stream's own verdict comes first, and a killed child's exit code second: we are
+    // the ones who killed it, and "claude exited 137" would bury the reason we did.
+    let session = pumped?;
+
     if code != 0 {
         return Err(AppError::AgentStream {
             detail: if stderr.trim().is_empty() {
@@ -495,11 +617,7 @@ pub fn run(
             },
         });
     }
-    // A read error on a run that exited cleanly means the transcript is incomplete, which
-    // the UI must not present as a finished walkthrough.
-    pumped.map_err(|e| AppError::AgentStream {
-        detail: format!("its output stopped mid-stream: {e}"),
-    })
+    Ok(session)
 }
 
 /// Consume stderr in the background, returning a handle to its text.
@@ -533,7 +651,35 @@ mod tests {
             cwd: PathBuf::from("/tmp/project"),
             mcp_config: PathBuf::from("/tmp/walkthrough/mcp.json"),
             settings: PathBuf::from("/tmp/walkthrough/settings.json"),
+            resume: None,
         }
+    }
+
+    /// Turn 1 starts a session; nothing may make it continue an unrelated one.
+    #[test]
+    fn a_first_turn_resumes_nothing() {
+        let args = argv(&command(&launch()));
+
+        assert!(!args.contains(&"--resume".to_string()));
+        // `--continue` would attach to whichever conversation was most recent on this
+        // machine, which for an app that can hold several walkthroughs open is a
+        // credential collected for one skill answering a question about another (D8).
+        assert!(!args.contains(&"--continue".to_string()));
+        assert!(!args.contains(&"-c".to_string()));
+    }
+
+    #[test]
+    fn a_later_turn_resumes_the_captured_session_by_id() {
+        let args = argv(&command(&Launch {
+            resume: Some("8731f047-3a33-41b5-a0cd-26bcfd7ac924".to_string()),
+            ..launch()
+        }));
+
+        let at = args
+            .iter()
+            .position(|arg| arg == "--resume")
+            .expect("a later turn resumes");
+        assert_eq!(args[at + 1], "8731f047-3a33-41b5-a0cd-26bcfd7ac924");
     }
 
     #[test]
