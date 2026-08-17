@@ -17,7 +17,7 @@
 // indistinguishable to the user from a hang.
 
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Instant;
 
@@ -86,6 +86,107 @@ pub fn command(launch: &Launch) -> Command {
         .arg("dontAsk")
         .current_dir(&launch.cwd);
     cmd
+}
+
+/// Every tool the agent may call. The hook denies everything else by name.
+pub const TOOL_PREFIX: &str = "mcp__library__";
+
+/// The argument that turns this binary into the `PreToolUse` hook (§4.1a).
+///
+/// The hook is **this executable**, not a shell one-liner. A script would need an
+/// interpreter to be present and a temp file to survive the run, and if either assumption
+/// fails the hook does not run — which, for a deny-by-default gate, fails *open*. The app
+/// binary is already on disk by definition.
+pub const HOOK_ARG: &str = "--pretooluse-hook";
+
+/// The `--settings` document: deny-by-default on every tool call.
+///
+/// This — not `--allowedTools`, not `--permission-mode dontAsk` — is the boundary
+/// (§4.1a, D11). The T0.2 spike ran `Bash("echo …")` and got its output with both flags
+/// set, so anything that treats them as the whitelist is a security bug rather than a
+/// style choice. `matcher: "*"` is what makes it deny-by-default: the hook sees every
+/// call, including tools no release has shipped yet.
+pub fn settings(hook_command: &str) -> serde_json::Value {
+    serde_json::json!({
+        "hooks": {
+            "PreToolUse": [{
+                "matcher": "*",
+                "hooks": [{ "type": "command", "command": hook_command }]
+            }]
+        }
+    })
+}
+
+/// Write the gate into *dir* and return the path to pass as `--settings`.
+///
+/// One file per walkthrough, alongside its MCP config, so a walkthrough's whole agent
+/// configuration lives and dies with it.
+pub fn write_settings(dir: &Path) -> Result<PathBuf, AppError> {
+    let path = dir.join("settings.json");
+    let document = settings(&hook_command()?);
+    std::fs::write(&path, document.to_string()).map_err(|e| AppError::AgentStream {
+        detail: format!("the tool gate could not be written to {}: {e}", path.display()),
+    })?;
+    Ok(path)
+}
+
+/// The hook command line: this binary, in hook mode.
+pub fn hook_command() -> Result<String, AppError> {
+    let exe = std::env::current_exe().map_err(|e| AppError::AgentStream {
+        detail: format!("the app could not locate its own binary to install the tool gate: {e}"),
+    })?;
+    Ok(format!("{} {HOOK_ARG}", shell_quote(&exe.display().to_string())))
+}
+
+/// Quote a path for the shell the hook command runs in.
+///
+/// The app's path can contain spaces (`/Applications/The Library.app/…`), and an unquoted
+/// one would make the hook fail to execute — silently permitting every tool.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+/// One tool call, decided.
+///
+/// Deny-by-default in the strong sense: anything this function cannot positively identify
+/// as one of ours is denied, including a hook payload it failed to parse. A hook that
+/// permits what it does not understand is not a whitelist.
+pub fn hook_decision(payload: &str) -> serde_json::Value {
+    let tool = serde_json::from_str::<serde_json::Value>(payload)
+        .ok()
+        .and_then(|input| input["tool_name"].as_str().map(String::from))
+        .unwrap_or_default();
+
+    let allowed = tool.starts_with(TOOL_PREFIX);
+    serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": if allowed { "allow" } else { "deny" },
+            // The agent reads this as an errored `tool_result` and adapts in-conversation,
+            // so it is addressed to the agent: it says what to do instead, not just no.
+            "permissionDecisionReason": if allowed {
+                "Allowed: one of the app's own tools.".to_string()
+            } else {
+                format!(
+                    "{} is not available in a setup walkthrough. Only the app's \
+                     {TOOL_PREFIX}* tools are; use those, or tell the user what you \
+                     needed and why.",
+                    if tool.is_empty() { "That tool" } else { &tool },
+                )
+            }
+        }
+    })
+}
+
+/// Serve one hook invocation: decision on stdout, nothing else.
+///
+/// Called from `main` before Tauri starts. Anything else this process might print would be
+/// parsed as part of the hook's response, which is why it happens before any window,
+/// plugin, or logger exists.
+pub fn serve_hook() {
+    let mut payload = String::new();
+    let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut payload);
+    println!("{}", hook_decision(&payload));
 }
 
 /// One thing that happened during a turn, as the UI needs it.
@@ -473,6 +574,95 @@ mod tests {
         let names: Vec<&str> = ALLOWED_TOOLS.split(',').collect();
         assert_eq!(names.len(), 4);
         assert!(names.iter().all(|name| name.starts_with("mcp__library__")));
+    }
+
+    fn decision(payload: serde_json::Value) -> String {
+        hook_decision(&payload.to_string())["hookSpecificOutput"]["permissionDecision"]
+            .as_str()
+            .expect("the hook always decides")
+            .to_string()
+    }
+
+    #[test]
+    fn the_gate_allows_the_apps_own_tools() {
+        for name in ALLOWED_TOOLS.split(',') {
+            assert_eq!(
+                decision(serde_json::json!({ "tool_name": name })),
+                "allow",
+                "{name} is the app's own tool"
+            );
+        }
+    }
+
+    /// `Bash` specifically, because the spike ran it and got its output with
+    /// `--allowedTools` + `dontAsk` alone. Everything else here is a builtin that showed
+    /// up in a recorded `init.tools` — the hook has to deny by *default*, not by list.
+    #[test]
+    fn the_gate_denies_every_other_tool() {
+        for name in [
+            "Bash",
+            "Read",
+            "Write",
+            "Task",
+            "WebFetch",
+            "ToolSearch",
+            "SomeToolALaterReleaseAdds",
+            // A different MCP server's tool, and a name that only looks like ours.
+            "mcp__slack__slack_post_message",
+            "mcp__library_evil__exfiltrate",
+        ] {
+            assert_eq!(
+                decision(serde_json::json!({ "tool_name": name })),
+                "deny",
+                "{name} is not on the whitelist"
+            );
+        }
+    }
+
+    /// A payload the hook cannot read is denied, not permitted. A gate that fails open on
+    /// a shape it does not recognise is not a gate.
+    #[test]
+    fn the_gate_denies_what_it_cannot_parse() {
+        assert_eq!(hook_decision("")["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(hook_decision("{")["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(decision(serde_json::json!({ "no_tool_name": true })), "deny");
+    }
+
+    /// The denial reaches the agent as an errored `tool_result`, so it has to say what to
+    /// do instead — otherwise the agent retries the same denied call.
+    #[test]
+    fn a_denial_names_the_tool_and_what_to_use_instead() {
+        let reason = hook_decision(&serde_json::json!({ "tool_name": "Bash" }).to_string())
+            ["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .expect("a denial explains itself")
+            .to_string();
+
+        assert!(reason.contains("Bash"));
+        assert!(reason.contains(TOOL_PREFIX));
+    }
+
+    /// `matcher: "*"` is the deny-by-default half. A matcher listing today's builtins
+    /// would permit tomorrow's.
+    #[test]
+    fn the_settings_route_every_tool_call_through_the_hook() {
+        let settings = settings("/Applications/The Library.app/bin --pretooluse-hook");
+        let entry = &settings["hooks"]["PreToolUse"][0];
+
+        assert_eq!(entry["matcher"], "*");
+        assert_eq!(entry["hooks"][0]["type"], "command");
+        assert!(entry["hooks"][0]["command"]
+            .as_str()
+            .expect("a command")
+            .ends_with(HOOK_ARG));
+    }
+
+    /// `/Applications/The Library.app/…` has a space in it, and an unquoted hook command
+    /// would simply fail to execute — which for a deny-by-default gate fails open.
+    #[test]
+    fn the_hook_command_survives_a_path_with_spaces() {
+        assert_eq!(shell_quote("/Applications/The Library.app/x"), "'/Applications/The Library.app/x'");
+        assert_eq!(shell_quote("/tmp/it's here"), r"'/tmp/it'\''s here'");
     }
 
     #[test]

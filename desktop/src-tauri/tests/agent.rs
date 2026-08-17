@@ -133,6 +133,75 @@ fn both_blocks_of_one_message_survive() {
     ));
 }
 
+/// The whitelist, verified against the real thing rather than argued about. This fixture
+/// is a live run under the app's own `PreToolUse` hook, asked to run a shell command: the
+/// T0.2 spike got `Bash` output with `--allowedTools` and `dontAsk` alone, so the hook is
+/// the boundary and this recording is what proves it holds (§4.1a, D11).
+#[test]
+fn a_tool_outside_the_whitelist_is_denied_by_the_hook() {
+    let events = replay("tool-denied.jsonl");
+
+    // The agent did try — the denial is enforcement, not the model declining.
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentEvent::Tool { name, .. } if name == "Bash"
+    )));
+
+    let AgentEvent::ToolResult { is_error, text, .. } = events
+        .iter()
+        .find(|event| matches!(event, AgentEvent::ToolResult { .. }))
+        .expect("the denied call still resolves")
+    else {
+        unreachable!()
+    };
+    assert!(is_error, "a denial arrives as an errored result");
+    assert!(text.contains("mcp__library__"), "the reason says what to use: {text}");
+}
+
+/// A denial is not a dead run. The hook's reason goes back as a normal errored result, and
+/// the agent adapts in-conversation — which is the whole reason to deny rather than to
+/// remove the tool and let the model invent a substitute.
+#[test]
+fn a_denied_call_does_not_end_the_turn() {
+    let events = replay("tool-denied.jsonl");
+
+    let AgentEvent::Done { is_error, .. } = events.last().expect("the run ends") else {
+        panic!("the last event of a run is its result");
+    };
+    assert!(!is_error);
+    // The agent spoke again after the denial rather than stopping on it.
+    let after_result = events
+        .iter()
+        .skip_while(|event| !matches!(event, AgentEvent::ToolResult { .. }))
+        .any(|event| matches!(event, AgentEvent::Text { .. }));
+    assert!(after_result);
+}
+
+/// The denied result's `content` is a bare string, where the MCP tool's was an array of
+/// text blocks. Both shapes are real and both are in the fixtures, so the parser reads the
+/// one result a user most needs — the reason their walkthrough refused something.
+#[test]
+fn a_tool_result_reads_whether_its_content_is_a_string_or_blocks() {
+    let from_string = agent::classify(
+        r#"{"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[
+             {"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"nope"}]}}"#,
+    );
+    let from_blocks = agent::classify(
+        r#"{"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[
+             {"type":"tool_result","tool_use_id":"t1","content":[
+               {"type":"text","text":"first"},{"type":"text","text":"second"}]}]}}"#,
+    );
+
+    assert!(matches!(
+        &from_string[0],
+        AgentEvent::ToolResult { text, is_error: true, .. } if text == "nope"
+    ));
+    assert!(matches!(
+        &from_blocks[0],
+        AgentEvent::ToolResult { text, is_error: false, .. } if text == "first\nsecond"
+    ));
+}
+
 #[test]
 fn a_rate_limit_warning_reports_its_status() {
     let events = replay("synthetic.jsonl");

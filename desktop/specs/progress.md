@@ -2788,3 +2788,45 @@ script `claude`, so the next person to read those docs will try to add it, and i
 break every teammate who signs in with a subscription instead of an API key.
 
 The module is not wired to a Tauri command yet: T6.4 is what has something to call it.
+
+---
+
+## T6.1a — the gate is the app's own binary, and it was verified against the real thing
+
+**The hook is `desktop --pretooluse-hook`, not a shell one-liner.** A script hook needs an
+interpreter to exist and a temp file to survive the run, and if either assumption fails the
+hook does not execute — which for a deny-by-default gate fails *open*, the one direction it
+must never fail. The app binary is on disk by definition, so `main` checks for the flag
+before Tauri starts and answers on stdout. Nothing else may print in that mode: a log line
+would be parsed as part of the decision.
+
+**Deny-by-default is implemented as deny-what-I-cannot-identify.** Unparseable payload, no
+`tool_name`, a name that only resembles ours (`mcp__library_evil__…`): all denied. A gate
+that permits what it does not understand is not a whitelist. `matcher: "*"` is the other
+half — a matcher listing today's builtins would permit tomorrow's, which is exactly how the
+spike's `--disallowedTools` deny-list leaked `Glob` and `Grep`.
+
+**Verified against a live run, not by reading the docs.** The recorder now captures a third
+transcript: real `claude`, real settings file, prompt asking for `Bash`. Result —
+
+    assistant  tool_use   Bash {"command": "echo GATE_OPEN"}
+    user       tool_result is_error: true
+               "Bash is not available in a setup walkthrough. Only the app's
+                mcp__library__* tools are; use those, or tell the user what you needed."
+    assistant  "The command didn't run. Bash is unavailable in this environment. …"
+
+Three things that transcript settles beyond the denial itself:
+
+- **The agent tried.** The `tool_use` is in the stream, so this is enforcement rather than
+  the model politely declining, which is what a hand-written fixture could never prove.
+- **A denial is not a dead run.** The turn continued and ended `is_error: false`, with the
+  agent explaining what it could not do. That is why the reason is addressed to the agent
+  and says what to use instead: a bare "denied" gets retried.
+- **A tool result's `content` can be a bare string.** The MCP tool's result was an array of
+  text blocks; the denial's is a string. Both shapes are now in the fixtures and both are
+  parsed, which matters because the string one is the result a user most needs to read.
+
+The recorder's settings JSON mirrors `agent::settings` rather than being generated from it.
+If they diverge the recorded denial stops being a denial, and the test that reads the
+fixture says so at the next re-record — a cheaper coupling than a second flag on the binary
+whose only purpose is printing a config file.

@@ -22,6 +22,12 @@ Two runs are recorded live:
                           preflight gate has to survive, and it is why the gate names our
                           server rather than asking whether any server failed (§4.3.1).
   agent/tool-call.jsonl   the same plus tool_use / tool_result for an MCP tool
+  agent/tool-denied.jsonl a run under the real `PreToolUse` gate, asked to run a shell
+                          command. Recorded because the T0.2 spike proved `--allowedTools`
+                          plus `--permission-mode dontAsk` does *not* stop `Bash` (F1), so
+                          the boundary is a hook and a hook that silently stops working
+                          fails open. It needs the app binary built:
+                          `cargo build --manifest-path desktop/src-tauri/Cargo.toml`.
 
 Two event kinds cannot be provoked on demand — an event type a future release adds, and a
 subagent message — so `agent/synthetic.jsonl` is generated from the literals below. They
@@ -117,19 +123,26 @@ SYNTHETIC = [
 
 TEXT_PROMPT = "Reply with exactly the word READY and nothing else."
 
+DENIED_PROMPT = (
+    "Use the Bash tool to run: echo GATE_OPEN. Then report exactly what the tool returned."
+)
+
 TOOL_PROMPT = (
     "Call the mcp__library__ping tool once with no arguments, then reply with exactly "
     "the word DONE and nothing else."
 )
 
 
-def run(prompt: str, workdir: Path, mcp_config: Path | None) -> str:
+def run(
+    prompt: str, workdir: Path, mcp_config: Path | None, settings: Path | None = None
+) -> str:
     """One `claude -p` run, recorded as it came off stdout.
 
-    The flags are design.md §4.1's, minus the ones this recording cannot exercise: no
-    `--settings` hook (T6.1a's, and it would deny the fixture tool) and no `--resume`.
-    `--bare` is deliberately absent here for the same reason it is absent in the app —
-    it would refuse the subscription login this machine authenticates with (D10).
+    The flags are design.md §4.1's, minus the ones a given recording cannot exercise: the
+    two MCP runs pass no `--settings`, because the gate would deny the fixture server's
+    tool, and nothing here passes `--resume`. `--bare` is deliberately absent for the same
+    reason it is absent in the app — it would refuse the subscription login this machine
+    authenticates with (D10).
     """
     argv = [
         "claude",
@@ -151,8 +164,11 @@ def run(prompt: str, workdir: Path, mcp_config: Path | None) -> str:
             "--allowedTools",
             "mcp__library__ping",
         ]
+    if settings is not None:
+        argv += ["--settings", str(settings)]
 
-    print(f"  $ {' '.join(argv[:2])} … ({'with' if mcp_config else 'without'} MCP)")
+    print(f"  $ claude -p … ({'with' if mcp_config else 'without'} MCP"
+          f"{', gated' if settings else ''})")
     result = subprocess.run(
         argv, cwd=workdir, capture_output=True, text=True, timeout=300
     )
@@ -215,9 +231,45 @@ def record_live() -> None:
             )
         )
 
+        # The gate is the app's own binary in hook mode, which is what it will be at
+        # runtime: a shell script here would prove a shape the app never uses.
+        binary = Path(__file__).resolve().parents[1].parent / "target/debug/desktop"
+        if not binary.is_file():
+            sys.exit(
+                f"{binary} is not built; run:\n"
+                "  cargo build --manifest-path desktop/src-tauri/Cargo.toml"
+            )
+        # Mirrors `agent::settings`, which a Rust unit test pins. If the two ever diverge
+        # the recorded denial stops being a denial, and the test that reads this fixture
+        # says so on the next re-record.
+        settings = workdir / "settings.json"
+        settings.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "*",
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": f"'{binary}' --pretooluse-hook",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                }
+            )
+        )
+
         print("recording live runs (a temp cwd, so no project CLAUDE.md loads):")
         write("text-only.jsonl", normalise(run(TEXT_PROMPT, workdir, None)))
         write("tool-call.jsonl", normalise(run(TOOL_PROMPT, workdir, mcp_config)))
+        write(
+            "tool-denied.jsonl",
+            normalise(run(DENIED_PROMPT, workdir, None, settings)),
+        )
 
 
 if __name__ == "__main__":

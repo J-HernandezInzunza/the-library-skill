@@ -802,8 +802,10 @@ D10/D11/D14 were revised to match. The tasks below assume the revised text, not 
     tests. Gate passes.
   - **Commit:** `feat(desktop/agent): spawn the agent and stream its events`
 
-- [ ] **T6.1a — The `PreToolUse` deny-by-default gate**
-  - **Files:** `desktop/src-tauri/src/agent.rs`
+- [x] **T6.1a — The `PreToolUse` deny-by-default gate**
+  - **Files:** `desktop/src-tauri/src/agent.rs`, `desktop/src-tauri/src/main.rs`,
+    `desktop/src-tauri/tests/agent.rs`,
+    `desktop/src-tauri/tests/fixtures/record_agent_stream.py`
   - **Requirements:** R5.3, D4, D11
   - **Do:** Generate the `--settings` file and hook command that deny every tool whose name is not
     `mcp__library__*`, and pass `--disallowedTools ToolSearch` so the app's tools are advertised
