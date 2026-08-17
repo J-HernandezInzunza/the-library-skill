@@ -726,6 +726,23 @@ the schema versions. **The app renders and executes; it does not parse or valida
     walkthrough. Gate passes.
   - **Commit:** `feat(desktop/setup): drive setup readiness from the CLI's manifest report`
 
+- [x] **T5.2 — Component tests (closes most of G1)**
+  - **Files:** `desktop/vite.config.ts`, `desktop/src/testing/tauri.ts`,
+    `desktop/src/testing/factories.ts`, `desktop/src/**/*.spec.ts`
+  - **Requirements:** G1
+  - **Why here:** ahead of T6.4 rather than after it. The walkthrough view has more
+    conditional rendering than anything currently in the app, and adding it untested is
+    where G1 stops being cheap to close.
+  - **Do:** Add `@vue/test-utils` and `jsdom`. Replace the Tauri IPC at the module
+    boundary with `test.alias` — one declaration over `api/core`, `api/event`, and the two
+    plugins — rather than a hoisted `vi.mock` per spec. The double records every call's
+    **argument names**, which nothing else in the gate can check. Cover the states G1
+    names: the `WrapperMissing` message and the other typed errors, every empty state, and
+    `SetupReadiness`, whose Vue half T5.1 shipped without ever rendering it.
+  - **Verify:** Gate passes. The `InstallPreview` argument-name regression is asserted by
+    a test proven to fail against the pre-fix component.
+  - **Commit:** `test(desktop): mount the components and pin their empty and error states`
+
 ---
 
 ## Phase 6 — Agent layer
@@ -836,7 +853,7 @@ The security-critical phase. Every task here is a place where a mistake leaks a 
   - **Do:** Accept only a `command_id` present in the manifest — never a command string, which would
     make the whitelist decorative. The manifest is the one T5.1 fetched from `library setup --json`,
     already validated against schema §7; do not re-read or re-validate `setup.yaml` here. Run the scaffold, write `config-file` secrets at their declared
-    key, chmod to the declared permissions (default `0600`). Implement `json` format only; `ini` and
+    key, chmod `0600` (R6.5 — fixed, not declared). Implement `json` format only; `ini` and
     `env` have no consumer yet (schema §10.3).
   - **Verify:** Tests for an unknown `command_id`, correct dotted-path write, resulting file mode,
     and `env` delivery never touching disk. Gate passes.
@@ -900,7 +917,7 @@ owns it and what would make it urgent, so a gap cannot quietly become folklore i
 
 | id | Gap | Owner | What makes it urgent |
 | --- | --- | --- | --- |
-| G1 | **No component tests.** Every empty state, every error state, and the `WrapperMissing` message are verified by eye. The backend contract is covered; the rendering is not. `vite.config.ts` already loads the Vue plugin for exactly this, so the cost is `@vue/test-utils` and nothing else | Desktop | T6.4's walkthrough view has more conditional rendering than anything currently in the app. Adding it untested is where this stops being cheap |
+| ~~G1~~ | ~~No component tests~~ | — | **Mostly closed** by T5.2. The harness exists and eight components are covered, including every state G1 named. Still verified only by eye: `AddEntry`, `RegisterCatalog`, `EntryEditor`, `EntryRemove`, `PushControl`, `Catalogs`, `EntryDetail`, `InstalledCopies`, `FirstRun`. Adding a case to any of them is now a spec file, not a decision |
 | G2 | **`UninstallControl`'s `REFUSED` branch has never been clicked through in the GUI.** The path is proven against the real CLI and the panel renders; the two have not been joined | Desktop, manual | Next time a hand-installed copy exists on a dev machine |
 | G3 | **`entry_record` short-circuits to `("not_installed", None)` when `overridden_by` is set**, before `entry_install_state` runs. A losing copy installed under `--dir` — a destination the winner never occupies — is therefore invisible in `list` | `library.py` | Nobody has hit it. Real only once `--dir` installs are common |
 | G4 | **`uninstall_entry` considers only destinations the *current* scopes resolve to** (deliberately, so `uninstall alpha` cannot take out an unrelated `--dir` install). So a receipt whose dest no longer resolves is unreachable: the entry reads `missing` with `scopes: []` and the app renders no control | `library.py` | Hit once already, cleaning up a moved project directory. Recurs whenever a project install's directory is deleted |

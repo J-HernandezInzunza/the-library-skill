@@ -2427,3 +2427,84 @@ rendered panel has not been seen in a running window.
 and `entry_use` with `{ name: props.name }`, but T4.7 changed both commands to take
 `names: Vec<String>`. Single-entry install from the detail page cannot be reaching the
 backend. It belongs to T4.7, not here.
+
+---
+
+## The T4.7 argument-name break, fixed
+
+`InstallPreview.vue` now sends `names: [props.name]` to both `entry_use_preview` and
+`entry_use`. The break was silent to every check the gate runs: Tauri's `invoke` takes an
+untyped payload, so a renamed command argument is not a type error on either side — the
+Rust signature deserializes `names` and the Vue call site says `name`, and nothing between
+them compares the two. It fails only at runtime, only when a human clicks Install on a
+detail page, which is the one path T4.7 never re-walked because bulk install was the
+feature under test. Worth remembering the shape: **`invoke` arguments are the one part of
+the app with no compiler on either end.**
+
+Every other `invoke` call site was checked against its `#[tauri::command]` signature by
+hand; the rest match, including the camelCase-to-snake_case pairs (`purgeClone` →
+`purge_clone`) and `BulkInstall`'s omission of the optional `project`, which serde reads
+as `None`. This was the only one.
+
+---
+
+## T5.2 — component tests, and the two things the harness found on its way in
+
+G1 said the cost was "`@vue/test-utils` and nothing else". That was very nearly right —
+`jsdom` too — but it undersold the decision that mattered, which is *where* the Tauri IPC
+gets replaced.
+
+**One `test.alias`, not a `vi.mock` per spec.** Four specifiers (`api/core`, `api/event`,
+`plugin-dialog`, `plugin-opener`) resolve to `src/testing/tauri.ts` under vitest. The
+alternative is four hoisted `vi.mock` calls at the top of every component spec, which is
+four places for one of them to be forgotten in the twelfth file — and a forgotten one
+fails as `invoke is not a function` from somewhere inside a component, not as a missing
+mock. Declared once in `vite.config.ts` it cannot be half-applied. The double lives under
+`src/` rather than beside the Rust fixtures so `vue-tsc` checks it: a stand-in that has
+drifted from the real signature should fail the gate rather than quietly diverge.
+
+**The double records argument *names*, and that is the point of it.** `invoke` takes an
+untyped payload, so a renamed command argument is invisible to `vue-tsc` on one side and
+`cargo` on the other. `InstallPreview` had been sending `name` to a command T4.7 changed
+to take `names` since that task shipped, and the whole gate passed the entire time. The
+first thing written against the new harness was a test asserting
+`{ names: ["alpha"], project: null }`, and it was confirmed to fail against the pre-fix
+component before being kept. Every other `invoke` call site was checked against its
+signature by hand at the same time; that was the only one.
+
+**`resetTauri` deliberately does not clear listeners.** `useCommandActivity` subscribes
+once per module lifetime and never unsubscribes — by design, since commands run while
+views are swapping. A reset that dropped the handlers left every case after the first one
+in `CommandLog.spec.ts` emitting into nothing and passing for the wrong reason. So the
+command history is shared across that file's cases, the empty-state case has to be first,
+and the rest assert against the newest rows. Written down because it looks like an
+oversight and is not.
+
+**`defineAsyncComponent` never resolves under `flushPromises` alone.** `App` reaches
+`FirstRun` through a dynamic import, and an uncached one does not settle on the microtask
+queue that `flushPromises` drains — so both setup screens rendered as nothing however many
+times the test awaited. `App.spec.ts` carries a static `import "./components/FirstRun.vue"`
+for its side effect on the module graph, referenced nowhere.
+
+**Two real rendering defects, found by asserting on a sentence.** `BulkInstall`'s success
+banner rendered `Installed 1 entry from team , with 1 dependencies.` — a leading newline
+inside a `<template v-if>` became a space before the comma, and the noun never varied with
+its number. Both are exactly what "verified by eye" misses: nobody reads their own success
+message closely enough to see a space, and the singular case needs a one-entry install
+that pulls exactly one dependency. Fixed via an `extraInstalled` computed.
+
+**What is covered, and what is not.** `StatusBanner`, `App` (the `wrapper_missing` message,
+`not_bootstrapped` and `not_configured` routing to `FirstRun` instead of the red box, both
+empty states, the all-overridden tab note, and that opening a tab does not turn selection
+mode on), `CommandLog`, `Doctor`, `Sync`, `SetupReadiness`, `InstallPreview`,
+`UninstallControl`, `BulkInstall` — 184 tests over 15 files, up from 6 files. The
+`SetupReadiness` and `Sync` specs replay the same recorded CLI payloads the Rust tests do,
+read from `src-tauri/tests/fixtures/` rather than copied, so no layer can drift into
+disagreeing about what the CLI returns. `UninstallControl`'s `REFUSED` branch now has its
+rendering half pinned, which is most of G2; the live click-through in a real window is
+still worth doing once. Nine components remain eye-verified and are listed in the G1 row.
+
+`entry` and `catalog` moved out of `catalog.spec.ts` into `src/testing/factories.ts`
+because the component specs needed the same payloads. The other five factories stayed put:
+a factory pulled out before a second caller exists is an abstraction guessing at its own
+shape.

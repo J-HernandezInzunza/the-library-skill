@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { defineConfig } from "vitest/config";
 import vue from "@vitejs/plugin-vue";
 
@@ -11,6 +12,24 @@ export default defineConfig(async () => ({
   test: {
     // src-tauri is Rust; cargo owns its tests.
     include: ["src/**/*.spec.ts"],
+
+    /**
+     * There is no Tauri runtime under vitest, so the IPC is replaced at the module
+     * boundary rather than mocked per file.
+     *
+     * `test.alias` and not `vi.mock`: the substitution is the same in every spec, and
+     * four hoisted `vi.mock` calls repeated across a dozen files is a place for one of
+     * them to be forgotten — which fails as `invoke is not a function` deep inside a
+     * component, not as a missing mock. Declared once, it cannot be half-applied.
+     */
+    alias: Object.fromEntries(
+      [
+        "@tauri-apps/api/core",
+        "@tauri-apps/api/event",
+        "@tauri-apps/plugin-dialog",
+        "@tauri-apps/plugin-opener",
+      ].map((specifier) => [specifier, resolve(import.meta.dirname, "src/testing/tauri.ts")]),
+    ),
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

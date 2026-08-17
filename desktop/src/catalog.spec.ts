@@ -21,7 +21,6 @@ import {
   purgeable,
 } from "./catalog";
 import type {
-  Catalog,
   CatalogCopy,
   Changes,
   PushReport,
@@ -31,24 +30,7 @@ import type {
   PlannedInstall,
   UsePreview,
 } from "./types";
-
-function entry(overrides: Partial<Entry> = {}): Entry {
-  return {
-    type: "skill",
-    name: "a-skill",
-    description: "does a thing",
-    source: "https://example.test/a-skill/SKILL.md",
-    requires: [],
-    installed: false,
-    scopes: [],
-    catalog: "personal",
-    overridden_by: null,
-    state: "not_installed",
-    receipt: null,
-    has_setup: false,
-    ...overrides,
-  };
-}
+import { catalog, entry } from "./testing/factories";
 
 /** What the CLI returns for a name held by two catalogs: a record per copy. */
 const heldByBoth = [
@@ -440,20 +422,6 @@ describe("isOnDisk", () => {
     expect(["missing", "not_installed", "unknown"].map(isOnDisk)).toEqual([false, false, false]);
   });
 });
-
-function catalog(overrides: Partial<Catalog> = {}): Catalog {
-  return {
-    id: "personal",
-    precedence: 1,
-    kind: "local",
-    location: "/Users/dev/catalog/library.yaml",
-    write_mode: "local",
-    writable: true,
-    entries: 12,
-    skipped: null,
-    ...overrides,
-  };
-}
 
 describe("editableCatalogs", () => {
   it("drops a read-only catalog, which the CLI refuses every write to", () => {
