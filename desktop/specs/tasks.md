@@ -785,8 +785,9 @@ the schema versions. **The app renders and executes; it does not parse or valida
 T0.2 ran; its findings are in [progress.md](progress.md) and design.md §4–§5 and requirements
 D10/D11/D14 were revised to match. The tasks below assume the revised text, not the original.
 
-- [ ] **T6.1 — Spawn the agent and parse the stream**
-  - **Files:** `desktop/src-tauri/src/agent.rs`
+- [x] **T6.1 — Spawn the agent and parse the stream**
+  - **Files:** `desktop/src-tauri/src/agent.rs`, `desktop/src-tauri/tests/agent.rs`,
+    `desktop/src-tauri/tests/fixtures/record_agent_stream.py`
   - **Requirements:** R5.2, R5.6, D3, D10
   - **Do:** Spawn `claude -p --output-format stream-json --verbose …` per design.md §4.1, including
     `--strict-mcp-config` (D10: keeps the teammate's personal MCP servers out of the session). The

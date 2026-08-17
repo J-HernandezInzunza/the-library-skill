@@ -2734,3 +2734,57 @@ reading.** Two of this document's own worked examples had transposed secret keys
 in opposite orders *between two secrets in the same file*. That last one was caught while
 staging the commit, by hand, on the second look. Convention held by attention lasts about
 a day, which is the entire argument for this task.
+
+---
+
+## T6.1 — the stream, recorded rather than imagined
+
+The parser is three pieces split by what each can be tested against: `command` builds
+argv and nothing else, `classify` is one line in and zero-or-more events out, and `stream`
+is the only part that needs a process. Same split as `cli::interpret`, for the same reason
+— everything interesting about a run is a function of its bytes, and logic reachable only
+through a subprocess is logic nobody tests.
+
+`classify` returns a **`Vec`**, not an `Option`. The recorded tool-call transcript puts
+"I'll call the ping tool." and the `tool_use` block in *one* `assistant` message, so
+one-event-per-line would have silently dropped whichever came second — and it would have
+been the narration, the half that says why the command is about to run.
+
+**The fixtures are recorded from real runs** (`record_agent_stream.py`, same standard as
+T5.3's payloads): a throwaway stdio MCP server in a temp dir, two live `claude` runs, one
+with tools and one without. Only two event kinds are synthesized, because they cannot be
+provoked on demand: a warning-status rate limit and a subagent message. Both literals live
+in the recorder, so there is still exactly one source for every fixture and the recorded /
+synthesized line is written down where the next person looks.
+
+**Recording found two things reading the docs would not have.**
+
+- **`rate_limit_event` is not a retry notice.** Design §4.3 had it as a transient
+  "retrying" badge. One arrives on *every* healthy run, with
+  `rate_limit_info: {status: "allowed", rateLimitType: "five_hour", resetsAt: …}`. Shipping
+  the original design would have put a rate-limit notice on every walkthrough turn, which
+  is how you teach someone to ignore the one that matters. The backend emits the status;
+  the status decides whether the UI says anything. The channel is `agent://rate_limit`
+  rather than `agent://retry`, because the name was asserting something false.
+- **`--strict-mcp-config` is load-bearing, and the fixture proves it.** The text-only run
+  was recorded *without* it and its `init` carries seven personal MCP servers — one
+  `failed`, one `needs-auth`, one `pending`. That is exactly the wreckage a teammate's own
+  config would drop into a walkthrough, and it is why the T6.3 gate has to name our server
+  instead of asking whether anything failed. The fixture is kept as-is for that reason: it
+  is the adversarial `init` payload, free.
+
+Two smaller decisions:
+
+- **`Launch`'s two file paths are required, not `Option`.** Without the MCP config there is
+  no `request_secret` and the agent asks for the token in chat; without the settings hook
+  there is no tool boundary at all. "Spawn it anyway, minus that file" is never the safe
+  fallback, so the type refuses to say it.
+- **stderr is drained on its own thread.** Reading it after stdout would deadlock the day
+  `claude` fills the pipe buffer mid-run, and that failure presents as a walkthrough hung
+  halfway with no output — the single worst symptom to debug from a bug report.
+
+`--bare`'s absence (D10) is now a test rather than a comment. It is the documented way to
+script `claude`, so the next person to read those docs will try to add it, and it would
+break every teammate who signs in with a subscription instead of an API key.
+
+The module is not wired to a Tauri command yet: T6.4 is what has something to call it.

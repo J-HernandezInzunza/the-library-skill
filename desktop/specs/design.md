@@ -336,7 +336,7 @@ it does not buffer the whole run (R5.2).
 | `assistant` (text) | emit `agent://text` | chat bubble |
 | `assistant` (tool_use) | emit `agent://tool` with tool name + input | "Running: `library use deploy`" (R5.5, D5) |
 | `user` (tool_result) | emit `agent://tool_result` | result under the command |
-| `rate_limit_event` | emit `agent://retry` | transient "retrying" notice |
+| `rate_limit_event` | emit `agent://rate_limit` with `rate_limit_info.status` | a notice **only** when the status is not `allowed` |
 | `result` (last line) | emit `agent://done` with session id | re-enable input |
 
 Messages with a non-null `parent_tool_use_id` come from subagents; the UI nests or hides them
@@ -346,6 +346,11 @@ The stream carries more than this table: `system/hook_started`, `system/hook_res
 `system/thinking_tokens` were all observed, and `system/api_retry` was **not** (`rate_limit_event`
 appears to be its current form). Unknown top-level `type`s and unknown `system.subtype`s are
 ignored, on the same reasoning as §3.5's unknown JSON keys: the stream grows between releases.
+
+`rate_limit_event` is **not** a retry notice. The T6.1 recordings show one arriving on every
+healthy run, carrying `rate_limit_info: {status: "allowed", rateLimitType, resetsAt, …}` — so the
+backend passes the status through and the *status* decides whether the UI says anything. A notice on
+every run trains the user to ignore the one that matters.
 
 #### 4.3.1 The preflight gate (corrected)
 

@@ -11,6 +11,7 @@
 // freezes the UI for the command's whole duration. No repaint means no spinner, no
 // button release, and no event delivery until it returns.
 
+pub mod agent;
 pub mod cli;
 pub mod error;
 pub mod events;
