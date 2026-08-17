@@ -15,6 +15,7 @@ pub mod agent;
 pub mod cli;
 pub mod error;
 pub mod events;
+pub mod mcp;
 pub mod setup;
 
 use cli::{

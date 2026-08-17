@@ -860,8 +860,9 @@ D10/D11/D14 were revised to match. The tasks below assume the revised text, not 
 
 The security-critical phase. Every task here is a place where a mistake leaks a credential.
 
-- [ ] **T7.1 — MCP server with the read-only tools**
-  - **Files:** `desktop/src-tauri/src/mcp.rs`
+- [x] **T7.1 — MCP server with the read-only tools**
+  - **Files:** `desktop/src-tauri/src/mcp.rs`, `desktop/src-tauri/tests/mcp.rs`,
+    `desktop/src-tauri/tests/mcp_live.rs`, `desktop/src-tauri/Cargo.toml`
   - **Requirements:** R5.3, D4, D11, D14
   - **Do:** Host the MCP server in-process over loopback HTTP per design.md §5.1 (`127.0.0.1`,
     ephemeral port, per-walkthrough bearer token), passed via `--mcp-config`. Not stdio: `claude`

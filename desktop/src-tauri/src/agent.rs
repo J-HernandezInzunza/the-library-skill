@@ -29,7 +29,7 @@ use crate::events::{next_command_id, CommandFinished, CommandSink, CommandStarte
 /// The agent's tools, all of them ours. `mcp__library__` is also the prefix the
 /// `PreToolUse` hook allows, so this list and that hook say the same thing twice on
 /// purpose: this one suppresses prompting, the hook is the boundary (design §4.1a).
-const ALLOWED_TOOLS: &str = "mcp__library__library_cmd,mcp__library__read_skill_doc,\
+pub const ALLOWED_TOOLS: &str = "mcp__library__library_cmd,mcp__library__read_skill_doc,\
                              mcp__library__request_secret,mcp__library__run_skill_setup";
 
 /// What to run, for one user turn of one walkthrough.

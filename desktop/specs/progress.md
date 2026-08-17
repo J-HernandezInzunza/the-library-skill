@@ -2880,3 +2880,61 @@ one occasion the user most needs to know what happened.
 nothing else (R7.2); raising an error for it would interrupt whatever the user was doing in
 the catalog to tell them about a feature they had not asked for. The "rename `claude` and
 watch the catalog keep working" check still wants doing by hand once T6.4 has UI to disable.
+
+---
+
+## T7.1 — the tool surface, and a transport proved against the real client
+
+Ordered ahead of T6.4 deliberately: the preflight gate refuses any session without this
+server, so until it existed the chat view would have had nothing to show but its own
+refusal message.
+
+**No HTTP dependency, because the endpoint turned out to be smaller than the client's
+tolerance.** The plan was `hyper` (already in the build graph via Tauri, so free). What
+`mcp.rs` actually needs is one POST route, `Content-Length` bodies, JSON responses, and
+`Connection: close` — no keep-alive, no chunked encoding, no SSE channel, no
+`Mcp-Session-Id`. That is ~120 lines of `std::net`, and the question it raises is not "is
+this correct HTTP" but "does Claude Code's client accept it", which no amount of care in
+this repo can answer. So it is asked directly, in `tests/mcp_live.rs`.
+
+**The live test is the load-bearing one, and it passes.** Real `claude`, real app-hosted
+server: `mcp_servers: [{"name": "library", "status": "connected"}]`, both tools advertised
+in `init.tools`, and `library_cmd doctor` **actually ran** — the tool result carried the
+live catalog's own report, 42 entries and eight warnings. It is `#[ignore]`d so the gate
+never spawns an agent, and it is the only test that would notice Claude Code dropping
+support for a JSON-only server. If it ever fails, the fix is named in its own comment: add
+SSE or the session header.
+
+**One server, one token per walkthrough.** The first draft started a server per
+walkthrough, which is a thread and a port leaked every time one opens. The property that
+actually matters is not a private port but a private credential: a token attributes a call
+to the walkthrough that authorized it, and `revoke` makes the `mcp.json` a finished
+walkthrough left on disk inert. The config file is written `0600` — it carries a live
+capability to the app's own tool surface, which by T7.2 includes the secret prompt.
+
+Three refusals that are more than validation:
+
+- **`args` may not contain a flag.** The allowlist checks the *subcommand*, so
+  `{subcommand: "list", args: ["--dir", "/tmp"]}` would have walked straight past it. A
+  checked head and an unchecked tail is the standard shape of this bug.
+- **A refusal is a tool result, not a JSON-RPC error.** Same reasoning as the `PreToolUse`
+  denial: the agent reads the reason and picks something else, instead of the run dying.
+  The tool descriptions say what is *not* available too, so a walkthrough that wants to
+  push explains why it cannot rather than retrying.
+- **`read_skill_doc` canonicalizes both sides before comparing.** That makes `..`, an
+  absolute path, and a symlink pointing out of the skill directory one check instead of
+  three — and the symlink is the one a prefix test on the unresolved path lets through. The
+  containment rule is split into `read_within`, so it is tested against a real directory
+  with a real symlink rather than only through a CLI call and an install receipt.
+  `Path::join` *replaces* on an absolute argument, so `/etc/hosts` is a live case, not a
+  theoretical one; it is in the test.
+
+**Where the skill's directory comes from matters.** The agent names a skill; the app asks
+`library setup <name> --json` where that skill is installed. Nothing the agent says
+contributes a path (R1.1), and an uninstalled skill has no files to read rather than a
+guessable location.
+
+`library_cmd`'s allowlist is `list`, `search`, `doctor`, `use` — reads plus install, so a
+walkthrough can pull in a missing sibling skill. Absent by design: `add`, `update`,
+`remove`, `push`, `catalog`. Those change what the *team* sees, and the user has forms for
+them with previews and confirmations an agent would bypass.
