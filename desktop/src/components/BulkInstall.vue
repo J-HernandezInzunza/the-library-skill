@@ -48,6 +48,11 @@ const uninstallReport = ref<UninstallReport | null>(null);
 const refused = computed(() =>
   (uninstallReport.value?.results ?? []).filter((r) => r.refused.length),
 );
+/** Dependencies the install brought in beyond the entries that were asked for. */
+const extraInstalled = computed(() =>
+  report.value ? report.value.installed.length - report.value.requested.length : 0,
+);
+
 /** Entries whose copies were actually removed. */
 const removed = computed(() =>
   (uninstallReport.value?.results ?? []).filter((r) => r.deleted.length),
@@ -152,9 +157,9 @@ watch(() => props.names, () => {
       <p class="bulk__done">
         Installed {{ report.requested.length }}
         {{ report.requested.length === 1 ? "entry" : "entries" }} from {{ catalogId }}<template
-          v-if="report.installed.length > report.requested.length"
-        >
-          , with {{ report.installed.length - report.requested.length }} dependencies</template
+          v-if="extraInstalled"
+        >, with {{ extraInstalled }}
+          {{ extraInstalled === 1 ? "dependency" : "dependencies" }}</template
         >.
       </p>
     </StatusBanner>
