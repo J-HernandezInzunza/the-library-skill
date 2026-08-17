@@ -224,8 +224,8 @@ watch([() => props.name, () => props.installed], () => load(props.name), { immed
   /* The only affordance on the row, so it is sized like one. At 0.7rem/0.5 it read as a
      bullet — decoration rather than the thing to click. */
   display: inline-block;
-  width: 0.9rem;
-  font-size: 0.85rem;
+  width: 0.75rem;
+  font-size: 1.25rem;
   opacity: 0.75;
   transition: transform 0.12s ease, opacity 0.12s ease;
 }
