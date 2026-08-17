@@ -573,7 +573,32 @@ export interface SetupReport {
   manifest: SetupManifest | null;
   problems: string[];
   prerequisites: Prerequisite[];
+  /** The declared values, each with whether it is already on disk (R5.1b). */
+  secrets: SecretState[];
+  /**
+   * Whether the values this skill needs are already stored, which `ready` does not say.
+   *
+   * `null` is an answer, not a missing one: a skill whose every secret is `env` or
+   * `manual` has nothing checkable. `true` never claims the stored values are *correct*
+   * — only the manifest's own `verify` command can decide that.
+   */
+  configured: boolean | null;
   ready: boolean;
+}
+
+/** One declared value, and whether the CLI could find it (R5.1b). */
+export interface SecretState {
+  key: string;
+  /** `config-file` | `env` | `manual`. A string for the same reason `Entry.state` is. */
+  delivery: string;
+  optional: boolean;
+  /**
+   * `null` means unknowable, not missing. Nothing is stored for an `env` secret by
+   * definition, and a `manual` one never reaches the app at all.
+   */
+  present: boolean | null;
+  /** Where it was found, or why it could not be. The CLI's words. */
+  detail: string;
 }
 
 /**

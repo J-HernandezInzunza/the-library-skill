@@ -1152,7 +1152,8 @@ fn a_missing_wrapper_names_the_path_it_looked_at() {
 #[test]
 fn a_ready_manifest_reports_its_summary_secrets_and_met_prerequisites() {
     let _guard = with_fixture_home();
-    let report = setup::setup(&Recorder::default(), "ready-skill").expect("a ready report");
+    let report =
+        setup::setup(&Recorder::default(), "unconfigured-skill").expect("a ready report");
 
     assert!(report.ready);
     assert!(report.has_setup);
@@ -1183,6 +1184,76 @@ fn a_ready_manifest_reports_its_summary_secrets_and_met_prerequisites() {
     assert!(report.prerequisites.iter().all(|p| p.met));
     assert_eq!(report.prerequisites[1].kind.as_deref(), Some("sibling-skill"));
     assert_eq!(report.prerequisites[1].detail, "installed (global)");
+}
+
+// --- `configured`: whether the values are already stored (R5.1b) -----------
+//
+// The same skill at three points in its life. `ready` is identical in all three and
+// says nothing about any of it, which is exactly why the field had to be added.
+
+#[test]
+fn values_that_were_never_stored_are_missing_and_not_configured() {
+    let _guard = with_fixture_home();
+    let report = setup::setup(&Recorder::default(), "unconfigured-skill").expect("a report");
+
+    assert_eq!(report.configured, Some(false));
+    assert_eq!(report.secrets.len(), 3);
+    assert!(report.secrets.iter().all(|s| s.present == Some(false)));
+    // The CLI's own words, naming the file that does not exist yet.
+    assert!(report.secrets[0].detail.contains("has not been created yet"));
+
+    // Orthogonal to readiness: nothing is stopping the walkthrough from starting, which
+    // is the whole reason both questions are asked.
+    assert!(report.ready);
+}
+
+#[test]
+fn stored_values_read_back_as_configured_even_with_an_optional_one_missing() {
+    let _guard = with_fixture_home();
+    let report = setup::setup(&Recorder::default(), "configured-skill").expect("a report");
+
+    assert_eq!(report.configured, Some(true));
+    let present: Vec<Option<bool>> = report.secrets.iter().map(|s| s.present).collect();
+    assert_eq!(present, vec![Some(true), Some(true), Some(false)]);
+    // The one that is missing is the optional one, and it does not hold `configured` back.
+    assert!(report.secrets[2].optional);
+    assert!(report.secrets[0].detail.starts_with("set in "));
+}
+
+#[test]
+fn values_nothing_can_check_are_unknown_rather_than_missing() {
+    let _guard = with_fixture_home();
+    let report = setup::setup(&Recorder::default(), "nostore-skill").expect("a report");
+
+    // `env` persists nothing by definition and `manual` never reaches the app, so
+    // `false` would accuse the user of work they may well have done. With nothing
+    // checkable, `configured` is null — an answer, not a failure to give one.
+    assert_eq!(report.configured, None);
+    assert!(report.secrets.iter().all(|s| s.present.is_none()));
+    assert_eq!(report.secrets[0].delivery, "env");
+    assert_eq!(report.secrets[1].delivery, "manual");
+}
+
+#[test]
+fn a_half_checkable_manifest_answers_for_the_half_it_can_see() {
+    let _guard = with_fixture_home();
+    let report = setup::setup(&Recorder::default(), "mixed-skill").expect("a report");
+
+    // True on the strength of the one stored value alone. It does not promise the `env`
+    // half is done, which is why the app words this one "Set up" rather than "complete".
+    assert_eq!(report.configured, Some(true));
+    assert_eq!(report.secrets[0].present, Some(true));
+    assert_eq!(report.secrets[1].present, None);
+}
+
+#[test]
+fn a_manifest_declaring_no_values_has_nothing_to_configure() {
+    let _guard = with_fixture_home();
+    let report = setup::setup(&Recorder::default(), "ready-skill").expect("a report");
+
+    assert!(report.ready);
+    assert!(report.secrets.is_empty());
+    assert_eq!(report.configured, None);
 }
 
 #[test]

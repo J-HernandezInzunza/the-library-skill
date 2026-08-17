@@ -2508,3 +2508,183 @@ still worth doing once. Nine components remain eye-verified and are listed in th
 because the component specs needed the same payloads. The other five factories stayed put:
 a factory pulled out before a second caller exists is an abstraction guessing at its own
 shape.
+
+---
+
+## T5.3 — `ready` was answering a question nobody asked twice
+
+The panel read the same on the day you installed a skill and a year after you finished
+setting it up. That is not a status; it is a section you learn to scroll past on the
+entries where it matters. The cause was one field carrying more weight than it could:
+`ready` is `manifest is not None and not problems and not unmet` — **the walkthrough can
+start** — and it stays true forever, before and after anyone does anything.
+
+**`configured` is a second question, not a better answer to the first.** It reports
+whether the values a manifest declares are already on disk. The two are genuinely
+orthogonal: a skill can be ready and unconfigured (the common case, the day you install
+it), configured and blocked (you stored the token, then the sibling skill was
+uninstalled), or ready with nothing to configure at all.
+
+**Three-valued, and that is the whole design.** Only `config-file` secrets leave anything
+behind. `env` persists nothing *by definition* and `manual` never reaches the app, so
+`present: false` for those would accuse someone of work they may well have done — and work
+they could never make the panel acknowledge. So `present` is `true | false | null`, and
+`configured` is `null` when nothing is checkable. **Null is an answer**, not a failure to
+give one, and the panel words it as "nothing this skill needs is kept on disk, so there is
+no state to check" rather than as an absence.
+
+A skill with two stored `config-file` secrets and one `env` secret reports
+`configured: true` on the strength of the checkable half. It says "the values this skill
+saves are in place. The rest are entered each time" — never "everything is done", which
+would send someone looking for a bug in the skill when the value was never meant to be
+stored.
+
+**What it does not claim.** `configured: true` means a non-empty value exists at each
+required `key`. It does not mean the value *works*. The schema already names the thing
+that decides that — `verify: <command id>`, whose exit code is the verdict — and nothing
+can run commands until Phase 6/7. Recorded in the schema doc so the next person does not
+read `configured` as more than it is.
+
+**Two near-misses while implementing, both the same shape: a definite answer dressed as
+an unknown.**
+
+- **A config file that does not exist is `present: false`, not `null`.** The first cut
+  routed "cannot read the store" and "there is no store" through one `why_not` string, so
+  the most common real state — you have not set this up yet — came back as unknowable and
+  the panel had nothing to say. Caught by the first CLI test written against it.
+  `_read_config_store` now returns a verdict whose first element *is* the `present` value,
+  so the distinction is in the type rather than in a caller remembering it.
+- **An empty string is not a stored value.** `config-init` scaffolds the file with the
+  shape right and the credential absent, which is precisely the state the check exists to
+  catch. Whitespace-only counts as absent too.
+
+**Optional secrets do not hold `configured` back**, and the `configured` fixture pins that
+by having its optional Bitbucket token genuinely missing. The headline counts only the
+required ones — naming the optional one would report work nobody has to do.
+
+**Collapse keys off `outstanding`, never off the state name.** `describeSetup` returns it,
+and the seven states map onto it in one place. Outstanding means somebody is waiting:
+`defective`, `blocked`, `unconfigured`. A settled panel renders one clickable row with the
+counts on it (`2 stored · 1 missing`), because a bare "Set up" invites exactly the click
+the collapse exists to save. An outstanding panel renders **no toggle at all** rather than
+a toggle that starts open — a caret over real work is how the work gets missed.
+
+**Fixtures re-recorded, and the recorder is committed this time.** The setup payloads have
+always been recorded rather than written, but the sandbox that produced them was ad hoc and
+gone. `record_setup_payloads.py` rebuilds it: its own copy of `library.py` so `SKILL_DIR`
+lands in the sandbox, its own `$HOME` so `~/.claude/skills` does too, and `assert_sandboxed`
+refusing to proceed if a dry-run install names a path outside it — the guard exists because
+that failure mode is silent, and it once installed six skills into the real `~/.claude/skills`.
+
+The set now covers every state with a real recording, including three payloads that are the
+*same skill at three points in its life* — `unconfigured`, `configured`, `ready` — which is
+the distinction the panel collapses on. `setup-ready.json` changed meaning: it is now a
+manifest that declares no values at all, and the old ready-skill recording became
+`setup-unconfigured.json`.
+
+One incidental thing the re-recording pinned: `unreadable (ScannerError)` reaches the
+payload as PyYAML's exception class name, so the *choice of malformation* in the recorder
+is load-bearing. `summary: [unclosed` is a ParserError; `summary: "unclosed` is a
+ScannerError. Noted in the recorder, because it looks arbitrary and is not.
+
+**Setup also moved below Source** on the detail page, as asked. Sitting between the two
+install controls it read as a step in installing, which it is not — it is about the copy
+you already have.
+
+---
+
+## T5.3a — what the collapsed row is for, from looking at it
+
+Three things came out of a screenshot of the shipped row, and one of them was a design
+mistake rather than a polish item.
+
+**"5 stored" was answering a question nobody asked.** It is a count of keys in a JSON
+file: nothing anyone would *do* differs between three and five. Sitting in the row's
+emphasis position it implied it was the thing to read, on a row that exists to be scanned
+rather than read. The slot now carries **the exception and nothing else** — "1 optional
+value not set", "2 entered each run" — and is empty when nothing qualifies the headline.
+Silence is the fastest possible scan: nothing there means nothing to do.
+
+**"Set up" was doing double duty, which is why it read weakly.** It rendered both for
+"every declared value is stored *and checkable*" and for "the checkable half is stored and
+the rest never can be". Only the first can honestly claim completion, so the headline now
+splits: **"Setup complete"** when `uncheckableSecrets` is empty, **"Set up"** when it is
+not. The distinction is exactly the one `configured: true` cannot make on its own — the
+CLI is right to report true in both cases, and the app is right not to say the same word
+about them. A green "Setup complete" over an `env` secret sends someone looking for a bug
+in a skill whose value was never meant to be written down.
+
+That case had no recording, which is why it was easy to miss: `setup-mixed.json` now
+exists for it — one `config-file` secret stored, one `env` secret — and it is the only
+fixture where `configured: true` and the headline is not "complete".
+
+**The `verify` result takes this slot later.** It is the authoritative answer and the
+schema already names it, but it means executing skill-authored code that often reaches the
+network, so it can never run on page load and belongs with Phase 7's runner rather than
+ahead of the decisions about how that is sandboxed. The slot and the wording are shaped
+for it now: a "Check" button lands in the same row and its verdict replaces the exception
+text.
+
+**The caret was 0.7rem at opacity 0.5**, which reads as a bullet — decoration rather than
+the control. It is the only affordance on the row, so it is now sized like one, with a
+hover state.
+
+`qualifier` lives on `SetupSummary` rather than in the component, next to `headline` and
+`outstanding`: the three are one editorial decision about a single row, and splitting the
+wording across two files is how they drift into disagreeing.
+
+---
+
+## T5.3b — `config` loses three of its four fields
+
+Reviewing the reconstructed `atlassian-toolkit` manifest against the schema's own worked
+example turned into an audit of whether `config`'s fields earn their place. Three did not.
+Each was traced to its actual consumers before being cut, and the evidence differed:
+
+**`permissions` — nothing read it, and its non-default values are all broken.** Not the
+app, not the Rust types, and not even `validate_setup`, so `permissions: "0777"` validated
+clean. Meanwhile atlassian-toolkit's own loader *refuses* a config with any group or other
+bit set (`_config.mjs:73`, `if (stat.mode & 0o077) throw`) and chmods `0600` itself on
+every write. So a manifest declaring `0644` would have had the app dutifully weaken the
+file and the skill then refuse to load it: **a field whose only effect is to break the
+skill it describes.** Now fixed at `0600`, R6.5 restated as not-configurable.
+
+**`format` — a declaration that can only agree with reality or be wrong about it.** The
+file `config-init` wrote is its own authority; being wrong means writing a shape the skill
+cannot read back. Detection cannot be wrong. The reader now parses and reports
+`not JSON, the only config format read so far` rather than gating on a declared string.
+
+**`scaffold` and `verify` — replaced by reserved ids, which is the stronger form of the
+same information.** These two were *pointers*: `scaffold: config-init` and `verify: check`
+named which command filled which role. Dropping them outright would have lost something
+real — that a command exists says nothing about its role — so the id now carries it.
+`config-init` creates the file, `check` decides success, any other id is just callable.
+
+Three arguments, and the second is the one that settles it:
+
+1. A pointer is a second name for the same thing, and second names drift. The version of
+   the schema doc carrying them had a command *id* `verify` running `smoke.mjs` while the
+   top-level `verify:` pointed at `check` — two different things called verify in one
+   file, in the schema's own example.
+2. **Freedom to name is freedom to differ.** The ask was a standard that could be followed
+   and enforced; every optional field and every free-form id is a way for two manifests to
+   look unalike. Reserving removes a field *and* a degree of freedom.
+3. It makes the rule checkable: "a `config-file` secret needs something to create the
+   file" is enforceable against a reserved id and merely conventional against a pointer,
+   which can name any command at all — including one that does something else.
+
+**Retired keys are rejected, not ignored.** §7 ignores unknown keys on purpose, but these
+four are *known and removed*: silently dropping `scaffold: config-init` leaves a manifest
+looking configured for behaviour it will not get. `RETIRED_SETUP_KEYS` names each one and
+what replaced it, so the failure is a sentence rather than a silence. Cheap to do because
+exactly one manifest exists in the world and it is in this repo.
+
+**What prompted the audit is worth keeping.** Asked whether the manifests agreed, the
+answer came from a script comparing key order across all eight — schema example, the
+reconstruction, six fixtures, and `VALID_SETUP` — rather than from reading them. Top-level
+order agreed everywhere; per-secret order had already drifted **in the file written hours
+earlier**, `optional` and `env_override` transposed against the example. Convention held
+by attention lasts about a day.
+
+`config:` now carries `path` and nothing else. It stays a block rather than collapsing to
+a top-level `config_path:` because a second field is plausible and the churn is not free.

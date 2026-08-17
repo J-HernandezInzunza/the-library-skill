@@ -11,5 +11,7 @@
     "/Users/tester/.claude/skills/unreadable-skill/setup.yaml: unreadable (ScannerError)"
   ],
   "prerequisites": [],
+  "secrets": [],
+  "configured": null,
   "ready": false
 }

@@ -44,9 +44,39 @@ pub struct SetupReport {
     pub problems: Vec<String>,
     #[serde(default)]
     pub prerequisites: Vec<Prerequisite>,
+    /// The declared values, each with whether it is already on disk (R5.1b).
+    #[serde(default)]
+    pub secrets: Vec<SecretState>,
+    /// Whether the values this skill needs are already stored — a different question
+    /// from `ready`, which says only that the walkthrough can start.
+    ///
+    /// `None` is an answer rather than a missing one: a skill whose every secret is
+    /// `env` or `manual` has nothing checkable, and `false` there would accuse the user
+    /// of work they may well have done.
+    #[serde(default)]
+    pub configured: Option<bool>,
     /// The CLI's own verdict: a manifest that validates and every prerequisite met.
     #[serde(default)]
     pub ready: bool,
+}
+
+/// One declared value, and whether the CLI could find it (R5.1b).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SecretState {
+    pub key: String,
+    /// `config-file` | `env` | `manual`. Typed as a `String` for the same reason
+    /// `Entry.state` is: the schema may grow one.
+    #[serde(default)]
+    pub delivery: String,
+    #[serde(default)]
+    pub optional: bool,
+    /// `None` means unknowable, not missing — nothing is stored for an `env` secret by
+    /// definition, and a `manual` one never reaches the app at all.
+    #[serde(default)]
+    pub present: Option<bool>,
+    /// Where it was found, or why it could not be. The CLI's words.
+    #[serde(default)]
+    pub detail: String,
 }
 
 /// The parts of the manifest this phase shows, ignoring the rest.

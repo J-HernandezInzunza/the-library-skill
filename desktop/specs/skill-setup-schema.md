@@ -88,10 +88,7 @@ prerequisites:
   - env: RETRO_CYCLE_PATH             # must be set in the environment
 
 config:
-  path: ~/.config/atlassian-toolkit/config.json
-  format: json                        # json | ini | env  (how the app writes into it)
-  scaffold: config-init               # command id that creates the file
-  permissions: "0600"                 # applied by the app after any write
+  path: ~/.config/atlassian-toolkit/config.json   # the only file the app will write
 
 secrets:
   - key: account.email                # dotted path within the config file
@@ -115,17 +112,15 @@ secrets:
     optional: true                    # setup succeeds without it
 
 commands:
-  config-init:
+  config-init:                        # RESERVED id: creates config.path (§3.2)
     run: bin/jira.mjs config init
     description: Scaffold the config file
-  check:
+  check:                              # RESERVED id: its exit code decides success
     run: bin/jira.mjs config check
     description: Report per-product readiness
-  verify:
+  smoke:                              # any other id: callable, no special meaning
     run: bin/smoke.mjs
     description: End-to-end smoke test
-
-verify: check                         # command id that decides success
 ```
 
 ### 3.1 Field rules
@@ -135,16 +130,55 @@ verify: check                         # command id that decides success
 | `version` | Schema version integer. Required. An unrecognized version disables the walkthrough rather than being parsed optimistically (§7). |
 | `summary` | One line, shown in the app before the walkthrough starts. |
 | `prerequisites[]` | Each entry has exactly one of `node`, `sibling-skill`, `env`, `binary`. Checked by the app before the agent runs; a failure aborts with the unmet item named. |
-| `config.path` | Absolute or `~`-prefixed. The only file the app will write for this skill. |
-| `config.format` | How the app writes a value: `json` (dotted `key` is a path into the object), `ini`, or `env` (`KEY=value` lines). |
-| `config.scaffold` | Command id run before any write, so the file exists in the skill's own expected shape. |
-| `config.permissions` | Applied after every write. Defaults to `0600` when omitted. |
+| `config.path` | Absolute or `~`-prefixed. The only file the app will write for this skill, and the only field `config` carries. |
 | `secrets[].key` | For `config-file`, a dotted path into `config.path`. For `env`, the variable name. |
 | `secrets[].secret` | Defaults `true`. `false` means a non-sensitive value (e.g. an email) — collected in a normal field and loggable. |
 | `secrets[].delivery` | `config-file` (default), `env`, or `manual`. See §4. |
 | `secrets[].optional` | Defaults `false`. Optional secrets can be skipped; setup still verifies. |
 | `commands.<id>.run` | Argv **relative to the installed skill directory**. Never absolute, never shell metacharacters. See §5. |
-| `verify` | Command id whose exit code decides walkthrough success. |
+| `commands.config-init` | Reserved. Run before any write. Required when any secret uses `config-file`. |
+| `commands.check` | Reserved. Its exit code decides whether setup succeeded. |
+
+### 3.2 Reserved command ids, and why roles are not pointers
+
+`config-init` and `check` are **reserved**: the id carries the role. Any other id is a
+command the walkthrough can call by name with no special meaning.
+
+| Id | Role | Required when |
+| --- | --- | --- |
+| `config-init` | Creates `config.path` in the shape the skill expects. Run before any write. | Any secret uses `delivery: config-file`. |
+| `check` | Its exit code decides whether setup succeeded. | Never required; without it, success is "the writes did not fail". |
+
+This replaced a `config.scaffold` and a top-level `verify:`, each naming which command
+filled which role. Three reasons the pointers lost:
+
+1. **A pointer is a second name for the same thing, and second names drift.** The version
+   of this document that carried them had a command *id* `verify` running `smoke.mjs`
+   while the top-level `verify:` pointed at `check` — two different things called verify
+   in one file, in the schema's own worked example.
+2. **Freedom to name is freedom to differ.** Every manifest's `commands:` block now reads
+   the same in the two places that matter, so a reviewer compares behaviour rather than
+   vocabulary.
+3. **It makes the rule checkable.** "A `config-file` secret needs something to create the
+   file" is enforceable against a reserved id and merely conventional against a pointer,
+   which can name any command at all — including one that does something else entirely.
+
+The app writes into a file the *skill* created, never one it invented: the skill's
+template carries defaults and the shape its own migrate step keys off, which a bare `{}`
+does not have. That is why `config-init` is required rather than optional.
+
+**Formats are detected, not declared.** A `config.format` field could only ever agree with
+the file or be wrong about it, and being wrong means writing a shape the skill cannot read
+back. The file `config-init` wrote is its own authority. JSON is the only shape read so
+far (§10.3); anything else is reported as unknown rather than guessed at.
+
+`library setup --json` reports, per declared secret, whether a value is already at its
+`key` in `config.path` — and an overall `configured` of `true` / `false` / `null`
+(R5.1b). It reads the config file; it never runs anything. So it answers "has a value
+been stored", which is not "does the value work": only the `check` command can decide that, and
+nothing runs commands yet. `configured` is `null` whenever nothing is checkable, which is
+every `env` and `manual` secret by definition, and any config file whose shape does not
+parse as JSON (§10.3).
 
 ## 4. Delivery modes (the D7 decision)
 
@@ -152,9 +186,9 @@ How a collected value reaches the skill. Declared per secret; the skill decides.
 
 | Mode | App behavior | Use when |
 | --- | --- | --- |
-| `config-file` *(default)* | App runs `config.scaffold`, then writes the value at `key` in `config.path`, then chmods to `config.permissions`. Value persists. | The skill's durable store is a config file. This is the atlassian/slack case. |
+| `config-file` *(default)* | App runs `config-init`, then writes the value at `key` in `config.path`, then chmods it `0600`. Value persists. | The skill's durable store is a config file. This is the atlassian/slack case. |
 | `env` | App injects the value as an env var into `run_skill_setup` subprocesses **for this walkthrough only**. Does not persist. | The skill genuinely wants process-scoped credentials, or the walkthrough only needs it to verify. |
-| `manual` | App never receives the value. It runs `config.scaffold`, then reveals `config.path` (opens the file / Finder) and instructs the user to enter it themselves. | The skill wants the human to type the credential directly into the file, with no intermediary. |
+| `manual` | App never receives the value. It runs `config-init`, then reveals `config.path` (opens the file / Finder) and instructs the user to enter it themselves. | The skill wants the human to type the credential directly into the file, with no intermediary. |
 
 ### 4.1 Why `config-file` is the default
 
@@ -196,7 +230,10 @@ These are the D7 regression surface and must be covered by tests (design.md §9)
 1. A `config-file` or `manual` secret value is never sent to the agent process, the prompt, or
    any model payload. `request_secret`'s `tool_result` is a fixed acknowledgement string.
 2. The app writes secrets **only** to `config.path`. No second store, no app-owned database.
-3. Files written are chmod'd to `config.permissions` (default `0600`) immediately after write.
+3. Files written are chmod'd `0600` immediately after write. Not configurable: a file holding
+   a credential has no other sane mode, and a manifest able to name a looser one is a manifest
+   able to weaken the skill it describes. `atlassian-toolkit`'s own loader refuses anything with
+   group or other bits set, so `0644` would have made the app break the skill on its behalf.
 4. The command log (design.md §6.3) redacts any value collected for a `secret: true` entry,
    including inside captured stdout/stderr, showing `***`.
 5. Values are held in backend memory for the walkthrough only and zeroized when it ends.
@@ -210,10 +247,13 @@ that skill with the reason shown, and never silently degrades to a looser mode:
 - `version` is present and recognized. An unknown version disables the walkthrough: a future
   schema could change the meaning of `delivery`, and guessing could write a secret a skill
   intended the app never to hold.
-- Every `config.scaffold` and `verify` value references an id present in `commands`.
+- `config.format`, `config.permissions`, `config.scaffold`, and top-level `verify` are
+  **rejected**, naming the reserved id or fixed behaviour that replaced each. Unknown keys are
+  ignored, but a known-and-removed one expressed an intent nothing honours.
 - Every `commands.<id>.run` passes the §5 argv rules (no shell metacharacters, resolves inside
   the skill dir).
-- Every `secrets[].delivery: config-file` entry requires `config.path` and `config.format`.
+- Every `secrets[].delivery: config-file` entry requires `config.path` and a `config-init`
+  command to create it.
 - `config.path` is absolute or `~`-prefixed.
 - Unknown keys inside `setup:` are ignored (forward compatibility), but unknown values for a
   closed enum (`delivery`, `format`) are an error, because silently treating an unrecognized
@@ -231,8 +271,6 @@ prerequisites:
   - node: ">=20"
 config:
   path: ~/.config/slack-toolkit/config.json
-  format: json
-  scaffold: config-init
 secrets:
   - key: webhook_url
     label: Slack incoming webhook URL
@@ -248,7 +286,6 @@ secrets:
 commands:
   config-init: { run: bin/slack.mjs config init, description: Scaffold the config file }
   check:       { run: bin/slack.mjs config check, description: Verify the webhook works }
-verify: check
 ```
 
 ### 8.2 `retro-toolkit/setup.yaml` (no secrets; a sibling and an env var)
@@ -267,7 +304,6 @@ secrets:
     guidance: Set RETRO_CYCLE_PATH in your shell rc to the cycle file path.
 commands:
   check: { run: bin/next-retro.mjs, description: Print the next retro date }
-verify: check
 ```
 
 Shows the two edges: a skill whose "setup" is a sibling dependency plus an env var, and a
@@ -305,5 +341,5 @@ the whole point of the schema.
    `requires-config`, and `requires-sibling-skill` duplicate `prerequisites`/`config`. Options:
    leave them as prose, or generate them from `setup.yaml`. Duplication drifts; pick one before
    more skills adopt the schema.
-3. **`ini`/`env` config formats** are declared in the schema but only `json` has a confirmed
+3. **Non-JSON config files** are readable in principle but only `json` has a confirmed
    consumer today. Implement `json` first; add the others when a skill needs one.

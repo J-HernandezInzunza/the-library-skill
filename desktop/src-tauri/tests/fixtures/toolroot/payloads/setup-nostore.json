@@ -1,0 +1,63 @@
+{
+  "status": "OK",
+  "name": "nostore-skill",
+  "type": "skill",
+  "catalog": "fixture",
+  "installed": true,
+  "dest": "/Users/tester/.claude/skills/nostore-skill",
+  "has_setup": true,
+  "manifest": {
+    "version": 1,
+    "summary": "Reads its credentials from the environment each run.",
+    "prerequisites": [
+      {
+        "binary": "git"
+      }
+    ],
+    "secrets": [
+      {
+        "key": "SLACK_BOT_TOKEN",
+        "label": "Slack bot token",
+        "delivery": "env"
+      },
+      {
+        "key": "personal.note",
+        "label": "A value you type into the file yourself",
+        "delivery": "manual"
+      }
+    ],
+    "commands": {
+      "check": {
+        "run": "bin/setup.sh check",
+        "description": "Report readiness"
+      }
+    }
+  },
+  "problems": [],
+  "prerequisites": [
+    {
+      "kind": "binary",
+      "value": "git",
+      "met": true,
+      "detail": "/usr/bin/git"
+    }
+  ],
+  "secrets": [
+    {
+      "key": "SLACK_BOT_TOKEN",
+      "delivery": "env",
+      "optional": false,
+      "present": null,
+      "detail": "entered each time; nothing is stored"
+    },
+    {
+      "key": "personal.note",
+      "delivery": "manual",
+      "optional": false,
+      "present": null,
+      "detail": "you enter this yourself, in the file"
+    }
+  ],
+  "configured": null,
+  "ready": true
+}

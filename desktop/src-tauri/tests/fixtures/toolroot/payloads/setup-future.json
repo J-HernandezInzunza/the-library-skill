@@ -32,5 +32,15 @@
       "detail": "/usr/bin/git"
     }
   ],
+  "secrets": [
+    {
+      "key": "token",
+      "delivery": "manual",
+      "optional": false,
+      "present": null,
+      "detail": "you enter this yourself, in the file"
+    }
+  ],
+  "configured": null,
   "ready": false
 }

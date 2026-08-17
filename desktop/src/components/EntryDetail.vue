@@ -159,6 +159,14 @@ watch(() => props.name, load, { immediate: true });
     <template v-else-if="detail">
       <p class="entry-detail__desc">{{ detail.entry.description }}</p>
 
+      <h3 class="entry-detail__section">Source</h3>
+      <div class="card">
+        <p class="entry-detail__origin">{{ origin }}</p>
+        <p v-if="detail.source.file_path" class="entry-detail__path">
+          {{ detail.source.file_path }}
+        </p>
+      </div>
+
       <!-- What you have, before what you could do: the page is most often opened about an
            entry that is already installed, and that was the fact it never stated. -->
       <InstalledCopies
@@ -169,24 +177,16 @@ watch(() => props.name, load, { immediate: true });
         @changed="afterWrite()"
       />
 
-      <!-- Directly under the install panel, because "it is installed" and "it still
-           needs a token before it works" are one thought, and the second is the half
-           that a chip in the header cannot carry. -->
-      <SetupReadiness :name="detail.name" :installed="copies.length > 0" />
-
       <InstallPreview
         :name="detail.name"
         :installed="copies.length > 0"
         @installed="afterWrite()"
       />
 
-      <h3 class="entry-detail__section">Source</h3>
-      <div class="card">
-        <p class="entry-detail__origin">{{ origin }}</p>
-        <p v-if="detail.source.file_path" class="entry-detail__path">
-          {{ detail.source.file_path }}
-        </p>
-      </div>
+      <!-- Below Source rather than under the install panel. It is about the installed
+           copy, but it is reference material — what this skill needs before it works —
+           and sitting between the two install controls it read as a step in installing. -->
+      <SetupReadiness :name="detail.name" :installed="copies.length > 0" />
 
       <h3 class="entry-detail__section">
         Catalogs holding this name ({{ detail.copies.length }})

@@ -22,7 +22,32 @@ const error = ref("");
 const summary = computed(() => (report.value ? describeSetup(report.value) : null));
 const unmet = computed(() => (report.value ? unmetPrerequisites(report.value) : []));
 const met = computed(() => report.value?.prerequisites.filter((pre) => pre.met) ?? []);
-const secrets = computed(() => report.value?.manifest?.secrets ?? []);
+
+/**
+ * What the manifest says about each value, joined to whether it is on disk.
+ *
+ * Two lists keyed by the same `key`: the manifest half carries the label, guidance, and
+ * url, the report half carries `present`. Joined here rather than in the CLI because the
+ * manifest reaches the app whole anyway, and duplicating the author's prose into the
+ * status list would give it two places to be wrong.
+ */
+const secrets = computed(() =>
+  (report.value?.manifest?.secrets ?? []).map((secret) => ({
+    ...secret,
+    present: report.value?.secrets.find((state) => state.key === secret.key)?.present ?? null,
+  })),
+);
+
+/** Expanded when something is waiting on somebody, or when asked for (R5.1c). */
+const opened = ref(false);
+const expanded = computed(() => summary.value?.outstanding === true || opened.value);
+
+/** The chip beside a value: what the CLI found, in three words rather than a path. */
+function describePresence(present: boolean | null): string {
+  if (present === true) return "stored";
+  if (present === false) return "not stored yet";
+  return "never stored";
+}
 
 /**
  * A skill that declares no setup says so by staying quiet.
@@ -70,9 +95,29 @@ watch([() => props.name, () => props.installed], () => load(props.name), { immed
       <Busy v-else-if="loading" inline :label="`Checking what ${name} needs…`" />
 
       <template v-else-if="summary">
-        <p class="setup__headline" :class="`setup__headline--${summary.tone}`">
+        <!-- A settled panel is one clickable line. Nothing is hidden that is waiting on
+             anyone: `outstanding` forces it open, so the toggle only ever appears over a
+             skill in good standing (R5.1c). -->
+        <button
+          v-if="!summary.outstanding"
+          type="button"
+          class="setup__toggle"
+          :aria-expanded="expanded"
+          @click="opened = !opened"
+        >
+          <span class="setup__caret" aria-hidden="true">{{ expanded ? "▾" : "▸" }}</span>
+          <span class="setup__headline" :class="`setup__headline--${summary.tone}`">
+            {{ summary.headline }}
+          </span>
+          <!-- Only when there is an exception. An unqualified headline says everything
+               there is to say, and silence in this slot means nothing to do. -->
+          <span v-if="summary.qualifier" class="setup__qualifier">{{ summary.qualifier }}</span>
+        </button>
+        <p v-else class="setup__headline" :class="`setup__headline--${summary.tone}`">
           {{ summary.headline }}
         </p>
+
+        <template v-if="expanded">
         <p class="setup__detail">{{ summary.detail }}</p>
 
         <p v-if="report?.manifest?.summary" class="setup__summary">
@@ -110,15 +155,24 @@ watch([() => props.name, () => props.installed], () => load(props.name), { immed
           </ul>
         </template>
 
-        <!-- A plan, never a value: this says what will be asked for, and nothing is
-             collected or stored here. -->
+        <!-- A plan and a state, never a value: this says what will be asked for and
+             whether it is already there. Nothing is collected or stored here. -->
         <template v-if="secrets.length">
-          <h4 class="setup__section">What it will ask you for ({{ secrets.length }})</h4>
+          <h4 class="setup__section">What it needs ({{ secrets.length }})</h4>
           <ul class="setup__secrets">
             <li v-for="secret in secrets" :key="secret.key" class="setup__secret">
               <div class="setup__secret-head">
                 <strong>{{ secret.label ?? secret.key }}</strong>
                 <span v-if="secret.optional" class="setup__optional">optional</span>
+                <span
+                  class="setup__presence"
+                  :class="{
+                    'setup__presence--stored': secret.present === true,
+                    'setup__presence--missing': secret.present === false,
+                  }"
+                >
+                  {{ describePresence(secret.present) }}
+                </span>
               </div>
               <p class="setup__delivery">{{ describeDelivery(secret.delivery) }}</p>
               <!-- Verbatim. A paraphrased token-scope list is a support ticket. -->
@@ -133,6 +187,7 @@ watch([() => props.name, () => props.installed], () => load(props.name), { immed
               </button>
             </li>
           </ul>
+        </template>
         </template>
       </template>
     </div>
@@ -151,6 +206,38 @@ watch([() => props.name, () => props.installed], () => load(props.name), { immed
   margin: 0;
   font-size: 0.9rem;
   font-weight: 600;
+}
+.setup__toggle {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.setup__caret {
+  /* The only affordance on the row, so it is sized like one. At 0.7rem/0.5 it read as a
+     bullet — decoration rather than the thing to click. */
+  display: inline-block;
+  width: 0.9rem;
+  font-size: 0.85rem;
+  opacity: 0.75;
+  transition: transform 0.12s ease, opacity 0.12s ease;
+}
+.setup__toggle:hover .setup__caret {
+  opacity: 1;
+}
+.setup__qualifier {
+  /* Pushed right, so the headline reads as the answer and this as the footnote on it. */
+  margin-left: auto;
+  padding-left: 1rem;
+  font-size: 0.75rem;
+  opacity: 0.6;
 }
 .setup__headline--ready {
   color: #16a34a;
@@ -235,6 +322,28 @@ watch([() => props.name, () => props.installed], () => load(props.name), { immed
   text-transform: uppercase;
   letter-spacing: 0.03em;
   opacity: 0.55;
+}
+.setup__presence {
+  /* Right-aligned, apart from the name and the optional tag, because it is the only part
+     of the row that changes after the skill is installed. */
+  margin-left: auto;
+  font-size: 0.7rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  white-space: nowrap;
+  background: rgba(128, 128, 128, 0.18);
+  opacity: 0.8;
+}
+.setup__presence--stored {
+  background: rgba(34, 197, 94, 0.18);
+  color: #16a34a;
+  opacity: 1;
+}
+.setup__presence--missing {
+  background: rgba(245, 158, 11, 0.2);
+  color: #b45309;
+  font-weight: 600;
+  opacity: 1;
 }
 .setup__delivery {
   margin: 0.2rem 0 0;

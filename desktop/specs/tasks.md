@@ -743,6 +743,24 @@ the schema versions. **The app renders and executes; it does not parse or valida
     a test proven to fail against the pre-fix component.
   - **Commit:** `test(desktop): mount the components and pin their empty and error states`
 
+- [x] **T5.3 — `configured`, and a panel that stops repeating itself**
+  - **Files:** `library.py`, `desktop/src-tauri/src/setup.rs`, `desktop/src/setup.ts`,
+    `desktop/src/components/SetupReadiness.vue`,
+    `desktop/src-tauri/tests/fixtures/record_setup_payloads.py`
+  - **Requirements:** R5.1b, R5.1c, R1.1
+  - **Why:** `ready` says the walkthrough *can start* and nothing more, so the panel read
+    identically the day a skill was installed and a year after it was set up.
+  - **Do:** `setup --json` gains `secrets[] {key, delivery, optional, present, detail}` and
+    `configured`, both computed in `library.py` — reading the skill's own `config.path` is
+    catalog logic, and R1.1 keeps it out of the app. All three values are three-valued:
+    only `config-file` secrets leave anything on disk, so `env` and `manual` report
+    `present: null` and a skill with nothing checkable reports `configured: null`. The
+    panel keys its collapse off `summary.outstanding` and nothing else. Setup also moves
+    below Source on the detail page.
+  - **Verify:** Fixtures re-recorded, not hand-edited, by a committed script; every state
+    has a real recording. Gate passes both sides.
+  - **Commit:** `feat(setup): report whether a skill's values are already stored`
+
 ---
 
 ## Phase 6 — Agent layer

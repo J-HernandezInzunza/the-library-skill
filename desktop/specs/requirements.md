@@ -174,6 +174,28 @@ implementation; changing one is a spec change, not an implementation choice.
   walkthrough and this is never an error.
 - R5.1a Declared prerequisites are checked by the app before the agent starts; an unmet
   prerequisite aborts the walkthrough naming the specific item.
+- R5.1b `setup --json` reports whether the values a manifest declares are **already on
+  disk**, separately from whether the walkthrough can start. `secrets[] {key, delivery,
+  optional, present, detail}` mirrors `prerequisites[]`, and `configured` is
+  `true` / `false` / `null`. Three-valued because only `config-file` secrets leave
+  anything behind: `env` persists nothing by definition and `manual` never reaches the app,
+  so `false` for those would accuse the user of work they have already done. `null` is an
+  answer — "nothing here is checkable" — not a failure to give one. `true` says every
+  required value that *can* be seen is present; it never claims the values are correct,
+  which only the manifest's own `verify` command can decide (R5.1c).
+- R5.1c A skill in good standing renders as one line, expandable. The full credential plan
+  is shown when there is something outstanding — a problem, an unmet prerequisite, or a
+  missing value — and collapsed when there is not. A panel that reads the same on the day
+  you install a skill and a year later is not a status, and gets skipped on the entries
+  where it matters.
+- R5.1d The collapsed row says "Setup complete" only when **every** declared value was
+  checkable and every required one is present. A manifest carrying an `env` or `manual`
+  secret can never be confirmed complete, so it reads "Set up" instead: the part that gets
+  stored is stored, and the rest is unknowable. The row's second half carries *the
+  exception only* — an unset optional value, values entered each run — and is empty when
+  nothing qualifies the headline. Counts of stored values are not shown: nothing anyone
+  would do differs between three and five, and a number in that position reads as the
+  thing to act on. The slot is reserved for the `verify` result once Phase 7 can run it.
 - R5.2 A walkthrough runs the agent as `claude -p --output-format stream-json`, streaming text
   and tool activity into an in-app chat panel.
 - R5.3 The agent's tools are restricted to the D4 whitelist by a deny-by-default `PreToolUse` hook
@@ -202,8 +224,11 @@ implementation; changing one is a spec change, not an implementation choice.
   written into the skill's declared config file (default), injected as an env var for the
   walkthrough's subprocesses, or never received by the app at all (`manual`). The app writes to
   no location other than the skill's declared `config.path`, and invents no second store.
-- R6.5 Any file the app writes a secret into is chmod'd to the declared permissions (default
-  `0600`) immediately after the write.
+- R6.5 Any file the app writes a secret into is chmod'd `0600` immediately after the write.
+  Not configurable by the manifest: a credential file has no other sane mode, and a declared
+  one could only ever be equal to it or weaker. `atlassian-toolkit`'s loader refuses a config
+  with any group or other bit set, so a manifest naming `0644` would have had the app break
+  the skill on its behalf.
 - R6.6 The command log redacts every value collected for a secret, including where it appears in
   captured stdout/stderr.
 

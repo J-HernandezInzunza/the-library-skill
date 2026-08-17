@@ -248,7 +248,20 @@ def record_install(entry: "Entry", dest: Path, scope: str, commit: "str | None",
 SETUP_VERSIONS = (1,)                                     # recognized schema versions
 PREREQ_KINDS = ("node", "sibling-skill", "env", "binary")
 DELIVERY_MODES = ("config-file", "env", "manual")
-CONFIG_FORMATS = ("json", "ini", "env")
+# Reserved command ids, in place of `config.scaffold` / `verify` pointers. A role is
+# carried by the id itself, so every manifest names these two the same thing and the
+# rules below are enforceable rather than conventional.
+SCAFFOLD_COMMAND = "config-init"   # creates config.path in the skill's own shape
+VERIFY_COMMAND = "check"           # exit code decides whether setup succeeded
+# Fields removed from the schema. Rejected rather than ignored: each one expressed an
+# intent that nothing honours now, and silently dropping it leaves a manifest looking
+# configured for behaviour it will not get.
+RETIRED_SETUP_KEYS = {
+    "config.format": f"formats are detected from the file {SCAFFOLD_COMMAND} writes, not declared",
+    "config.permissions": "config files are always chmod 0600",
+    "config.scaffold": f"the scaffold command is the one with id '{SCAFFOLD_COMMAND}'",
+    "verify": f"the verify command is the one with id '{VERIFY_COMMAND}'",
+}
 _SHELL_METACHARS = "&|;<>`$()\n"  # exactly the schema §5 set — no stricter, or valid manifests break
 
 
@@ -318,16 +331,12 @@ def validate_setup(data: Any, skill_dir: "Path | None" = None) -> list[str]:
             problems.append("config.path is required when config is present")
         elif not (path.startswith("/") or path.startswith("~")):
             problems.append(f"config.path must be absolute or ~-prefixed, got '{path}'")
-        fmt = config.get("format")
-        if fmt is not None and fmt not in CONFIG_FORMATS:
-            problems.append(f"unknown config.format '{fmt}' (known: {', '.join(CONFIG_FORMATS)})")
-        scaffold = config.get("scaffold")
-        if scaffold is not None and scaffold not in commands:
-            problems.append(f"config.scaffold '{scaffold}' is not a command id")
 
-    verify = data.get("verify")
-    if verify is not None and verify not in commands:
-        problems.append(f"verify '{verify}' is not a command id")
+    for field, why in RETIRED_SETUP_KEYS.items():
+        section, _, key = field.rpartition(".")
+        holder = config if section == "config" else data
+        if isinstance(holder, dict) and key in holder:
+            problems.append(f"'{field}' was removed from the schema: {why}")
 
     secrets = data.get("secrets") or []
     if not isinstance(secrets, list):
@@ -343,9 +352,13 @@ def validate_setup(data: Any, skill_dir: "Path | None" = None) -> list[str]:
         if delivery not in DELIVERY_MODES:
             problems.append(f"unknown delivery '{delivery}' for secrets[{i}] "
                             f"(known: {', '.join(DELIVERY_MODES)})")
-        elif delivery == "config-file" and not (config.get("path") and config.get("format")):
-            problems.append(f"secrets[{i}] delivers to the config file, "
-                            "which needs config.path and config.format")
+        elif delivery == "config-file" and not config.get("path"):
+            problems.append(f"secrets[{i}] delivers to the config file, which needs config.path")
+        elif delivery == "config-file" and SCAFFOLD_COMMAND not in commands:
+            # The app writes into a file the skill created, never one it invented: the
+            # skill's template carries defaults and a shape its own migrate step keys off.
+            problems.append(f"secrets[{i}] delivers to the config file, so a "
+                            f"'{SCAFFOLD_COMMAND}' command is required to create it")
 
     prereqs = data.get("prerequisites") or []
     if not isinstance(prereqs, list):
@@ -442,6 +455,78 @@ def check_prerequisite(pre: dict[str, Any], dirs: dict[str, dict[str, str]],
     scopes = installed_scopes(dirs, sibling)
     return {"kind": kind, "value": value, "met": bool(scopes),
             "detail": f"installed ({', '.join(scopes)})" if scopes else "not installed"}
+
+
+def _dotted_get(data: Any, key: str) -> Any:
+    """Follow a dotted `secrets[].key` into a parsed config file. Missing is None."""
+    cur = data
+    for part in key.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def _read_config_store(config: dict[str, Any]) -> tuple[Any, "tuple[bool | None, str] | None"]:
+    """Read the skill's *own* config file, so declared secrets can be looked up in it.
+
+    The format is *detected*, never declared. A `config.format` field could only ever
+    agree with the file or be wrong about it — and being wrong means writing a shape the
+    skill cannot read back. The file the scaffold command wrote is its own authority.
+
+    Returns (parsed, verdict). A verdict short-circuits every secret in the file to the
+    same answer, and its first element is the `present` value to report:
+
+    - `(False, …)` — the file is not there. Definite: nothing is stored in a file that
+      does not exist, and calling that "unknown" would hide the most common real state.
+    - `(None, …)`  — nothing to look in, or what is there does not parse. JSON is the only
+      shape read so far (schema §10.3); anything else is reported as unknown rather than
+      guessed at, because a value called missing that the app cannot store either sends
+      you to the wrong fix.
+    """
+    path_raw = config.get("path")
+    if not isinstance(path_raw, str) or not path_raw.strip():
+        return None, (None, "no config file declared")
+
+    path = Path(path_raw).expanduser()
+    if not path.is_file():
+        return None, (False, f"not set — {path} has not been created yet")
+    try:
+        return json.loads(path.read_text()), None
+    except OSError as ex:
+        return None, (None, f"{path} is unreadable ({ex.__class__.__name__})")
+    except ValueError:
+        return None, (None, f"{path} is not JSON, the only config format read so far")
+
+
+def check_secret(sec: dict[str, Any], config: dict[str, Any],
+                 store: Any, verdict: "tuple[bool | None, str] | None") -> dict[str, Any]:
+    """Check whether one declared secret already has a value on disk.
+
+    Returns {key, delivery, optional, present, detail}, mirroring `check_prerequisite`.
+
+    `present` is deliberately three-valued. Only `config-file` secrets leave anything
+    behind: `env` persists nothing *by definition* and `manual` never reaches the app at
+    all, so for those the honest answer is None. Reporting False would read as "you still
+    have to do this" on a skill that is entirely set up, which is the exact mistake a
+    completion state exists to stop making.
+    """
+    key = str(sec.get("key") or "")
+    delivery = sec.get("delivery", "config-file")
+    common = {"key": key, "delivery": delivery, "optional": bool(sec.get("optional"))}
+
+    if delivery == "env":
+        return {**common, "present": None, "detail": "entered each time; nothing is stored"}
+    if delivery == "manual":
+        return {**common, "present": None, "detail": "you enter this yourself, in the file"}
+    if verdict is not None:
+        return {**common, "present": verdict[0], "detail": verdict[1]}
+
+    value = _dotted_get(store, key)
+    filled = value is not None and (not isinstance(value, str) or value.strip() != "")
+    where = Path(str(config.get("path"))).expanduser()
+    return {**common, "present": filled,
+            "detail": f"set in {where}" if filled else f"not set in {where}"}
 
 
 def load_setup(dest: Path) -> tuple["dict[str, Any] | None", list[str]]:
@@ -3034,6 +3119,17 @@ def cmd_setup(args: argparse.Namespace) -> int:
                      for p in (manifest or {}).get("prerequisites") or []]
     unmet = [p for p in prerequisites if not p["met"]]
 
+    # Whether the values the manifest declares are already on disk — a different question
+    # from `ready`, which only says the walkthrough *can start*. Read once, not per secret.
+    setup_config = (manifest or {}).get("config") or {}
+    store, verdict = _read_config_store(setup_config)
+    secrets = [check_secret(s, setup_config, store, verdict)
+               for s in (manifest or {}).get("secrets") or [] if isinstance(s, dict)]
+    # Only what is actually checkable counts. A skill whose every secret is `env` has
+    # nothing to look at, and `false` there would be an accusation rather than a fact.
+    checkable = [s for s in secrets if s["present"] is not None]
+    missing = [s for s in checkable if not s["present"] and not s["optional"]]
+
     payload = {
         "status": "OK",
         "name": entry.name,
@@ -3045,6 +3141,12 @@ def cmd_setup(args: argparse.Namespace) -> int:
         "manifest": manifest,
         "problems": problems,
         "prerequisites": prerequisites,
+        "secrets": secrets,
+        # Three-valued on purpose, and null is not a failure to answer — it is the answer
+        # for a skill with nothing checkable. True means every *required* value that can
+        # be seen is there; it does not promise the values are correct, which only the
+        # manifest's own `verify` command can say.
+        "configured": None if not checkable else not missing,
         # Ready means the app can start the walkthrough: a manifest that validates and
         # every prerequisite met. A manifest with problems is never "ready anyway".
         "ready": manifest is not None and not problems and not unmet,
@@ -3075,15 +3177,16 @@ def cmd_setup(args: argparse.Namespace) -> int:
         for p in prerequisites:
             mark = "ok  " if p["met"] else "MISS"
             print(f"    [{mark}] {p['kind']}: {p['value']} — {p['detail']}")
-    secrets = manifest.get("secrets") or []
     if secrets:
         print("  Values to collect:")
         for s in secrets:
-            if not isinstance(s, dict):
-                continue
-            tail = " (optional)" if s.get("optional") else ""
-            print(f"    {s.get('key')} via {s.get('delivery', 'config-file')}{tail}")
+            mark = {True: "ok  ", False: "MISS"}.get(s["present"], "  ? ")
+            tail = " (optional)" if s["optional"] else ""
+            print(f"    [{mark}] {s['key']} via {s['delivery']}{tail} — {s['detail']}")
     print(f"  Ready: {'yes' if payload['ready'] else 'no'}")
+    configured = payload["configured"]
+    if configured is not None:
+        print(f"  Configured: {'yes' if configured else 'no'}")
     return 0
 
 

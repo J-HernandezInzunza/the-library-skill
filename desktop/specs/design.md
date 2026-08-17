@@ -158,6 +158,7 @@ One Tauri command per operation (R1.2) — never a generic passthrough:
 | `entry_push` | `push <name> --from … [--message] --json` — tolerates exit 1 (§3.7) | R4.5 |
 | `entry_uninstall` | `uninstall <name> --scope … --json` (+`--force`) — tolerates exit 2 (§3.7) | R3.1 |
 | `entry_show` | `show <name> --json` | R2.1 |
+| `entry_setup` | `setup <name> --json` — tolerates exit 2 (§3.7) | R5.1, R5.1b |
 | `registry_list` | `catalog list --json` | R2.4, R2.5, R4.1 |
 | `bootstrap_tool` | `python3 bootstrap.py --json --dir <home>` | R7.1 |
 | `catalog_init` | `init --repo … --branch …` | R4.6 |
