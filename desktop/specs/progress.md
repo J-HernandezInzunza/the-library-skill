@@ -2938,3 +2938,57 @@ guessable location.
 walkthrough can pull in a missing sibling skill. Absent by design: `add`, `update`,
 `remove`, `push`, `catalog`. Those change what the *team* sees, and the user has forms for
 them with previews and confirmations an agent would bypass.
+
+---
+
+## T7.2 — the field, and a tool call that waits for it
+
+`request_secret` is the only tool that does not answer when it is called. It registers an ask,
+the window renders a masked field, and the call resolves when the user submits or declines.
+That suspension *is* the design: it is what lets the agent be told "a value arrived" while the
+value itself only ever travels from a native field to the backend store.
+
+**The acknowledgement is byte-identical whatever the user typed**, and a test proves it by
+running the tool twice with values of different lengths and comparing the two results. It also
+asserts the value and its length are absent. That is the one test in this repo whose failure
+means a credential reached the model.
+
+Its wording is doing three jobs, each from a spike finding: it names the key (a bare
+`"received"` was read by the agent as *"an empty/no result"*, and it offered to retry), it says
+the app holds the value and the agent does not, and it forbids asking — because an ack that
+merely omits the value gets followed by a polite request to paste the token into the chat.
+
+**Declining is an answer, not a cancel.** It comes back as an errored tool result carrying
+"Do not ask again; explain what the skill cannot do without it", because the alternative is an
+agent that reads a plain failure as a transient one and asks a second time.
+
+Four things the shape of the store decides:
+
+- **Values are `Vec<u8>`, not `String`.** Zeroing a `Vec<u8>` on `Drop` is safe code; the same
+  thing on a `String` needs `unsafe { as_mut_vec() }`. The honest limit, written where someone
+  will read it: the value also passed through the IPC layer and serde, and those copies are not
+  ours to zero. What this guarantees is that the app's own copy does not outlive the walkthrough.
+- **One ask at a time, and a second is refused rather than queued.** Two credential fields on
+  screen at once is how a token gets typed into the box for an email address.
+- **The key is checked against the open ask on submit.** A value answered under the wrong key
+  gets written to the wrong place in somebody's config file, which is worse than a refused
+  submit.
+- **The ask is announced only after it is registered**, so a submit that arrives immediately
+  cannot find nothing to attach to.
+
+**A deadlock, found by writing the test wrong.** The first draft of the store's tests
+synchronised by retrying a submit until it stuck — fine, until the "a second ask is refused"
+test, whose second call is itself a `request`: it registered its own ask and blocked for the
+full 15-minute limit. `cargo test` hung. The tests now wait for the ask to *open* and then
+answer once, which is both deterministic and what the UI actually does. The 15-minute
+`WAIT_LIMIT` earned its place twice over: it is why an abandoned walkthrough does not hold a
+thread forever, and it is why that mistake was a slow test rather than a permanent hang.
+
+**On the front end, the panel follows the backend's lifecycle rather than owning it.** The store
+closes an ask when a walkthrough ends or an ask times out, so `secret://resolved` closes the
+field; `secret://requested` clears the box, so a value typed for one key cannot be submitted
+under the next. The spec asserts the value never appears in rendered HTML, and — the assertion
+that matters — that `submit_secret` is the *only* call any part of the payload reaches.
+
+Not yet placed in the app: T6.4 decides where the walkthrough's chrome goes, and a credential
+field mounted somewhere nothing can ask for a value would be decoration.

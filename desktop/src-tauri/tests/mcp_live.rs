@@ -18,8 +18,28 @@ use std::sync::Arc;
 
 use desktop_lib::events::{CommandFinished, CommandSink, CommandStarted};
 use desktop_lib::mcp::{self, Host};
+use desktop_lib::secrets::{Ask, Notifier, Secrets};
 
-struct Quiet;
+/// A host that logs nothing and announces nothing. Its secret store is real, because the tool
+/// surface holds one; nothing here opens an ask.
+struct Quiet {
+    secrets: Secrets,
+}
+
+impl Quiet {
+    fn new() -> Self {
+        Self {
+            secrets: Secrets::new(Arc::new(Deaf)),
+        }
+    }
+}
+
+struct Deaf;
+
+impl Notifier for Deaf {
+    fn requested(&self, _: &Ask) {}
+    fn resolved(&self, _: &str) {}
+}
 
 impl CommandSink for Quiet {
     fn started(&self, _: &CommandStarted) {}
@@ -30,12 +50,16 @@ impl Host for Quiet {
     fn sink(&self) -> &dyn CommandSink {
         self
     }
+
+    fn secrets(&self) -> &Secrets {
+        &self.secrets
+    }
 }
 
 #[test]
 #[ignore = "spawns a real claude; run with --ignored"]
 fn claude_connects_to_the_app_hosted_server_and_calls_a_tool() {
-    let server = mcp::start(Arc::new(Quiet)).expect("the endpoint should start");
+    let server = mcp::start(Arc::new(Quiet::new())).expect("the endpoint should start");
     let token = server.mint().expect("a walkthrough token");
     let dir = std::env::temp_dir().join(format!("library-mcp-live-{}", server.port()));
     std::fs::create_dir_all(&dir).unwrap();

@@ -12,8 +12,28 @@ use std::sync::Arc;
 
 use desktop_lib::events::{CommandFinished, CommandSink, CommandStarted};
 use desktop_lib::mcp::{self, Host};
+use desktop_lib::secrets::{Ask, Notifier, Secrets};
 
-struct Quiet;
+/// A host that logs nothing and announces nothing. Its secret store is real, because the tool
+/// surface holds one; nothing here opens an ask.
+struct Quiet {
+    secrets: Secrets,
+}
+
+impl Quiet {
+    fn new() -> Self {
+        Self {
+            secrets: Secrets::new(Arc::new(Deaf)),
+        }
+    }
+}
+
+struct Deaf;
+
+impl Notifier for Deaf {
+    fn requested(&self, _: &Ask) {}
+    fn resolved(&self, _: &str) {}
+}
 
 impl CommandSink for Quiet {
     fn started(&self, _: &CommandStarted) {}
@@ -23,6 +43,10 @@ impl CommandSink for Quiet {
 impl Host for Quiet {
     fn sink(&self) -> &dyn CommandSink {
         self
+    }
+
+    fn secrets(&self) -> &Secrets {
+        &self.secrets
     }
 }
 
@@ -61,7 +85,7 @@ fn payload(response: &str) -> serde_json::Value {
 }
 
 fn served() -> mcp::Server {
-    mcp::start(Arc::new(Quiet)).expect("the endpoint should start")
+    mcp::start(Arc::new(Quiet::new())).expect("the endpoint should start")
 }
 
 /// A server with one walkthrough's token minted, which is the normal state.
@@ -69,6 +93,31 @@ fn served_with_token() -> (mcp::Server, String) {
     let server = served();
     let token = server.mint().expect("a walkthrough token");
     (server, token)
+}
+
+/// The same, keeping the host so a test can play the part of the user answering a field.
+fn served_with_host() -> (mcp::Server, String, Arc<Quiet>) {
+    let host = Arc::new(Quiet::new());
+    let server = mcp::start(host.clone()).expect("the endpoint should start");
+    let token = server.mint().expect("a walkthrough token");
+    (server, token, host)
+}
+
+/// Answer the open ask with *value*, once it opens. Plays the user, from the outside.
+fn answer_the_field(host: &Arc<Quiet>, value: &'static str) -> std::thread::JoinHandle<String> {
+    let host = Arc::clone(host);
+    std::thread::spawn(move || {
+        for _ in 0..2_000 {
+            if let Some(ask) = host.secrets().pending() {
+                host.secrets()
+                    .submit(&ask.key, value.as_bytes().to_vec())
+                    .expect("the open ask should accept its own key");
+                return ask.key;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        panic!("no field was ever opened");
+    })
 }
 
 #[test]
@@ -159,6 +208,86 @@ fn a_refused_subcommand_comes_back_as_a_readable_tool_result() {
         .as_str()
         .expect("a reason")
         .contains("push"));
+}
+
+/// **The D7 assertion at the tool boundary.** Two runs, two values of different lengths, and the
+/// agent-facing result has to be the same bytes both times: no value, no length, no prefix. This
+/// is the one test whose failure means a credential reached the model.
+#[test]
+fn the_acknowledgement_is_identical_whatever_the_user_typed() {
+    let mut results = Vec::new();
+    for value in ["x", "atlassian-token-of-a-quite-different-length-0123456789"] {
+        let (server, token, host) = served_with_host();
+        let answering = answer_the_field(&host, value);
+
+        let response = post(
+            server.port(),
+            Some(&token),
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": "request_secret",
+                    "arguments": { "key": "account.api_token", "guidance": "Create it unscoped." }
+                }
+            }),
+        );
+        answering.join().unwrap();
+
+        let result = payload(&response)["result"].clone();
+        let text = result["content"][0]["text"]
+            .as_str()
+            .expect("an acknowledgement")
+            .to_string();
+        assert!(!text.contains(value), "the value reached the agent: {text}");
+        assert!(!text.contains(&value.len().to_string()), "its length did: {text}");
+        assert!(text.contains("account.api_token"), "{text}");
+        results.push(text);
+    }
+
+    assert_eq!(results[0], results[1], "the ack varies with the value");
+}
+
+/// Declining is an answer, not a failure — but the agent has to hear it as "stop asking", which
+/// means it arrives as an errored result carrying that instruction.
+#[test]
+fn declining_reaches_the_agent_as_an_error_that_says_not_to_ask_again() {
+    let (server, token, host) = served_with_host();
+    let declining = {
+        let host = Arc::clone(&host);
+        std::thread::spawn(move || {
+            for _ in 0..2_000 {
+                if let Some(ask) = host.secrets().pending() {
+                    host.secrets().decline(&ask.key).expect("the open ask");
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            panic!("no field was ever opened");
+        })
+    };
+
+    let response = post(
+        server.port(),
+        Some(&token),
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {
+                "name": "request_secret",
+                "arguments": { "key": "account.api_token", "guidance": "Create it unscoped." }
+            }
+        }),
+    );
+    declining.join().unwrap();
+
+    let result = &payload(&response)["result"];
+    assert_eq!(result["isError"], true);
+    let text = result["content"][0]["text"].as_str().expect("a reason");
+    assert!(text.contains("declined"), "{text}");
+    assert!(text.contains("Do not ask again"), "{text}");
 }
 
 /// A body larger than the endpoint will read must not be the way to make the app allocate until

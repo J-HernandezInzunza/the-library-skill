@@ -16,6 +16,7 @@ pub mod cli;
 pub mod error;
 pub mod events;
 pub mod mcp;
+pub mod secrets;
 pub mod setup;
 
 use cli::{
@@ -25,7 +26,9 @@ use cli::{
     UpdateRequest, UsePreview, UseReport,
 };
 use error::AppError;
+use secrets::Secrets;
 use setup::SetupReport;
+use std::sync::Arc;
 
 /// Run a blocking CLI call off the UI thread.
 ///
@@ -239,6 +242,44 @@ async fn entry_setup(app: tauri::AppHandle, name: String) -> Result<SetupReport,
     off_thread(move || setup::setup(&app, &name)).await
 }
 
+/// Hand the value the user typed to the waiting tool call (R6.1, D7).
+///
+/// The value crosses the IPC boundary once, from the field to the store, and goes no further: it
+/// is never returned to this layer, never logged, and never named in what the agent is told. The
+/// key is checked against the open ask inside the store, so a stale field cannot answer a
+/// different question than the one on screen.
+#[tauri::command]
+async fn submit_secret(
+    secrets: tauri::State<'_, Arc<Secrets>>,
+    key: String,
+    value: String,
+) -> Result<(), AppError> {
+    let store = Arc::clone(&secrets);
+    off_thread(move || {
+        store
+            .submit(&key, value.into_bytes())
+            // A refused submit is the app disagreeing with itself about what is on screen, so it
+            // reads as a plain failure rather than as a CLI one.
+            .map_err(|detail| AppError::AgentStream { detail })
+    })
+    .await
+}
+
+/// The user chose not to provide the value. The walkthrough continues without it (R6.1).
+#[tauri::command]
+async fn decline_secret(
+    secrets: tauri::State<'_, Arc<Secrets>>,
+    key: String,
+) -> Result<(), AppError> {
+    let store = Arc::clone(&secrets);
+    off_thread(move || {
+        store
+            .decline(&key)
+            .map_err(|detail| AppError::AgentStream { detail })
+    })
+    .await
+}
+
 /// Whether guided walkthroughs can be offered at all (R7.2).
 ///
 /// Returns a `bool` rather than failing when `claude` is absent: the agent is an
@@ -260,6 +301,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // The secret store outlives any one view: a walkthrough's pending ask has to survive the
+        // user navigating away from the panel that opened it, and the value it holds belongs to
+        // the walkthrough rather than to a component.
+        .setup(|app| {
+            let notifier: Arc<dyn secrets::Notifier> = Arc::new(app.handle().clone());
+            tauri::Manager::manage(app, Arc::new(Secrets::new(notifier)));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             library_list,
             entry_show,
@@ -281,6 +330,8 @@ pub fn run() {
             registry_remove,
             entry_setup,
             agent_available,
+            submit_secret,
+            decline_secret,
             bootstrap_tool
         ])
         .run(tauri::generate_context!())

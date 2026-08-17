@@ -602,6 +602,20 @@ export interface SecretState {
 }
 
 /**
+ * One value the walkthrough is asking for, mirrored from `secrets.rs`'s `Ask`.
+ *
+ * Arrives on `secret://requested` while the agent's tool call is still suspended, and the field
+ * it opens is the only place the value is ever typed. `guidance` and `url` are the skill
+ * author's own words: what to do to obtain the value, and where.
+ */
+export interface SecretRequest {
+  /** The dotted config key the value belongs at — `account.api_token`. */
+  key: string;
+  guidance: string;
+  url?: string | null;
+}
+
+/**
  * The backend contract, mirrored from `src-tauri/src/error.rs`.
  *
  * Errors arrive as a tagged union so the UI can act on them rather than dump a

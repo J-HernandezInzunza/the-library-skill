@@ -875,8 +875,10 @@ The security-critical phase. Every task here is a place where a mistake leaks a 
     missing or wrong bearer token. Gate passes.
   - **Commit:** `feat(desktop/mcp): expose the read-only agent tool whitelist`
 
-- [ ] **T7.2 — `request_secret` and the secure input**
-  - **Files:** `desktop/src-tauri/src/{mcp,secrets}.rs`, `desktop/src/components/SecretPrompt.vue`
+- [x] **T7.2 — `request_secret` and the secure input**
+  - **Files:** `desktop/src-tauri/src/{mcp,secrets,lib}.rs`,
+    `desktop/src/components/SecretPrompt.vue`, `desktop/src/components/SecretPrompt.spec.ts`,
+    `desktop/src-tauri/tests/mcp.rs`, `desktop/src/types.ts`
   - **Requirements:** R6.1, R6.2, R6.3, D7
   - **Do:** `request_secret` does not resolve immediately: it emits `secret://requested`, the app
     renders a native masked field, and the tool resolves only once the user submits — returning a

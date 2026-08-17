@@ -27,6 +27,7 @@ use serde_json::{json, Value};
 use crate::cli;
 use crate::error::AppError;
 use crate::events::CommandSink;
+use crate::secrets::{Answer, Ask, Secrets};
 use crate::setup;
 
 /// The subcommands the agent may run (R5.3a).
@@ -39,7 +40,7 @@ pub const ALLOWED_SUBCOMMANDS: [&str; 4] = ["list", "search", "doctor", "use"];
 
 /// What the tools are called on the wire. `mcp__library__` is prepended by Claude Code from
 /// the server's name in `--mcp-config`, and the hook allows exactly that prefix.
-pub const TOOLS: [&str; 2] = ["library_cmd", "read_skill_doc"];
+pub const TOOLS: [&str; 3] = ["library_cmd", "read_skill_doc", "request_secret"];
 
 /// The app's one tool endpoint, and the tokens currently allowed to use it.
 ///
@@ -112,11 +113,28 @@ fn agent_server_name() -> &'static str {
 /// assert what the agent was allowed to do.
 pub trait Host: Send + Sync {
     fn sink(&self) -> &dyn CommandSink;
+
+    /// Where a collected value goes, and what a pending ask blocks on (R6).
+    fn secrets(&self) -> &Secrets;
 }
 
-impl Host for tauri::AppHandle {
+/// The app as its tools see it: the window's command log, and the walkthrough's secret store.
+///
+/// A struct rather than an `impl Host for AppHandle`, because the store is not something an
+/// `AppHandle` can hand back by reference — and because bundling them names what a tool call is
+/// actually allowed to reach.
+pub struct AppHost {
+    pub app: tauri::AppHandle,
+    pub secrets: Arc<Secrets>,
+}
+
+impl Host for AppHost {
     fn sink(&self) -> &dyn CommandSink {
-        self
+        &self.app
+    }
+
+    fn secrets(&self) -> &Secrets {
+        &self.secrets
     }
 }
 
@@ -378,6 +396,30 @@ fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "request_secret",
+            "description":
+                "Ask the app to collect one credential from the user. The app renders a native \
+                 masked field outside this conversation; you never see the value, and you must \
+                 not ask the user to paste it here. Returns once the user has answered.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "The dotted config key from the skill's setup manifest."
+                    },
+                    "guidance": {
+                        "type": "string",
+                        "description":
+                            "What the user has to do to obtain it. Pass the manifest's own \
+                             guidance verbatim; do not paraphrase scopes or permissions."
+                    },
+                    "url": { "type": "string", "description": "Where to obtain it, if declared." }
+                },
+                "required": ["key", "guidance"]
+            }
+        }),
+        json!({
             "name": "read_skill_doc",
             "description":
                 "Read a file from inside an installed skill's own directory — its SKILL.md, \
@@ -403,6 +445,7 @@ fn call(params: &Value, host: &dyn Host) -> Result<Value, String> {
     let text = match name {
         "library_cmd" => library_cmd(arguments, host)?,
         "read_skill_doc" => read_skill_doc(arguments, host)?,
+        "request_secret" => request_secret(arguments, host)?,
         // Named tools only. A prefix or pattern match here is how a tool nobody reviewed
         // becomes reachable.
         other => return Err(format!("'{other}' is not one of this app's tools")),
@@ -439,6 +482,49 @@ fn library_cmd(arguments: &Value, host: &dyn Host) -> Result<String, String> {
         // The CLI's own words, which are what the agent needs to explain the problem. Wrapped
         // as a refusal rather than raised, so one failed lookup does not end the walkthrough.
         Err(e) => Err(format!("the command failed: {}", refusal_text(&e))),
+    }
+}
+
+/// What the agent is told once a value has been collected (design §7).
+///
+/// **Byte-identical whatever the user typed.** It names the key, states that the app has the
+/// value, and says what to do next — three things the spike proved necessary: a bare `"received"`
+/// was reported by the agent as *"an empty/no result"* and it offered to retry, and an ack that
+/// does not forbid asking gets followed by a polite request to paste the token in chat.
+fn acknowledgement(key: &str) -> String {
+    format!(
+        "SECRET_RECEIVED: the user submitted a value for '{key}' via the app's secure field. \
+         The app holds it; you do not, and you must not ask for it, echo it, or ask the user to \
+         paste it here. Continue with run_skill_setup."
+    )
+}
+
+/// Ask the app to collect one credential, and wait for the user (R6.1, R6.2, D7).
+///
+/// The value is never returned, never logged, and never named in the result — the agent learns
+/// only that the app has one. That is the whole of D7 in one function: the model's context
+/// contains a key and an acknowledgement, and the credential itself never crosses into it.
+fn request_secret(arguments: &Value, host: &dyn Host) -> Result<String, String> {
+    let key = arguments["key"].as_str().unwrap_or_default();
+    if key.is_empty() {
+        return Err("request_secret needs the manifest's key for the value.".to_string());
+    }
+    let ask = Ask {
+        key: key.to_string(),
+        // The skill author's words, passed through untouched. Empty is allowed — a manifest may
+        // declare a value that needs no explanation — but it is the author's call, not ours.
+        guidance: arguments["guidance"].as_str().unwrap_or_default().to_string(),
+        url: arguments["url"].as_str().map(String::from),
+    };
+
+    match host.secrets().request(ask)? {
+        Answer::Submitted => Ok(acknowledgement(key)),
+        // A refusal rather than a failure: declining is a legitimate end to a walkthrough, and
+        // the agent needs to hear it as "stop asking" instead of "try again".
+        Answer::Declined => Err(format!(
+            "the user declined to provide '{key}'. Do not ask again; explain what the skill \
+             cannot do without it."
+        )),
     }
 }
 
@@ -534,8 +620,26 @@ fn http(status: u16, body: &Value) -> String {
 mod tests {
     use super::*;
 
-    /// A host whose CLI calls are recorded rather than run.
-    struct Silent;
+    /// A host that runs nothing and announces nothing — enough for every rule that refuses
+    /// before it reaches the CLI or the user.
+    struct Silent {
+        secrets: Secrets,
+    }
+
+    impl Default for Silent {
+        fn default() -> Self {
+            Self {
+                secrets: Secrets::new(Arc::new(Deaf)),
+            }
+        }
+    }
+
+    struct Deaf;
+
+    impl crate::secrets::Notifier for Deaf {
+        fn requested(&self, _: &Ask) {}
+        fn resolved(&self, _: &str) {}
+    }
 
     impl CommandSink for Silent {
         fn started(&self, _: &crate::events::CommandStarted) {}
@@ -545,6 +649,10 @@ mod tests {
     impl Host for Silent {
         fn sink(&self) -> &dyn CommandSink {
             self
+        }
+
+        fn secrets(&self) -> &Secrets {
+            &self.secrets
         }
     }
 
@@ -579,7 +687,7 @@ mod tests {
     fn a_call_without_the_token_is_refused() {
         let call = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
         for auth in [None, Some("Bearer wrong-token-of-the-same-length"), Some("secret")] {
-            let response = respond(&request("POST", "/mcp", auth, call.clone()), &live("secret"), &Silent);
+            let response = respond(&request("POST", "/mcp", auth, call.clone()), &live("secret"), &Silent::default());
             assert_eq!(status(&response), 401, "{auth:?} must not be served");
         }
     }
@@ -594,17 +702,22 @@ mod tests {
                 json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }),
             ),
             &live("secret"),
-            &Silent,
+            &Silent::default(),
         );
 
         assert_eq!(status(&response), 200);
-        let advertised: Vec<String> = body(&response)["result"]["tools"]
+        let mut advertised: Vec<String> = body(&response)["result"]["tools"]
             .as_array()
             .expect("a tool list")
             .iter()
             .map(|tool| tool["name"].as_str().unwrap_or_default().to_string())
             .collect();
-        assert_eq!(advertised, TOOLS);
+        // Sorted rather than positional: the order tools are declared in is presentation, and a
+        // test that pins it fails for a reordering nobody can be harmed by.
+        advertised.sort();
+        let mut expected = TOOLS.map(String::from);
+        expected.sort();
+        assert_eq!(advertised, expected);
     }
 
     /// The preflight gate in `agent.rs` requires every tool it expects to be advertised, so
@@ -625,11 +738,11 @@ mod tests {
         let auth = Some("Bearer secret");
 
         assert_eq!(
-            status(&respond(&request("GET", "/mcp", auth, call.clone()), &live("secret"), &Silent)),
+            status(&respond(&request("GET", "/mcp", auth, call.clone()), &live("secret"), &Silent::default())),
             405
         );
         assert_eq!(
-            status(&respond(&request("POST", "/", auth, call), &live("secret"), &Silent)),
+            status(&respond(&request("POST", "/", auth, call), &live("secret"), &Silent::default())),
             404
         );
     }
@@ -644,7 +757,7 @@ mod tests {
                 json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
             ),
             &live("secret"),
-            &Silent,
+            &Silent::default(),
         );
 
         assert_eq!(status(&response), 202);
@@ -660,7 +773,7 @@ mod tests {
                 json!({ "jsonrpc": "2.0", "id": 7, "method": "resources/list" }),
             ),
             &live("secret"),
-            &Silent,
+            &Silent::default(),
         );
 
         assert_eq!(body(&response)["error"]["code"], -32601);
@@ -671,7 +784,7 @@ mod tests {
     #[test]
     fn a_subcommand_off_the_allowlist_is_refused() {
         for subcommand in ["push", "remove", "add", "update", "catalog", "init"] {
-            let refusal = library_cmd(&json!({ "subcommand": subcommand }), &Silent)
+            let refusal = library_cmd(&json!({ "subcommand": subcommand }), &Silent::default())
                 .unwrap_err();
             assert!(refusal.contains(subcommand), "{refusal}");
         }
@@ -682,13 +795,13 @@ mod tests {
     #[test]
     fn a_flag_in_the_arguments_is_refused() {
         for args in [json!(["--dir", "/tmp"]), json!(["-f"]), json!(["ok", "--force"])] {
-            assert!(library_cmd(&json!({ "subcommand": "list", "args": args }), &Silent).is_err());
+            assert!(library_cmd(&json!({ "subcommand": "list", "args": args }), &Silent::default()).is_err());
         }
     }
 
     #[test]
     fn a_tool_nobody_defined_is_refused_by_name() {
-        let refusal = call(&json!({ "name": "run_anything", "arguments": {} }), &Silent)
+        let refusal = call(&json!({ "name": "run_anything", "arguments": {} }), &Silent::default())
             .expect_err("an unknown tool must be refused");
         assert!(refusal.contains("run_anything"));
     }
@@ -710,7 +823,7 @@ mod tests {
                 }),
             ),
             &live("secret"),
-            &Silent,
+            &Silent::default(),
         );
 
         assert_eq!(status(&response), 200);
