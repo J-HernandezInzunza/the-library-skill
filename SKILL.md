@@ -112,6 +112,7 @@ Never say "PR opened" unless `mode == "pr"` **and** `method == "gh"`. Claiming a
 | `/library show <name>`      | Everything about one entry: copies, overrides, deps, dependents, source, installs     |
 | `/library sync`             | Re-pull all installed items from source                                               |
 | `/library setup <name>`     | Report an installed skill's setup manifest + prerequisite state (never executes it)   |
+| `/library setup <name> --scaffold` | Print a canonical `setup.yaml` skeleton to stdout for a skill author to redirect       |
 | `/library search <keyword>` | Find entries by keyword                                                               |
 | `/library suggest-source <path>` | The source URL teammates could use for a file on this machine (reads no catalog) |
 | `/library catalog <action>` | Manage the catalog registry: `list`, `add`, `init`, `remove`, `migrate`                |

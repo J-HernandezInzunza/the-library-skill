@@ -761,6 +761,23 @@ the schema versions. **The app renders and executes; it does not parse or valida
     has a real recording. Gate passes both sides.
   - **Commit:** `feat(setup): report whether a skill's values are already stored`
 
+- [x] **T5.4 — A canonical form for `setup.yaml`, and two things that check it**
+  - **Files:** `library.py`, `tests/test_library.py`, `desktop/specs/skill-setup-schema.md`,
+    `SKILL.md`, `README.md`
+  - **Requirements:** schema §11
+  - **Why:** `validate_setup` enforces semantics and nothing about form, so "valid" and
+    "consistent" were different properties and only one was enforced. Three real
+    deviations existed across eight manifests, including two in the schema doc's own
+    examples.
+  - **Do:** Name the canonical key order in §11. Add `lint_setup`, reported by `doctor` as
+    **warnings on a channel that is never `problems`** — a field-order nit must not take a
+    skill's walkthrough offline. Add `setup <name> --scaffold`, which *prints* a canonical
+    skeleton rather than writing one: the manifest belongs in the skill's source repo,
+    which for a remote catalog is not on this machine.
+  - **Verify:** The template passes its own validator and linter. Both directions of the
+    warning/error split are pinned. Gate passes.
+  - **Commit:** `feat(setup): Add a canonical form for setup.yaml and check it`
+
 ---
 
 ## Phase 6 — Agent layer

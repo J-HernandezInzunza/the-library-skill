@@ -270,6 +270,7 @@ Two ways to drive it, same result:
 | Remove an entry | "remove deploy from the library" | `./library remove deploy` |
 | Sync everything | "sync all my installed library skills" | `./library sync` |
 | What a skill needs to work | "what setup does atlassian-toolkit need?" | `./library setup atlassian-toolkit` |
+| Author a skill's setup manifest | "start a setup.yaml for my-skill" | `./library setup my-skill --scaffold > setup.yaml` |
 | Health check | "check the library catalog for problems" | `./library doctor` |
 | See your catalogs | "what catalogs am I using?" | `./library catalog list` |
 | Start a personal catalog | "give me my own catalog" | `./library catalog init <path>` |

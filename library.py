@@ -264,6 +264,12 @@ RETIRED_SETUP_KEYS = {
 }
 _SHELL_METACHARS = "&|;<>`$()\n"  # exactly the schema §5 set — no stricter, or valid manifests break
 
+# Canonical key order (schema §11). Convention, not validity: YAML mappings mean the
+# same thing in any order, which is exactly why they drift unless something says so.
+SETUP_KEY_ORDER = ("version", "summary", "prerequisites", "config", "secrets", "commands")
+SECRET_KEY_ORDER = ("key", "label", "secret", "url", "guidance", "delivery",
+                    "env_override", "optional")
+
 
 def _run_problems(cid: str, run: Any, skill_dir: "Path | None") -> list[str]:
     """Argv rules for one command (schema §5): a command is argv, never a shell line."""
@@ -527,6 +533,98 @@ def check_secret(sec: dict[str, Any], config: dict[str, Any],
     where = Path(str(config.get("path"))).expanduser()
     return {**common, "present": filled,
             "detail": f"set in {where}" if filled else f"not set in {where}"}
+
+
+SETUP_TEMPLATE = """\
+version: 1
+summary: {summary}
+
+# Each entry has exactly one of: node, sibling-skill, env, binary.
+# Checked before the walkthrough starts; an unmet one names itself and blocks.
+prerequisites:
+  - binary: git
+
+# `path` is the only field, and the only file the app will write for this skill.
+# It is always chmod 0600, and its format is detected from what config-init wrote.
+# Drop this block entirely if no secret uses delivery: config-file.
+config:
+  path: ~/.config/{name}/config.json
+
+# Keys stay in this order: key, label, secret, url, guidance, delivery,
+# env_override, optional.
+secrets:
+  - key: account.api_token
+    label: API token
+    url: https://example.test/tokens
+    guidance: Say exactly how to obtain this. Shown to the user verbatim.
+    delivery: config-file        # config-file | env | manual
+    env_override: EXAMPLE_TOKEN
+    optional: false
+
+# `run` is argv relative to the installed skill directory. No shell, no absolute
+# paths, no metacharacters.
+commands:
+  config-init:                   # RESERVED: creates config.path. Required by config-file.
+    run: bin/setup.sh init
+    description: Scaffold the config file
+  check:                         # RESERVED: its exit code decides whether setup worked.
+    run: bin/setup.sh check
+    description: Report readiness
+"""
+
+
+def _order_note(subject: str, got: "list[str]", canonical: "tuple[str, ...]") -> "str | None":
+    """Compare *got* against *canonical*, ignoring keys the canon does not name."""
+    known = [k for k in got if k in canonical]
+    want = [k for k in canonical if k in known]
+    if known == want:
+        return None
+    return (f"{subject}: keys read {', '.join(known)}; "
+            f"canonical order is {', '.join(want)}")
+
+
+def lint_setup(data: Any) -> list[str]:
+    """Convention deviations in a manifest that is already *valid* (schema §11).
+
+    A separate channel from `validate_setup` on purpose, and the separation is the whole
+    point: a problem there disables the walkthrough, which is the right response to a
+    manifest that is wrong and an absurd one to a manifest whose keys are in an unusual
+    order. These are reported by `doctor` as warnings and stop nothing.
+
+    Every rule here is about two manifests being *comparable* — a reviewer should be able
+    to diff behaviour rather than vocabulary.
+    """
+    if not isinstance(data, dict):
+        return []
+
+    notes = []
+    note = _order_note("top level", list(data), SETUP_KEY_ORDER)
+    if note:
+        notes.append(note)
+
+    for i, sec in enumerate(data.get("secrets") or []):
+        if not isinstance(sec, dict):
+            continue
+        where = f"secrets[{i}] ({sec.get('key', '?')})"
+        note = _order_note(where, list(sec), SECRET_KEY_ORDER)
+        if note:
+            notes.append(note)
+        if not sec.get("label"):
+            # The key is a dotted config path; it is not a prompt. Without a label the
+            # app has nothing to put beside the field but `account.api_token`.
+            notes.append(f"{where}: no label, so the app must show the raw key")
+        if "delivery" not in sec:
+            # Valid — it defaults to config-file — but the default decides whether the
+            # value is ever written to disk, which is too load-bearing to leave implied.
+            notes.append(f"{where}: no explicit delivery; spell out the default config-file")
+
+    commands = data.get("commands")
+    if isinstance(commands, dict):
+        for cid, spec in commands.items():
+            if isinstance(spec, dict) and not spec.get("description"):
+                notes.append(f"commands.{cid}: no description")
+
+    return notes
 
 
 def load_setup(dest: Path) -> tuple["dict[str, Any] | None", list[str]]:
@@ -3085,6 +3183,14 @@ def cmd_use(args: argparse.Namespace) -> int:
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
+    # Printed, never written: the manifest belongs in the skill's *source* repo, and for
+    # a remote catalog that directory is not on this machine at all. Redirecting is one
+    # keystroke and cannot clobber a file the author already has.
+    if getattr(args, "scaffold", False):
+        print(SETUP_TEMPLATE.format(name=args.name,
+                                    summary=f"One-time setup for {args.name}."), end="")
+        return 0
+
     cfg = load_config()
     refresh_catalogs(cfg, args.no_pull)
     entries = resolved_entries(cfg, args)
@@ -4970,8 +5076,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     continue
                 elif state == "not_installed":
                     continue
-                for problem in load_setup(Path(dest))[1]:
+                manifest, setup_problems = load_setup(Path(dest))
+                for problem in setup_problems:
                     errors.append((e.catalog, e.name, f"invalid {SETUP_FILE} at {dest}: {problem}"))
+                # Conventions are warnings, never errors: an unusual key order is not a
+                # reason to take a skill's walkthrough offline (§11).
+                for note in lint_setup(manifest):
+                    warns.append((e.catalog, e.name, f"{SETUP_FILE} {note}"))
 
     multi = cfg is not None and multi_catalog(cfg)
 
@@ -5261,6 +5372,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_use)
 
     sp = sub.add_parser("setup", help="report an installed skill's setup manifest and prerequisites")
+    sp.add_argument("--scaffold", action="store_true",
+                    help=f"print a canonical {SETUP_FILE} skeleton to stdout and exit")
     sp.add_argument("name")
     add_common(sp)
     add_catalog_flag(sp)

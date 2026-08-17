@@ -2688,3 +2688,49 @@ by attention lasts about a day.
 
 `config:` now carries `path` and nothing else. It stays a block rather than collapsing to
 a top-level `config_path:` because a second field is plausible and the churn is not free.
+
+---
+
+## T5.4 — the standard, made checkable
+
+`validate_setup` enforces *semantics* and nothing about *form*: which optional fields you
+fill in, what order the keys sit in, whether you spell out a default. So "valid" and
+"consistent" were different properties and only the first was enforced. §11 now names the
+canonical form and two things check it.
+
+**`lint_setup` is a separate channel from `validate_setup`, and the separation is the
+whole design.** A problem in §7 disables the walkthrough — the right response to a
+manifest that is *wrong*, and an absurd one to a manifest whose keys are in an unusual
+order. So conventions surface as `doctor` **warnings**, never errors, and a
+wholly non-canonical manifest still runs. Both directions are pinned by a test.
+
+**The canonical order is what it is for a reason**: what the value is, then what the user
+is told about it, then what the app does with it — `key, label, secret, url, guidance,
+delivery, env_override, optional`. Keys the canon does not name are ignored, so a field
+added by a later schema version cannot make every existing manifest noisy on the day it
+lands.
+
+Three rules beyond ordering, each earning its place:
+
+- **Every secret needs a `label`.** `key` is a dotted config path, not a prompt; without
+  one the app has nothing to show beside the field but `account.api_token`.
+- **`delivery` is spelled out even when it is the default.** That default decides whether
+  the value is ever written to disk, which is too load-bearing to leave implied.
+- **Every command needs a `description`.** It is what the walkthrough shows before running
+  it.
+
+**The scaffold prints, it does not write.** A manifest belongs in the skill's *source*
+repo, and for a remote catalog that directory is not on this machine at all — so guessing
+a destination would be wrong about half the time and clobbering an existing file the rest.
+`library setup <name> --scaffold > setup.yaml` is one keystroke more and cannot destroy
+anything. It also needs no installed copy and no catalog entry, because authoring happens
+before the skill exists anywhere. A test asserts the template passes **its own** validator
+and linter: a skeleton its own linter rejects would teach the deviation it exists to
+prevent, on the first manifest anyone writes.
+
+**It found three real deviations within a minute of existing, and none had been found by
+reading.** Two of this document's own worked examples had transposed secret keys, and the
+`atlassian-toolkit` manifest written earlier the same day had `optional` and `env_override`
+in opposite orders *between two secrets in the same file*. That last one was caught while
+staging the commit, by hand, on the second look. Convention held by attention lasts about
+a day, which is the entire argument for this task.

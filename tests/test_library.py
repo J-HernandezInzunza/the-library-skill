@@ -3494,6 +3494,60 @@ class TestValidateSetup(unittest.TestCase):
                 self.assertEqual(library.validate_setup(data), ["setup.yaml must be a mapping"])
 
 
+class TestLintSetup(unittest.TestCase):
+    """schema §11 — conventions, on a channel that never disables a walkthrough."""
+
+    def test_a_canonical_manifest_has_nothing_to_say(self) -> None:
+        data = setup_manifest(secrets=[{
+            "key": "account.api_token", "label": "API token", "delivery": "config-file"}])
+        data["commands"] = {"config-init": {"run": "bin/x.mjs init", "description": "Scaffold"},
+                            "check": {"run": "bin/x.mjs check", "description": "Check"}}
+        self.assertEqual(library.lint_setup(data), [])
+
+    def test_the_scaffold_it_prints_passes_its_own_rules(self) -> None:
+        # A template that its own linter rejects would teach the deviation it exists to
+        # prevent, on the very first manifest anyone writes.
+        data = yaml.safe_load(library.SETUP_TEMPLATE.format(name="x", summary="s"))
+        self.assertEqual(library.validate_setup(data), [])
+        self.assertEqual(library.lint_setup(data), [])
+
+    def test_top_level_key_order_is_reported(self) -> None:
+        data = {"summary": "s", "version": 1}
+        self.assertIn("top level", library.lint_setup(data)[0])
+
+    def test_secret_key_order_is_reported_against_the_canon(self) -> None:
+        # The deviation that actually happened, twice, in files written by hand.
+        data = setup_manifest(secrets=[{
+            "key": "k", "label": "L", "delivery": "config-file",
+            "optional": True, "env_override": "TOKEN"}])
+        note = next(n for n in library.lint_setup(data) if "secrets[0]" in n)
+        self.assertIn("canonical order is key, label, delivery, env_override, optional", note)
+
+    def test_keys_the_canon_does_not_name_are_ignored(self) -> None:
+        # A field added by a later schema version must not make an existing manifest
+        # non-canonical, or every manifest becomes noisy the day the schema grows.
+        data = setup_manifest(secrets=[{
+            "key": "k", "label": "L", "delivery": "config-file", "future_field": 1}])
+        self.assertEqual([n for n in library.lint_setup(data) if "secrets[0]" in n], [])
+
+    def test_a_missing_label_and_an_implied_delivery_are_reported(self) -> None:
+        data = setup_manifest(secrets=[{"key": "account.api_token"}])
+        notes = " ".join(library.lint_setup(data))
+        self.assertIn("no label", notes)
+        self.assertIn("no explicit delivery", notes)
+
+    def test_a_command_without_a_description_is_reported(self) -> None:
+        data = setup_manifest(commands={"config-init": {"run": "bin/x.mjs"}})
+        self.assertIn("commands.config-init: no description", library.lint_setup(data))
+
+    def test_conventions_are_never_validity(self) -> None:
+        # The separation this whole channel exists for: a manifest can be wholly
+        # non-canonical and still perfectly valid, and must still run.
+        data = setup_manifest(secrets=[{"key": "k"}], commands={"config-init": {"run": "bin/x.mjs"}})
+        self.assertEqual(library.validate_setup(data), [])
+        self.assertTrue(library.lint_setup(data))
+
+
 class TestLoadSetup(unittest.TestCase):
     def setUp(self) -> None:
         self.tool = TempTool()
@@ -5132,6 +5186,33 @@ library:
             self.assertNotIn("installed copy", message)
             self.assertNotIn("setup.yaml", message)
 
+    def test_a_non_canonical_manifest_warns_and_never_errors(self) -> None:
+        # §11's separation, end to end: doctor still exits 0 and the walkthrough is
+        # untouched. A field-order nit must never take a skill's setup offline.
+        dest = self.install("alpha")
+        (dest / "setup.yaml").write_text(yaml.safe_dump(setup_manifest(secrets=[
+            {"key": "k", "label": "L", "delivery": "config-file",
+             "optional": True, "env_override": "TOKEN"}])))
+
+        payload = self.doctor()
+
+        self.assertEqual(payload["status"], "OK")
+        self.assertTrue(any("canonical order" in w for w in self.messages(payload, "warnings")),
+                        payload["warnings"])
+        self.assertEqual(
+            [e for e in self.messages(payload, "errors") if "setup.yaml" in e], [])
+
+    def test_an_invalid_manifest_still_errors(self) -> None:
+        # The other side of the same separation: validity is not a convention.
+        dest = self.install("alpha")
+        (dest / "setup.yaml").write_text(yaml.safe_dump(setup_manifest(verify="check")))
+
+        payload = self.doctor()
+
+        self.assertEqual(payload["status"], "PROBLEMS")
+        self.assertTrue(any("was removed from the schema" in e
+                            for e in self.messages(payload, "errors")), payload["errors"])
+
     def test_a_drifted_install_warns(self) -> None:
         dest = self.install("alpha")
         (dest / "SKILL.md").write_text("# edited by hand\n")
@@ -5300,6 +5381,32 @@ library:
         payload = self.setup("toolkit")
         self.assertEqual(payload["problems"], [])
         self.assertFalse(payload["ready"])
+
+    def test_scaffold_prints_a_canonical_skeleton_without_touching_disk(self) -> None:
+        # Printed, not written: the manifest belongs in the skill's *source* repo, which
+        # for a remote catalog is not on this machine at all. Redirecting is one keystroke
+        # and cannot clobber a file the author already has.
+        before = sorted(p.name for p in (self.tool.home / ".claude/skills").rglob("*")) \
+            if (self.tool.home / ".claude/skills").exists() else []
+
+        code, out, err = run_cli("setup", "toolkit", "--scaffold", "--no-pull")
+
+        self.assertEqual(code, 0, err)
+        data = yaml.safe_load(out)
+        self.assertEqual(library.validate_setup(data), [])
+        self.assertEqual(library.lint_setup(data), [])
+        self.assertIn("toolkit", data["summary"])
+        after = sorted(p.name for p in (self.tool.home / ".claude/skills").rglob("*")) \
+            if (self.tool.home / ".claude/skills").exists() else []
+        self.assertEqual(before, after)
+
+    def test_scaffold_needs_no_installed_copy_or_catalog_entry(self) -> None:
+        # Authoring a manifest happens before the skill is installed anywhere, so the
+        # template cannot depend on resolving the entry.
+        code, out, err = run_cli("setup", "not-in-any-catalog", "--scaffold", "--no-pull")
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(library.lint_setup(yaml.safe_load(out)), [])
 
     def test_an_unknown_name_reports_not_found(self) -> None:
         self.assertEqual(self.setup("nope", expect=2)["status"], "NOT_FOUND")

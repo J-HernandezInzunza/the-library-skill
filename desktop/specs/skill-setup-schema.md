@@ -281,8 +281,8 @@ secrets:
   - key: bot_token
     label: Slack bot token (advanced, full Web API)
     delivery: config-file
-    optional: true
     env_override: SLACK_BOT_TOKEN
+    optional: true
 commands:
   config-init: { run: bin/slack.mjs config init, description: Scaffold the config file }
   check:       { run: bin/slack.mjs config check, description: Verify the webhook works }
@@ -300,8 +300,8 @@ secrets:
   - key: RETRO_CYCLE_PATH
     label: Path to the retro cycle JSON
     secret: false
-    delivery: manual
     guidance: Set RETRO_CYCLE_PATH in your shell rc to the cycle file path.
+    delivery: manual
 commands:
   check: { run: bin/next-retro.mjs, description: Print the next retro date }
 ```
@@ -343,3 +343,41 @@ the whole point of the schema.
    more skills adopt the schema.
 3. **Non-JSON config files** are readable in principle but only `json` has a confirmed
    consumer today. Implement `json` first; add the others when a skill needs one.
+
+## 11. Canonical form
+
+Everything above decides whether a manifest is *valid*. This section decides whether two
+manifests are *comparable* — a reviewer should be able to diff behaviour rather than
+vocabulary. None of it changes meaning: YAML mappings are order-independent, which is
+precisely why order drifts unless something says otherwise.
+
+**Key order.**
+
+```
+top level    version, summary, prerequisites, config, secrets, commands
+secrets[]    key, label, secret, url, guidance, delivery, env_override, optional
+```
+
+Roughly: what it is, then what the user is told, then what the app does with it. Keys the
+canon does not name are ignored, so a future field cannot make an existing manifest
+non-canonical.
+
+**Expected even where optional.**
+
+- Every secret has a `label`. `key` is a dotted config path, not a prompt — without a
+  label the app has nothing to put beside the field but `account.api_token`.
+- Every secret spells out `delivery`, including the `config-file` default. That default
+  decides whether the value is ever written to disk, which is too load-bearing to leave
+  implied.
+- Every command has a `description`. It is what the walkthrough shows before running it.
+
+**How it is enforced.** `library setup <name> --scaffold` prints a canonical skeleton to
+stdout; redirect it into the skill's source repo. `library doctor` reports deviations as
+**warnings**, never errors — a problem in §7 disables the walkthrough, which is the right
+response to a manifest that is wrong and an absurd one to a manifest whose keys are in an
+unusual order. The two channels never mix.
+
+**Why this exists.** Convention held by attention lasts about a day. The first manifest
+written against this schema had `env_override` and `optional` transposed between two
+secrets *in the same file*, and two of this document's own worked examples were off — all
+three found by the linter within a minute of it existing, and none by reading.
