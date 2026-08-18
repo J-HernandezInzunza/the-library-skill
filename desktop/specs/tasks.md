@@ -902,8 +902,8 @@ The security-critical phase. Every task here is a place where a mistake leaks a 
     and `env` delivery never touching disk. Gate passes.
   - **Commit:** `feat(desktop/secrets): deliver secrets per the skill's declared mode`
 
-- [ ] **T7.4 — Redaction across every output path**
-  - **Files:** `desktop/src-tauri/src/{secrets,cli,agent}.rs`
+- [x] **T7.4 — Redaction across every output path**
+  - **Files:** `desktop/src-tauri/src/{secrets,cli,agent,error,lib,mcp}.rs`
   - **Requirements:** R6.6
   - **Do:** Redact every `secret: true` value wherever text escapes the backend: the command log,
     captured stdout/stderr, and error messages. A setup command that echoes its own config on

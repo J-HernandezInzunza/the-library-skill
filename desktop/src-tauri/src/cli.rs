@@ -1300,13 +1300,17 @@ pub(crate) fn parse<T: serde::de::DeserializeOwned>(
 ///
 /// Every spawn is bracketed by a started/finished pair, so the command log cannot be
 /// bypassed by adding a caller that forgets to emit.
+///
+/// Being the one spawn is also what makes it the one place argv is redacted (R6.6). No `library`
+/// subcommand takes a credential on its command line today; the log is redacted anyway, because
+/// "no caller passes one" is a property of every caller and this is a property of the log.
 fn spawn(sink: &dyn CommandSink, mut cmd: Command, cwd: &Path) -> std::io::Result<Output> {
     let id = next_command_id();
     sink.started(&CommandStarted {
         id,
         argv: std::iter::once(cmd.get_program())
             .chain(cmd.get_args())
-            .map(|arg| arg.to_string_lossy().into_owned())
+            .map(|arg| crate::secrets::redact(&arg.to_string_lossy()))
             .collect(),
         cwd: cwd.display().to_string(),
     });

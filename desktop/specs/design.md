@@ -694,7 +694,13 @@ Consequences that fall out of this and must hold:
   declared key, and chmods to `0600`. The app writes only to the skill's declared `config.path`
   and invents no second store, because two stores means one is stale.
 - The command log (§6.3) redacts env values for keys collected via `request_secret`; it logs
-  `ATLASSIAN_API_TOKEN=***`, never the value.
+  `ATLASSIAN_API_TOKEN=***`, never the value. The command log is one of four places text leaves
+  the backend, and R6.6 applies at all of them: `mcp::to_agent` (every tool result and refusal),
+  `agent::classify` (the whole transcript), `lib::off_thread` (every `AppError` the frontend
+  sees), and the two spawn sites' argv. Each is the only one of its kind, which is what makes
+  redaction a property of the boundary rather than something a caller remembers. `secrets.rs`
+  installs a process-wide `Weak` handle to the one store so `cli` and `agent` can redact without
+  holding a reference to it — a handle, not a second copy of the values.
 
 Worked example (atlassian-toolkit, the motivating case): agent reads the skill's README via
 `read_skill_doc` → learns the credential model → calls `request_secret("account.api_token")` with

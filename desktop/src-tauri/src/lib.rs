@@ -35,12 +35,16 @@ use std::sync::Arc;
 /// `spawn_blocking` rather than a bare `async fn`: the body waits on a child process
 /// with no await points, so running it directly on the async runtime would just move
 /// the stall onto a worker thread that other commands need.
+///
+/// Every command's failure leaves the backend through here, which is why redaction lives here
+/// too (R6.6): one boundary rather than a step at each of the dozen places an `AppError` is
+/// built, since that version is the one where the next construction site forgets.
 async fn off_thread<T, F>(work: F) -> Result<T, AppError>
 where
     F: FnOnce() -> Result<T, AppError> + Send + 'static,
     T: Send + 'static,
 {
-    match tauri::async_runtime::spawn_blocking(work).await {
+    let result = match tauri::async_runtime::spawn_blocking(work).await {
         Ok(result) => result,
         // The task panicked, which is a bug in this layer rather than a CLI failure.
         // Reported as code -1, the same stand-in `cli` uses for "nothing ran".
@@ -48,7 +52,8 @@ where
             code: -1,
             stderr: format!("the command panicked before returning: {e}"),
         }),
-    }
+    };
+    result.map_err(AppError::redacted)
 }
 
 /// The full catalog with install status — backs the list view.
@@ -306,7 +311,11 @@ pub fn run() {
         // the walkthrough rather than to a component.
         .setup(|app| {
             let notifier: Arc<dyn secrets::Notifier> = Arc::new(app.handle().clone());
-            tauri::Manager::manage(app, Arc::new(Secrets::new(notifier)));
+            let store = Arc::new(Secrets::new(notifier));
+            // Installed before any command can run, so every emit boundary redacts against the
+            // one store from the first walkthrough onward (R6.6).
+            store.install();
+            tauri::Manager::manage(app, store);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

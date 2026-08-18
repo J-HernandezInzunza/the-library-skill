@@ -16,10 +16,114 @@
 // guarantees is that the app's *own* copy does not outlive the walkthrough.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Duration;
 
 use serde::Serialize;
+
+/// The store every emit boundary redacts against (R6.6).
+///
+/// Process-wide rather than a parameter threaded through `cli` and `agent`, and that is the whole
+/// point: a parameter makes redaction something each emit site *opts into*, and the site that
+/// forgets is a leak nobody notices until it is in a screenshot. There is exactly one store in a
+/// running app, so there is exactly one right answer to hold here.
+///
+/// A `Weak`, so this is a handle to the one store rather than a second copy of its values — the
+/// same argument that keeps the app from inventing a second place to keep a credential. It also
+/// means a dropped store leaves nothing behind: the upgrade fails and redaction becomes the
+/// identity, which is correct, because a store that no longer exists holds no values to hide.
+static REDACTOR: Mutex<Option<Weak<Secrets>>> = Mutex::new(None);
+
+/// Replace every collected value in *text* with `***`, wherever text leaves the backend (R6.6).
+///
+/// A free function because its callers are the emit boundaries — the command log, a captured
+/// stderr, an agent event, a tool result — and none of them has, or should need, a reference to
+/// the secret store.
+///
+/// Returns *text* unchanged when no store is installed. That is not a fail-open: no store means
+/// no walkthrough has ever run in this process, so there is nothing collected to leak.
+pub fn redact(text: &str) -> String {
+    // The guard is dropped before `redact` runs, which locks the store's own state. Holding both
+    // at once is a lock-order dependency waiting to become a deadlock.
+    let store = REDACTOR
+        .lock()
+        .expect("the redactor")
+        .as_ref()
+        .and_then(Weak::upgrade);
+    match store {
+        Some(store) => store.redact(text),
+        None => text.to_string(),
+    }
+}
+
+/// Exclusive use of the installed redactor, for a test that installs one.
+///
+/// `REDACTOR` holds one handle for the whole process — correct for an app that builds one store,
+/// wrong for a test binary where several threads each want theirs installed. Without this, a test
+/// asserting on its own value finds whichever store was installed most recently and fails
+/// depending on the order the suite happened to run in.
+#[cfg(test)]
+pub(crate) fn redactor_turn() -> std::sync::MutexGuard<'static, ()> {
+    static TURN: Mutex<()> = Mutex::new(());
+    // A panic inside one turn must not fail every later test with a poison error; the state being
+    // guarded is a handle that the next installer overwrites anyway.
+    TURN.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// A store already holding one value, skipping the ask/answer dance the UI drives.
+///
+/// Lives here rather than in each test module because three of them need it now: the delivery
+/// tests below, and the redaction tests in `error` and `agent`, whose subject is what happens to
+/// a value *after* it has been collected.
+#[cfg(test)]
+pub(crate) fn store_holding(key: &str, value: &[u8]) -> Arc<Secrets> {
+    struct Deaf;
+    impl Notifier for Deaf {
+        fn requested(&self, _: &Ask) {}
+        fn resolved(&self, _: &str) {}
+    }
+
+    let store = Arc::new(Secrets::new(Arc::new(Deaf)));
+    let ask = Ask {
+        key: key.to_string(),
+        guidance: String::new(),
+        url: None,
+    };
+    // `request` blocks until answered — that is the mechanism, not an accident — so the answer
+    // has to come from another thread.
+    std::thread::scope(|scope| {
+        scope.spawn(|| store.request(ask).expect("the ask should open"));
+        while store.pending().is_none() {
+            std::thread::yield_now();
+        }
+        store.submit(key, value.to_vec()).expect("the open ask");
+    });
+    store
+}
+
+/// Every string inside *value*, redacted, structure untouched (R6.6).
+///
+/// For the JSON the agent hands back — a `tool_use` input above all, which is where a value the
+/// user pasted into chat by mistake would reappear. Serializing the whole document and redacting
+/// the text would work on the value but destroy the shape, so the walk goes to the leaves.
+pub fn redact_json(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(text) => serde_json::Value::String(redact(text)),
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(redact_json).collect())
+        }
+        serde_json::Value::Object(fields) => serde_json::Value::Object(
+            fields
+                .iter()
+                // Keys too: a manifest key is not a secret, but an object built from a value
+                // would put one there, and skipping it costs nothing to check.
+                .map(|(key, field)| (redact(key), redact_json(field)))
+                .collect(),
+        ),
+        // Numbers, booleans and null cannot carry a credential.
+        other => other.clone(),
+    }
+}
 
 /// How long a pending ask waits before giving up.
 ///
@@ -107,6 +211,14 @@ impl Secrets {
             answered: Condvar::new(),
             notifier,
         }
+    }
+
+    /// Make this the store every emit boundary redacts against (R6.6).
+    ///
+    /// Called once, where the app builds its store. Takes `&Arc<Self>` because what is installed
+    /// is a handle to this store and not a copy of it — see `REDACTOR`.
+    pub fn install(self: &Arc<Self>) {
+        *REDACTOR.lock().expect("the redactor") = Some(Arc::downgrade(self));
     }
 
     /// Open an ask and block until it is answered.
@@ -547,22 +659,7 @@ mod tests {
         assert_eq!(store.keys(), ["account.api_token"]);
     }
 
-    /// A store holding *value* at *key*, without the ask/answer dance — for the delivery tests,
-    /// whose subject is what happens to a value after it has been collected.
-    fn holding(key: &str, value: &[u8]) -> Arc<Secrets> {
-        let (store, _) = store();
-        let waiting = open_ask(
-            &store,
-            Ask {
-                key: key.to_string(),
-                guidance: String::new(),
-                url: None,
-            },
-        );
-        store.submit(key, value.to_vec()).unwrap();
-        waiting.join().unwrap().unwrap();
-        store
-    }
+    use super::store_holding as holding;
 
     /// A config file as `config-init` would have left it: the skill's own template, with defaults.
     fn scaffolded() -> PathBuf {
@@ -758,6 +855,63 @@ mod tests {
 
         assert_eq!(store.redact("ATATT-the-token"), "ATATT-the-token");
         assert!(store.env_for(&["account.api_token".to_string()]).is_empty());
+    }
+
+    /// The free function is what every emit boundary calls, and it is only useful once a store
+    /// has installed itself. Uses a sentinel nothing else in the suite contains: the installed
+    /// handle is process-wide, so a value another test happens to use would make this one's
+    /// result depend on the order they ran in.
+    #[test]
+    fn an_installed_store_redacts_through_the_free_function() {
+        let _turn = redactor_turn();
+        let store = holding("account.api_token", b"T7.4-SENTINEL-VALUE");
+        store.install();
+
+        assert_eq!(
+            redact("token=T7.4-SENTINEL-VALUE failed"),
+            "token=*** failed"
+        );
+    }
+
+    /// No store means no walkthrough has run in this process, so there is nothing collected to
+    /// hide — the identity here is the correct answer rather than a fail-open. A dropped store
+    /// reaches the same state on its own, since the installed handle is weak.
+    #[test]
+    fn redaction_with_no_store_left_alive_leaves_text_alone() {
+        let _turn = redactor_turn();
+        {
+            let store = holding("account.api_token", b"T7.4-DROPPED-VALUE");
+            store.install();
+            assert_eq!(redact("T7.4-DROPPED-VALUE"), "***");
+        }
+
+        assert_eq!(redact("T7.4-DROPPED-VALUE"), "T7.4-DROPPED-VALUE");
+    }
+
+    /// A `tool_use` input is JSON, and the panel renders its shape. Redacting the serialized
+    /// document would hide the value and destroy the structure with it.
+    #[test]
+    fn json_is_redacted_at_the_leaves_with_its_shape_intact() {
+        let _turn = redactor_turn();
+        let store = holding("account.api_token", b"T7.4-JSON-VALUE");
+        store.install();
+
+        let redacted = redact_json(&serde_json::json!({
+            "command_id": "check",
+            "args": ["--token", "T7.4-JSON-VALUE"],
+            "attempt": 2,
+            "nested": { "value": "T7.4-JSON-VALUE" }
+        }));
+
+        assert_eq!(
+            redacted,
+            serde_json::json!({
+                "command_id": "check",
+                "args": ["--token", "***"],
+                "attempt": 2,
+                "nested": { "value": "***" }
+            })
+        );
     }
 
     #[test]

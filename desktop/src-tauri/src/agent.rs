@@ -25,6 +25,7 @@ use serde::Serialize;
 
 use crate::error::AppError;
 use crate::events::{next_command_id, CommandFinished, CommandSink, CommandStarted};
+use crate::secrets::redact;
 
 /// The agent's tools, all of them ours. `mcp__library__` is also the prefix the
 /// `PreToolUse` hook allows, so this list and that hook say the same thing twice on
@@ -391,6 +392,13 @@ impl AgentSink for tauri::AppHandle {
 /// four event kinds design §4.3 never listed, and the recorded fixtures add
 /// `hook_started` and `hook_response` on top. Erroring on growth would mean a Claude Code
 /// upgrade breaks every walkthrough.
+///
+/// Every text-bearing field is redacted on the way out (R6.6). `pump` emits only what this
+/// returns, so this is the one gate the whole transcript passes through — and the transcript is
+/// the surface where a leak is most visible, since it is on screen and in screenshots. D7 says
+/// the value never reaches the agent, so in a working app there is nothing here to find; this is
+/// what makes that assertable rather than assumed, and what catches the case D7 does not cover —
+/// a user pasting the token into the chat box themselves.
 pub fn classify(line: &str) -> Vec<AgentEvent> {
     let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
         return Vec::new();
@@ -423,13 +431,15 @@ pub fn classify(line: &str) -> Vec<AgentEvent> {
             .iter()
             .filter_map(|block| match block["type"].as_str() {
                 Some("text") => Some(AgentEvent::Text {
-                    text: string(&block["text"]),
+                    text: redact(&string(&block["text"])),
                     subagent,
                 }),
                 Some("tool_use") => Some(AgentEvent::Tool {
                     id: string(&block["id"]),
                     name: string(&block["name"]),
-                    input: block["input"].clone(),
+                    // Redacted leaf by leaf rather than as serialized text, so the panel still
+                    // gets the input's shape to render.
+                    input: crate::secrets::redact_json(&block["input"]),
                     subagent,
                 }),
                 // `thinking` and whatever comes next: not part of the transcript this
@@ -446,7 +456,7 @@ pub fn classify(line: &str) -> Vec<AgentEvent> {
             .map(|block| AgentEvent::ToolResult {
                 tool_use_id: string(&block["tool_use_id"]),
                 is_error: block["is_error"].as_bool().unwrap_or(false),
-                text: result_text(&block["content"]),
+                text: redact(&result_text(&block["content"])),
                 subagent,
             })
             .collect(),
@@ -463,7 +473,7 @@ pub fn classify(line: &str) -> Vec<AgentEvent> {
         Some("result") => vec![AgentEvent::Done {
             session_id: string(&event["session_id"]),
             is_error: event["is_error"].as_bool().unwrap_or(false),
-            result: event["result"].as_str().map(String::from),
+            result: event["result"].as_str().map(|text| redact(text)),
         }],
 
         _ => Vec::new(),
@@ -556,7 +566,9 @@ pub fn run(
     let id = next_command_id();
     log.started(&CommandStarted {
         id,
-        argv: argv(&cmd),
+        // Redacted here rather than in `argv`, which answers "what would the child see" — a
+        // question the invocation-contract tests ask and the log does not.
+        argv: argv(&cmd).iter().map(|arg| redact(arg)).collect(),
         cwd: launch.cwd.display().to_string(),
     });
     let started_at = Instant::now();
@@ -613,7 +625,9 @@ pub fn run(
             detail: if stderr.trim().is_empty() {
                 format!("claude exited {code} without explaining why")
             } else {
-                format!("claude exited {code}: {}", stderr.trim())
+                // `claude`'s stderr is the one stream nothing else has filtered: the transcript
+                // goes through `classify`, this does not.
+                format!("claude exited {code}: {}", redact(stderr.trim()))
             },
         });
     }
@@ -644,6 +658,55 @@ fn argv(cmd: &Command) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::secrets::{redactor_turn, store_holding};
+
+    /// R6.6 across the whole transcript. `pump` emits only what `classify` returns, so a value
+    /// that survives here reaches the panel and every screenshot of it.
+    ///
+    /// D7 means the agent never had the value to repeat — this covers the case D7 does not: the
+    /// user typing it into the chat box themselves, which comes back as the agent quoting it.
+    #[test]
+    fn every_text_bearing_event_is_redacted_on_its_way_to_the_panel() {
+        let _turn = redactor_turn();
+        let store = store_holding("account.api_token", b"T7.4-STREAM-VALUE");
+        store.install();
+        let leaked = "T7.4-STREAM-VALUE";
+
+        let lines = [
+            format!(
+                r#"{{"type":"assistant","message":{{"content":[
+                   {{"type":"text","text":"I will use {leaked} now."}},
+                   {{"type":"tool_use","id":"t1","name":"run_skill_setup",
+                     "input":{{"command_id":"check","token":"{leaked}"}}}}]}}}}"#
+            ),
+            format!(
+                r#"{{"type":"user","message":{{"content":[
+                   {{"type":"tool_result","tool_use_id":"t1","is_error":true,
+                     "content":[{{"type":"text","text":"failed with {leaked}"}}]}}]}}}}"#
+            ),
+            format!(
+                r#"{{"type":"result","session_id":"s1","is_error":false,
+                    "result":"configured with {leaked}"}}"#
+            ),
+        ];
+
+        let events: Vec<AgentEvent> = lines.iter().flat_map(|line| classify(line)).collect();
+
+        assert_eq!(events.len(), 4, "{events:?}");
+        for event in &events {
+            let serialized = serde_json::to_string(event).expect("an event serializes");
+            assert!(!serialized.contains(leaked), "{serialized}");
+            assert!(serialized.contains("***"), "{serialized}");
+        }
+
+        // The `tool_use` input keeps its shape, so the panel still renders a call rather than a
+        // string: only the leaf that held the value changed.
+        let AgentEvent::Tool { input, .. } = &events[1] else {
+            panic!("the second event is the tool call: {events:?}");
+        };
+        assert_eq!(input["command_id"], "check");
+        assert_eq!(input["token"], "***");
+    }
 
     fn launch() -> Launch {
         Launch {

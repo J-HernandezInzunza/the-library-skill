@@ -3058,3 +3058,67 @@ run `config-init` and then *reveal* `config.path` for the user to edit by hand. 
 action — `opener.revealItemInDir` — so it belongs with T6.4's walkthrough chrome, not in a
 tool handler. `env_override` is likewise still unused: the file write covers the config-file case,
 and injecting the override name as well would be a second source of truth for the same value.
+
+---
+
+## T7.4 — four boundaries, and the argument for a global
+
+`Secrets::redact` already existed (T7.3); this task was about *where it gets called*. The task
+said "at the emit boundary rather than trusted to callers", and honouring that literally turned
+out to be the whole design problem, because the emit boundaries are in `cli` and `agent`, which
+have no reference to the secret store and no good way to get one.
+
+**The store installs a process-wide handle, and `secrets::redact` is a free function.** Threading
+`&Secrets` through `cli` would have touched two dozen signatures, and — the part that actually
+decides it — would have made redaction something each emit site *opts into*. The site that
+forgets is a leak nobody notices until it is in a screenshot. A global inverts that: the boundary
+gets it whether or not the person adding one thought about secrets.
+
+`events.rs` argues against a global sink for the opposite conclusion, and the two are consistent:
+a sink that was never installed drops events silently, which is that module's one unacceptable
+failure. A redactor that was never installed can only be a process where no walkthrough ever ran,
+so there is nothing collected to hide. The failure modes point in opposite directions.
+
+The handle is a `Weak`, so this is a *handle to the one store* rather than a second copy of its
+values — the same reasoning that stops the app inventing a second place to keep a credential. It
+also self-cleans: a dropped store fails to upgrade and redaction becomes the identity.
+
+**Four boundaries, each the only one of its kind:**
+
+| Boundary | What escapes there |
+| --- | --- |
+| `mcp::to_agent` | every tool result and every refusal, both arms |
+| `agent::classify` | the whole transcript — `pump` emits only what it returns |
+| `lib::off_thread` | every `AppError` the frontend is shown |
+| `cli::spawn` / `agent::run` | the command log's argv |
+
+`AppError::redacted` is applied at `off_thread` rather than at the dozen places an error is built,
+for the same reason as everything else here: the version with a step at each construction site is
+the version where the thirteenth one forgets.
+
+**The redaction in `run_skill_setup` moved out to `to_agent`.** T7.3 put it on that one tool's
+return, which was right when it was the only tool that could see a value. Four handlers means four
+places to remember, and the fifth tool arrives looking exactly like the others while redacting
+nothing. `mcp.rs` uses `host.secrets()` rather than the global, since it has the store in hand and
+its tests build their own.
+
+**A `tool_use` input is redacted leaf by leaf, not as serialized text.** The panel renders the
+input's shape, so flattening it to a redacted string would hide the value and destroy the call
+with it. `redact_json` walks to the leaves and leaves numbers, booleans and structure alone.
+
+**Why the transcript is redacted at all, given D7.** D7 means the agent never had the value, so in
+a working app there is nothing in the stream to find. Two reasons it is still done: it makes the
+invariant *assertable* rather than assumed — which is what T7.5 is about to depend on — and it
+covers the one case D7 does not, a user typing the token into the chat box themselves, which
+comes back as the agent quoting it.
+
+**One test-only concession.** The installed handle is process-wide, so two tests installing
+concurrently would each find the other's store, and a test would pass or fail depending on the
+order the suite happened to run in. `redactor_turn()` serialises the tests that install one; the
+sentinels are distinctive (`T7.4-…`) so nothing else in the suite can match them either way.
+
+**Verified by mutation**, not just by passing: making `redact` the identity fails six tests, and
+gutting the replacement loop inside `Secrets::redact` fails ten, including both MCP boundary
+tests. The command-log argv path has no test of its own — no `library` subcommand takes a
+credential on its command line today, so a test would have to construct a spawn that cannot
+happen. T7.5's full-walkthrough suite is where that assertion belongs.

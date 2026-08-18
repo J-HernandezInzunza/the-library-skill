@@ -466,16 +466,34 @@ fn call(params: &Value, host: &dyn Host) -> Result<Value, String> {
     let name = params["name"].as_str().unwrap_or_default();
     let arguments = &params["arguments"];
 
-    let text = match name {
-        "library_cmd" => library_cmd(arguments, host)?,
-        "read_skill_doc" => read_skill_doc(arguments, host)?,
-        "request_secret" => request_secret(arguments, host)?,
-        "run_skill_setup" => run_skill_setup(arguments, host)?,
+    let result = match name {
+        "library_cmd" => library_cmd(arguments, host),
+        "read_skill_doc" => read_skill_doc(arguments, host),
+        "request_secret" => request_secret(arguments, host),
+        "run_skill_setup" => run_skill_setup(arguments, host),
         // Named tools only. A prefix or pattern match here is how a tool nobody reviewed
         // becomes reachable.
-        other => return Err(format!("'{other}' is not one of this app's tools")),
+        other => Err(format!("'{other}' is not one of this app's tools")),
     };
-    Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+    to_agent(result, host)
+}
+
+/// Everything a tool says, on its way to the agent — redacted, whichever arm it came from (R6.6).
+///
+/// The single gate for the whole tool surface, rather than a step inside each handler: four
+/// handlers means four places to remember, and the fifth tool arrives looking exactly like the
+/// others while redacting nothing.
+///
+/// The refusal arm carries as much risk as the success one. A `run_skill_setup` failure hands
+/// back the setup command's stderr, and the realistic leak in this whole app is a skill echoing
+/// the config file it just wrote when its own check fails.
+fn to_agent(result: Result<String, String>, host: &dyn Host) -> Result<Value, String> {
+    match result {
+        Ok(text) => Ok(json!({
+            "content": [{ "type": "text", "text": host.secrets().redact(&text) }]
+        })),
+        Err(refusal) => Err(host.secrets().redact(&refusal)),
+    }
 }
 
 /// One allowlisted library subcommand, run through the same path every other CLI call uses.
@@ -600,15 +618,16 @@ fn run_skill_setup(arguments: &Value, host: &dyn Host) -> Result<String, String>
         .map_err(|e| format!("'{skill}' is recorded at {dest}, which could not be read: {e}"))?;
     let output = run_declared(&root, &command.run, &env_delivery(manifest, host))?;
 
-    // Redacted on the way out, not trusted to be clean. The realistic leak is a skill's own setup
+    // The command's output is not trusted to be clean — the realistic leak is a skill's own setup
     // command echoing the config file it just wrote, on failure, into text we hand to the agent.
-    let text = host.secrets().redact(&output.text);
+    // Redaction is not applied here, though: `call` redacts both arms for every tool, and a
+    // second pass here would be the copy that gets forgotten when a fifth tool arrives.
     if output.code == 0 {
-        Ok(format!("{delivered}{text}"))
+        Ok(format!("{delivered}{}", output.text))
     } else {
         Err(format!(
-            "{delivered}'{id}' exited {}: {text}",
-            output.code
+            "{delivered}'{id}' exited {}: {}",
+            output.code, output.text
         ))
     }
 }
@@ -1306,6 +1325,54 @@ mod tests {
         let refusal = deliver(&manifest, &host).unwrap_err();
 
         assert!(refusal.contains("config.path"), "{refusal}");
+    }
+
+    /// R6.6, on the text a real command really did emit.
+    ///
+    /// The first assertion is the point of the second: a skill's own setup command, handed the
+    /// credential it was declared to receive, prints it. That is not hypothetical and not the
+    /// skill's bug — `check` commands echo their configuration. So the value exists in text the
+    /// app is holding, and the only thing between it and the agent is this boundary.
+    #[test]
+    fn a_command_that_echoes_its_credential_is_redacted_before_the_agent_sees_it() {
+        let base = skill_with_command();
+        let root = std::fs::canonicalize(base.join("skill")).unwrap();
+        let host = Silent::default();
+        collect(&host, "WEBHOOK_SECRET", b"whsec-123456");
+        let manifest = manifest(None, vec![("WEBHOOK_SECRET", "env")]);
+
+        let ran = run_declared(&root, "bin/setup.sh check", &env_delivery(&manifest, &host)).unwrap();
+        assert!(ran.text.contains("whsec-123456"), "{}", ran.text);
+
+        // Both arms, because a failing `check` is exactly when a command prints its config.
+        let result = to_agent(Ok(ran.text.clone()), &host).unwrap();
+        let seen = result["content"][0]["text"].as_str().unwrap();
+        assert!(!seen.contains("whsec-123456"), "{seen}");
+        assert!(seen.contains("***"), "{seen}");
+        assert!(seen.contains("args:check"), "the rest of the output survives: {seen}");
+
+        let refusal = to_agent(Err(format!("'check' exited 3: {}", ran.text)), &host).unwrap_err();
+        assert!(!refusal.contains("whsec-123456"), "{refusal}");
+        assert!(refusal.contains("exited 3"), "{refusal}");
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// A refusal built from what the agent said is the other half: an agent that puts a value in
+    /// a tool argument gets it back in the message explaining why the call failed.
+    #[test]
+    fn a_refusal_quoting_the_agents_own_argument_is_redacted_too() {
+        let host = Silent::default();
+        collect(&host, "account.api_token", b"ATATT-the-token");
+
+        let refusal = call(
+            &json!({ "name": "ATATT-the-token", "arguments": {} }),
+            &host,
+        )
+        .unwrap_err();
+
+        assert!(!refusal.contains("ATATT-the-token"), "{refusal}");
+        assert!(refusal.contains("not one of this app's tools"), "{refusal}");
     }
 
     /// Put a value in the host's store without the ask/answer dance.

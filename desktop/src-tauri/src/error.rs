@@ -51,10 +51,54 @@ pub enum AppError {
     McpNotLoaded { detail: String },
 }
 
+impl AppError {
+    /// The same failure with every collected secret replaced by `***` (R6.6).
+    ///
+    /// Applied where errors cross to the frontend rather than where they are built. There are a
+    /// dozen construction sites and one boundary, and the version that is a step at each
+    /// construction site is the version where the thirteenth one forgets.
+    ///
+    /// `stderr` is the field this exists for: R1.4 shows it verbatim, and a setup command that
+    /// echoes the config it just wrote — on failure, which is the only time anyone reads stderr —
+    /// puts a credential in it.
+    pub fn redacted(self) -> Self {
+        use crate::secrets::redact;
+        match self {
+            AppError::WrapperMissing { path } => AppError::WrapperMissing {
+                path: redact(&path),
+            },
+            AppError::Cli { code, stderr } => AppError::Cli {
+                code,
+                stderr: redact(&stderr),
+            },
+            AppError::Ambiguous { catalogs } => AppError::Ambiguous {
+                catalogs: catalogs.iter().map(|c| redact(c)).collect(),
+            },
+            AppError::NotBootstrapped { tool_dir } => AppError::NotBootstrapped {
+                tool_dir: redact(&tool_dir),
+            },
+            AppError::NotConfigured { config_path } => AppError::NotConfigured {
+                config_path: redact(&config_path),
+            },
+            AppError::Json { detail } => AppError::Json {
+                detail: redact(&detail),
+            },
+            AppError::AgentMissing => AppError::AgentMissing,
+            AppError::AgentStream { detail } => AppError::AgentStream {
+                detail: redact(&detail),
+            },
+            AppError::McpNotLoaded { detail } => AppError::McpNotLoaded {
+                detail: redact(&detail),
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    use crate::secrets::{redactor_turn, store_holding};
 
     fn shape(err: AppError) -> serde_json::Value {
         serde_json::to_value(err).expect("AppError must serialize")
@@ -127,5 +171,59 @@ mod tests {
             shape(AppError::McpNotLoaded { detail: "status: failed".into() }),
             json!({ "kind": "mcp_not_loaded", "detail": "status: failed" })
         );
+    }
+
+    /// R6.6, on the field it exists for. A CLI failure's stderr is shown verbatim (R1.4), and the
+    /// only thing that keeps "verbatim" from meaning "including the credential" is this.
+    #[test]
+    fn redaction_replaces_a_collected_value_and_leaves_the_reason_readable() {
+        let _turn = redactor_turn();
+        let store = store_holding("account.api_token", b"T7.4-ERROR-VALUE");
+        store.install();
+
+        let redacted = AppError::Cli {
+            code: 1,
+            stderr: "config check failed: api_token=T7.4-ERROR-VALUE".into(),
+        }
+        .redacted();
+
+        assert_eq!(
+            redacted,
+            AppError::Cli {
+                code: 1,
+                stderr: "config check failed: api_token=***".into()
+            }
+        );
+    }
+
+    /// Every text-bearing variant, so a new one cannot be added and quietly skipped: the match in
+    /// `redacted` is exhaustive, and this asserts each arm actually redacts rather than falling
+    /// through to a clone.
+    #[test]
+    fn every_variant_that_carries_text_redacts_it() {
+        let _turn = redactor_turn();
+        let store = store_holding("account.api_token", b"T7.4-VARIANT-VALUE");
+        store.install();
+        let leaked = "T7.4-VARIANT-VALUE";
+
+        let cases = [
+            AppError::WrapperMissing { path: leaked.into() },
+            AppError::Cli { code: 1, stderr: leaked.into() },
+            AppError::Ambiguous { catalogs: vec![leaked.into()] },
+            AppError::NotBootstrapped { tool_dir: leaked.into() },
+            AppError::NotConfigured { config_path: leaked.into() },
+            AppError::Json { detail: leaked.into() },
+            AppError::AgentStream { detail: leaked.into() },
+            AppError::McpNotLoaded { detail: leaked.into() },
+        ];
+
+        for case in cases {
+            let serialized = shape(case.clone().redacted()).to_string();
+            assert!(!serialized.contains(leaked), "{serialized}");
+            assert!(serialized.contains("***"), "{serialized}");
+        }
+
+        // The one variant with nothing to redact still round-trips.
+        assert_eq!(AppError::AgentMissing.redacted(), AppError::AgentMissing);
     }
 }
