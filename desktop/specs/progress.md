@@ -3184,3 +3184,39 @@ would make the suite redder rather than greener.
 
 **Phase 7 is closed.** The tool surface, the field, the delivery, the redaction, and the standing
 invariant that keeps them honest.
+
+---
+
+## T8.1 — the README, and the two features it had to admit are not reachable
+
+The prototype README described an app that browsed a catalog and did nothing else. Rewriting it
+was mostly transcription; two things in it were judgement calls.
+
+**It says out loud that walkthroughs have no front door.** Phase 7 built the entire secret-handling
+apparatus — the MCP tool surface, the suspending `request_secret`, delivery, redaction, the D7
+suite — and T6.4, the chat view that would let a user *start* one, is still open. Phase 7 ran ahead
+of it because the tool surface is what the UI would drive, so the ordering was right; the result is
+a complete backend behind no button. A README that described the walkthrough as a feature would be
+describing something nobody can reach. It names both blockers, T6.4 and the fact that no skill has
+declared a `setup.yaml` yet (T8.2), because those are the two things standing between this and a
+feature that exists for a real user. What *is* reachable — the readiness panel from
+`library setup --json` — is called out separately.
+
+**G6 and G7 are documented as behaviour, not filed as bugs.**
+
+- **G6** (`npm run check` fails in a non-login shell): the failure mode is what makes it worth a
+  callout. `cargo` is missing, so the gate dies with `command not found` where a reader expects a
+  test failure — the message points at the wrong thing entirely. Documented as "run it from a
+  login shell, or source `~/.cargo/env`".
+- **G7** (`bootstrap()` resolves `python3` from `PATH`): only reachable through a Finder-launched
+  bundle, which D9 says we are not shipping. It sits in the bundle section rather than the
+  prerequisites, as a caveat on the thing that would trigger it, since putting it up top would
+  warn every reader about a path none of them take.
+
+Both stay in the gaps table. Documenting a sharp edge is not the same as removing it, and the
+condition that would make either urgent has not changed.
+
+**Kept from the prototype, because it is still true and still the reason for it:** the two-level
+wrapper resolution and its *why* — a GUI's working directory is wherever it was launched from,
+often `/`, which is also why `LIBRARY_CWD` is passed explicitly rather than inherited. That pair
+is the thing a reader most needs to understand before changing anything in `cli.rs`.

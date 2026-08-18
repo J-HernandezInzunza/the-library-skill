@@ -928,7 +928,7 @@ The security-critical phase. Every task here is a place where a mistake leaks a 
 
 ## Phase 8 — Documentation
 
-- [ ] **T8.1 — Update the desktop README for the real app**
+- [x] **T8.1 — Update the desktop README for the real app**
   - **Files:** `desktop/README.md`
   - **Requirements:** R8.1, R8.3
   - **Do:** Replace the prototype framing: prerequisites (Rust, Node, an authed `claude`), the
