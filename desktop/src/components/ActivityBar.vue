@@ -39,11 +39,18 @@ const { busy, label } = useCommandActivity();
   position: absolute;
   top: 0.4rem;
   right: 0.75rem;
+  /* Bounded to one line, always. This is an absolutely-positioned element with no layout
+     parent to constrain it, so a long label does not wrap into a corner — it paints across
+     the whole window, over the view, at the opacity of a watermark. */
+  max-width: 40vw;
+  overflow: hidden;
   padding: 0.1rem 0.45rem;
   border-radius: 999px;
   background: var(--app-bg-sticky);
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 0.68rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   opacity: 0.6;
 }
 

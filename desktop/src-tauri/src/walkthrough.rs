@@ -279,26 +279,37 @@ fn walkthrough_dir() -> Result<PathBuf, AppError> {
 /// CLI is the authority on the manifest and the app passes its answer on (R1.1); an agent
 /// re-deriving it is the same mistake as a second validator in Rust.
 ///
-/// It also names the tools, because the agent's first instinct on being told to read a skill's
-/// documentation is `Read` — which the hook denies, correctly, and which costs a turn to discover.
+/// **The tools are named in full**, `mcp__library__` prefix included. That prefix is not
+/// decoration: it is what Claude Code calls the tool, and it is what the hook allows. Naming them
+/// bare in the prompt — as the first version did, taking the names from `mcp.rs` — got
+/// `No such tool available: run_skill_setup` on the first call of a real run. The agent recovered
+/// on its next turn, which is the worst version of this bug: it costs a turn and a confusing red
+/// box, and it looks intermittent rather than certain.
+///
+/// It also names the tools at all because the agent's first instinct on being told to read a
+/// skill's documentation is `Read` — which the hook denies, correctly, and which costs a turn to
+/// discover.
 fn opening_prompt(skill: &str, report: &setup::SetupReport) -> String {
+    let p = agent::TOOL_PREFIX;
     format!(
         "You are running inside The Library, a desktop app, guiding a user through the setup of \
          an installed skill called '{skill}'. This is a first-run configuration, not a code task.\n\
          \n\
          {manifest}\n\
          Work only through the app's own tools:\n\
-         - `read_skill_doc` to read '{skill}'s own documentation — SKILL.md and README.md are the \
-         entry points. It reads files that exist; it is not a search. **Do not guess filenames.** \
-         Everything the app knows about this skill's setup is stated above, so there is no \
-         manifest for you to go and find.\n\
-         - `library_cmd` for the read-only library commands, plus `use` to install a skill this \
-         one depends on.\n\
-         - `request_secret` when a credential is needed.\n\
-         - `run_skill_setup` to run one of the declared commands above, by its id.\n\
+         Every tool below must be called by its full name, prefix included — those are the only \
+         tools you have.\n\
+         - `{p}read_skill_doc` to read '{skill}'s own documentation — SKILL.md and README.md are \
+         the entry points. It reads files that exist; it is not a search. **Do not guess \
+         filenames.** Everything the app knows about this skill's setup is stated above, so there \
+         is no manifest for you to go and find.\n\
+         - `{p}library_cmd` for the read-only library commands, plus `use` to install a skill \
+         this one depends on.\n\
+         - `{p}request_secret` when a credential is needed.\n\
+         - `{p}run_skill_setup` to run one of the declared commands above, by its id.\n\
          \n\
          About credentials, which is the part that matters most: when '{skill}' needs one, call \
-         `request_secret` with the declared key for it, and put the skill's own instructions for \
+         `{p}request_secret` with the declared key for it, and put the skill's own instructions for \
          obtaining it in `guidance`. The app then collects the value in a native, masked field \
          outside this conversation. You will never see it, and you must never ask the user to type \
          a credential to you here — not as a fallback, not to confirm one, not to check its \
@@ -531,9 +542,17 @@ mod tests {
         assert!(prompt.contains("never ask the user to type a credential"), "{prompt}");
         assert!(prompt.contains("not as a fallback"), "{prompt}");
 
-        for tool in ["read_skill_doc", "library_cmd", "run_skill_setup"] {
-            assert!(prompt.contains(tool), "{tool} is not named: {prompt}");
+        // **By their full wire names.** A real run called the bare `run_skill_setup` and got
+        // `No such tool available` — the prompt had taught it the wrong name, taking the bare
+        // ones from `mcp.rs`. The agent recovered a turn later, which is what made it look
+        // intermittent rather than certain.
+        for tool in ["read_skill_doc", "library_cmd", "run_skill_setup", "request_secret"] {
+            let wire = format!("mcp__library__{tool}");
+            assert!(prompt.contains(&wire), "{wire} is not named: {prompt}");
         }
+        // And nowhere by a bare name, which is what taught it the wrong one.
+        assert!(!prompt.contains("`run_skill_setup`"), "{prompt}");
+        assert!(!prompt.contains("`request_secret`"), "{prompt}");
     }
 
     /// Every walkthrough gets its own directory, and it is not world-readable: it holds a live

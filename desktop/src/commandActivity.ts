@@ -117,6 +117,17 @@ export function activityLabel(runningArgv: string[] | undefined, intents: string
 }
 
 /**
+ * How long a phrase the bar will show.
+ *
+ * It is a pill in the corner, not a log line — and a positional argument can be any length at
+ * all. The agent spawn passes the entire walkthrough prompt as one, and the bar rendered all two
+ * thousand characters of it across and down the window, in monospace at 40% opacity, looking for
+ * all the world like the page had a second layer behind it. The CSS bounds this too; the cap is
+ * here as well because a label that needs clipping to be legible is already the wrong label.
+ */
+const PHRASE = 60;
+
+/**
  * An argv as a short phrase: `bootstrap.py`, `library catalog list`, `library use x`.
  *
  * The full argv already has a home in the command log, so the bar names the operation
@@ -128,5 +139,10 @@ export function describeArgv(argv: string[]): string {
   const meaningful = args.filter((arg) => !arg.startsWith("--")).slice(0, 2);
 
   if (tool === "python3") return "bootstrapping";
-  return [tool, ...meaningful].join(" ");
+  // The agent's argv is a prompt, not a command line. Naming the operation is the only useful
+  // thing to say about it — everything after `claude -p` is prose addressed to a model.
+  if (tool === "claude") return "asking the assistant";
+
+  const phrase = [tool, ...meaningful].join(" ");
+  return phrase.length > PHRASE ? `${phrase.slice(0, PHRASE)}…` : phrase;
 }

@@ -226,19 +226,24 @@ onUnmounted(() => {
            because it is what the user should answer rather than the chat. -->
       <SecretPrompt />
 
+      <!-- Full-bleed, with the content column rebuilt inside it. The band has to reach the
+           bottom of the window: anything less leaves a strip the transcript scrolls through,
+           between this and the command bar. -->
       <form class="walkthrough__reply" @submit.prevent="send">
-        <textarea
-          v-model="reply"
-          v-bind="RAW_TEXT"
-          class="walkthrough__input"
-          rows="2"
-          :disabled="!canReply"
-          :placeholder="canReply ? 'Reply…' : 'Waiting for the assistant…'"
-          @keydown.enter.exact.prevent="send"
-        />
-        <button type="submit" class="walkthrough__send" :disabled="!canReply || !reply.trim()">
-          Send
-        </button>
+        <div class="walkthrough__composer">
+          <textarea
+            v-model="reply"
+            v-bind="RAW_TEXT"
+            class="walkthrough__input"
+            rows="2"
+            :disabled="!canReply"
+            :placeholder="canReply ? 'Reply…' : 'Waiting for the assistant…'"
+            @keydown.enter.exact.prevent="send"
+          />
+          <button type="submit" class="walkthrough__send" :disabled="!canReply || !reply.trim()">
+            Send
+          </button>
+        </div>
       </form>
     </template>
   </section>
@@ -402,20 +407,28 @@ onUnmounted(() => {
   position: fixed;
   left: 0;
   right: 0;
-  /* Above the command-log bar, which is pinned to the bottom of every screen. */
-  bottom: var(--command-bar-h);
+  /* All the way down, not to the top of the command bar. Stopping short left a transparent
+     strip between the two, and the transcript scrolled through it — visible as text sliding
+     past underneath the reply box. The bar's height becomes padding instead, so the opaque
+     band is continuous from the composer to the bottom of the window. */
+  bottom: 0;
   z-index: 15;
-  display: flex;
-  gap: 0.5rem;
-  align-items: flex-end;
-  /* `.app`'s column: its max-width, its horizontal padding, and its centring. */
-  max-width: 860px;
-  margin: 0 auto;
-  padding: 0.6rem 1.25rem 0.7rem;
+  padding-bottom: var(--command-bar-h);
   border-top: 1px solid rgba(128, 128, 128, 0.25);
   /* Opaque: it floats over the transcript, and a translucent one leaves the text showing
      through from behind. */
   background: var(--app-bg);
+}
+
+/* `.app`'s column: its max-width, its horizontal padding, and its centring — rebuilt here
+   because a fixed element is positioned against the viewport and cannot inherit them. */
+.walkthrough__composer {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 0.6rem 1.25rem 0.7rem;
 }
 
 .walkthrough__input {

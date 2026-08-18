@@ -3396,3 +3396,43 @@ actually withholds `Bash`. D7 rests entirely on the agent having no other way to
 run a command. So the gating question for a second runtime is not "what is its output format" —
 that is a day's work — but "what is its enforceable tool boundary". A runtime without one cannot
 host a walkthrough safely, and one that merely *runs* would be worse than not supporting it.
+
+---
+
+## T6.4c — the watermark was the activity bar, and the tool names were wrong in the prompt
+
+Three from one more run. The first had been misdiagnosed twice.
+
+**The prompt painted across the window was `ActivityBar`, not the command log.** The log was
+collapsed in the screenshot that proved it — six commands, panel shut, prose still there. The bar
+shows the running command's phrase via `describeArgv`, which takes the first two *positional*
+arguments; for `claude -p <prompt>` the first positional is the entire two-thousand-character
+prompt. It renders in an absolutely-positioned pill with no layout parent to constrain it, so it
+did not wrap into a corner — it painted across and down the whole window in monospace at 40%
+opacity, which is exactly what a background layer looks like.
+
+Two rounds of fixes had gone to the command log, which was a real problem and not this one. The
+lesson is cheap to state and was not cheap to find: **the log and the bar both render argv, and
+only one of them was on screen.** Fixed in three places, because each is independently right — the
+agent's argv now says `asking the assistant` (everything after `-p` is prose addressed to a model,
+not a command line), any phrase over 60 characters is capped, and the pill has a `max-width` with
+`text-overflow: ellipsis` so no future long argument can do this again.
+
+**`No such tool available: run_skill_setup`.** The prompt named the tools bare, taken from
+`mcp.rs`'s `TOOLS`. Claude Code calls them `mcp__library__*` — the prefix the hook allows — so the
+first call of the run failed and the agent recovered a turn later by guessing the right name. That
+recovery is what made it look intermittent; it was certain. The prompt now builds every tool name
+from `agent::TOOL_PREFIX`, and the test asserts both that the full names appear **and** that no
+bare one does, since a bare name in the prose is what taught it the wrong thing.
+
+This is the third bug from the same root — the wire name is not the declared name. It has now cost
+a mislabelled transcript (T6.4a), and a failed tool call. Anywhere a tool is *named to* the agent
+or *matched from* it, the wire form is the only correct one; `mcp.rs`'s constants describe what the
+app implements, not what anyone calls it.
+
+**The composer left a strip for the transcript to scroll through.** It was fixed at
+`bottom: var(--command-bar-h)`, so its opaque band stopped at the top of the command bar and the
+gap between them was transparent — text sliding past under the reply box. It now sits at
+`bottom: 0` with the bar's height as *padding*, so the band is continuous to the bottom of the
+window, and the content column is rebuilt in an inner element rather than by centring the fixed
+element itself.
