@@ -110,7 +110,7 @@ export function describeToolCall(name: string, input: unknown): string {
   const args = (input ?? {}) as Record<string, unknown>;
   const text = (key: string): string => (typeof args[key] === "string" ? (args[key] as string) : "");
 
-  switch (name) {
+  switch (toolName(name)) {
     case "library_cmd": {
       const extra = Array.isArray(args.args) ? (args.args as unknown[]).filter(isText) : [];
       return ["library", text("subcommand"), ...extra].filter(Boolean).join(" ");
@@ -128,6 +128,23 @@ export function describeToolCall(name: string, input: unknown): string {
     default:
       return name;
   }
+}
+
+/**
+ * The tool's own name, without the wire prefix.
+ *
+ * Claude Code advertises an MCP tool as `mcp__<server>__<tool>` — the server name comes from
+ * `--mcp-config`, and it is that prefix the `PreToolUse` hook allows. So the name arriving in the
+ * stream is never the name the backend declares, and matching on the declared one made *every*
+ * call fall through to the raw wire name: a transcript of `mcp__library__read_skill_doc` lines
+ * that read like debug output and were indistinguishable from each other.
+ *
+ * Caught by running the app, not by the tests — the specs were written from `mcp.rs`'s `TOOLS`
+ * constant, while `tests/fixtures/agent/tool-call.jsonl`, a real recorded session, had
+ * `mcp__library__library_cmd` in it the whole time.
+ */
+export function toolName(wireName: string): string {
+  return wireName.replace(/^mcp__.+?__/, "");
 }
 
 function isText(value: unknown): value is string {

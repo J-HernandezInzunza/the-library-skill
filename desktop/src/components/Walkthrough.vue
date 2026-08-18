@@ -198,11 +198,13 @@ onUnmounted(() => {
           <p v-else-if="turn.kind === 'text'" class="turn__text">{{ turn.text }}</p>
           <p v-else-if="turn.kind === 'notice'" class="turn__notice">{{ turn.text }}</p>
 
-          <!-- What it did, then what came back. The command log alongside carries the exact
-               argv for the calls that spawn a process; this is the narration (R5.5). -->
+          <!-- What it did, then what came back, inside one bounded block. The border is doing
+               real work: agent prose and machine activity are different kinds of thing, and
+               running them at the same weight down one column made the transcript unreadable —
+               the first thing said about it after using the app (R5.5). -->
           <template v-else>
             <p class="turn__tool">
-              <span class="turn__tool-mark" aria-hidden="true">›</span>
+              <span class="turn__tool-mark" aria-hidden="true">▸</span>
               <code>{{ turn.label }}</code>
               <span v-if="turn.result === null" class="turn__running">running…</span>
             </p>
@@ -304,6 +306,20 @@ onUnmounted(() => {
   white-space: pre-wrap;
 }
 
+/* What the assistant said reads as prose: full contrast, no decoration, the only thing on the
+   page set at reading weight. Everything else on this surface is deliberately quieter. */
+.turn__text {
+  max-width: 62ch;
+}
+
+/* One tool call and its result, boxed. */
+.turn--tool {
+  padding: 0.45rem 0.6rem;
+  border: 1px solid rgba(128, 128, 128, 0.28);
+  border-radius: 0.4rem;
+  background: rgba(128, 128, 128, 0.05);
+}
+
 .turn__said {
   align-self: flex-end;
   max-width: 80%;
@@ -324,7 +340,10 @@ onUnmounted(() => {
   gap: 0.4rem;
   align-items: baseline;
   margin: 0;
-  font-size: 0.82rem;
+  font-size: 0.8rem;
+  /* Small caps for the marker, muted overall: this is a label on an activity, not something
+     to read at the same level as the assistant's own words. */
+  opacity: 0.9;
 }
 
 .turn__tool-mark {
@@ -342,7 +361,7 @@ onUnmounted(() => {
 }
 
 .turn__result {
-  margin: 0.25rem 0 0 1rem;
+  margin: 0.4rem 0 0;
   padding: 0.4rem 0.55rem;
   max-height: 14rem;
   border-radius: 0.35rem;

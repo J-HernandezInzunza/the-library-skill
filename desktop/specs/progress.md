@@ -3291,3 +3291,63 @@ code has to hold that even when the probe itself fails.
 (T8.2). And the manual verification T6.1a asked for — ask the agent to run a shell command and
 watch the denial arrive as an errored `tool_result` — is now *possible* and has not been done: it
 needs an authed `claude` and a skill with a manifest, which is the same blocker.
+
+---
+
+## T6.4a — four bugs from one real run
+
+The first walkthrough against `atlassian-toolkit` found more than any test had. All four were
+invisible to the suite, and two of them were invisible *because* of how the suite was written.
+
+**The tool names in the stream are not the names the backend declares.** Claude Code advertises an
+MCP tool as `mcp__<server>__<tool>`, so every one of the app's own tools fell through
+`describeToolCall`'s match to the raw-name fallback. The transcript was a column of
+`mcp__library__read_skill_doc` lines that all looked alike — which is most of what "everything
+blends together" was describing.
+
+The specs passed because I wrote them from `mcp.rs`'s `TOOLS` constant, the declared names.
+`tests/fixtures/agent/tool-call.jsonl` — a real recorded session, already in the repo — has
+`mcp__library__library_cmd` in it, and has since T6.1. **The fixture is the source of truth about
+what arrives; a constant is the source of truth about what is sent.** The tests now use the wire
+form throughout, and `toolName` strips the prefix in one place.
+
+**One argv broke the command log's layout.** The agent spawn carries the entire opening prompt as
+a single argv element, so the log's fixed panel grew past the viewport — and because its
+background is deliberately translucent (`--app-bg-sticky`), the page rendered *through* it. Two
+layers of text on top of each other. The panel is now capped at `60vh` and each row's argv scrolls
+inside `6.5rem`, so D5's verbatim record stays whole and selectable without one entry burying
+every other command.
+
+**Tool activity and assistant prose were the same weight.** They are different kinds of thing —
+one is the machine reporting, the other is the thing you are reading — and a single column at one
+weight made the panel unparseable. A tool call and its result are now one bounded, tinted block;
+assistant text is the only thing on the surface set at reading weight, capped at 62ch.
+
+### The one that mattered: the agent was hunting for a manifest the app already had
+
+It read SKILL.md, saw `requires-config: ~/.config/atlassian-toolkit/config.json`, inferred that a
+setup manifest might be JSON too, and spent turns calling `read_skill_doc` for `setup.json` and
+then `library-setup.json`. **Neither exists in any design.** `setup.yaml` is the manifest
+(skill-setup-schema.md); `config.json` is the skill's *own* config file, where credentials get
+written. The agent conflated the two — reasonably, given what it had been told.
+
+What it had been told was: go and read the docs and work out what this skill needs. Meanwhile
+`library setup --json` had already fetched and validated the manifest, and the app was holding it:
+five declared keys with their guidance and urls, three command ids, the config path, and which
+values were already stored. **The prompt now carries all of it.** An agent re-deriving the
+manifest is the same mistake as a second validator in Rust — the CLI is the authority and the app
+passes its answer on (R1.1).
+
+Three things fell out of doing that:
+
+- The prompt states the command ids and that they are *the only ones*, which is what
+  `run_skill_setup` enforces anyway. The agent had been guessing those too.
+- It states which values are already stored, so a re-run does not re-ask for everything. The run
+  that prompted this was a re-run, and the app now says so in one line.
+- A skill with **no** manifest is told so plainly, with "do not invent a setup procedure". Silence
+  is what produced the guessing: an agent that cannot find a manifest and has not been told there
+  is none will go looking for one.
+
+**Also learned:** `atlassian-toolkit` already has a valid `setup.yaml` in
+`my-engineering-library/skills/`. T8.2 assumed none existed anywhere. What T8.2 is actually for is
+the clean-machine verification, not the authoring.

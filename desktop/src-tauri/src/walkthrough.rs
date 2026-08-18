@@ -21,6 +21,7 @@ use crate::agent::{self, Launch};
 use crate::cli;
 use crate::error::AppError;
 use crate::mcp;
+use crate::setup;
 use crate::secrets::Secrets;
 
 /// What one open walkthrough consists of.
@@ -67,7 +68,7 @@ impl Walkthroughs {
     ///
     /// Split from running the turn so the setup — which touches the token, the filesystem, and
     /// the slot — happens under the lock, and the part that takes tens of seconds does not.
-    fn open(&self, skill: &str) -> Result<Launch, AppError> {
+    fn open(&self, skill: &str, report: &setup::SetupReport) -> Result<Launch, AppError> {
         // Whatever was open is over. Ending it here rather than refusing to start: the user
         // clicked "set up this skill", and an error saying another walkthrough is open names a
         // panel they may well have closed and cannot see.
@@ -84,7 +85,7 @@ impl Walkthroughs {
         let cwd = cli::library_home();
 
         let launch = Launch {
-            prompt: opening_prompt(skill),
+            prompt: opening_prompt(skill, report),
             cwd: cwd.clone(),
             mcp_config: mcp_config.clone(),
             settings: settings.clone(),
@@ -186,7 +187,14 @@ pub fn start(
     log: &dyn crate::events::CommandSink,
     skill: &str,
 ) -> Result<(), AppError> {
-    let launch = state.open(skill)?;
+    // **The manifest is fetched here and put in the prompt**, rather than left for the agent to
+    // discover. `library setup --json` has already validated it, so the app holds the declared
+    // keys, the declared command ids, and the config path before the agent starts — and an agent
+    // told to go and find that out instead spends turns guessing filenames. Which is exactly what
+    // the first real run did: it read SKILL.md, saw the skill's own `config.json`, and went
+    // looking for `setup.json` and `library-setup.json`, neither of which is a thing (R1.1).
+    let report = setup::setup(log, skill)?;
+    let launch = state.open(skill, &report)?;
     run_turn(state, sink, log, &launch)
 }
 
@@ -262,44 +270,256 @@ fn walkthrough_dir() -> Result<PathBuf, AppError> {
 /// anything: which skill this is about, that the app collects credentials in its own field, and
 /// that the agent is neither expected nor permitted to handle one.
 ///
+/// **It carries the manifest, rather than sending the agent to find it.** `library setup --json`
+/// has already fetched and validated it, so the declared keys, the declared command ids, and the
+/// config path are known before the first token is generated. The first real run showed what the
+/// alternative costs: told to read the docs and work it out, the agent read SKILL.md, saw the
+/// skill's own `config.json`, inferred that a setup manifest might be JSON too, and spent turns
+/// asking for `setup.json` and `library-setup.json` — neither of which exists in any design. The
+/// CLI is the authority on the manifest and the app passes its answer on (R1.1); an agent
+/// re-deriving it is the same mistake as a second validator in Rust.
+///
 /// It also names the tools, because the agent's first instinct on being told to read a skill's
 /// documentation is `Read` — which the hook denies, correctly, and which costs a turn to discover.
-fn opening_prompt(skill: &str) -> String {
+fn opening_prompt(skill: &str, report: &setup::SetupReport) -> String {
     format!(
         "You are running inside The Library, a desktop app, guiding a user through the setup of \
          an installed skill called '{skill}'. This is a first-run configuration, not a code task.\n\
          \n\
+         {manifest}\n\
          Work only through the app's own tools:\n\
-         - `read_skill_doc` to read '{skill}'s own documentation. Start with SKILL.md or README.md \
-         and follow what they say. You have no filesystem access other than this.\n\
+         - `read_skill_doc` to read '{skill}'s own documentation — SKILL.md and README.md are the \
+         entry points. It reads files that exist; it is not a search. **Do not guess filenames.** \
+         Everything the app knows about this skill's setup is stated above, so there is no \
+         manifest for you to go and find.\n\
          - `library_cmd` for the read-only library commands, plus `use` to install a skill this \
          one depends on.\n\
          - `request_secret` when a credential is needed.\n\
-         - `run_skill_setup` to run a command '{skill}' itself declares, by its id.\n\
+         - `run_skill_setup` to run one of the declared commands above, by its id.\n\
          \n\
          About credentials, which is the part that matters most: when '{skill}' needs one, call \
-         `request_secret` with the manifest's key for it, and put the skill's own instructions for \
+         `request_secret` with the declared key for it, and put the skill's own instructions for \
          obtaining it in `guidance`. The app then collects the value in a native, masked field \
          outside this conversation. You will never see it, and you must never ask the user to type \
          a credential to you here — not as a fallback, not to confirm one, not to check its \
          format. If a tool fails, say what failed and what you would need; do not work around it \
          by asking for the value.\n\
          \n\
-         Begin by reading '{skill}'s documentation to learn what it needs, then tell the user what \
-         setting it up will involve before you start. Keep your replies short: this is a panel in \
-         an app, not a terminal."
+         {plan} Keep your replies short: this is a panel in an app, not a terminal.",
+        manifest = declared(report),
+        plan = if report.manifest.is_some() {
+            "Start by telling the user, in two or three lines, what setting this up will involve. \
+             Then work through it."
+        } else {
+            "Read the documentation, then tell the user what they will have to do by hand. Do not \
+             invent a setup procedure."
+        }
     )
+}
+
+/// What the skill declares, as the agent needs to read it.
+///
+/// The keys, the delivery modes, and the command ids — everything `run_skill_setup` and
+/// `request_secret` will accept. Whether each value is already stored is included because it is
+/// the difference between a first run and a re-run, and an agent that cannot tell asks for
+/// everything again.
+///
+/// The author's `guidance` and `url` are passed through verbatim, for the same reason the UI
+/// renders them verbatim: a paraphrased token-scope list is a support ticket.
+fn declared(report: &setup::SetupReport) -> String {
+    let Some(manifest) = report.manifest.as_ref() else {
+        return "This skill declares no setup manifest, so there are no declared commands to run \
+                and no declared values to collect. `run_skill_setup` will refuse anything you \
+                pass it.\n"
+            .to_string();
+    };
+
+    let mut text = String::from("What this skill declares, already validated by the app:\n");
+    if let Some(summary) = &manifest.summary {
+        text.push_str(&format!("- Purpose: {summary}\n"));
+    }
+    if let Some(config) = &manifest.config {
+        text.push_str(&format!(
+            "- Config file: {} — the app writes declared values into it, at 0600. You do not.\n",
+            config.path
+        ));
+    }
+
+    if manifest.secrets.is_empty() {
+        text.push_str("- Values to collect: none.\n");
+    } else {
+        text.push_str("- Values to collect:\n");
+        for secret in &manifest.secrets {
+            // The CLI's own answer about what is on disk, joined by key. `None` means unknowable
+            // rather than missing — an `env` value is never stored by definition.
+            let stored = report
+                .secrets
+                .iter()
+                .find(|state| state.key == secret.key)
+                .and_then(|state| state.present);
+            text.push_str(&format!(
+                "  - `{}`{}{} [{}{}]{}{}\n",
+                secret.key,
+                secret.label.as_deref().map(|l| format!(" — {l}")).unwrap_or_default(),
+                match stored {
+                    Some(true) => " (already stored; only collect again if the user wants to replace it)",
+                    Some(false) => " (not stored yet)",
+                    None => "",
+                },
+                secret.delivery,
+                if secret.optional { ", optional" } else { "" },
+                secret.guidance.as_deref().map(|g| format!(" {g}")).unwrap_or_default(),
+                secret.url.as_deref().map(|u| format!(" Get it at: {u}")).unwrap_or_default(),
+            ));
+        }
+    }
+
+    if manifest.commands.is_empty() {
+        text.push_str("- Commands you may run: none.\n");
+    } else {
+        text.push_str("- Commands you may run, by id — these ids and no others:\n");
+        for (id, command) in &manifest.commands {
+            text.push_str(&format!("  - `{id}`: {}\n", command.description));
+        }
+    }
+
+    // Stated as a fact rather than left to be inferred from the per-value notes, because it is the
+    // one thing that decides whether this conversation is a setup or a re-check.
+    match report.configured {
+        Some(true) => text.push_str(
+            "\nEvery required value is already stored. This is a re-run: confirm with the user \
+             what they want to change before collecting anything.\n",
+        ),
+        Some(false) => text.push_str("\nSome required values are not stored yet.\n"),
+        None => {}
+    }
+    text
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A manifest shaped like `atlassian-toolkit`'s real one: two command ids, a stored value and
+    /// an unstored one, and an author's guidance that must survive verbatim.
+    fn manifest_report() -> setup::SetupReport {
+        setup::SetupReport {
+            status: "OK".into(),
+            name: "atlassian-toolkit".into(),
+            r#type: "skill".into(),
+            catalog: "shared".into(),
+            installed: true,
+            dest: Some("/tmp/atlassian-toolkit".into()),
+            has_setup: true,
+            manifest: Some(setup::SetupManifest {
+                version: Some(serde_json::json!(1)),
+                summary: Some("One-time credential setup.".into()),
+                config: Some(setup::ConfigFile {
+                    path: "~/.config/atlassian-toolkit/config.json".into(),
+                }),
+                secrets: vec![
+                    setup::Secret {
+                        key: "account.email".into(),
+                        label: Some("Atlassian account email".into()),
+                        guidance: None,
+                        url: None,
+                        delivery: "config-file".into(),
+                        optional: false,
+                        secret: false,
+                        env_override: None,
+                    },
+                    setup::Secret {
+                        key: "account.api_token".into(),
+                        label: Some("Atlassian API token".into()),
+                        guidance: Some("Create this token WITHOUT scopes.".into()),
+                        url: Some("https://id.atlassian.com/manage-profile/security/api-tokens".into()),
+                        delivery: "config-file".into(),
+                        optional: false,
+                        secret: true,
+                        env_override: None,
+                    },
+                ],
+                commands: [
+                    ("config-init".to_string(), setup::SetupCommand {
+                        run: "bin/jira.mjs config init".into(),
+                        description: "Scaffold the config file".into(),
+                    }),
+                    ("check".to_string(), setup::SetupCommand {
+                        run: "bin/jira.mjs config check".into(),
+                        description: "Report per-product readiness".into(),
+                    }),
+                ]
+                .into_iter()
+                .collect(),
+            }),
+            problems: vec![],
+            prerequisites: vec![],
+            secrets: vec![
+                setup::SecretState {
+                    key: "account.email".into(),
+                    delivery: "config-file".into(),
+                    optional: false,
+                    present: Some(true),
+                    detail: "set".into(),
+                },
+                setup::SecretState {
+                    key: "account.api_token".into(),
+                    delivery: "config-file".into(),
+                    optional: false,
+                    present: Some(false),
+                    detail: "not set".into(),
+                },
+            ],
+            configured: Some(false),
+            ready: true,
+        }
+    }
+
+    /// **The manifest is in the prompt.** The first real run had the agent read SKILL.md, see the
+    /// skill's own `config.json`, and go looking for `setup.json` and `library-setup.json` —
+    /// neither of which exists in any design — because the prompt sent it exploring for something
+    /// the app was already holding.
+    #[test]
+    fn the_opening_prompt_states_what_the_skill_declares() {
+        let prompt = opening_prompt("atlassian-toolkit", &manifest_report());
+
+        // The command ids `run_skill_setup` will accept, and the fact that they are the only ones.
+        assert!(prompt.contains("`config-init`"), "{prompt}");
+        assert!(prompt.contains("`check`"), "{prompt}");
+        assert!(prompt.contains("these ids and no others"), "{prompt}");
+        // The keys, with the author's own words untouched.
+        assert!(prompt.contains("`account.api_token`"), "{prompt}");
+        assert!(prompt.contains("Create this token WITHOUT scopes."), "{prompt}");
+        assert!(prompt.contains("id.atlassian.com"), "{prompt}");
+        // Where the app writes, and that the agent does not.
+        assert!(prompt.contains("~/.config/atlassian-toolkit/config.json"), "{prompt}");
+        // Which of the two is already on disk, so a re-run does not re-ask for everything.
+        assert!(prompt.contains("already stored"), "{prompt}");
+        assert!(prompt.contains("not stored yet"), "{prompt}");
+        // And the instruction that stops the hunt.
+        assert!(prompt.contains("Do not guess filenames"), "{prompt}");
+    }
+
+    /// A skill with no manifest gets told so plainly. Silence here is what produced the guessing:
+    /// an agent that cannot find a manifest and was not told there is none will look for one.
+    #[test]
+    fn a_skill_with_no_manifest_is_stated_rather_than_left_open() {
+        let mut report = manifest_report();
+        report.manifest = None;
+        report.has_setup = false;
+        report.configured = None;
+
+        let prompt = opening_prompt("plain-skill", &report);
+
+        assert!(prompt.contains("declares no setup manifest"), "{prompt}");
+        assert!(prompt.contains("Do not invent a setup procedure"), "{prompt}");
+    }
+
     /// The three things §4.5 says a first turn must establish, and the tool names that save a
     /// turn spent discovering the hook.
     #[test]
     fn the_opening_prompt_carries_the_setup_context() {
-        let prompt = opening_prompt("atlassian-toolkit");
+        let prompt = opening_prompt("atlassian-toolkit", &manifest_report());
 
         // Which skill — named enough times that a truncated read still has it.
         assert!(prompt.matches("atlassian-toolkit").count() >= 4, "{prompt}");
@@ -344,7 +564,7 @@ mod tests {
             mcp::start(Arc::new(SilentHost::default())).unwrap(),
             Arc::new(Secrets::new(Arc::new(Deaf))),
         );
-        state.open("leak-skill").unwrap();
+        state.open("leak-skill", &manifest_report()).unwrap();
 
         // Matched rather than unwrapped: the `Ok` side is a `Launch`, and giving it a `Debug`
         // just so a test can panic-print it would put the prompt in every panic message.
@@ -366,7 +586,7 @@ mod tests {
             mcp::start(Arc::new(SilentHost::default())).unwrap(),
             Arc::clone(&secrets),
         );
-        state.open("leak-skill").unwrap();
+        state.open("leak-skill", &manifest_report()).unwrap();
         let dir = state
             .active
             .lock()
@@ -392,7 +612,7 @@ mod tests {
             Arc::new(Secrets::new(Arc::new(Deaf))),
         );
 
-        state.open("first-skill").unwrap();
+        state.open("first-skill", &manifest_report()).unwrap();
         let first = state
             .active
             .lock()
@@ -401,7 +621,7 @@ mod tests {
             .map(|active| active.dir.clone())
             .unwrap();
 
-        state.open("second-skill").unwrap();
+        state.open("second-skill", &manifest_report()).unwrap();
 
         assert_eq!(state.open_for().as_deref(), Some("second-skill"));
         assert!(!first.exists(), "the first walkthrough's files survived it");

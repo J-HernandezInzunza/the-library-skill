@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyEvent, applySaid, describeToolCall, type Turn } from "./walkthrough";
+import { applyEvent, applySaid, describeToolCall, toolName, type Turn } from "./walkthrough";
 import type { AgentEvent } from "./types";
 
 /**
@@ -132,18 +132,44 @@ describe("applySaid", () => {
   });
 });
 
+describe("toolName", () => {
+  it("strips the wire prefix Claude Code puts on an MCP tool", () => {
+    // The name in the stream is never the name the backend declares: `mcp__<server>__<tool>`,
+    // where the server name comes from --mcp-config. Matching the declared name sent every one of
+    // the app's own tools to the fallback, and the transcript became a column of
+    // `mcp__library__…` lines that all looked alike. Found by using the app.
+    expect(toolName("mcp__library__read_skill_doc")).toBe("read_skill_doc");
+    expect(toolName("mcp__library__library_cmd")).toBe("library_cmd");
+  });
+
+  it("leaves a name that carries no prefix alone", () => {
+    // A denied builtin arrives under its own name, and it should read as itself.
+    expect(toolName("Bash")).toBe("Bash");
+  });
+});
+
 describe("describeToolCall", () => {
+  /**
+   * The names as they actually arrive.
+   *
+   * Every case below uses the wire form on purpose. The first version of these tests took the
+   * bare names from `mcp.rs`'s `TOOLS` constant and passed while the app rendered raw wire names
+   * at the user — the recorded session in `tests/fixtures/agent/tool-call.jsonl` had
+   * `mcp__library__library_cmd` in it the whole time.
+   */
   it("renders a library call as the command it is (R5.5)", () => {
-    expect(describeToolCall("library_cmd", { subcommand: "use", args: ["deploy"] })).toBe(
-      "library use deploy",
+    expect(
+      describeToolCall("mcp__library__library_cmd", { subcommand: "use", args: ["deploy"] }),
+    ).toBe("library use deploy");
+    expect(describeToolCall("mcp__library__library_cmd", { subcommand: "list" })).toBe(
+      "library list",
     );
-    expect(describeToolCall("library_cmd", { subcommand: "list" })).toBe("library list");
   });
 
   it("names the key a credential is being asked for, and nothing else", () => {
     // There is no value in this call yet — the field has not been filled — but the phrasing is
     // what the panel shows beside a masked field, so it says who is asking for what.
-    const label = describeToolCall("request_secret", {
+    const label = describeToolCall("mcp__library__request_secret", {
       key: "account.api_token",
       guidance: "Create it unscoped.",
     });
@@ -153,28 +179,35 @@ describe("describeToolCall", () => {
   });
 
   it("names the skill and the command id for a declared setup command", () => {
-    expect(describeToolCall("run_skill_setup", { skill: "atlassian-toolkit", command_id: "check" }))
-      .toBe("running atlassian-toolkit's check");
+    expect(
+      describeToolCall("mcp__library__run_skill_setup", {
+        skill: "atlassian-toolkit",
+        command_id: "check",
+      }),
+    ).toBe("running atlassian-toolkit's check");
   });
 
   it("names the file for a doc read", () => {
-    expect(describeToolCall("read_skill_doc", { skill: "grilling", relative_path: "SKILL.md" })).toBe(
-      "reading grilling/SKILL.md",
-    );
+    expect(
+      describeToolCall("mcp__library__read_skill_doc", {
+        skill: "grilling",
+        relative_path: "SKILL.md",
+      }),
+    ).toBe("reading grilling/SKILL.md");
   });
 
   it("falls back to the tool's name rather than rendering nothing", () => {
     // The hook denies anything outside the prefix, so the agent cannot call one — but a tool
     // added to the backend and not here should read as unfamiliar, not as an empty line.
     expect(describeToolCall("Bash", { command: "rm -rf /" })).toBe("Bash");
-    expect(describeToolCall("library_cmd", undefined)).toBe("library");
+    expect(describeToolCall("mcp__library__library_cmd", undefined)).toBe("library");
   });
 
   it("ignores non-string arguments instead of rendering them", () => {
     // `input` is whatever the model produced, so it is not to be trusted to have the shape the
     // tool schema asked for.
-    expect(describeToolCall("library_cmd", { subcommand: "list", args: [1, null, "jira"] })).toBe(
-      "library list jira",
-    );
+    expect(
+      describeToolCall("mcp__library__library_cmd", { subcommand: "list", args: [1, null, "jira"] }),
+    ).toBe("library list jira");
   });
 });

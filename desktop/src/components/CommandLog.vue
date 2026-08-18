@@ -48,6 +48,12 @@ function label(run: LoggedCommand): string {
   left: 0;
   right: 0;
   z-index: 20;
+  /* Never taller than the window it floats over. One agent spawn carries the whole walkthrough
+     prompt as a single argv element — hundreds of words — and an uncapped fixed panel grew past
+     the viewport and rendered the log *through* the page behind it, since the background is
+     deliberately translucent. Two layers of text on top of each other, found by using the app. */
+  max-height: 60vh;
+  overflow-y: auto;
   border-top: 1px solid rgba(128, 128, 128, 0.25);
   background: var(--app-bg-sticky);
   backdrop-filter: blur(8px);
@@ -103,6 +109,10 @@ function label(run: LoggedCommand): string {
 }
 .command-log__argv {
   flex: 1;
+  /* Verbatim (D5) but bounded: the argv stays whole and selectable, and one enormous entry
+     scrolls inside its own row instead of burying every other command in the log. */
+  max-height: 6.5rem;
+  overflow-y: auto;
   font-family: ui-monospace, SFMono-Regular, monospace;
   overflow-wrap: anywhere;
   opacity: 0.85;
