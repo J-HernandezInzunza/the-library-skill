@@ -3122,3 +3122,65 @@ gutting the replacement loop inside `Secrets::redact` fails ten, including both 
 tests. The command-log argv path has no test of its own — no `library` subcommand takes a
 credential on its command line today, so a test would have to construct a spawn that cannot
 happen. T7.5's full-walkthrough suite is where that assertion belongs.
+
+---
+
+## T7.5 — the invariant, made executable, and the two things it does not ask
+
+D7 has been an argument in prose since design §7. This turns it into one test that fails when a
+credential reaches the model.
+
+**One test, not one per surface.** The invariant is stated over the *union* of everything the app
+emitted, and splitting it per surface is precisely how a leak survives: each test passes on the
+surface it owns while the value walks out through the one nobody wrote a test for. `Surfaces`
+records the command log, the `secret://requested` announcements, the agent transcript, and the raw
+HTTP responses; `everything()` flattens them; one loop asserts over the lot. A new surface is added
+to that list, never to a new test.
+
+**End-to-end where the other tests are deliberately not.** The tool calls go over the real socket,
+so what is asserted is the bytes an agent's client would read rather than a return value on its way
+to becoming them. The setup command is a real child process that really prints the credential —
+`echo "config: $(cat config.json)"` on stdout and the env value on stderr. That is not a contrived
+leak: a `check` exists to report what it is configured with, and printing the file it just read is
+the obvious way to write one. The skill is behaving *correctly* there, which is the point, since
+nothing about D7 may depend on skills being careful.
+
+**Two sentinels, one per delivery mode the app can see.** `config-file` goes through the config
+write, `env` through the child's environment, and the same command hands both back. One sentinel
+would have left whichever path it did not take unproven — and the two paths share no code after
+`deliver`.
+
+**A new fixture case, `leak-skill`, whose paths the test owns.** Every other `setup` payload is a
+recorded absolute path under `/Users/tester`, which is fine for a readiness view and useless for a
+walkthrough that has to really write a file. This one takes its `dest` and `config.path` from env
+vars, the same trick `use --project` already uses for `LIBRARY_CWD`.
+
+**Two things this suite does not ask, named rather than left implicit:**
+
+- **An ack that echoes the value does not fail it.** Breaking `request_secret` to append the
+  credential to its own acknowledgement leaves the suite green, because `to_agent` redacts it on
+  the way out — and green is the right answer: nothing escaped. It fails only once redaction is
+  broken too. The ack's own property is that it is *byte-identical whatever the user typed*
+  (R6.3), a different question, asked in `tests/mcp.rs`. Depth is why both exist.
+- **Zeroization is asserted at its observable edge.** After `clear()` the store holds nothing and
+  redacts nothing. Whether a freed page still contains the bytes is not something safe code can
+  look at, and the copies serde and the Tauri IPC layer made on the way in were never ours to
+  zero. `secrets.rs` has said so since T7.2; this is where that limit is visible in a test rather
+  than only in a comment.
+
+**The clock is not a unique name.** Both tests named their temp directory from
+`SystemTime::now().as_nanos()`, and two threads starting on the same instant got the *same*
+reading — so they shared a directory and whichever finished first deleted it out from under the
+other. Roughly one run in seven. The label is now part of the name. Worth remembering that the
+same pattern is in `secrets.rs`'s `scaffolded()`; it has not collided yet because those tests do
+not run in pairs that start together.
+
+**Verified by breaking it, four ways.** `secrets::redact` as the identity → the transcript's text
+event fails. `to_agent` not redacting → the `run_skill_setup` result fails. Announcing the
+collected value on the ask → the `secret://requested` payload fails. Both the ack leak and the
+boundary broken together → fails. And a companion test asserts the command really did print both
+values and the command log really did record something, so deleting every `sink.started(…)` call
+would make the suite redder rather than greener.
+
+**Phase 7 is closed.** The tool surface, the field, the delivery, the redaction, and the standing
+invariant that keeps them honest.

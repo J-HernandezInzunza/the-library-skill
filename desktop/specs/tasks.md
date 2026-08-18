@@ -913,8 +913,9 @@ The security-critical phase. Every task here is a place where a mistake leaks a 
     every emitted event. Gate passes.
   - **Commit:** `feat(desktop/secrets): redact secret values from every emitted output`
 
-- [ ] **T7.5 — The D7 regression suite**
-  - **Files:** `desktop/src-tauri/tests/secrets_leak.rs`
+- [x] **T7.5 — The D7 regression suite**
+  - **Files:** `desktop/src-tauri/tests/secrets_leak.rs`,
+    `desktop/src-tauri/tests/fixtures/toolroot/library`
   - **Requirements:** R6.1–R6.6, D7
   - **Do:** One suite that runs a full simulated walkthrough with a sentinel value and asserts the
     sentinel appears in **no** agent-bound payload, prompt, tool_result, emitted event, or log line,

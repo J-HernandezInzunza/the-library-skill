@@ -139,6 +139,25 @@ case "$sub" in
       blocked-skill)      cat "$here/payloads/setup-blocked.json" ;;
       future-skill)       cat "$here/payloads/setup-future.json" ;;
       unreadable-skill)   cat "$here/payloads/setup-unreadable.json" ;;
+      # The one manifest whose paths the *test* owns, so a full walkthrough can really write a
+      # value and really run a command that echoes it back. Both arrive by env var for the same
+      # reason `use --project` echoes LIBRARY_CWD: a recorded absolute path would name a
+      # directory nothing created. Declares one secret of each delivery mode that reaches the
+      # app, which is what makes `tests/secrets_leak.rs` cover both at once.
+      leak-skill)
+        printf '{"status":"OK","name":"leak-skill","type":"skill","catalog":"fixture",'
+        printf '"installed":true,"dest":"%s","has_setup":true,' "${LIBRARY_TEST_SKILL_DIR:-UNSET}"
+        printf '"manifest":{"version":1,"summary":"Echoes its own config.",'
+        printf '"config":{"path":"%s"},' "${LIBRARY_TEST_CONFIG:-UNSET}"
+        printf '"secrets":[{"key":"account.api_token","delivery":"config-file","secret":true},'
+        printf '{"key":"WEBHOOK_SECRET","delivery":"env","secret":true}],'
+        printf '"commands":{"check":{"run":"bin/setup.sh check","description":"Report readiness"}}},'
+        printf '"problems":[],"prerequisites":[],'
+        printf '"secrets":[{"key":"account.api_token","delivery":"config-file","optional":false,'
+        printf '"present":false,"detail":"not set"},{"key":"WEBHOOK_SECRET","delivery":"env",'
+        printf '"optional":false,"present":null,"detail":"env only"}],'
+        printf '"configured":false,"ready":true}\n'
+        ;;
       # The manifest belongs to the installed copy, so an entry never installed has
       # nothing to report — not "no setup needed", which is a different answer.
       absent-skill)       cat "$here/payloads/setup-absent.json" ;;
