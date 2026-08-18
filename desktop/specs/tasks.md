@@ -844,8 +844,11 @@ D10/D11/D14 were revised to match. The tasks below assume the revised text, not 
     tool. Gate passes.
   - **Commit:** `feat(desktop/agent): fail closed when claude or the MCP server is unavailable`
 
-- [ ] **T6.4 — Walkthrough chat UI**
-  - **Files:** `desktop/src/components/Walkthrough.vue`
+- [x] **T6.4 — Walkthrough chat UI**
+  - **Files:** `desktop/src/components/Walkthrough.vue`,
+    `desktop/src/components/Walkthrough.spec.ts`, `desktop/src/walkthrough.{ts,spec.ts}`,
+    `desktop/src-tauri/src/walkthrough.rs`, `desktop/src-tauri/src/{lib,mcp}.rs`,
+    `desktop/src/components/{SetupReadiness,EntryDetail}.vue`, `desktop/src/{App.vue,types.ts}`
   - **Requirements:** R5.2, R5.5
   - **Do:** Transcript, tool activity rendered as the verbatim command, retry notices, turn input.
     Subagent messages nested or hidden, never interleaved with the main transcript. Turn 1's prompt

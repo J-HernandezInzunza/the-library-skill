@@ -18,6 +18,7 @@ pub mod events;
 pub mod mcp;
 pub mod secrets;
 pub mod setup;
+pub mod walkthrough;
 
 use cli::{
     AddReport, AddRequest, BootstrapReport, Catalog, CatalogRequest, DoctorReport, Entry,
@@ -285,6 +286,48 @@ async fn decline_secret(
     .await
 }
 
+/// Start a guided setup walkthrough for one skill and run its first turn (R5.2).
+///
+/// Returns when the turn ends, but the panel does not wait for it: every stream event is emitted
+/// as the line is read, so the transcript fills in while this is still running.
+#[tauri::command]
+async fn walkthrough_start(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<walkthrough::Walkthroughs>>,
+    skill: String,
+) -> Result<(), AppError> {
+    let state = Arc::clone(&state);
+    off_thread(move || walkthrough::start(&state, &app, &app, &skill)).await
+}
+
+/// Continue the open walkthrough with the user's message (R5.4, D8).
+#[tauri::command]
+async fn walkthrough_say(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<walkthrough::Walkthroughs>>,
+    message: String,
+) -> Result<(), AppError> {
+    let state = Arc::clone(&state);
+    off_thread(move || walkthrough::say(&state, &app, &app, &message)).await
+}
+
+/// End the open walkthrough: retire its token, forget its values, remove its files (R6, D7).
+///
+/// Off the UI thread like every other command, though it looked small enough not to need it — it
+/// deletes a directory, and R7.4's rule exists so that "small enough" is never a judgement anyone
+/// has to make. The convention test in `tests/commands.rs` is what caught this one.
+#[tauri::command]
+async fn walkthrough_end(
+    state: tauri::State<'_, Arc<walkthrough::Walkthroughs>>,
+) -> Result<(), AppError> {
+    let state = Arc::clone(&state);
+    off_thread(move || {
+        state.close();
+        Ok(())
+    })
+    .await
+}
+
 /// Whether guided walkthroughs can be offered at all (R7.2).
 ///
 /// Returns a `bool` rather than failing when `claude` is absent: the agent is an
@@ -315,6 +358,28 @@ pub fn run() {
             // Installed before any command can run, so every emit boundary redacts against the
             // one store from the first walkthrough onward (R6.6).
             store.install();
+
+            // One server for the app, started here rather than per walkthrough: a server each
+            // would leak a thread and a port on every one, and what attributes a tool call to
+            // the walkthrough that authorized it is the token, not the port (design §5.1).
+            //
+            // Started even when `claude` is absent. The listener serves nobody until a
+            // walkthrough mints a token, so the cost of having it up is a bound socket, and the
+            // alternative is a startup order that depends on what is installed.
+            let host = Arc::new(mcp::AppHost {
+                app: app.handle().clone(),
+                secrets: Arc::clone(&store),
+            });
+            // A failure here means no port, which means no walkthrough can ever run — so it stops
+            // startup rather than leaving the button on. `AppError` is the frontend's contract
+            // and deliberately not a `std::error::Error`, so it is rendered for the one reader
+            // this path has: whoever is looking at the terminal when the window does not appear.
+            let server = mcp::start(host).map_err(|e| format!("{e:?}"))?;
+
+            tauri::Manager::manage(
+                app,
+                Arc::new(walkthrough::Walkthroughs::new(server, Arc::clone(&store))),
+            );
             tauri::Manager::manage(app, store);
             Ok(())
         })
@@ -339,6 +404,9 @@ pub fn run() {
             registry_remove,
             entry_setup,
             agent_available,
+            walkthrough_start,
+            walkthrough_say,
+            walkthrough_end,
             submit_secret,
             decline_secret,
             bootstrap_tool

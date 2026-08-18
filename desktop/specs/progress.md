@@ -3220,3 +3220,74 @@ condition that would make either urgent has not changed.
 wrapper resolution and its *why* — a GUI's working directory is wherever it was launched from,
 often `/`, which is also why `LIBRARY_CWD` is passed explicitly rather than inherited. That pair
 is the thing a reader most needs to understand before changing anything in `cli.rs`.
+
+---
+
+## T6.4 — the front door, and the wiring the task assumed existed
+
+The task named one file, `Walkthrough.vue`. The view had nothing to drive: `agent::run`,
+`mcp::start`, `Secrets`, and `write_settings` all existed and were tested, and nothing composed
+them. Phase 7 built the tool surface the UI would use, which was the right order, but it left the
+whole capability behind no button. So this task is a backend module plus a view.
+
+**`walkthrough.rs` owns a lifetime, not a step.** A walkthrough is a token, two config files, a
+session id, and a set of collected values, and the property that matters is that all five appear
+and disappear *together*. Spread across the three Tauri commands that need them, "disappear
+together" becomes three places to remember and one of them is `end`, the one that runs when
+something already went wrong. `close()` is idempotent, runs every step even if an earlier one
+fails, and revokes the token **first** — so a process that dies mid-cleanup leaves an `mcp.json`
+that names a port which will refuse it.
+
+**One walkthrough at a time, and that is a real constraint rather than a simplification.** The
+design's session model allows several and the server really does mint a token per walkthrough, but
+the transcript reaches the window on global channels (`agent://text`, and the rest). A second
+concurrent walkthrough would interleave into the first one's panel. Making that safe needs an id
+on every event and a filtering subscriber, which is worth doing when the app can *show* two. It
+cannot, so starting a second one ends the first, explicitly.
+
+**The opening prompt is a precondition, and it is tested like one.** The T0.2 spike's cold
+"collect this credential" instruction was refused on safety grounds — the correct call from where
+the agent stood. The prompt establishes the app, the skill, and the fact that credentials are
+collected outside the conversation, then closes the fallbacks by name: not to confirm a value, not
+to check its format, and *not when a tool fails*, which is the one moment asking feels reasonable.
+It also names the four tools, because the instinct on being told to read a skill's docs is `Read`,
+which the hook denies and which costs a turn to discover.
+
+### Three things found by building it
+
+- **The skill's own setup command was never logged.** `run_declared` spawns with
+  `std::process::Command` directly rather than through `cli::spawn`, so D5's "every command,
+  verbatim" quietly excluded the one command in this app that is the app running an executable
+  *because a model asked it to*. It went unnoticed because nothing was watching — there was no
+  panel to watch from. It now emits the same bracketed pair, logging the **resolved** path rather
+  than the manifest's `run` string: the resolved path is the thing that passed the containment
+  check, and a log showing what was requested rather than what ran is a log that cannot be used to
+  audit the check.
+- **`walkthrough_end` was sync, and `tests/commands.rs` caught it.** The reasoning for the
+  exception — it only takes a lock and deletes two files — is exactly the judgement R7.4 exists to
+  remove, and it deletes a *directory*. The convention test was right and the exception was not.
+- **`started` was derived and had to be a latch.** Computing "has this begun" from
+  `turns.length > 0` put the intro screen back the instant a turn ended having produced no turns —
+  which is precisely what a first turn that fails its preflight gate produces. The one case where
+  the user needs to see the error was the one case the error was replaced by a Start button.
+
+### Two smaller decisions
+
+**The panel flows down the page rather than owning a viewport.** The first draft was a
+height-constrained flex column with its own scroll region, which `pageChrome.spec.ts` rejected: it
+did not root in `.view`. Reading why that rule exists — every full-screen view flows down the
+window (D19) — the convention was right and the draft was wrong. A chat with its own scrollbar
+inside a scrolling page gives the user two scrollbars for one conversation. The reply box is
+`position: sticky` and uses the app's existing `--app-bg-sticky`, the token the catalog toolbar
+already had for exactly this.
+
+**`agent_available` cannot take the setup panel down.** It got its own `try`/`catch` after the
+existing `SetupReadiness` specs went red: sharing `load`'s meant a failed `claude --version`
+replaced the whole readiness report — prerequisites, values, everything — with an error about the
+one thing on that screen the user had not asked about. The agent is an enhancement (R7.2), and the
+code has to hold that even when the probe itself fails.
+
+**Still open.** The panel is the front door; it opens onto a feature that has no skills yet
+(T8.2). And the manual verification T6.1a asked for — ask the agent to run a shell command and
+watch the denial arrive as an errored `tool_result` — is now *possible* and has not been done: it
+needs an authed `claude` and a skill with a manifest, which is the same blocker.

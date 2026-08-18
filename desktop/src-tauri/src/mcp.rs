@@ -20,6 +20,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::process::Stdio;
+use std::time::Instant;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -616,7 +617,7 @@ fn run_skill_setup(arguments: &Value, host: &dyn Host) -> Result<String, String>
 
     let root = std::fs::canonicalize(dest)
         .map_err(|e| format!("'{skill}' is recorded at {dest}, which could not be read: {e}"))?;
-    let output = run_declared(&root, &command.run, &env_delivery(manifest, host))?;
+    let output = run_declared(host.sink(), &root, &command.run, &env_delivery(manifest, host))?;
 
     // The command's output is not trusted to be clean — the realistic leak is a skill's own setup
     // command echoing the config file it just wrote, on failure, into text we hand to the agent.
@@ -690,7 +691,15 @@ struct Ran {
 /// `argv[0]` is resolved inside the skill directory and canonicalized, on the same reasoning as
 /// `read_skill_doc`: a `..` or a symlink out of the skill dir would make "the skill's own command"
 /// mean any executable on the machine.
+///
+/// **Logged like every other child process** (D5, R5.5). This is the app running an executable on
+/// the agent's say-so, which makes it the single command in the app a user most needs to see —
+/// and it went unlogged until walkthroughs got a UI, because nothing was watching. It cannot use
+/// `cli::spawn`: that path builds a `library` invocation and appends `--json`. So it emits the
+/// same bracketed pair around its own child, and the two paths agree on the event rather than on
+/// the code that sends it.
 fn run_declared(
+    sink: &dyn CommandSink,
     root: &Path,
     run: &str,
     env: &[(String, String)],
@@ -719,9 +728,29 @@ fn run_declared(
         command.env(name, value);
     }
 
-    let output = command
-        .output()
-        .map_err(|e| format!("'{run}' could not be started: {e}"))?;
+    let id = crate::events::next_command_id();
+    sink.started(&crate::events::CommandStarted {
+        id,
+        // The resolved path, not the manifest's `run` string: what ran is the file inside the
+        // skill directory, and the containment check above is only meaningful if the log shows
+        // the thing that passed it.
+        argv: std::iter::once(resolved.display().to_string())
+            .chain(run.split_whitespace().skip(1).map(String::from))
+            .collect(),
+        cwd: root.display().to_string(),
+    });
+    let started_at = Instant::now();
+    let output = command.output();
+    sink.finished(&crate::events::CommandFinished {
+        id,
+        code: match &output {
+            Ok(output) => output.status.code().unwrap_or(-1),
+            Err(_) => -1,
+        },
+        duration_ms: started_at.elapsed().as_millis() as u64,
+    });
+
+    let output = output.map_err(|e| format!("'{run}' could not be started: {e}"))?;
     // Both streams, because a setup command's useful half is stderr about as often as stdout, and
     // the agent's job here is to explain a failure.
     let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -1138,7 +1167,7 @@ mod tests {
         let base = skill_with_command();
         let root = std::fs::canonicalize(base.join("skill")).unwrap();
 
-        let ran = run_declared(&root, "bin/setup.sh check", &[]).unwrap();
+        let ran = run_declared(&Silent::default(), &root, "bin/setup.sh check", &[]).unwrap();
 
         assert_eq!(ran.code, 0);
         assert!(ran.text.contains("args:check"), "{}", ran.text);
@@ -1157,6 +1186,7 @@ mod tests {
         let sentinel = base.join("pwned");
 
         let ran = run_declared(
+            &Silent::default(),
             &root,
             &format!("bin/setup.sh check && touch {}", sentinel.display()),
             &[],
@@ -1178,7 +1208,7 @@ mod tests {
         std::os::unix::fs::symlink("/bin/sh", root.join("bin/innocent.sh")).unwrap();
 
         for escape in ["../../../bin/sh", "/bin/sh", "bin/innocent.sh"] {
-            let refusal = run_declared(&root, escape, &[]).unwrap_err();
+            let refusal = run_declared(&Silent::default(), &root, escape, &[]).unwrap_err();
             assert!(refusal.contains(escape), "{refusal}");
         }
 
@@ -1190,8 +1220,8 @@ mod tests {
         let base = skill_with_command();
         let root = std::fs::canonicalize(base.join("skill")).unwrap();
 
-        assert!(run_declared(&root, "bin/absent.sh", &[]).is_err());
-        assert!(run_declared(&root, "", &[]).is_err());
+        assert!(run_declared(&Silent::default(), &root, "bin/absent.sh", &[]).is_err());
+        assert!(run_declared(&Silent::default(), &root, "", &[]).is_err());
 
         std::fs::remove_dir_all(&base).ok();
     }
@@ -1203,6 +1233,7 @@ mod tests {
         let root = std::fs::canonicalize(base.join("skill")).unwrap();
 
         let ran = run_declared(
+            &Silent::default(),
             &root,
             "bin/setup.sh check",
             &[("WEBHOOK_SECRET".to_string(), "whsec-123456".to_string())],
@@ -1222,7 +1253,7 @@ mod tests {
         let base = skill_with_command();
         let root = std::fs::canonicalize(base.join("skill")).unwrap();
 
-        let ran = run_declared(&root, "bin/setup.sh fail", &[]).unwrap();
+        let ran = run_declared(&Silent::default(), &root, "bin/setup.sh fail", &[]).unwrap();
 
         assert_eq!(ran.code, 3);
         assert!(ran.text.contains("it went wrong"), "{}", ran.text);
@@ -1327,6 +1358,64 @@ mod tests {
         assert!(refusal.contains("config.path"), "{refusal}");
     }
 
+    /// D5 / R5.5. The app running an executable because the agent asked it to is the one command
+    /// a user most needs to see, and it went unlogged until walkthroughs had a panel to show it
+    /// in. The logged argv is the *resolved* path, since that is the thing the containment check
+    /// passed — a log showing the manifest's `run` string would be showing what was requested
+    /// rather than what ran.
+    #[test]
+    fn a_declared_command_is_reported_to_the_command_log() {
+        let base = skill_with_command();
+        let root = std::fs::canonicalize(base.join("skill")).unwrap();
+        let log = Recorder::default();
+
+        run_declared(&log, &root, "bin/setup.sh check", &[]).unwrap();
+
+        let started = log.started.lock().unwrap();
+        let finished = log.finished.lock().unwrap();
+        assert_eq!(started.len(), 1);
+        assert_eq!(started[0].argv[0], root.join("bin/setup.sh").display().to_string());
+        assert_eq!(started[0].argv[1], "check");
+        assert_eq!(started[0].cwd, root.display().to_string());
+        // Correlated, so the panel can pair them, and carrying the code the agent was told about.
+        assert_eq!(finished[0].id, started[0].id);
+        assert_eq!(finished[0].code, 0);
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// A command that fails still reports, with its real exit code: the log is a record of what
+    /// happened, and a walkthrough's interesting commands are the ones that did not work.
+    #[test]
+    fn a_failed_declared_command_is_logged_with_its_exit_code() {
+        let base = skill_with_command();
+        let root = std::fs::canonicalize(base.join("skill")).unwrap();
+        let log = Recorder::default();
+
+        run_declared(&log, &root, "bin/setup.sh fail", &[]).unwrap();
+
+        assert_eq!(log.finished.lock().unwrap()[0].code, 3);
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// Records the command log, so D5 is assertable rather than assumed.
+    #[derive(Default)]
+    struct Recorder {
+        started: Mutex<Vec<crate::events::CommandStarted>>,
+        finished: Mutex<Vec<crate::events::CommandFinished>>,
+    }
+
+    impl CommandSink for Recorder {
+        fn started(&self, event: &crate::events::CommandStarted) {
+            self.started.lock().unwrap().push(event.clone());
+        }
+
+        fn finished(&self, event: &crate::events::CommandFinished) {
+            self.finished.lock().unwrap().push(event.clone());
+        }
+    }
+
     /// R6.6, on the text a real command really did emit.
     ///
     /// The first assertion is the point of the second: a skill's own setup command, handed the
@@ -1341,7 +1430,7 @@ mod tests {
         collect(&host, "WEBHOOK_SECRET", b"whsec-123456");
         let manifest = manifest(None, vec![("WEBHOOK_SECRET", "env")]);
 
-        let ran = run_declared(&root, "bin/setup.sh check", &env_delivery(&manifest, &host)).unwrap();
+        let ran = run_declared(&Silent::default(), &root, "bin/setup.sh check", &env_delivery(&manifest, &host)).unwrap();
         assert!(ran.text.contains("whsec-123456"), "{}", ran.text);
 
         // Both arms, because a failing `check` is exactly when a command prints its config.

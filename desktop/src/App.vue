@@ -24,6 +24,9 @@ const AddEntry = defineAsyncComponent(() => import("./components/AddEntry.vue"))
 const Catalogs = defineAsyncComponent(() => import("./components/Catalogs.vue"));
 // Only reachable inside a catalog tab, so it stays out of the initial bundle.
 const BulkInstall = defineAsyncComponent(() => import("./components/BulkInstall.vue"));
+// Only reached by starting a setup walkthrough, and it pulls in the agent transcript machinery,
+// so it stays well out of the initial bundle.
+const Walkthrough = defineAsyncComponent(() => import("./components/Walkthrough.vue"));
 
 // Attached here, at the earliest point in the app, so the command log and the activity
 // bar are subscribed before anything can run.
@@ -45,6 +48,14 @@ const trail = ref<string[]>([]);
 const openEntry = computed(() => trail.value.at(-1) ?? null);
 /** The entry Back returns to, or null when that is the catalog. */
 const previousEntry = computed(() => trail.value.at(-2) ?? null);
+/**
+ * The skill a walkthrough is open for, or null.
+ *
+ * Held here rather than inside the entry page because the walkthrough is a full view, and one
+ * that unmounted when you navigated would end the session behind your back — `Walkthrough` calls
+ * `walkthrough_end` on unmount, deliberately.
+ */
+const walkingThrough = ref<string | null>(null);
 const showDoctor = ref(false);
 const showSync = ref(false);
 /** The catalog an add is destined for; `null` closes the form. */
@@ -268,6 +279,14 @@ onMounted(async () => {
       @navigate="manage = { catalog: $event, entry: null }"
     />
 
+    <!-- Above the entry page it was opened from, so closing it lands back there. -->
+    <Walkthrough
+      v-else-if="walkingThrough"
+      :skill="walkingThrough"
+      :back-to="openEntry ?? 'The Library'"
+      @close="walkingThrough = null"
+    />
+
     <EntryDetail
       v-else-if="openEntry"
       :name="openEntry"
@@ -278,6 +297,7 @@ onMounted(async () => {
       @open="trail.push($event)"
       @installed="load()"
       @manage="manage = { catalog: $event.catalog, entry: $event.name }"
+      @walkthrough="walkingThrough = $event"
     />
 
     <template v-else>

@@ -14,8 +14,20 @@ const props = defineProps<{
    *  knowable until there is one — and asking costs a subprocess. */
   installed: boolean;
 }>();
+const emit = defineEmits<{
+  /** Start a guided walkthrough for this entry. The view above owns the panel. */
+  walkthrough: [];
+}>();
 
 const report = ref<SetupReport | null>(null);
+/**
+ * Whether `claude` resolves (R7.2).
+ *
+ * Asked once per panel rather than held globally: it costs one `--version` and the answer changes
+ * when the user installs it, which is precisely when a stale global `false` would be wrong.
+ * `null` while unknown, so the button does not flicker in and then out.
+ */
+const agentReady = ref<boolean | null>(null);
 const loading = ref(false);
 const error = ref("");
 
@@ -57,6 +69,19 @@ function describePresence(present: boolean | null): string {
  */
 const worthShowing = computed(() => summary.value !== null && summary.value.state !== "none");
 
+/**
+ * Whether to offer a walkthrough at all.
+ *
+ * Only for a skill whose manifest validates and whose prerequisites are met — `ready` is the
+ * CLI's own verdict on exactly that (R5.1). Offering one over a defective manifest or an unmet
+ * prerequisite would start a conversation whose first act is to report the thing the panel is
+ * already showing.
+ *
+ * A `configured` skill still gets the offer, worded as re-running: values drift, tokens expire,
+ * and "you already did this" is a reason to make it a secondary action rather than to hide it.
+ */
+const canWalk = computed(() => agentReady.value === true && report.value?.ready === true);
+
 /** What a collected value does, so "delivery" is not jargon on screen. */
 function describeDelivery(delivery: string): string {
   if (delivery === "manual") return "you enter this yourself; the app never sees it";
@@ -77,10 +102,30 @@ async function load(name: string) {
     report.value = await withActivity(`checking what ${name} needs…`, () =>
       invoke<SetupReport>("entry_setup", { name }),
     );
+    // After the report, not alongside it: nothing is offered over a skill that is not ready, so
+    // an unready one never pays for the check.
+    if (report.value.ready) await checkAgent();
   } catch (e) {
     error.value = describeAppError(e);
   } finally {
     loading.value = false;
+  }
+}
+
+/**
+ * Whether `claude` is there, asked in a way that cannot take the panel down with it.
+ *
+ * Its own try/catch rather than sharing `load`'s: this panel's subject is what the skill needs,
+ * and the agent is an enhancement (R7.2). A probe that failed inside `load` replaced the whole
+ * readiness report — prerequisites, values, everything — with an error about `claude`, which is
+ * the one thing on this screen the user did not ask about.
+ */
+async function checkAgent() {
+  try {
+    agentReady.value = await invoke<boolean>("agent_available");
+  } catch {
+    // Indistinguishable from absent, as far as anything here can offer.
+    agentReady.value = false;
   }
 }
 
@@ -119,6 +164,19 @@ watch([() => props.name, () => props.installed], () => load(props.name), { immed
 
         <template v-if="expanded">
         <p class="setup__detail">{{ summary.detail }}</p>
+
+        <!-- The offer sits directly under what it would act on, and only over a skill the CLI
+             calls ready: starting a conversation whose first act is to report the problem this
+             panel is already showing helps nobody. -->
+        <button v-if="canWalk" type="button" class="setup__walk" @click="emit('walkthrough')">
+          {{ report?.configured ? "Run setup again" : "Set this up" }}
+        </button>
+        <!-- R7.2: the agent is an enhancement, so a missing one is a fact stated next to the
+             thing it would have done, not an error interrupting the page. -->
+        <p v-else-if="agentReady === false" class="setup__no-agent">
+          Guided setup needs Claude Code installed and signed in. Everything else here works
+          without it.
+        </p>
 
         <p v-if="report?.manifest?.summary" class="setup__summary">
           {{ report.manifest.summary }}
@@ -195,6 +253,23 @@ watch([() => props.name, () => props.installed], () => load(props.name), { immed
 </template>
 
 <style scoped>
+.setup__walk {
+  align-self: flex-start;
+  margin-top: 0.15rem;
+  padding: 0.35rem 0.8rem;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 0.35rem;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.setup__no-agent {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  opacity: 0.7;
+}
 .setup__heading {
   margin: 1.75rem 0 0.5rem;
   font-size: 0.75rem;

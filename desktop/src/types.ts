@@ -616,6 +616,46 @@ export interface SecretRequest {
 }
 
 /**
+ * One MCP server as the session's `init` line reported it.
+ *
+ * `status` is a string rather than a union because only `connected` is load-bearing and the rest
+ * (`failed`, `needs-auth`, `pending`) is an open set the backend passes through.
+ */
+export interface McpServer {
+  name: string;
+  status: string;
+}
+
+/**
+ * One thing that happened during a turn, mirrored from `agent.rs`'s `AgentEvent`.
+ *
+ * Tagged on `kind`, and every variant is flat: the raw `claude` stream nests these three levels
+ * deep, and a view walking `message.content[]` itself would be a second parser to disagree with
+ * the backend's.
+ *
+ * `subagent` is true for messages from a subagent rather than the walkthrough itself. Interleaved
+ * with the main transcript they read as the agent contradicting itself, so the panel nests them.
+ */
+export type AgentEvent =
+  | {
+      kind: "init";
+      session_id: string;
+      tools: string[];
+      mcp_servers: McpServer[];
+      mcp_server_errors: unknown;
+    }
+  | { kind: "text"; text: string; subagent: boolean }
+  | { kind: "tool"; id: string; name: string; input: unknown; subagent: boolean }
+  | { kind: "tool_result"; tool_use_id: string; is_error: boolean; text: string; subagent: boolean }
+  /**
+   * A usage-limit notice. **Not** a retry: one arrives on every healthy run with
+   * `status: "allowed"`, so the status decides whether the panel says anything. A notice on
+   * every run trains the reader to ignore the one that matters.
+   */
+  | { kind: "rate_limit"; status: string; limit_type?: string | null; resets_at?: number | null }
+  | { kind: "done"; session_id: string; is_error: boolean; result?: string | null };
+
+/**
  * The backend contract, mirrored from `src-tauri/src/error.rs`.
  *
  * Errors arrive as a tagged union so the UI can act on them rather than dump a

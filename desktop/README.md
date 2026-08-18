@@ -96,17 +96,15 @@ The agent's tools are restricted to four the app defines, by a deny-by-default h
 a shell, and it cannot reach `add`, `update`, `remove`, or `push` — mutating the catalog is a form
 you fill in, not something an agent does on your behalf.
 
-**Two things are needed before a walkthrough is worth starting, and neither is in place yet:**
+Start one from the **Setup** panel on a skill's page. It appears for a skill the CLI reports as
+ready — a manifest that validates and its prerequisites met — and only when `claude` is installed
+and signed in. Leaving the panel ends the walkthrough: the token is retired, the collected values
+are forgotten, and the agent's config files are deleted.
 
-- **The chat view (T6.4).** The backend is complete and tested — spawning the agent, streaming its
-  events, the MCP tool surface, the secure field, delivery, redaction — but there is no UI to
-  start a walkthrough from. Until that lands, this section describes a capability with no front
-  door.
-- **A skill that declares `setup.yaml` (T8.2).** No skill does yet, so the feature currently ships
-  for zero skills.
-
-The readiness panel on an entry's page already works: it shows what a skill needs, whether each
-prerequisite is met, and whether its values are stored, all from `library setup <name> --json`.
+**One thing is still missing: a skill that declares a `setup.yaml`.** None does yet, so the
+feature currently ships for zero skills (T8.2). The readiness panel works regardless — it shows
+what a skill needs, whether each prerequisite is met, and whether its values are stored, all from
+`library setup <name> --json`.
 
 ## Layout
 

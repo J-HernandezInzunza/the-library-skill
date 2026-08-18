@@ -32,6 +32,8 @@ const emit = defineEmits<{
   installed: [];
   /** Hand off to the catalog manager, focused on this copy. */
   manage: [payload: { catalog: string; name: string }];
+  /** Start a guided setup walkthrough for this entry. */
+  walkthrough: [name: string];
 }>();
 
 /** Both views hold state the write just invalidated, so both re-read it. */
@@ -186,7 +188,11 @@ watch(() => props.name, load, { immediate: true });
       <!-- Below Source rather than under the install panel. It is about the installed
            copy, but it is reference material — what this skill needs before it works —
            and sitting between the two install controls it read as a step in installing. -->
-      <SetupReadiness :name="detail.name" :installed="copies.length > 0" />
+      <SetupReadiness
+        :name="detail.name"
+        :installed="copies.length > 0"
+        @walkthrough="emit('walkthrough', detail.name)"
+      />
 
       <h3 class="entry-detail__section">
         Catalogs holding this name ({{ detail.copies.length }})
