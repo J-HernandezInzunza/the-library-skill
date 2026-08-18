@@ -408,6 +408,10 @@ onMounted(async () => {
   /* The sticky header composites over scrolling content, so it needs a surface of
      its own; a bare backdrop-filter leaves the text to overlap the list. */
   --app-bg-sticky: rgba(246, 246, 247, 0.95);
+  /* The collapsed command-log bar, which is pinned to the bottom of the window on every screen.
+     Anything else that pins itself down there has to clear it, and guessing the number in two
+     places is how they drift apart. */
+  --command-bar-h: 2.1rem;
 }
 /* Reserve the scrollbar's width on every page, scrolling or not.
 

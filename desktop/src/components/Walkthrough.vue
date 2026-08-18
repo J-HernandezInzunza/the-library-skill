@@ -284,7 +284,9 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-  padding: 0.5rem 0.15rem 1rem;
+  /* Bottom room for the pinned composer, so the last thing the agent said is readable rather
+     than sitting underneath it. */
+  padding: 0.5rem 0.15rem 7rem;
 }
 
 .turn--nested {
@@ -384,21 +386,36 @@ onUnmounted(() => {
   opacity: 0.6;
 }
 
+/*
+ * Pinned to the window, not to the document.
+ *
+ * `sticky` was wrong here: it pins an element while its container is still on screen, and this
+ * one's container ends immediately after it — so the box simply sat at the end of the transcript
+ * and scrolled away with it. A composer you have to scroll to reach is a composer you lose every
+ * time the agent says something long, which is most turns.
+ *
+ * Fixed to the full window width with the content column reconstructed inside, rather than to the
+ * column itself: a fixed element cannot inherit `.app`'s centring, since it is positioned against
+ * the viewport rather than against its parent.
+ */
 .walkthrough__reply {
-  /* Sticky rather than pinned to a fixed-height column: the page scrolls, so this stays
-     reachable without the view having to own a viewport of its own. */
-  position: sticky;
-  bottom: 0;
+  position: fixed;
+  left: 0;
+  right: 0;
+  /* Above the command-log bar, which is pinned to the bottom of every screen. */
+  bottom: var(--command-bar-h);
+  z-index: 15;
   display: flex;
   gap: 0.5rem;
   align-items: flex-end;
-  padding: 0.6rem 0 0.75rem;
+  /* `.app`'s column: its max-width, its horizontal padding, and its centring. */
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 0.6rem 1.25rem 0.7rem;
   border-top: 1px solid rgba(128, 128, 128, 0.25);
-  /* The app's own sticky surface, the one the catalog toolbar uses: a sticky element
-     composites over scrolling content, and a transparent one leaves the transcript
-     showing through the reply box. */
-  background: var(--app-bg-sticky);
-  backdrop-filter: blur(6px);
+  /* Opaque: it floats over the transcript, and a translucent one leaves the text showing
+     through from behind. */
+  background: var(--app-bg);
 }
 
 .walkthrough__input {

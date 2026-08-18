@@ -98,4 +98,44 @@ describe("CommandLog", () => {
       "library list",
     ]);
   });
+
+  /**
+   * The agent spawn, which is the one command in the app that does not fit on a line.
+   *
+   * `claude -p <prompt>` carries the whole walkthrough prompt as a single argv element — around
+   * two thousand characters. Rendered whole it filled the window, buried every other entry, and
+   * left the page showing through this panel from behind. Twice reported from using the app.
+   */
+  it("folds a command too long to read, and still holds all of it", async () => {
+    const log = await mountLog();
+    const prompt = "You are running inside The Library. ".repeat(60);
+
+    emitEvent("command://started", { id: 201, argv: ["claude", "-p", prompt, "--verbose"] });
+    await flushPromises();
+
+    const row = log.findAll(".command-log__argv")[0];
+    const more = log.findAll(".command-log__more")[0];
+    // Folded by default, and the control says there is more rather than being on every row.
+    expect(row.text().length).toBeLessThan(200);
+    expect(row.text().endsWith("…")).toBe(true);
+    expect(more.text()).toBe("full");
+
+    await more.trigger("click");
+
+    // D5's verbatim record, in the same row: nothing is lost, it is asked for.
+    expect(log.findAll(".command-log__argv")[0].text()).toContain("--verbose");
+    expect(log.findAll(".command-log__argv")[0].text()).toContain(prompt.trim());
+    expect(log.findAll(".command-log__more")[0].text()).toBe("less");
+  });
+
+  it("leaves a command that already fits alone", async () => {
+    const log = await mountLog();
+
+    emitEvent("command://started", { id: 202, argv: ["library", "list", "--json"] });
+    await flushPromises();
+
+    // No control where nothing is hidden: its presence has to mean something.
+    expect(log.findAll(".command-log__argv")[0].text()).toBe("library list --json");
+    expect(log.findAll(".command-log__row")[0].find(".command-log__more").exists()).toBe(false);
+  });
 });

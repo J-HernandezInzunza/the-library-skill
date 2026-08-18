@@ -3351,3 +3351,48 @@ Three things fell out of doing that:
 **Also learned:** `atlassian-toolkit` already has a valid `setup.yaml` in
 `my-engineering-library/skills/`. T8.2 assumed none existed anywhere. What T8.2 is actually for is
 the clean-machine verification, not the authoring.
+
+---
+
+## T6.4b — the log stopped shouting, and the composer stopped running away
+
+Two more from using it, and one question answered rather than built.
+
+**The command log now folds a command too long to read.** Capping the panel's height was not the
+fix, because the entry causing it is not a normal command: the agent spawn carries the whole
+walkthrough prompt as one argv element, two thousand characters of it. Whole, it filled the
+window and buried every other entry. It now shows the first 160 characters with a `full` control
+in the row, which appears only where something is actually hidden — a control on every row means
+nothing. D5's verbatim record is intact and one click away.
+
+The panel is also **opaque now**. It was using `--app-bg-sticky`, the translucent surface the
+catalog toolbar uses — right for something that scrolls with the page, wrong for something that
+floats over it. Translucent plus overflowing is why the page rendered *through* the log, which is
+what both screenshots showed.
+
+**The composer is pinned to the window, not the document.** `position: sticky` was the wrong tool:
+it holds an element while its container is on screen, and this one's container ends immediately
+after it, so the box just sat at the end of the transcript and scrolled away with it. It is
+`fixed` now, sitting above the command-log bar via a new `--command-bar-h` on `:root` — the number
+is in one place because two components pin themselves to the bottom of the window and a guess in
+each is how they drift apart. The transcript carries bottom padding so its tail is readable rather
+than sitting underneath.
+
+### Could this drive an agent other than Claude Code?
+
+Asked while testing; assessed and **deferred**, with the reasoning recorded in tasks.md rather
+than acted on — building configurability nobody has a second runtime for is the speculative
+generality this repo's conventions rule out.
+
+The short version is better than expected: the Claude-specific *code* is confined to `agent.rs`.
+Outside it every mention is a comment. `mcp.rs` is standard MCP over HTTP, `secrets.rs` knows
+nothing about agents, and `AgentEvent` is already a normalized internal type — the frontend has
+never seen a vendor wire format, which is why `walkthrough.ts` and the panel would not change at
+all.
+
+The part that does not generalize is the one that matters. §4.1a's finding is that
+`--allowedTools` pre-approves and never excludes; only the deny-by-default `PreToolUse` hook
+actually withholds `Bash`. D7 rests entirely on the agent having no other way to read a file or
+run a command. So the gating question for a second runtime is not "what is its output format" —
+that is a day's work — but "what is its enforceable tool boundary". A runtime without one cannot
+host a walkthrough safely, and one that merely *runs* would be worse than not supporting it.

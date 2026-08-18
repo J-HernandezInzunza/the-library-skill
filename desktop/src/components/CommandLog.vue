@@ -7,8 +7,39 @@ import { useCommandActivity, type LoggedCommand } from "../commandActivity";
 const { commands } = useCommandActivity();
 const open = ref(false);
 
+/**
+ * How much of one command is shown before it has to be asked for.
+ *
+ * Every command in the app fits well inside this except one: the agent spawn carries the entire
+ * walkthrough prompt as a single argv element, some two thousand characters of it. Rendered whole
+ * it filled the window, buried every other entry, and — because this panel floats over the page —
+ * left the transcript showing through from behind. D5 wants the command verbatim, and it still is:
+ * one click away, in the same row, rather than as the default that makes the log unreadable.
+ */
+const LIMIT = 160;
+
+/** Rows the user has asked to see in full, by command id. */
+const expanded = ref<Set<number>>(new Set());
+
+function toggle(id: number) {
+  const next = new Set(expanded.value);
+  if (!next.delete(id)) next.add(id);
+  expanded.value = next;
+}
+
 function label(run: LoggedCommand): string {
   return run.argv.join(" ");
+}
+
+function isLong(run: LoggedCommand): boolean {
+  return label(run).length > LIMIT;
+}
+
+/** What the row shows now: the whole command, or its head. */
+function shown(run: LoggedCommand): string {
+  const full = label(run);
+  if (!isLong(run) || expanded.value.has(run.id)) return full;
+  return `${full.slice(0, LIMIT)}…`;
 }
 </script>
 
@@ -31,7 +62,17 @@ function label(run: LoggedCommand): string {
         >
           {{ run.code === null ? "…" : run.code }}
         </span>
-        <code class="command-log__argv">{{ label(run) }}</code>
+        <code class="command-log__argv">{{ shown(run) }}</code>
+        <!-- Only where something is actually hidden, so the control's presence means there is
+             more to read rather than being decoration on every row. -->
+        <button
+          v-if="isLong(run)"
+          type="button"
+          class="command-log__more"
+          @click="toggle(run.id)"
+        >
+          {{ expanded.has(run.id) ? "less" : "full" }}
+        </button>
         <span v-if="run.durationMs !== null" class="command-log__time">
           {{ run.durationMs }}ms
         </span>
@@ -55,8 +96,10 @@ function label(run: LoggedCommand): string {
   max-height: 60vh;
   overflow-y: auto;
   border-top: 1px solid rgba(128, 128, 128, 0.25);
-  background: var(--app-bg-sticky);
-  backdrop-filter: blur(8px);
+  /* Opaque, not the translucent sticky surface. This panel floats *over* the page rather than
+     scrolling with it, and a translucent one let the page render straight through the log —
+     two layers of text on top of each other, which is what it looked like in the app. */
+  background: var(--app-bg);
 }
 .command-log__toggle {
   display: flex;
@@ -109,13 +152,25 @@ function label(run: LoggedCommand): string {
 }
 .command-log__argv {
   flex: 1;
-  /* Verbatim (D5) but bounded: the argv stays whole and selectable, and one enormous entry
-     scrolls inside its own row instead of burying every other command in the log. */
-  max-height: 6.5rem;
+  /* Verbatim (D5) but bounded: even expanded, one entry scrolls inside its own row instead of
+     pushing every other command out of the panel. */
+  max-height: 9rem;
   overflow-y: auto;
   font-family: ui-monospace, SFMono-Regular, monospace;
   overflow-wrap: anywhere;
   opacity: 0.85;
+}
+.command-log__more {
+  flex: none;
+  align-self: flex-start;
+  padding: 0 0.35rem;
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  border-radius: 0.25rem;
+  background: transparent;
+  color: inherit;
+  font-size: 0.68rem;
+  opacity: 0.7;
+  cursor: pointer;
 }
 .command-log__time {
   opacity: 0.5;
