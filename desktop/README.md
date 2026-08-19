@@ -101,10 +101,10 @@ ready — a manifest that validates and its prerequisites met — and only when 
 and signed in. Leaving the panel ends the walkthrough: the token is retired, the collected values
 are forgotten, and the agent's config files are deleted.
 
-**One thing is still missing: a skill that declares a `setup.yaml`.** None does yet, so the
-feature currently ships for zero skills (T8.2). The readiness panel works regardless — it shows
-what a skill needs, whether each prerequisite is met, and whether its values are stored, all from
-`library setup <name> --json`.
+What a walkthrough can do for a skill is declared by that skill, in its own `setup.yaml` — the
+values it needs, the one file they go in, and the commands that may run. `atlassian-toolkit` has
+one; a skill without one gets the readiness panel and no walkthrough offer. The schema is
+[`specs/skill-setup-schema.md`](specs/skill-setup-schema.md).
 
 ## Layout
 
