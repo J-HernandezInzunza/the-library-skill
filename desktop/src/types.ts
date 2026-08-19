@@ -613,6 +613,21 @@ export interface SecretRequest {
   key: string;
   guidance: string;
   url?: string | null;
+  /**
+   * Where the app will put this value, from the skill's own manifest.
+   *
+   * Filled in by the backend, never by the agent's tool call: the field states this while the
+   * user is holding a credential, and a destination a model could describe is a destination a
+   * model could describe wrongly.
+   */
+  destination?: Destination | null;
+}
+
+/** Where a collected value ends up, mirrored from `secrets.rs`. */
+export interface Destination {
+  /** `config-file` — written to `path`; or `env` — handed to a subprocess and never saved. */
+  delivery: string;
+  path?: string | null;
 }
 
 /**

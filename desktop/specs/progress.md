@@ -3436,3 +3436,47 @@ gap between them was transparent — text sliding past under the reply box. It n
 `bottom: 0` with the bar's height as *padding*, so the band is continuous to the bottom of the
 window, and the content column is rebuilt in an inner element rather than by centring the fixed
 element itself.
+
+---
+
+## T6.4d — saying where the value goes, not just where it doesn't
+
+Raised from using the app: someone unfamiliar with this would reasonably assume the value they
+type gets handed to the assistant, which then acts on it. That assumption is worth taking
+seriously — **everywhere else in the world, typing into a chat app means the assistant reads it.**
+The app was fighting that with a denial: *"Typed here, never in the chat."* A sentence that only
+denies something leaves the reader to supply their own account of what happens instead, and the
+account they supply is the one being denied.
+
+So the panel now leads with the destination and follows with the denial. `SecretPrompt` says
+**"This app writes it straight to `/Users/…/.config/atlassian-toolkit/config.json`. Owner-only
+permissions (0600). Nothing else receives a copy."** and only then that the assistant is told
+nothing but that you answered.
+
+**Naming the real path is the point.** It is the verifiable half of the claim — the user can go
+and look at that file — where "the skill's config file" is something they have to take on trust.
+
+**A static sentence would have been wrong.** That is what decided the implementation rather than
+copy-editing: `config-file` goes to disk and stays there, `env` is handed to a subprocess and
+written nowhere. One sentence covering both has to be vague enough to be useless, or false for one
+of them. So `Ask` gained a `destination`, and the two modes read differently.
+
+**The destination is filled in by the store, never by the tool call.** `request_secret` builds the
+`Ask` with `destination: None` and `Secrets::request` fills it from the manifest the walkthrough
+opened with. The agent names a key; where that key's value goes is the app's answer. An agent that
+could supply the destination could misdescribe it, on the one screen where the user is deciding
+whether to trust the app with a credential — and that screen is the whole feature.
+
+Three smaller consequences:
+
+- The map is loaded once at walkthrough start from the manifest already fetched, rather than
+  looked up per ask, which would be a subprocess every time a field opens.
+- `clear()` forgets destinations along with values. They belong to the walkthrough that declared
+  them, and the next one must not inherit an idea of where a value goes from an unrelated skill.
+- A key the manifest declares nothing for gets **no** promise about a destination — only the part
+  that holds regardless. Inventing a path is the one lie this panel cannot afford.
+
+**A test caught something worth keeping.** `SecretPrompt.spec.ts`'s helper had its ask typed by
+inference from a single literal, so the new cases failed to compile rather than failing to pass.
+It now takes a real `SecretRequest`, which is what the testing harness's own comment argues for:
+a double that has drifted from the real signature should fail the gate.

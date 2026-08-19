@@ -88,6 +88,7 @@ pub(crate) fn store_holding(key: &str, value: &[u8]) -> Arc<Secrets> {
         key: key.to_string(),
         guidance: String::new(),
         url: None,
+        destination: None,
     };
     // `request` blocks until answered — that is the mechanism, not an accident — so the answer
     // has to come from another thread.
@@ -143,6 +144,30 @@ pub struct Ask {
     pub key: String,
     pub guidance: String,
     pub url: Option<String>,
+    /// Where this value is going, so the field can say so while the user is holding a credential.
+    ///
+    /// Filled in by the store from what the walkthrough declared, not by the caller: the agent
+    /// asks for a key, and where that key's value ends up is the app's business rather than
+    /// something a model gets to describe to the user.
+    ///
+    /// `None` when the manifest declares nothing for this key — the field then says only what it
+    /// can stand behind, which is that the assistant is not getting it.
+    #[serde(default)]
+    pub destination: Option<Destination>,
+}
+
+/// Where a collected value will end up, in the terms the user needs before typing one.
+///
+/// Two modes reach the app and they differ in exactly the thing a careful person would want to
+/// know: `config-file` goes to disk and stays there, `env` exists only for the walkthrough's own
+/// subprocesses. One sentence covering both would have to be vague enough to be useless, or wrong
+/// for one of them.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Destination {
+    /// `config-file` or `env`.
+    pub delivery: String,
+    /// The file it will be written into, expanded. Absent for `env`, which writes nowhere.
+    pub path: Option<String>,
 }
 
 /// How a pending ask ended.
@@ -191,6 +216,11 @@ struct Pending {
 
 #[derive(Default)]
 struct State {
+    /// Where each declared key's value will go, from the manifest the walkthrough opened with.
+    ///
+    /// Held here rather than looked up per ask because the alternative is a subprocess every time
+    /// a field opens, to re-read a manifest the walkthrough already fetched.
+    destinations: std::collections::BTreeMap<String, Destination>,
     /// One at a time. The agent asks for one value per tool call, and a second field appearing
     /// over the first is how a user submits a token into the wrong box.
     pending: Option<Pending>,
@@ -205,6 +235,15 @@ pub struct Secrets {
 }
 
 impl Secrets {
+    /// Declare where each key's value will go, for the length of one walkthrough.
+    ///
+    /// Called when the walkthrough opens, from the manifest the CLI already validated. What the
+    /// field tells the user therefore comes from the skill's own declaration rather than from
+    /// anything the agent said.
+    pub fn expect(&self, destinations: std::collections::BTreeMap<String, Destination>) {
+        self.state.lock().expect("the secret store").destinations = destinations;
+    }
+
     pub fn new(notifier: Arc<dyn Notifier>) -> Self {
         Self {
             state: Mutex::new(State::default()),
@@ -234,6 +273,12 @@ impl Secrets {
                 open.key()
             ));
         }
+        // Answered from the manifest rather than taken from the caller: the agent names a key,
+        // and the app is the one that says where that key's value goes.
+        let ask = Ask {
+            destination: state.destinations.get(&ask.key).cloned(),
+            ..ask
+        };
         state.pending = Some(Pending {
             ask: ask.clone(),
             answer: None,
@@ -404,11 +449,11 @@ impl Secrets {
     /// Called when a walkthrough ends. `Value`'s `Drop` does the zeroing, so this cannot be
     /// half-done by a caller that forgets a step.
     pub fn clear(&self) {
-        self.state
-            .lock()
-            .expect("the secret store")
-            .collected
-            .clear();
+        let mut state = self.state.lock().expect("the secret store");
+        state.collected.clear();
+        // The manifest belonged to the walkthrough that just ended, so the next one does not
+        // inherit its idea of where a value goes.
+        state.destinations.clear();
     }
 }
 
@@ -531,6 +576,7 @@ mod tests {
             key: "account.api_token".to_string(),
             guidance: "Create this token WITHOUT scopes.".to_string(),
             url: Some("https://id.atlassian.com/manage-profile/security/api-tokens".to_string()),
+            destination: None,
         }
     }
 
@@ -602,6 +648,83 @@ mod tests {
         assert_eq!(announced.requested.lock().unwrap()[0], ask());
     }
 
+    /// The field has to be able to say where the value is going, and the answer comes from the
+    /// manifest rather than from the tool call — an agent that could name the destination could
+    /// also misdescribe it, on the one screen where the user is deciding whether to trust the app
+    /// with a credential.
+    #[test]
+    fn an_ask_carries_where_the_value_will_go() {
+        let (store, announced) = store();
+        store.expect(
+            [
+                (
+                    "account.api_token".to_string(),
+                    Destination {
+                        delivery: "config-file".to_string(),
+                        path: Some("/Users/dev/.config/atlassian-toolkit/config.json".to_string()),
+                    },
+                ),
+                (
+                    "WEBHOOK_SECRET".to_string(),
+                    Destination { delivery: "env".to_string(), path: None },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+
+        // Asked for with no destination set on it, as `request_secret` always does.
+        let waiting = open_ask(&store, ask());
+        store.decline("account.api_token").unwrap();
+        waiting.join().unwrap().unwrap();
+
+        let announced = announced.requested.lock().unwrap();
+        assert_eq!(
+            announced[0].destination,
+            Some(Destination {
+                delivery: "config-file".to_string(),
+                path: Some("/Users/dev/.config/atlassian-toolkit/config.json".to_string()),
+            })
+        );
+    }
+
+    /// A key the manifest says nothing about gets no promise. The field then says only the part
+    /// that is true regardless: the assistant is not getting it.
+    #[test]
+    fn an_undeclared_key_is_announced_without_a_destination() {
+        let (store, announced) = store();
+        store.expect(Default::default());
+
+        let waiting = open_ask(&store, ask());
+        store.decline("account.api_token").unwrap();
+        waiting.join().unwrap().unwrap();
+
+        assert_eq!(announced.requested.lock().unwrap()[0].destination, None);
+    }
+
+    /// Destinations belong to the walkthrough that declared them, so the next one does not
+    /// inherit an idea of where a value goes from a skill it has nothing to do with.
+    #[test]
+    fn ending_a_walkthrough_forgets_where_values_were_going() {
+        let (store, announced) = store();
+        store.expect(
+            [(
+                "account.api_token".to_string(),
+                Destination { delivery: "config-file".to_string(), path: Some("/x.json".into()) },
+            )]
+            .into_iter()
+            .collect(),
+        );
+
+        store.clear();
+
+        let waiting = open_ask(&store, ask());
+        store.decline("account.api_token").unwrap();
+        waiting.join().unwrap().unwrap();
+
+        assert_eq!(announced.requested.lock().unwrap()[0].destination, None);
+    }
+
     /// A value answered under the wrong key would be written into the wrong place in somebody's
     /// config file, which is a worse outcome than a refused submit.
     #[test]
@@ -635,6 +758,7 @@ mod tests {
                 key: "account.email".to_string(),
                 guidance: String::new(),
                 url: None,
+                destination: None,
             })
             .unwrap_err();
 
@@ -837,6 +961,7 @@ mod tests {
                 key: "account.other".to_string(),
                 guidance: String::new(),
                 url: None,
+                destination: None,
             },
         );
         store.submit("account.other", b"secret-token".to_vec()).unwrap();

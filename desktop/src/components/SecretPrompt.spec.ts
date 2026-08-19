@@ -2,11 +2,12 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { afterEach, describe, expect, it } from "vitest";
 import { answer, callTo, calls, commandsCalled, emitEvent, resetTauri } from "../testing/tauri";
+import type { SecretRequest } from "../types";
 import SecretPrompt from "./SecretPrompt.vue";
 
 afterEach(resetTauri);
 
-const ASK = {
+const ASK: SecretRequest = {
   key: "account.api_token",
   guidance: "Create this token WITHOUT scopes. Scoped tokens are rejected by the API.",
   url: "https://id.atlassian.com/manage-profile/security/api-tokens",
@@ -15,7 +16,14 @@ const ASK = {
 const TOKEN = "ATATT3xFfGF0-a-real-looking-token-value";
 
 /** Mount and open an ask, which is the only way this panel ever appears. */
-async function opened(ask = ASK) {
+/**
+ * Mount and open an ask, which is the only way this panel ever appears.
+ *
+ * Typed as the real `SecretRequest` rather than inferred from `ASK`: inference narrowed it to
+ * that one literal's shape, so a case exercising a field `ASK` happens not to set failed to
+ * compile instead of testing anything.
+ */
+async function opened(ask: SecretRequest = ASK) {
   const panel = mount(SecretPrompt);
   await flushPromises();
   emitEvent("secret://requested", ask);
@@ -175,10 +183,66 @@ describe("SecretPrompt", () => {
   });
 
   it("renders an ask with no url or guidance", async () => {
-    const panel = await opened({ key: "account.email", guidance: "", url: undefined as never });
+    const panel = await opened({ key: "account.email", guidance: "" });
 
     expect(panel.find(".secret").exists()).toBe(true);
     expect(panel.find(".secret__where").exists()).toBe(false);
     expect(panel.find(".secret__guidance").exists()).toBe(false);
+  });
+
+  /**
+   * The misconception this copy exists to correct.
+   *
+   * Everywhere else in the world, typing into a chat app means the assistant reads it. A field
+   * that says only "never in the chat" leaves the reader to supply their own account of what
+   * happens instead, and the usual guess is that the assistant receives the value and acts on it.
+   * So the panel names the destination first, and it names the real path — the verifiable half,
+   * since the user can go and look at that file.
+   */
+  it("names the file it will write the value to", async () => {
+    const panel = await opened({
+      key: "account.api_token",
+      guidance: "Create this token WITHOUT scopes.",
+      destination: {
+        delivery: "config-file",
+        path: "/Users/dev/.config/atlassian-toolkit/config.json",
+      },
+    });
+
+    expect(panel.get(".secret__route").text()).toContain("This app writes it straight to");
+    expect(panel.get(".secret__path").text()).toBe(
+      "/Users/dev/.config/atlassian-toolkit/config.json",
+    );
+    expect(panel.get(".secret__route").text()).toContain("0600");
+    expect(panel.get(".secret__route").text()).toContain("assistant never receives it");
+  });
+
+  /**
+   * An `env` value goes to a subprocess and is written nowhere, so the config-file wording would
+   * be a false promise about a file that never gets touched. One sentence covering both modes has
+   * to be wrong for one of them.
+   */
+  it("says an env value is never written to disk, rather than naming a file", async () => {
+    const panel = await opened({
+      key: "WEBHOOK_SECRET",
+      guidance: "",
+      destination: { delivery: "env", path: null },
+    });
+
+    expect(panel.get(".secret__route").text()).toContain("never written to disk");
+    expect(panel.find(".secret__path").exists()).toBe(false);
+  });
+
+  /**
+   * A key the manifest declares nothing for gets no promise about a destination — only the part
+   * that is true regardless. Inventing a path here would be the one lie this panel cannot afford.
+   */
+  it("promises nothing specific when the manifest declared no destination", async () => {
+    const panel = await opened({ key: "account.email", guidance: "" });
+
+    expect(panel.find(".secret__path").exists()).toBe(false);
+    expect(panel.get(".secret__route").text()).toContain("goes where the skill declared");
+    // The one claim that holds for every ask, however little else is known.
+    expect(panel.get(".secret__route").text()).toContain("assistant never receives it");
   });
 });

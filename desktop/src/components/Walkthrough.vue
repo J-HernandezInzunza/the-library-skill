@@ -174,10 +174,16 @@ onUnmounted(() => {
       </p>
       <!-- Stated before the walkthrough starts, not after a field appears. This is the one
            promise the user is being asked to rely on, and the moment to read it is while
-           deciding, not while holding a token. -->
+           deciding, not while holding a token.
+
+           It says where a credential *goes* before it says who does not get it. Everywhere else
+           in the world, typing into a chat means the assistant reads it — so a line that only
+           denies that leaves the reader to invent their own account of what happens instead. -->
       <p class="walkthrough__assurance">
-        If a credential is needed you will type it into a field in this window. The assistant is
-        told only that a value arrived — never the value, its length, or any part of it.
+        If a credential is needed, <strong>this app collects it and writes it to the skill's own
+        config file itself</strong> — in a field in this window, with owner-only permissions. The
+        assistant is not involved in that step and never receives the value, its length, or any
+        part of it. It is told only that you answered.
       </p>
       <p class="walkthrough__assurance">
         It can read this skill's files and run the commands the skill declares. It cannot run a

@@ -559,6 +559,11 @@ fn request_secret(arguments: &Value, host: &dyn Host) -> Result<String, String> 
         // declare a value that needs no explanation — but it is the author's call, not ours.
         guidance: arguments["guidance"].as_str().unwrap_or_default().to_string(),
         url: arguments["url"].as_str().map(String::from),
+        // Deliberately not taken from `arguments`. Where a value goes is the skill's declaration,
+        // and the store fills it in from the manifest the walkthrough opened with — an agent that
+        // could name the destination could also misdescribe it on the one screen where the user
+        // is deciding whether to trust the app with a credential.
+        destination: None,
     };
 
     match host.secrets().request(ask)? {
@@ -1471,6 +1476,7 @@ mod tests {
             key: key.to_string(),
             guidance: String::new(),
             url: None,
+            destination: None,
         };
         std::thread::scope(|scope| {
             scope.spawn(|| store.request(ask).expect("the ask should open"));

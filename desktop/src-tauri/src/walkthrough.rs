@@ -13,6 +13,7 @@
 // subscriber that filters, which is worth doing when the app can show two at once. It cannot, so
 // starting a second one ends the first, explicitly, rather than quietly sharing its channels.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -22,7 +23,7 @@ use crate::cli;
 use crate::error::AppError;
 use crate::mcp;
 use crate::setup;
-use crate::secrets::Secrets;
+use crate::secrets::{self, Secrets};
 
 /// What one open walkthrough consists of.
 struct Active {
@@ -91,6 +92,10 @@ impl Walkthroughs {
             settings: settings.clone(),
             resume: None,
         };
+
+        // What the field will tell the user about where their value goes, taken from the skill's
+        // own declaration rather than from anything the agent says at ask time.
+        self.secrets.expect(destinations(report));
 
         *self.active.lock().expect("the walkthrough slot") = Some(Active {
             skill: skill.to_string(),
@@ -229,6 +234,41 @@ fn run_turn(
         }
         Err(e) => Err(e),
     }
+}
+
+/// Where each declared value will end up, keyed the way the agent will ask for it.
+///
+/// Only the two modes the app can actually see. A `manual` secret never reaches the app at all,
+/// so promising the user anything about it would be a promise nothing here keeps.
+fn destinations(report: &setup::SetupReport) -> BTreeMap<String, secrets::Destination> {
+    let Some(manifest) = report.manifest.as_ref() else {
+        return BTreeMap::new();
+    };
+    let config = manifest
+        .config
+        .as_ref()
+        .map(|config| secrets::expand_home(&config.path).display().to_string());
+
+    manifest
+        .secrets
+        .iter()
+        .filter_map(|secret| {
+            let destination = match secret.delivery.as_str() {
+                // The path is expanded here, because `~/.config/…` is what the manifest says and
+                // the actual directory is what the user would go and look in.
+                "config-file" => secrets::Destination {
+                    delivery: secret.delivery.clone(),
+                    path: config.clone(),
+                },
+                "env" => secrets::Destination {
+                    delivery: secret.delivery.clone(),
+                    path: None,
+                },
+                _ => return None,
+            };
+            Some((secret.key.clone(), destination))
+        })
+        .collect()
 }
 
 /// A fresh directory for one walkthrough's agent configuration.

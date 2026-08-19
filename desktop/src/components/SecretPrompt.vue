@@ -11,7 +11,7 @@
  * a field that unmounted when you navigated away would strand a suspended tool call behind a
  * view you had closed.
  */
-import { onUnmounted, ref } from "vue";
+import { computed, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -20,6 +20,34 @@ import { describeAppError, type SecretRequest } from "../types";
 import StatusBanner from "./StatusBanner.vue";
 
 const ask = ref<SecretRequest | null>(null);
+
+/**
+ * Where this value is going, in a sentence.
+ *
+ * Stated at the moment the user is holding a credential, because the assumption this exists to
+ * correct is a reasonable one: everywhere else, typing into a chat app means the assistant reads
+ * it. Saying only "never in the chat" leaves the reader to guess what *does* happen instead, and
+ * the guess is usually "the assistant handles it".
+ *
+ * The two delivery modes differ in the thing a careful person wants to know, so one sentence
+ * covering both would be wrong for one of them.
+ */
+const destination = computed(() => {
+  const to = ask.value?.destination;
+  if (!to) return null;
+  if (to.delivery === "env" || !to.path) {
+    return {
+      lead: "This app passes it straight to the setup command",
+      detail: "It is used for this walkthrough only, and never written to disk.",
+      path: null,
+    };
+  }
+  return {
+    lead: "This app writes it straight to",
+    detail: "Owner-only permissions (0600). Nothing else receives a copy.",
+    path: to.path,
+  };
+});
 const value = ref("");
 const busy = ref(false);
 const error = ref("");
@@ -82,7 +110,7 @@ async function decline() {
   <!-- No teleport, no overlay of its own: this sits where it is mounted and the walkthrough view
        decides the surrounding chrome. -->
   <section v-if="ask" class="secret" aria-live="polite">
-    <h3 class="secret__title">The walkthrough needs a value</h3>
+    <h3 class="secret__title">The Library needs a value</h3>
 
     <!-- The key is shown as code, because it is a config path and not a sentence. -->
     <p class="secret__key"><code>{{ ask.key }}</code></p>
@@ -122,9 +150,26 @@ async function decline() {
       </div>
     </form>
 
-    <p class="secret__assurance">
-      Typed here, never in the chat. The assistant is told that a value arrived and nothing else.
-    </p>
+    <!-- Where it goes, then who does not get it. In that order deliberately: the misconception
+         being corrected is that the assistant receives the value and acts on it, and a sentence
+         that only denies something leaves the reader to supply their own version of what
+         actually happens. -->
+    <div class="secret__route">
+      <p v-if="destination" class="secret__route-line">
+        <strong>{{ destination.lead }}</strong>
+        <code v-if="destination.path" class="secret__path">{{ destination.path }}</code
+        ><span v-else>.</span>
+        {{ destination.detail }}
+      </p>
+      <p v-else class="secret__route-line">
+        <strong>This app handles this value itself.</strong>
+        It goes where the skill declared, and nowhere else.
+      </p>
+      <p class="secret__route-line secret__route-line--muted">
+        The assistant never receives it — not the value, not its length, not any part of it. It is
+        told only that you answered, so it knows to carry on.
+      </p>
+    </div>
   </section>
 </template>
 
@@ -213,7 +258,31 @@ async function decline() {
   cursor: default;
 }
 
-.secret__assurance {
-  opacity: 0.65;
+.secret__route {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 0.15rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid rgba(128, 128, 128, 0.28);
+}
+.secret__route-line {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.55;
+}
+.secret__route-line--muted {
+  opacity: 0.7;
+}
+.secret__path {
+  /* The path is the verifiable part of the claim — the user can go and look at that file — so it
+     is set apart rather than run into the sentence. */
+  display: inline-block;
+  padding: 0.05rem 0.3rem;
+  border-radius: 0.2rem;
+  background: rgba(128, 128, 128, 0.16);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.75rem;
+  word-break: break-all;
 }
 </style>

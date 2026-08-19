@@ -55,9 +55,12 @@ describe("Walkthrough", () => {
   it("says what will happen before anything starts", async () => {
     const panel = await mountPanel();
 
-    // The moment to read the promise is while deciding, not while holding a token.
-    expect(panel.text()).toContain("type it into a field in this window");
-    expect(panel.text()).toContain("never the value");
+    // The moment to read the promise is while deciding, not while holding a token — and it says
+    // where the value *goes* before it says who does not get it. A line that only denies the
+    // assistant's involvement leaves the reader to invent what happens instead, and the usual
+    // guess is "the assistant handles it".
+    expect(panel.text()).toContain("this app collects it and writes it to the skill's own config");
+    expect(panel.text()).toContain("never receives the value");
     // And what it cannot do, since "an assistant" otherwise reads as unbounded.
     expect(panel.text()).toContain("cannot run a shell");
     expect(commandsCalled()).not.toContain("walkthrough_start");
@@ -227,6 +230,10 @@ describe("Walkthrough", () => {
       key: "account.api_token",
       guidance: "Create this token WITHOUT scopes.",
       url: null,
+      destination: {
+        delivery: "config-file",
+        path: "/Users/dev/.config/atlassian-toolkit/config.json",
+      },
     });
     await flushPromises();
 
@@ -234,6 +241,13 @@ describe("Walkthrough", () => {
     expect(field.attributes("type")).toBe("password");
     // Verbatim: a paraphrased scope list is a support ticket.
     expect(panel.text()).toContain("Create this token WITHOUT scopes.");
+    // The destination, named — the verifiable half of the claim, since the user can go and look
+    // at that file.
+    expect(panel.get(".secret__path").text()).toBe(
+      "/Users/dev/.config/atlassian-toolkit/config.json",
+    );
+    expect(panel.text()).toContain("This app writes it straight to");
+    expect(panel.text()).toContain("0600");
 
     await field.setValue("ATATT-the-token");
     await panel.get(".secret__form").trigger("submit");
