@@ -285,6 +285,12 @@ onUnmounted(() => {
   font: inherit;
   cursor: pointer;
 }
+.walkthrough__send {
+  /* Height comes from the row, not from padding — `align-items: stretch` above matches it to the
+     textarea. `flex: none` keeps it at its label's width while the input takes the rest. */
+  flex: none;
+  padding-block: 0;
+}
 
 .walkthrough__send:disabled {
   opacity: 0.5;
@@ -431,10 +437,14 @@ onUnmounted(() => {
 .walkthrough__composer {
   display: flex;
   gap: 0.5rem;
-  align-items: flex-end;
+  /* Stretch, so the button is the input's height rather than hanging off its bottom edge. The
+     two are one control; sizing them independently reads as a misalignment. */
+  align-items: stretch;
   max-width: 860px;
   margin: 0 auto;
-  padding: 0.6rem 1.25rem 0.7rem;
+  /* Even top and bottom: the band is the only thing framing the input, so an asymmetric one
+     shows up as the box sitting slightly high in it. */
+  padding: 0.7rem 1.25rem;
 }
 
 .walkthrough__input {
