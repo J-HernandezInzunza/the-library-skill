@@ -9,6 +9,7 @@ import {
   installPlan,
   isOnDisk,
   requirableRefs,
+  searchRows,
   summarizeChanges,
   winningRows,
   editableCatalogs,
@@ -151,6 +152,40 @@ it("gives each catalog a stable colour, cycling rather than running out", () => 
   expect(catalogHue(1)).toBe(catalogHue(1));
   expect(catalogHue(1)).not.toBe(catalogHue(2));
   expect(catalogHue(5)).toBe(catalogHue(1));
+});
+
+describe("searchRows", () => {
+  const rows = allRows([
+    entry({ name: "jira-ticket-drafter", description: "turns a Slack message into a ticket" }),
+    entry({ name: "slack-poster", description: "posts a message" }),
+    entry({ name: "post-to-slack", description: "sends an update" }),
+    entry({ name: "grilling", description: "asks hard questions" }),
+  ]);
+
+  it("ranks name matches above entries that only mention the term in the description", () => {
+    expect(searchRows(rows, "slack").map((row) => row.entry.name)).toEqual([
+      "slack-poster",
+      "post-to-slack",
+      "jira-ticket-drafter",
+    ]);
+  });
+
+  it("drops entries the term does not touch at all", () => {
+    expect(searchRows(rows, "grill").map((row) => row.entry.name)).toEqual(["grilling"]);
+  });
+
+  it("matches without regard to case, and returns everything for an empty query", () => {
+    expect(searchRows(rows, "  SLACK-Poster ").map((row) => row.entry.name)).toEqual([
+      "slack-poster",
+    ]);
+    expect(searchRows(rows, "   ")).toEqual(rows);
+  });
+
+  it("keeps a name's copies adjacent, since both copies rank the same", () => {
+    const ranked = searchRows(allRows(heldByBoth), "grilling");
+
+    expect(ranked.map((row) => row.entry.catalog)).toEqual(["personal", "shared"]);
+  });
 });
 
 describe("dependencies", () => {

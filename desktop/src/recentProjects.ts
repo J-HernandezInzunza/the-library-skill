@@ -1,5 +1,5 @@
 const KEY = "library.recentProjects";
-const LIMIT = 5;
+const LIMIT = 3;
 
 /**
  * Directories previously picked for a project install.
@@ -25,6 +25,12 @@ export function recentProjects(): string[] {
 
 export function rememberProject(dir: string): string[] {
   const updated = withMostRecent(recentProjects(), dir);
+  localStorage.setItem(KEY, JSON.stringify(updated));
+  return updated;
+}
+
+export function forgetProject(dir: string): string[] {
+  const updated = recentProjects().filter((path) => path !== dir);
   localStorage.setItem(KEY, JSON.stringify(updated));
   return updated;
 }

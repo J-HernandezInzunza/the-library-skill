@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, defineAsyncComponent, onMounted, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { allRows, catalogRows, isOnDisk, winningRows, type Row } from "./catalog";
+import { allRows, catalogRows, isOnDisk, searchRows, winningRows, type Row } from "./catalog";
 import { useCommandActivity, withActivity } from "./commandActivity";
 import { describeAppError, isAppError, type Catalog, type Entry } from "./types";
 import ActivityBar from "./components/ActivityBar.vue";
@@ -236,15 +236,8 @@ const overriddenCount = computed(
   () => entries.value.filter((entry) => entry.overridden_by).length,
 );
 
-/** Case-insensitive filter over name + description, computed client-side. */
-const filtered = computed(() => {
-  const q = query.value.trim().toLowerCase();
-  if (!q) return rows.value;
-  return rows.value.filter(
-    ({ entry }) =>
-      entry.name.toLowerCase().includes(q) || entry.description.toLowerCase().includes(q),
-  );
-});
+/** Case-insensitive search over name + description, name matches first, computed client-side. */
+const filtered = computed(() => searchRows(rows.value, query.value));
 
 const summary = computed(() => {
   const installed = filtered.value.filter(({ tone }) => tone === "installed").length;

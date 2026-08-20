@@ -90,6 +90,32 @@ export function catalogRows(entries: Entry[], catalogId: string): Row[] {
   return held.map((entry) => toRow(entry));
 }
 
+/**
+ * The rows matching `query`, name matches first.
+ *
+ * A term is nearly always a name the user is hunting for, but descriptions mention other
+ * skills by name freely, so a plain name-or-description filter buries the `slack-*`
+ * entries under everything whose description happens to say "Slack". Ranking by where
+ * the term hit — name prefix, then anywhere in the name, then description only — puts
+ * the hunted entry on screen without hiding the looser matches. The sort is stable, so
+ * copies of one name stay adjacent and the grouping the row builders established holds.
+ */
+export function searchRows(rows: Row[], query: string): Row[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return rows;
+
+  const ranked: { row: Row; rank: number }[] = [];
+  for (const row of rows) {
+    const name = row.entry.name.toLowerCase();
+    const rank = name.startsWith(q) ? 0 : name.includes(q) ? 1 : 2;
+    if (rank < 2 || row.entry.description.toLowerCase().includes(q)) {
+      ranked.push({ row, rank });
+    }
+  }
+
+  return ranked.sort((a, b) => a.rank - b.rank).map(({ row }) => row);
+}
+
 /** Grouped by name alone, matching how the CLI resolves a winner. */
 function byName(entries: Entry[]): Map<string, Entry[]> {
   const groups = new Map<string, Entry[]>();

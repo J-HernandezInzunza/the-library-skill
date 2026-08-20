@@ -67,6 +67,7 @@ const hueByCatalog = computed(
         type="button"
         class="entry-list__item"
         :disabled="selecting && !selectable(row)"
+        :aria-pressed="selectable(row) ? selected?.has(row.entry.name) : undefined"
         @click="activate(row)"
       >
       <div class="entry-list__head">
@@ -112,7 +113,13 @@ const hueByCatalog = computed(
           class="entry-list__tick"
           :class="{ 'entry-list__tick--on': selected?.has(row.entry.name) }"
           aria-hidden="true"
-        />
+        >
+          <!-- Drawn, not a glyph, so it cannot pick up a font's baseline: two legs of
+               different length is a shape CSS gradients cannot express. -->
+          <svg v-if="selected?.has(row.entry.name)" viewBox="0 0 16 16">
+            <path d="M4 8.4l2.7 2.7L12 5.2" />
+          </svg>
+        </span>
       </span>
       </div>
     </li>
@@ -139,17 +146,26 @@ const hueByCatalog = computed(
   padding: 0 0.9rem 0 0.2rem;
 }
 .entry-list__tick {
+  /* A square box, because the selection is a multi-pick: a circle would promise a radio. */
+  display: flex;
   width: 1.15rem;
   height: 1.15rem;
-  border-radius: 50%;
+  border-radius: 5px;
   border: 2px solid rgba(128, 128, 128, 0.5);
 }
 .entry-list__tick--on {
   border-color: #3b82f6;
   background: #3b82f6;
-  /* The check, drawn rather than a glyph, so it cannot pick up a font's baseline. */
-  background-image: linear-gradient(45deg, transparent 45%, #fff 45%, #fff 55%, transparent 55%),
-    linear-gradient(-45deg, transparent 60%, #fff 60%, #fff 72%, transparent 72%);
+  color: #fff;
+}
+.entry-list__tick svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.25;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .entry-list {
   list-style: none;

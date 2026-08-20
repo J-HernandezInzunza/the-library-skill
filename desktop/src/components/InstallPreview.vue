@@ -9,7 +9,7 @@ import {
   summarizeChanges,
 } from "../catalog";
 import { withActivity } from "../commandActivity";
-import { recentProjects, rememberProject } from "../recentProjects";
+import { forgetProject, recentProjects, rememberProject } from "../recentProjects";
 import { describeAppError, type UsePreview, type UseReport } from "../types";
 import Busy from "./Busy.vue";
 import StatusBanner from "./StatusBanner.vue";
@@ -44,6 +44,10 @@ async function pickDirectory() {
 
   chooseDirectory(picked);
   recents.value = rememberProject(picked);
+}
+
+function forget(dir: string) {
+  recents.value = forgetProject(dir);
 }
 
 function chooseDirectory(dir: string) {
@@ -146,20 +150,35 @@ watch([() => props.name, scope], () => {
         >
           {{ projectDir ? "Choose another…" : "Choose a directory…" }}
         </button>
-        <code v-if="projectDir" class="install-preview__dir">{{ projectDir }}</code>
+        <template v-if="projectDir">
+          <p class="install-preview__label">Installing into</p>
+          <code class="install-preview__dir">{{ projectDir }}</code>
+        </template>
 
-        <ul v-if="recents.length" class="install-preview__recents">
-          <li v-for="dir in recents" :key="dir">
-            <button
-              type="button"
-              class="install-preview__recent"
-              :class="{ 'install-preview__recent--current': dir === projectDir }"
-              @click="chooseDirectory(dir)"
-            >
-              {{ dir }}
-            </button>
-          </li>
-        </ul>
+        <template v-if="recents.length">
+          <p class="install-preview__label">Recent directories</p>
+          <ul class="install-preview__recents">
+            <li v-for="dir in recents" :key="dir" class="install-preview__recent-row">
+              <button
+                type="button"
+                class="install-preview__recent"
+                :class="{ 'install-preview__recent--current': dir === projectDir }"
+                @click="chooseDirectory(dir)"
+              >
+                {{ dir }}
+              </button>
+              <button
+                type="button"
+                class="install-preview__forget"
+                :title="`Forget ${dir}`"
+                :aria-label="`Forget ${dir}`"
+                @click="forget(dir)"
+              >
+                &times;
+              </button>
+            </li>
+          </ul>
+        </template>
       </div>
 
       <button
@@ -314,17 +333,29 @@ watch([() => props.name, scope], () => {
 }
 .install-preview__dir {
   display: block;
-  margin-top: 0.4rem;
   font-size: 0.78rem;
   overflow-wrap: anywhere;
 }
+.install-preview__label {
+  margin: 0.6rem 0 0.2rem;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.5;
+}
 .install-preview__recents {
   list-style: none;
-  margin: 0.4rem 0 0;
+  margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
+  align-items: flex-start;
+}
+.install-preview__recent-row {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
 }
 .install-preview__recent {
   padding: 0.15rem 0.35rem;
@@ -345,6 +376,21 @@ watch([() => props.name, scope], () => {
 .install-preview__recent--current {
   opacity: 1;
   font-weight: 600;
+}
+.install-preview__forget {
+  padding: 0 0.3rem;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 0.85rem;
+  line-height: 1;
+  opacity: 0.35;
+  cursor: pointer;
+}
+.install-preview__forget:hover {
+  background: rgba(128, 128, 128, 0.15);
+  opacity: 1;
 }
 .install-preview__plan {
   list-style: none;
