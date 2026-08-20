@@ -14,10 +14,8 @@ import { withActivity } from "../commandActivity";
 import { describeAppError, type Catalog, type Entry, type EntryDetail } from "../types";
 import Busy from "./Busy.vue";
 import StatusBanner from "./StatusBanner.vue";
-import InstallPreview from "./InstallPreview.vue";
 import InstalledCopies from "./InstalledCopies.vue";
 import PageHeader from "./PageHeader.vue";
-import SetupReadiness from "./SetupReadiness.vue";
 
 const props = defineProps<{
   name: string;
@@ -32,8 +30,8 @@ const emit = defineEmits<{
   installed: [];
   /** Hand off to the catalog manager, focused on this copy. */
   manage: [payload: { catalog: string; name: string }];
-  /** Start a guided setup walkthrough for this entry. */
-  walkthrough: [name: string];
+  /** Hand off to the install and setup page for this entry. */
+  install: [name: string];
 }>();
 
 /** Both views hold state the write just invalidated, so both re-read it. */
@@ -126,6 +124,19 @@ const copies = computed(() =>
 );
 
 /**
+ * What the install page is for, from here: adding a copy, or maintaining the one you have.
+ *
+ * Two sentences rather than one for every state. The states the panels themselves distinguish —
+ * drifted, stale, untracked — are their subject and are stated on that page; a hand-off only has
+ * to say which of the two jobs is waiting, or the page grows a second account of the same fact.
+ */
+const handoff = computed(() =>
+  copies.value.length
+    ? "Add another copy or refresh this one, and see what this skill needs before it runs."
+    : "Put a copy on this machine, and see what it needs before it runs.",
+);
+
+/**
  * The same badge the list shows, from the same function.
  *
  * The page used to show none, so an entry the list had just labelled `installed · global`
@@ -178,20 +189,21 @@ watch(() => props.name, load, { immediate: true });
           @changed="afterWrite()"
         />
 
-        <InstallPreview
-          :name="detail.name"
-          :installed="copies.length > 0"
-          @installed="afterWrite()"
-        />
-
-        <!-- Below Source rather than under the install panel. It is about the installed
-             copy, but it is reference material — what this skill needs before it works —
-             and sitting between the two install controls it read as a step in installing. -->
-        <SetupReadiness
-          :name="detail.name"
-          :installed="copies.length > 0"
-          @walkthrough="emit('walkthrough', detail.name)"
-        />
+        <!-- A pointer, not the panels themselves (D23). Installing a copy and reading what it
+             needs are actions on this entry, and they had grown into two controls sitting between
+             the facts above and the facts below, so reading down the page crossed out of "what is
+             true about this" and back into it. -->
+        <h3 class="entry-detail__section">Install and set up</h3>
+        <div class="card entry-detail__handoff">
+          <p class="entry-detail__handoff-lede">{{ handoff }}</p>
+          <button
+            type="button"
+            class="ghost"
+            @click="emit('install', detail.name)"
+          >
+            Install and set up
+          </button>
+        </div>
 
         <h3 class="entry-detail__section">
           Catalogs holding this name ({{ detail.copies.length }})
@@ -355,6 +367,19 @@ watch(() => props.name, load, { immediate: true });
   border-radius: 999px;
   background: rgba(59, 130, 246, 0.18);
   color: #2563eb;
+}
+.entry-detail__handoff {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.entry-detail__handoff-lede {
+  flex: 1;
+  min-width: 14rem;
+  margin: 0;
+  font-size: 0.85rem;
+  opacity: 0.8;
 }
 .entry-detail__desc {
   margin: 0;

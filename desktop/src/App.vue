@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, defineAsyncComponent, onMounted, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { allRows, catalogRows, winningRows, type Row } from "./catalog";
+import { allRows, catalogRows, isOnDisk, winningRows, type Row } from "./catalog";
 import { useCommandActivity, withActivity } from "./commandActivity";
 import { describeAppError, isAppError, type Catalog, type Entry } from "./types";
 import ActivityBar from "./components/ActivityBar.vue";
@@ -22,6 +22,9 @@ const Doctor = defineAsyncComponent(() => import("./components/Doctor.vue"));
 const Sync = defineAsyncComponent(() => import("./components/Sync.vue"));
 const AddEntry = defineAsyncComponent(() => import("./components/AddEntry.vue"));
 const Catalogs = defineAsyncComponent(() => import("./components/Catalogs.vue"));
+// Only reached from an entry page, and it pulls in the install preview and the setup report,
+// so it stays out of the initial bundle.
+const EntryInstall = defineAsyncComponent(() => import("./components/EntryInstall.vue"));
 // Only reachable inside a catalog tab, so it stays out of the initial bundle.
 const BulkInstall = defineAsyncComponent(() => import("./components/BulkInstall.vue"));
 // Only reached by starting a setup walkthrough, and it pulls in the agent transcript machinery,
@@ -56,6 +59,14 @@ const previousEntry = computed(() => trail.value.at(-2) ?? null);
  * `walkthrough_end` on unmount, deliberately.
  */
 const walkingThrough = ref<string | null>(null);
+/**
+ * The entry whose install and setup page is open, or null (D23).
+ *
+ * Held here rather than inside the detail page for the same reason the walkthrough is: it is a
+ * full view of its own, and the walkthrough opens *from* it, so both have to outlive the page
+ * that launched them.
+ */
+const installFor = ref<string | null>(null);
 const showDoctor = ref(false);
 const showSync = ref(false);
 /** The catalog an add is destined for; `null` closes the form. */
@@ -155,6 +166,9 @@ async function load() {
 function pruneTrail(loaded: Entry[]) {
   const known = new Set(loaded.map((entry) => entry.name));
   trail.value = trail.value.filter((name) => known.has(name));
+  // The install page is about one name too, and a page whose entry the catalog no longer has is
+  // a page whose every command would fail.
+  if (installFor.value !== null && !known.has(installFor.value)) installFor.value = null;
 }
 
 /**
@@ -178,6 +192,18 @@ const setupNeeded = computed(() => {
 const errorMessage = computed(() => {
   if (failure.value === null || setupNeeded.value !== null) return "";
   return describeAppError(failure.value);
+});
+
+/**
+ * Whether the entry whose install page is open has a copy on this machine.
+ *
+ * Read from the catalog the app already holds, so an install on that page updates it: the page
+ * itself reloads the list, and a boolean captured at navigation time would have left the setup
+ * card hidden until the user navigated out and back.
+ */
+const installForOnDisk = computed(() => {
+  const entry = entries.value.find((candidate) => candidate.name === installFor.value);
+  return entry ? isOnDisk(entry.state) : false;
 });
 
 const multiCatalog = computed(() => catalogs.value.length > 1);
@@ -285,12 +311,23 @@ onMounted(async () => {
         @navigate="manage = { catalog: $event, entry: null }"
       />
 
-      <!-- Above the entry page it was opened from, so closing it lands back there. -->
+      <!-- Above the page it was opened from, so closing it lands back there. -->
       <Walkthrough
         v-else-if="walkingThrough"
         :skill="walkingThrough"
-        :back-to="openEntry ?? 'The Library'"
+        :back-to="installFor ? 'Install and set up' : (openEntry ?? 'The Library')"
         @close="walkingThrough = null"
+      />
+
+      <!-- Above the entry page, and below the walkthrough it starts. -->
+      <EntryInstall
+        v-else-if="installFor"
+        :name="installFor"
+        :installed="installForOnDisk"
+        :back-to="installFor"
+        @close="installFor = null"
+        @installed="load()"
+        @walkthrough="walkingThrough = installFor"
       />
 
       <EntryDetail
@@ -303,7 +340,7 @@ onMounted(async () => {
         @open="trail.push($event)"
         @installed="load()"
         @manage="manage = { catalog: $event.catalog, entry: $event.name }"
-        @walkthrough="walkingThrough = $event"
+        @install="installFor = $event"
       />
 
     <!-- The catalog list: the one view with nowhere to go back to, so its head is its title and

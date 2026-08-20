@@ -573,10 +573,23 @@ and a subcategory when it is actually "where it lives" and "what a change to it 
 now one sentence each, from `describeCatalog`, which also supplies the reason a shared catalog
 cannot be managed in the app — for a `pr` catalog those are the same fact.
 
-### 6.6a The entry page states what you have before what you could do (D21)
+### 6.6a The entry page states what you have before what you could do (D21, D23)
 
-Order: name and **install badge** → description → **On this machine** → install/refresh → source
-and catalogs → dependencies.
+Order: name and **install badge** → description → **source** → **On this machine** → the
+**install and set up** hand-off → catalogs holding this name → dependencies.
+
+**Acting on the entry is its own page** (`EntryInstall`, D23). The install panel and the setup
+readiness card used to sit in the middle of that list, so reading down the page crossed from facts
+into controls and back out into facts. They are one job — put a copy on the machine, then find out
+what it wants — and the entry page keeps a hand-off button instead, exactly as it does for editing a
+catalog entry (D18): a pointer, never a form. The guided walkthrough is started from there too,
+since it is the setup card's own action.
+
+`installed` reaches that page as a prop derived from the loaded catalog rather than captured on the
+way in, because an install *on* that page changes it: a snapshot would have left the readiness card
+hidden until the user navigated out and back. And the page is cleared when the catalog no longer
+holds its name, for the same reason the entry trail is pruned — every command it could run would
+fail.
 
 Two defects, one cause. The page **never stated install status** — the list shows a badge, the
 detail page dropped it — so an entry the list had just labelled `installed · global` opened with a

@@ -3890,3 +3890,33 @@ document that no longer moves, so the outcome banner it exists to reveal would h
 off-screen on a long requires list. Found by grepping for what the old model had licensed rather
 than by opening the form, which is the only way it *would* have been found: nothing throws, and the
 test suite renders one view at a time.
+
+---
+
+## Install and setup became their own page
+
+The entry page was two pages wearing one header: a page *about* an entry, and a page for acting on
+it. Reading down it went source → what is on this machine → **install panel** → **setup readiness**
+→ which catalogs hold this name → dependencies, so it crossed out of facts into controls and back
+into facts. That is D21's complaint one level up, and the same argument D18 made about the catalog:
+the surface for reading is not the surface for writing.
+
+So `EntryInstall` holds both panels and the entry page keeps a hand-off button, the same shape as
+"Edit this entry in …". **Install and setup belong together because they are one job** — you put a
+copy on the machine, then find out what it wants — and the walkthrough is started from there rather
+than from the entry page, since it is the readiness card's own action. Recorded as **D23**, with
+design.md §6.6a.
+
+Two details worth the words:
+
+- **`installed` is derived, not snapshotted.** The page takes it as a prop computed from the loaded
+  catalog, so installing a copy *on that page* flips it. Captured at navigation time it would have
+  been false for the whole visit, and `SetupReadiness` gates on it — the card would have stayed
+  hidden until the user left and came back, right after the install that made it readable.
+- **The page is pruned like the trail.** A removal elsewhere can delete the name this page is
+  about, and every command it offers would then fail. `pruneTrail` already had to do this for the
+  entry trail; the install page is one more thing keyed by a name the catalog can stop having.
+
+The hand-off says one of two sentences — add a copy, or put one on the machine — and deliberately
+does not describe `drifted`, `stale`, or `untracked`. Those are the install panel's subject, and a
+hand-off that explained them would be a second account of the same fact one click from the first.
