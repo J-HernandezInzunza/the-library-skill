@@ -289,8 +289,9 @@ onUnmounted(() => {
 }
 .walkthrough__send {
   /* Height comes from the row, not from padding — `align-items: stretch` above matches it to the
-     textarea. `flex: none` keeps it at its label's width while the input takes the rest. */
-  flex: none;
+     textarea. Width is a fixed share of the row rather than the label's own width, so the control
+     reads as the other half of the composer instead of as text with a box drawn round it. */
+  flex: 0 0 7rem;
   padding-block: 0;
 }
 

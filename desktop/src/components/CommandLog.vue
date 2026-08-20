@@ -106,7 +106,14 @@ function shown(run: LoggedCommand): string {
   align-items: center;
   gap: 0.4rem;
   width: 100%;
-  padding: 0.4rem 1rem;
+  /* The collapsed bar is exactly `--command-bar-h` tall, border included, because anything else
+     pinning itself above it offsets by that token. It was a measurement of this button's padding
+     and line box — about 0.3rem out — and the difference showed up as slack under the walkthrough
+     composer, where it read as uneven padding around the input. The token defines the height now
+     rather than estimating it, so a font change cannot reintroduce the drift. */
+  box-sizing: border-box;
+  height: calc(var(--command-bar-h) - 1px);
+  padding: 0 1rem;
   border: none;
   border-radius: 0;
   background: transparent;
