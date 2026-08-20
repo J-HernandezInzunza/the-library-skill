@@ -289,9 +289,10 @@ onUnmounted(() => {
 }
 .walkthrough__send {
   /* Height comes from the row, not from padding — `align-items: stretch` above matches it to the
-     textarea. Width is a fixed share of the row rather than the label's own width, so the control
-     reads as the other half of the composer instead of as text with a box drawn round it. */
-  flex: 0 0 7rem;
+     textarea. Width is whatever the input does not take: both flex from a zero basis, so the row
+     divides five-to-one and the button grows and shrinks with the window instead of leaving dead
+     space beside it at one size and crowding at another. */
+  flex: 1;
   padding-block: 0;
 }
 
@@ -463,7 +464,7 @@ onUnmounted(() => {
 }
 
 .walkthrough__input {
-  flex: 1;
+  flex: 5;
   min-width: 0;
   padding: 0.4rem 0.55rem;
   border: 1px solid rgba(128, 128, 128, 0.4);
