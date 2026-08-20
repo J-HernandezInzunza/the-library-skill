@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, useTemplateRef } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -161,6 +161,10 @@ async function submit() {
   }
 }
 
+/** This view's scrolling body — the only thing in the view that scrolls (D22). */
+/** The header, for the one thing this view needs from it: the body element it scrolls. */
+const header = useTemplateRef<InstanceType<typeof PageHeader>>("header");
+
 /**
  * Bring the confirmation into view.
  *
@@ -170,8 +174,12 @@ async function submit() {
  * which was correct only while the error still sat beside the submit button.
  */
 function scrollToBanner() {
+  // This view's body, not the window: the document does not scroll (D22), so `window.scrollTo`
+  // moved nothing and the banner stayed off-screen.
+  const box = header.value?.body;
+  if (!box) return;
   const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  window.scrollTo({ top: 0, behavior: reduced ? "auto" : "smooth" });
+  box.scrollTo({ top: 0, behavior: reduced ? "auto" : "smooth" });
 }
 
 /**
@@ -192,112 +200,113 @@ async function reveal(path: string) {
 
 <template>
   <section class="view">
-    <PageHeader :title="`Add an entry to ${catalogId}`" :back="catalogId" @back="emit('close')" />
+    <PageHeader ref="header" :title="`Add an entry to ${catalogId}`" :back="catalogId" @back="emit('close')">
 
-    <StatusBanner v-if="failure" kind="error" :detail="failure" />
+      <StatusBanner v-if="failure" kind="error" :detail="failure" />
 
-    <StatusBanner v-else-if="report" kind="success">
-      <p class="add-entry__added-line">
-        Added <strong>{{ report.added.name }}</strong> to
-        <strong>{{ report.catalog }}</strong>, under {{ report.added.section }}.
-      </p>
-      <p v-if="report.path" class="add-entry__added-where">
-        <button type="button" class="ghost" @click="reveal(report.path)">Show in Finder</button>
-        <code>{{ report.path }}</code>
-      </p>
-      <p v-if="report.pushed" class="add-entry__added-where">
-        Committed and pushed to {{ report.branch }}.
-      </p>
-      <p v-else-if="report.committed" class="add-entry__added-where">
-        Committed to {{ report.branch }}; the push did not happen.
-      </p>
-    </StatusBanner>
+      <StatusBanner v-else-if="report" kind="success">
+        <p class="add-entry__added-line">
+          Added <strong>{{ report.added.name }}</strong> to
+          <strong>{{ report.catalog }}</strong>, under {{ report.added.section }}.
+        </p>
+        <p v-if="report.path" class="add-entry__added-where">
+          <button type="button" class="ghost" @click="reveal(report.path)">Show in Finder</button>
+          <code>{{ report.path }}</code>
+        </p>
+        <p v-if="report.pushed" class="add-entry__added-where">
+          Committed and pushed to {{ report.branch }}.
+        </p>
+        <p v-else-if="report.committed" class="add-entry__added-where">
+          Committed to {{ report.branch }}; the push did not happen.
+        </p>
+      </StatusBanner>
 
-    <form class="add-entry__form" @submit.prevent="submit">
-      <label class="add-entry__field">
-        <span>Name</span>
-        <input
-          v-model="name"
-          type="text"
-          placeholder="bug-investigator"
-          autofocus
-          v-bind="RAW_TEXT"
-        />
-
-        <span v-if="consequences.blocked" class="add-entry__conflict">
-          <strong>{{ catalogId }}</strong> already has an entry called
-          <code>{{ name.trim() }}</code>. Adding it again is refused — change the existing
-          entry instead, or pick a different name.
-        </span>
-        <span v-else-if="consequences.overrides.length" class="add-entry__consequence">
-          <code>{{ name.trim() }}</code> also exists in
-          <strong>{{ consequences.overrides.join(", ") }}</strong>. Your copy in
-          {{ catalogId }} takes precedence, so it becomes the one that installs.
-        </span>
-        <span v-else-if="consequences.overriddenBy.length" class="add-entry__consequence">
-          <code>{{ name.trim() }}</code> also exists in
-          <strong>{{ consequences.overriddenBy.join(", ") }}</strong>, which takes precedence.
-          Your copy in {{ catalogId }} would be added but never installed.
-        </span>
-      </label>
-
-      <label class="add-entry__field">
-        <span>Type</span>
-        <select v-model="type">
-          <option v-for="option in TYPES" :key="option" :value="option">{{ option }}</option>
-        </select>
-      </label>
-
-      <label class="add-entry__field">
-        <span>Description</span>
-        <input
-          v-model="description"
-          type="text"
-          placeholder="What it does, in one line, this is what will show in the catalog entry"
-          v-bind="RAW_TEXT"
-        />
-      </label>
-
-      <label class="add-entry__field">
-        <span>Source</span>
-        <span class="add-entry__row">
+      <form class="add-entry__form" @submit.prevent="submit">
+        <label class="add-entry__field">
+          <span>Name</span>
           <input
-            v-model="source"
+            v-model="name"
             type="text"
-            placeholder="https://github.com/your-team/repo/blob/main/bug-investigator/SKILL.md"
+            placeholder="bug-investigator"
+            autofocus
             v-bind="RAW_TEXT"
           />
-          <button type="button" class="ghost" @click="pickSource">Choose file…</button>
-        </span>
-        <span class="add-entry__hint">{{ sourceHint }}</span>
 
-        <span v-if="suggestion?.suggestion" class="add-entry__suggestion">
-          <span>This file is in a git repo. Teammates would need this URL instead:</span>
-          <code>{{ suggestion.suggestion }}</code>
-          <span class="add-entry__suggestion-actions">
-            <button type="button" @click="applySuggestion">Use this URL</button>
-            <button type="button" class="ghost" @click="suggestion = null">Keep the path</button>
+          <span v-if="consequences.blocked" class="add-entry__conflict">
+            <strong>{{ catalogId }}</strong> already has an entry called
+            <code>{{ name.trim() }}</code>. Adding it again is refused — change the existing
+            entry instead, or pick a different name.
           </span>
-        </span>
-        <span v-else-if="suggestion" class="add-entry__hint">
-          No shareable URL for this file: {{ suggestion.reason }}. That is fine for a catalog
-          only you use.
-        </span>
-      </label>
+          <span v-else-if="consequences.overrides.length" class="add-entry__consequence">
+            <code>{{ name.trim() }}</code> also exists in
+            <strong>{{ consequences.overrides.join(", ") }}</strong>. Your copy in
+            {{ catalogId }} takes precedence, so it becomes the one that installs.
+          </span>
+          <span v-else-if="consequences.overriddenBy.length" class="add-entry__consequence">
+            <code>{{ name.trim() }}</code> also exists in
+            <strong>{{ consequences.overriddenBy.join(", ") }}</strong>, which takes precedence.
+            Your copy in {{ catalogId }} would be added but never installed.
+          </span>
+        </label>
 
-      <fieldset v-if="available.length" class="add-entry__requires">
-        <legend>Requires</legend>
-        <div class="add-entry__requires-list">
-          <label v-for="ref in available" :key="ref" class="add-entry__check">
-            <input v-model="requires" type="checkbox" :value="ref" />
-            <span>{{ ref }}</span>
-          </label>
-        </div>
-      </fieldset>
+        <label class="add-entry__field">
+          <span>Type</span>
+          <select v-model="type">
+            <option v-for="option in TYPES" :key="option" :value="option">{{ option }}</option>
+          </select>
+        </label>
 
-      <button type="submit" :disabled="!canSubmit">Add to {{ catalogId }}</button>
-      <Busy v-if="submitting" inline label="Writing the catalog…" />
-    </form>
+        <label class="add-entry__field">
+          <span>Description</span>
+          <input
+            v-model="description"
+            type="text"
+            placeholder="What it does, in one line, this is what will show in the catalog entry"
+            v-bind="RAW_TEXT"
+          />
+        </label>
+
+        <label class="add-entry__field">
+          <span>Source</span>
+          <span class="add-entry__row">
+            <input
+              v-model="source"
+              type="text"
+              placeholder="https://github.com/your-team/repo/blob/main/bug-investigator/SKILL.md"
+              v-bind="RAW_TEXT"
+            />
+            <button type="button" class="ghost" @click="pickSource">Choose file…</button>
+          </span>
+          <span class="add-entry__hint">{{ sourceHint }}</span>
+
+          <span v-if="suggestion?.suggestion" class="add-entry__suggestion">
+            <span>This file is in a git repo. Teammates would need this URL instead:</span>
+            <code>{{ suggestion.suggestion }}</code>
+            <span class="add-entry__suggestion-actions">
+              <button type="button" @click="applySuggestion">Use this URL</button>
+              <button type="button" class="ghost" @click="suggestion = null">Keep the path</button>
+            </span>
+          </span>
+          <span v-else-if="suggestion" class="add-entry__hint">
+            No shareable URL for this file: {{ suggestion.reason }}. That is fine for a catalog
+            only you use.
+          </span>
+        </label>
+
+        <fieldset v-if="available.length" class="add-entry__requires">
+          <legend>Requires</legend>
+          <div class="add-entry__requires-list">
+            <label v-for="ref in available" :key="ref" class="add-entry__check">
+              <input v-model="requires" type="checkbox" :value="ref" />
+              <span>{{ ref }}</span>
+            </label>
+          </div>
+        </fieldset>
+
+        <button type="submit" :disabled="!canSubmit">Add to {{ catalogId }}</button>
+        <Busy v-if="submitting" inline label="Writing the catalog…" />
+      </form>
+    </PageHeader>
   </section>
 </template>
 

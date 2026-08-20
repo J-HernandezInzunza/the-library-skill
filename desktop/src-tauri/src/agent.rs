@@ -33,6 +33,63 @@ use crate::secrets::redact;
 pub const ALLOWED_TOOLS: &str = "mcp__library__library_cmd,mcp__library__read_skill_doc,\
                              mcp__library__request_secret,mcp__library__run_skill_setup";
 
+/// The builtins a real session advertises, denied by name so they are never advertised at all.
+///
+/// **This cannot break a tool the walkthrough could otherwise use.** The hook already refuses
+/// every one of these at call time — none carries the `mcp__library__` prefix — so everything on
+/// this list was unreachable before it existed. What the list changes is *visibility*:
+/// `permissions.deny` removes a tool from `init.tools` entirely rather than refusing it on call
+/// (measured on CLI 2.1.236), so a model talked into reaching for a shell has nothing to reach
+/// for. That matters because four escalating attempts in a real walkthrough never produced a
+/// single `tool_use` — the opening prompt was the layer holding the line, and a prompt is only as
+/// good as the model honoring it.
+///
+/// **It is a deny-list, so it is stale by construction, and that is exactly why the hook stays.**
+/// A tool a later release ships is simply absent here and stays advertised — then denied on call
+/// by the prefix rule, which is the only construct that can speak about tools that do not exist
+/// yet. It cannot be inverted into a whitelist: `deny: ["*"]` measures as `tool count: 0` and
+/// outranks `allow`, so a wildcard would strip our own four tools with no way to win them back.
+///
+/// Taken from `tests/fixtures/agent/tool-denied.jsonl`'s `init.tools`, which is a recorded run
+/// rather than a list from the docs — plus `Glob` and `Grep`, which that recording does *not*
+/// contain and a live run does. The list was therefore stale the moment it was written, which is
+/// the argument for the hook stated as an incident rather than a worry: two file-reading tools
+/// were visible to the agent on the first live check, and `mcp_live` is what caught them.
+pub const DENIED_BUILTINS: [&str; 32] = [
+    "Task",
+    "Bash",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "DesignSync",
+    "Edit",
+    "EnterWorktree",
+    "ExitWorktree",
+    "Glob",
+    "Grep",
+    "ListAgents",
+    "ListMcpResourcesTool",
+    "Monitor",
+    "NotebookEdit",
+    "PushNotification",
+    "Read",
+    "ReadMcpResourceDirTool",
+    "ReadMcpResourceTool",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "ShareOnboardingGuide",
+    "Skill",
+    "TaskOutput",
+    "TaskStop",
+    "WaitForMcpServers",
+    "WebFetch",
+    "WebSearch",
+    "Workflow",
+    "Write",
+];
+
 /// What to run, for one user turn of one walkthrough.
 ///
 /// Both file paths are required rather than optional. A run without the MCP config has no
@@ -193,13 +250,21 @@ pub const HOOK_ARG: &str = "--pretooluse-hook";
 
 /// The `--settings` document: deny-by-default on every tool call.
 ///
-/// This — not `--allowedTools`, not `--permission-mode dontAsk` — is the boundary
-/// (§4.1a, D11). The T0.2 spike ran `Bash("echo …")` and got its output with both flags
-/// set, so anything that treats them as the whitelist is a security bug rather than a
-/// style choice. `matcher: "*"` is what makes it deny-by-default: the hook sees every
-/// call, including tools no release has shipped yet.
+/// The *hook* — not `--allowedTools`, not `--permission-mode dontAsk`, and not the
+/// `permissions.deny` block below it — is the boundary (§4.1a, D11). The T0.2 spike ran
+/// `Bash("echo …")` and got its output with both flags set; re-run on CLI 2.1.236 with the
+/// hook removed it still does, so anything that treats the flags as the whitelist is a
+/// security bug rather than a style choice. `matcher: "*"` is what makes the hook
+/// deny-by-default: it sees every call, including tools no release has shipped yet.
+///
+/// The document carries two layers on purpose. `permissions.deny` keeps today's builtins
+/// out of `init.tools` so the agent never sees them; the hook decides every call that does
+/// arrive, which is the half that still holds when the list goes stale.
 pub fn settings(hook_command: &str) -> serde_json::Value {
     serde_json::json!({
+        // Belt to the hook's braces: these never reach `init.tools`, so the agent cannot see
+        // them to try. `DENIED_BUILTINS` explains why this is not a replacement for the hook.
+        "permissions": { "deny": DENIED_BUILTINS },
         "hooks": {
             "PreToolUse": [{
                 "matcher": "*",
@@ -849,6 +914,39 @@ mod tests {
 
         assert!(reason.contains("Bash"));
         assert!(reason.contains(TOOL_PREFIX));
+    }
+
+    /// The deny-list is the visibility layer, and the one thing it must never do is name
+    /// something of ours. A wildcard or an `mcp__library__` entry would strip the agent's whole
+    /// surface — `deny` outranks `allow`, so `--allowedTools` could not win it back — and the
+    /// walkthrough would open with no tools and no way to say why.
+    #[test]
+    fn the_deny_list_never_names_one_of_our_own_tools() {
+        for tool in DENIED_BUILTINS {
+            assert!(!tool.starts_with(TOOL_PREFIX), "{tool} is one of ours");
+            assert!(!tool.contains('*'), "{tool} is a wildcard, which denies everything");
+        }
+        for ours in ALLOWED_TOOLS.split(',') {
+            assert!(!DENIED_BUILTINS.contains(&ours), "{ours} is denied and allowed at once");
+        }
+    }
+
+    /// `permissions.deny` removes a tool from `init.tools` rather than refusing it on call, so
+    /// the builtins the recorded run advertised have to be in the document by name.
+    #[test]
+    fn the_settings_hide_the_builtins_the_agent_would_otherwise_be_offered() {
+        let settings = settings("/tmp/desktop --pretooluse-hook");
+        let denied = settings["permissions"]["deny"]
+            .as_array()
+            .expect("a deny list")
+            .iter()
+            .map(|value| value.as_str().expect("a tool name").to_string())
+            .collect::<Vec<_>>();
+
+        // The two the spike actually got output from, and the one that spawns a surface of its own.
+        for tool in ["Bash", "Read", "Write", "Task", "WebFetch"] {
+            assert!(denied.contains(&tool.to_string()), "{tool} is still advertised");
+        }
     }
 
     /// `matcher: "*"` is the deny-by-default half. A matcher listing today's builtins

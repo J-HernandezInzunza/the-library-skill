@@ -42,8 +42,6 @@ async function afterWrite() {
   await load(props.name);
 }
 
-
-
 const detail = ref<EntryDetail | null>(null);
 const loading = ref(false);
 const error = ref("");
@@ -144,175 +142,177 @@ watch(() => props.name, load, { immediate: true });
     <!-- Titled from the prop, not from the payload: the header must be in place before
          the command returns, or it lands late and shifts everything under it. -->
     <PageHeader :title="name" :back="backTo ?? 'The Library'" @back="$emit('close')">
-      <span v-if="detail" class="entry-detail__type">{{ detail.entry.type }}</span>
-      <span
-        v-if="status"
-        class="entry-detail__status"
-        :class="`entry-detail__status--${status.tone}`"
-      >
-        {{ status.status }}
-      </span>
-      <span v-if="detail?.has_setup" class="entry-detail__setup">guided setup available</span>
-    </PageHeader>
-
-    <Busy v-if="loading" :label="`Reading ${name}…`" />
-    <StatusBanner v-else-if="error" kind="error" :detail="error" />
-
-    <template v-else-if="detail">
-      <p class="entry-detail__desc">{{ detail.entry.description }}</p>
-
-      <h3 class="entry-detail__section">Source</h3>
-      <div class="card">
-        <p class="entry-detail__origin">{{ origin }}</p>
-        <p v-if="detail.source.file_path" class="entry-detail__path">
-          {{ detail.source.file_path }}
-        </p>
-      </div>
-
-      <!-- What you have, before what you could do: the page is most often opened about an
-           entry that is already installed, and that was the fact it never stated. -->
-      <InstalledCopies
-        :name="detail.name"
-        :copies="copies"
-        :source="detail.source"
-        :affected="affected.map((user) => user.entry.name)"
-        @changed="afterWrite()"
-      />
-
-      <InstallPreview
-        :name="detail.name"
-        :installed="copies.length > 0"
-        @installed="afterWrite()"
-      />
-
-      <!-- Below Source rather than under the install panel. It is about the installed
-           copy, but it is reference material — what this skill needs before it works —
-           and sitting between the two install controls it read as a step in installing. -->
-      <SetupReadiness
-        :name="detail.name"
-        :installed="copies.length > 0"
-        @walkthrough="emit('walkthrough', detail.name)"
-      />
-
-      <h3 class="entry-detail__section">
-        Catalogs holding this name ({{ detail.copies.length }})
-      </h3>
-      <ul class="entry-detail__copies">
-        <li
-          v-for="copy in detail.copies"
-          :key="copy.catalog"
-          class="entry-detail__copy"
-          :class="{ 'entry-detail__copy--wins': copy.wins }"
-          :style="{ '--catalog-hue': hueByCatalog.get(copy.catalog) ?? 220 }"
+      <template #badges>
+        <span v-if="detail" class="entry-detail__type">{{ detail.entry.type }}</span>
+        <span
+          v-if="status"
+          class="entry-detail__status"
+          :class="`entry-detail__status--${status.tone}`"
         >
-          <div class="entry-detail__copy-head">
-            <span class="entry-detail__origin-chip">{{ copy.catalog }}</span>
-            <span v-if="copy.wins" class="entry-detail__wins">resolves — this is what installs</span>
-            <span v-else class="entry-detail__loses">
-              overridden by {{ copy.overridden_by.join(", ") }}
-            </span>
-          </div>
-          <p v-if="copy.overrides.length" class="entry-detail__chain">
-            overrides {{ copy.overrides.join(", ") }}
+          {{ status.status }}
+        </span>
+        <span v-if="detail?.has_setup" class="entry-detail__setup">guided setup available</span>
+      </template>
+
+      <Busy v-if="loading" :label="`Reading ${name}…`" />
+      <StatusBanner v-else-if="error" kind="error" :detail="error" />
+
+      <template v-else-if="detail">
+        <p class="entry-detail__desc">{{ detail.entry.description }}</p>
+
+        <h3 class="entry-detail__section">Source</h3>
+        <div class="card">
+          <p class="entry-detail__origin">{{ origin }}</p>
+          <p v-if="detail.source.file_path" class="entry-detail__path">
+            {{ detail.source.file_path }}
           </p>
-          <p class="entry-detail__copy-source">{{ copy.source }}</p>
-          <!-- A pointer, not a form: the edit itself belongs with the other catalog
-               management, but noticing a wrong description happens here. -->
-          <button
-            v-if="editableIds.has(copy.catalog)"
-            type="button"
-            class="ghost entry-detail__manage"
-            @click="emit('manage', { catalog: copy.catalog, name: detail.name })"
-          >
-            Edit this entry in {{ copy.catalog }}
-          </button>
-        </li>
-      </ul>
+        </div>
 
-      <template v-if="declared.length">
-        <h3 class="entry-detail__section">Requires ({{ declared.length }})</h3>
-        <ul class="entry-detail__requires">
-          <li v-for="dep in declared" :key="dep.entry.name">
-            <button type="button" class="entry-detail__dep" @click="$emit('open', dep.entry.name)">
-              <span class="entry-detail__dep-head">
-                <strong>{{ dep.entry.name }}</strong>
-                <span
-                  class="entry-detail__dep-state"
-                  :class="{ 'entry-detail__dep-state--missing': dep.state !== 'installed' }"
-                >
-                  {{ dep.state === "installed" ? "installed" : "not installed" }}
-                </span>
-              </span>
-              <span class="entry-detail__req-desc">{{ dep.entry.description }}</span>
-            </button>
-          </li>
-        </ul>
-      </template>
+        <!-- What you have, before what you could do: the page is most often opened about an
+             entry that is already installed, and that was the fact it never stated. -->
+        <InstalledCopies
+          :name="detail.name"
+          :copies="copies"
+          :source="detail.source"
+          :affected="affected.map((user) => user.entry.name)"
+          @changed="afterWrite()"
+        />
 
-      <template v-if="inherited.length">
+        <InstallPreview
+          :name="detail.name"
+          :installed="copies.length > 0"
+          @installed="afterWrite()"
+        />
+
+        <!-- Below Source rather than under the install panel. It is about the installed
+             copy, but it is reference material — what this skill needs before it works —
+             and sitting between the two install controls it read as a step in installing. -->
+        <SetupReadiness
+          :name="detail.name"
+          :installed="copies.length > 0"
+          @walkthrough="emit('walkthrough', detail.name)"
+        />
+
         <h3 class="entry-detail__section">
-          Also installed, via those ({{ inherited.length }})
+          Catalogs holding this name ({{ detail.copies.length }})
         </h3>
-        <ul class="entry-detail__requires">
-          <li v-for="dep in inherited" :key="dep.entry.name">
-            <button type="button" class="entry-detail__dep" @click="$emit('open', dep.entry.name)">
-              <span class="entry-detail__dep-head">
-                <strong>{{ dep.entry.name }}</strong>
-                <span
-                  class="entry-detail__dep-state"
-                  :class="{ 'entry-detail__dep-state--missing': dep.state !== 'installed' }"
-                >
-                  {{ dep.state === "installed" ? "installed" : "not installed" }}
-                </span>
-              </span>
-            </button>
-          </li>
-        </ul>
-      </template>
-
-      <template v-if="users.length">
-        <h3 class="entry-detail__section">Required by ({{ users.length }})</h3>
-        <ul class="entry-detail__requires">
-          <li v-for="user in users" :key="user.entry.name">
-            <button type="button" class="entry-detail__dep" @click="$emit('open', user.entry.name)">
-              <span class="entry-detail__dep-head">
-                <strong>{{ user.entry.name }}</strong>
-                <span v-if="!user.entry.direct" class="entry-detail__indirect">
-                  via another entry
-                </span>
-                <span
-                  class="entry-detail__dep-state"
-                  :class="{ 'entry-detail__dep-state--missing': !isOnDisk(user.state) }"
-                >
-                  {{ isOnDisk(user.state) ? "installed" : "not installed" }}
-                </span>
-              </span>
-              <span class="entry-detail__req-desc">{{ user.entry.description }}</span>
-            </button>
-          </li>
-        </ul>
-      </template>
-
-      <template v-if="detail.unresolved_requires.length">
-        <h3 class="entry-detail__section entry-detail__section--broken">
-          Unresolved ({{ detail.unresolved_requires.length }})
-        </h3>
-        <ul class="entry-detail__requires">
+        <ul class="entry-detail__copies">
           <li
-            v-for="broken in detail.unresolved_requires"
-            :key="broken.ref"
-            class="entry-detail__broken"
+            v-for="copy in detail.copies"
+            :key="copy.catalog"
+            class="entry-detail__copy"
+            :class="{ 'entry-detail__copy--wins': copy.wins }"
+            :style="{ '--catalog-hue': hueByCatalog.get(copy.catalog) ?? 220 }"
           >
-            <code>{{ broken.ref }}</code>
-            <span class="entry-detail__broken-why">{{ brokenBecause(broken.reason) }}</span>
-            <p class="entry-detail__req-desc">
-              Required by {{ broken.required_by }}. This entry will install without it.
+            <div class="entry-detail__copy-head">
+              <span class="entry-detail__origin-chip">{{ copy.catalog }}</span>
+              <span v-if="copy.wins" class="entry-detail__wins">resolves — this is what installs</span>
+              <span v-else class="entry-detail__loses">
+                overridden by {{ copy.overridden_by.join(", ") }}
+              </span>
+            </div>
+            <p v-if="copy.overrides.length" class="entry-detail__chain">
+              overrides {{ copy.overrides.join(", ") }}
             </p>
+            <p class="entry-detail__copy-source">{{ copy.source }}</p>
+            <!-- A pointer, not a form: the edit itself belongs with the other catalog
+                 management, but noticing a wrong description happens here. -->
+            <button
+              v-if="editableIds.has(copy.catalog)"
+              type="button"
+              class="ghost entry-detail__manage"
+              @click="emit('manage', { catalog: copy.catalog, name: detail.name })"
+            >
+              Edit this entry in {{ copy.catalog }}
+            </button>
           </li>
         </ul>
-      </template>
 
-    </template>
+        <template v-if="declared.length">
+          <h3 class="entry-detail__section">Requires ({{ declared.length }})</h3>
+          <ul class="entry-detail__requires">
+            <li v-for="dep in declared" :key="dep.entry.name">
+              <button type="button" class="entry-detail__dep" @click="$emit('open', dep.entry.name)">
+                <span class="entry-detail__dep-head">
+                  <strong>{{ dep.entry.name }}</strong>
+                  <span
+                    class="entry-detail__dep-state"
+                    :class="{ 'entry-detail__dep-state--missing': dep.state !== 'installed' }"
+                  >
+                    {{ dep.state === "installed" ? "installed" : "not installed" }}
+                  </span>
+                </span>
+                <span class="entry-detail__req-desc">{{ dep.entry.description }}</span>
+              </button>
+            </li>
+          </ul>
+        </template>
+
+        <template v-if="inherited.length">
+          <h3 class="entry-detail__section">
+            Also installed, via those ({{ inherited.length }})
+          </h3>
+          <ul class="entry-detail__requires">
+            <li v-for="dep in inherited" :key="dep.entry.name">
+              <button type="button" class="entry-detail__dep" @click="$emit('open', dep.entry.name)">
+                <span class="entry-detail__dep-head">
+                  <strong>{{ dep.entry.name }}</strong>
+                  <span
+                    class="entry-detail__dep-state"
+                    :class="{ 'entry-detail__dep-state--missing': dep.state !== 'installed' }"
+                  >
+                    {{ dep.state === "installed" ? "installed" : "not installed" }}
+                  </span>
+                </span>
+              </button>
+            </li>
+          </ul>
+        </template>
+
+        <template v-if="users.length">
+          <h3 class="entry-detail__section">Required by ({{ users.length }})</h3>
+          <ul class="entry-detail__requires">
+            <li v-for="user in users" :key="user.entry.name">
+              <button type="button" class="entry-detail__dep" @click="$emit('open', user.entry.name)">
+                <span class="entry-detail__dep-head">
+                  <strong>{{ user.entry.name }}</strong>
+                  <span v-if="!user.entry.direct" class="entry-detail__indirect">
+                    via another entry
+                  </span>
+                  <span
+                    class="entry-detail__dep-state"
+                    :class="{ 'entry-detail__dep-state--missing': !isOnDisk(user.state) }"
+                  >
+                    {{ isOnDisk(user.state) ? "installed" : "not installed" }}
+                  </span>
+                </span>
+                <span class="entry-detail__req-desc">{{ user.entry.description }}</span>
+              </button>
+            </li>
+          </ul>
+        </template>
+
+        <template v-if="detail.unresolved_requires.length">
+          <h3 class="entry-detail__section entry-detail__section--broken">
+            Unresolved ({{ detail.unresolved_requires.length }})
+          </h3>
+          <ul class="entry-detail__requires">
+            <li
+              v-for="broken in detail.unresolved_requires"
+              :key="broken.ref"
+              class="entry-detail__broken"
+            >
+              <code>{{ broken.ref }}</code>
+              <span class="entry-detail__broken-why">{{ brokenBecause(broken.reason) }}</span>
+              <p class="entry-detail__req-desc">
+                Required by {{ broken.required_by }}. This entry will install without it.
+              </p>
+            </li>
+          </ul>
+        </template>
+
+      </template>
+    </PageHeader>
   </section>
 </template>
 

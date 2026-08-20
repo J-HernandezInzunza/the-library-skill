@@ -239,163 +239,173 @@ onMounted(async () => {
 
 <template>
   <main class="app">
-    <FirstRun
-      v-if="setupNeeded"
-      :state="setupNeeded.state"
-      :path="setupNeeded.path"
-      @ready="load()"
-    />
-
-    <!-- Ordered so a view opened *from* another sits above it: closing Doctor or the add
-         form falls back to whatever is still open underneath, with no state to restore. -->
-    <Doctor
-      v-else-if="showDoctor"
-      :back-to="manage ? 'Catalogs' : 'The Library'"
-      @close="showDoctor = false"
-    />
-
-    <Sync v-else-if="showSync" @close="showSync = false" @synced="load()" />
-
-    <AddEntry
-      v-else-if="addingTo"
-      :catalog-id="addingTo"
-      :catalogs="catalogs"
-      :entries="entries"
-      @close="addingTo = null"
-      @added="load()"
-    />
-
-    <Catalogs
-      v-else-if="manage"
-      :catalogs="catalogs"
-      :entries="entries"
-      :at-catalog="manage.catalog"
-      :at-entry="manage.entry"
-      :back-to="openEntry ?? 'The Library'"
-      @close="manage = null"
-      @changed="load()"
-      @add="addingTo = $event"
-      @doctor="showDoctor = true"
-      @navigate="manage = { catalog: $event, entry: null }"
-    />
-
-    <!-- Above the entry page it was opened from, so closing it lands back there. -->
-    <Walkthrough
-      v-else-if="walkingThrough"
-      :skill="walkingThrough"
-      :back-to="openEntry ?? 'The Library'"
-      @close="walkingThrough = null"
-    />
-
-    <EntryDetail
-      v-else-if="openEntry"
-      :name="openEntry"
-      :back-to="previousEntry"
-      :catalogs="catalogs"
-      :entries="entries"
-      @close="trail.pop()"
-      @open="trail.push($event)"
-      @installed="load()"
-      @manage="manage = { catalog: $event.catalog, entry: $event.name }"
-      @walkthrough="walkingThrough = $event"
-    />
-
-    <template v-else>
-    <header class="topbar">
-      <h1>The Library</h1>
-      <form class="searchbar" @submit.prevent>
-        <input
-          v-model="query"
-          type="search"
-          placeholder="Search skills, agents, prompts…"
-        />
-        <!-- What you do to this list, and where you go. Adding an entry and checking
-             catalog health both moved into Catalogs, which is their subject (D18). -->
-        <button type="button" class="ghost" @click="load()">Refresh</button>
-        <button
-          type="button"
-          class="ghost"
-          @click="manage = { catalog: null, entry: null }"
-        >
-          Catalogs
-        </button>
-        <button type="button" class="ghost" @click="showSync = true">Sync</button>
-      </form>
-    </header>
-
-    <CatalogTabs v-if="multiCatalog" v-model="activeCatalog" :catalogs="catalogs" />
-    <CatalogSummary v-if="selectedCatalog" :catalog="selectedCatalog" />
-
-    <p v-if="!loading && !errorMessage" class="summary">
-      {{ summary }}
-      <label v-if="activeCatalog === null && overriddenCount" class="summary__toggle">
-        <input v-model="hideOverridden" type="checkbox" />
-        Hide overridden
-      </label>
-      <!-- A missing control reads as a bug rather than a decision, so a tab where nothing
-           would install says so instead of just not offering it. -->
-      <span v-if="activeCatalog && !selectable.length && rows.length" class="summary__note">
-        Nothing here can be installed: every copy is overridden by a higher-precedence
-        catalog, so installing any of these names would fetch that catalog's copy instead.
-      </span>
-      <template v-if="activeCatalog && selectable.length">
-        <button
-          v-if="!picked"
-          type="button"
-          class="ghost summary__all"
-          @click="setSelecting(true)"
-        >
-          Select
-        </button>
-        <template v-else>
-          <button
-            type="button"
-            class="ghost summary__all"
-            @click="pickedNames.length === selectable.length ? (picked = new Set()) : selectAll()"
-          >
-            {{ pickedNames.length === selectable.length ? "Select none" : `Select all ${selectable.length}` }}
-          </button>
-          <button
-            v-if="pickedNames.length"
-            type="button"
-            class="ghost summary__clear"
-            @click="picked = new Set()"
-          >
-            Clear
-          </button>
-          <button type="button" class="ghost summary__done" @click="setSelecting(false)">
-            Stop selecting
-          </button>
-        </template>
-      </template>
-    </p>
-
-    <!-- Rendered for the whole of selection mode, not just while something is ticked: it
-         owns the success banner, and the install clears the selection that produced it. -->
-    <BulkInstall
-      v-if="activeCatalog && picked"
-      :names="pickedNames"
-      :catalog-id="activeCatalog"
-      @installed="afterBulkAction()"
-      @uninstalled="afterBulkAction()"
-    />
-
-    <Busy v-if="loading" label="Reading the catalog…" />
-    <StatusBanner v-else-if="errorMessage" kind="error" :detail="errorMessage" />
-    <p v-else-if="!filtered.length" class="state">No matching entries.</p>
-    <EntryList
-      v-else
-      class="fade-in"
-      :rows="filtered"
-      :catalogs="catalogs"
-      :show-origin="multiCatalog"
-      :selected="picked"
-      @select="trail = [$event]"
-      @toggle="togglePicked($event)"
-    />
-    </template>
-
     <ActivityBar />
+
+    <!-- Exactly one view is on screen, and every view is itself the window's frame: a chrome row
+         that cannot scroll, one scrolling body, and — where the view has one — a second chrome row
+         at the bottom. The command bar below is the app's last row, so a view's bottom chrome
+         lands directly on it. -->
+    <FirstRun
+        v-if="setupNeeded"
+        :state="setupNeeded.state"
+        :path="setupNeeded.path"
+        @ready="load()"
+      />
+
+      <!-- Ordered so a view opened *from* another sits above it: closing Doctor or the add
+           form falls back to whatever is still open underneath, with no state to restore. -->
+      <Doctor
+        v-else-if="showDoctor"
+        :back-to="manage ? 'Catalogs' : 'The Library'"
+        @close="showDoctor = false"
+      />
+
+      <Sync v-else-if="showSync" @close="showSync = false" @synced="load()" />
+
+      <AddEntry
+        v-else-if="addingTo"
+        :catalog-id="addingTo"
+        :catalogs="catalogs"
+        :entries="entries"
+        @close="addingTo = null"
+        @added="load()"
+      />
+
+      <Catalogs
+        v-else-if="manage"
+        :catalogs="catalogs"
+        :entries="entries"
+        :at-catalog="manage.catalog"
+        :at-entry="manage.entry"
+        :back-to="openEntry ?? 'The Library'"
+        @close="manage = null"
+        @changed="load()"
+        @add="addingTo = $event"
+        @doctor="showDoctor = true"
+        @navigate="manage = { catalog: $event, entry: null }"
+      />
+
+      <!-- Above the entry page it was opened from, so closing it lands back there. -->
+      <Walkthrough
+        v-else-if="walkingThrough"
+        :skill="walkingThrough"
+        :back-to="openEntry ?? 'The Library'"
+        @close="walkingThrough = null"
+      />
+
+      <EntryDetail
+        v-else-if="openEntry"
+        :name="openEntry"
+        :back-to="previousEntry"
+        :catalogs="catalogs"
+        :entries="entries"
+        @close="trail.pop()"
+        @open="trail.push($event)"
+        @installed="load()"
+        @manage="manage = { catalog: $event.catalog, entry: $event.name }"
+        @walkthrough="walkingThrough = $event"
+      />
+
+    <!-- The catalog list: the one view with nowhere to go back to, so its head is its title and
+         what you do to the list rather than a back row. Adding an entry and checking catalog
+         health both moved into Catalogs, which is their subject (D18). -->
+    <section v-else class="view">
+      <header class="view__head column">
+        <h1>The Library</h1>
+        <form class="searchbar" @submit.prevent>
+          <input
+            v-model="query"
+            type="search"
+            placeholder="Search skills, agents, prompts…"
+          />
+          <button type="button" class="ghost" @click="load()">Refresh</button>
+          <button
+            type="button"
+            class="ghost"
+            @click="manage = { catalog: null, entry: null }"
+          >
+            Catalogs
+          </button>
+          <button type="button" class="ghost" @click="showSync = true">Sync</button>
+        </form>
+      </header>
+
+      <div class="view__body column">
+        <CatalogTabs v-if="multiCatalog" v-model="activeCatalog" :catalogs="catalogs" />
+        <CatalogSummary v-if="selectedCatalog" :catalog="selectedCatalog" />
+
+        <p v-if="!loading && !errorMessage" class="summary">
+          {{ summary }}
+          <label v-if="activeCatalog === null && overriddenCount" class="summary__toggle">
+            <input v-model="hideOverridden" type="checkbox" />
+            Hide overridden
+          </label>
+          <!-- A missing control reads as a bug rather than a decision, so a tab where nothing
+               would install says so instead of just not offering it. -->
+          <span v-if="activeCatalog && !selectable.length && rows.length" class="summary__note">
+            Nothing here can be installed: every copy is overridden by a higher-precedence
+            catalog, so installing any of these names would fetch that catalog's copy instead.
+          </span>
+          <template v-if="activeCatalog && selectable.length">
+            <button
+              v-if="!picked"
+              type="button"
+              class="ghost summary__all"
+              @click="setSelecting(true)"
+            >
+              Select
+            </button>
+            <template v-else>
+              <button
+                type="button"
+                class="ghost summary__all"
+                @click="pickedNames.length === selectable.length ? (picked = new Set()) : selectAll()"
+              >
+                {{ pickedNames.length === selectable.length ? "Select none" : `Select all ${selectable.length}` }}
+              </button>
+              <button
+                v-if="pickedNames.length"
+                type="button"
+                class="ghost summary__clear"
+                @click="picked = new Set()"
+              >
+                Clear
+              </button>
+              <button type="button" class="ghost summary__done" @click="setSelecting(false)">
+                Stop selecting
+              </button>
+            </template>
+          </template>
+        </p>
+
+        <!-- Rendered for the whole of selection mode, not just while something is ticked: it
+             owns the success banner, and the install clears the selection that produced it. -->
+        <BulkInstall
+          v-if="activeCatalog && picked"
+          :names="pickedNames"
+          :catalog-id="activeCatalog"
+          @installed="afterBulkAction()"
+          @uninstalled="afterBulkAction()"
+        />
+
+        <Busy v-if="loading" label="Reading the catalog…" />
+        <StatusBanner v-else-if="errorMessage" kind="error" :detail="errorMessage" />
+        <p v-else-if="!filtered.length" class="state">No matching entries.</p>
+        <EntryList
+          v-else
+          class="fade-in"
+          :rows="filtered"
+          :catalogs="catalogs"
+          :show-origin="multiCatalog"
+          :selected="picked"
+          @select="trail = [$event]"
+          @toggle="togglePicked($event)"
+        />
+      </div>
+    </section>
+
+    <!-- The app's last row, under whichever view is on screen: in the flow, so it is the bottom
+         of the window by construction and nothing can move it. -->
     <CommandLog />
   </main>
 </template>
@@ -405,29 +415,25 @@ onMounted(async () => {
   color-scheme: light dark;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, sans-serif;
   --app-bg: #f6f6f7;
-  /* The sticky header composites over scrolling content, so it needs a surface of
-     its own; a bare backdrop-filter leaves the text to overlap the list. */
+  /* For the one thing that still floats over content: the activity bar's label. It needs a
+     surface of its own, since a bare backdrop-filter leaves the text overlapping the view. */
   --app-bg-sticky: rgba(246, 246, 247, 0.95);
-  /* The collapsed command-log bar, which is pinned to the bottom of the window on every screen.
-     Anything else that pins itself down there has to clear it, and guessing the number in two
-     places is how they drift apart. */
-  --command-bar-h: 2.1rem;
 }
-/* Reserve the scrollbar's width on every page, scrolling or not.
+/* The window is a fixed frame; only a view's `.view__body` inside it scrolls (D22).
 
-   Without this the app visibly breathes: `.app` is centred with `margin: 0 auto`, so a
-   page long enough to scroll loses the scrollbar's width from the viewport and *both*
-   edges move inward by half of it. Every navigation between a long view (the catalog, a
-   catalog's entries) and a short one (Add, the registry) shifted the whole layout.
-
-   It is invisible on a Mac set to overlay scrollbars, which reserve no space — so this is
-   a defect that only some machines can see, which is the kind worth pinning rather than
-   eyeballing. */
-html {
-  scrollbar-gutter: stable;
+   The document itself must not, and `overflow: hidden` here is what says so. A scrolling
+   document put the app at the mercy of the WebView's rubber-band overscroll: the whole
+   page could be dragged away from both ends, and every `position: fixed` element — the
+   command bar, the walkthrough's composer — travelled with it, so the bar that is
+   supposed to be the bottom of the window visibly left it. */
+html,
+body,
+#app {
+  height: 100%;
 }
 body {
   margin: 0;
+  overflow: hidden;
   background: var(--app-bg);
   color: #1a1a1a;
 }
@@ -493,11 +499,65 @@ button:disabled {
   background: rgba(128, 128, 128, 0.08);
 }
 
-/* Every full-screen view's root. Global rather than repeated per component because the
-   whole point is that the views agree: five of them had drifted to three different
-   paddings, so the header visibly shifted as you navigated between them. */
+/* The content column, as padding rather than as a centred box. A view's three parts are three
+   rows of the window and each has to be full-bleed — the head's hairline and the foot's border
+   go edge to edge — while their *content* lines up on one measure. A `max-width` box cannot do
+   both, and the earlier one had the rows drifting a rem apart from each other. */
+.column {
+  padding-inline: max(1.25rem, calc((100% - 860px) / 2));
+}
+
+/* Every full-screen view is the window's frame (D22).
+ *
+ * Three rows: the view's own chrome, the one thing in it that scrolls, and — where the view has
+ * one — a second chrome row at the bottom. The rows are placed explicitly rather than by source
+ * order, because a view's conditional siblings (a status banner, a branch that swaps the whole
+ * page) would otherwise decide which row the body lands in.
+ *
+ * This is what makes the chrome unscrollable rather than merely sticky. A row that is not inside
+ * the scroller cannot be scrolled at all; sticky pins an element only while its containing block
+ * is in view, and `fixed` rode the WebView's overscroll, which is how the command bar used to
+ * leave the bottom of the window.
+ */
 .view {
-  padding: 1.5rem 0 3rem;
+  /* The app's first row, and a grid of its own. Sized by that track rather than by a
+     `height: 100%` — a percentage against an auto-sized track is cyclic, so the view grew to its
+     content instead of to the window: nothing scrolled, and the foot row landed under the command
+     bar, which paints over it. `min-height: 0` for the same reason the body needs it, one level
+     up: a `1fr` track's floor is the item's min-content unless the item says otherwise. */
+  grid-row: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+}
+.view__head {
+  grid-row: 1;
+  padding-block: 0.75rem;
+  /* Opaque, and a hairline: content is clipped at this edge rather than scrolling under it, and
+     the line is what makes the edge read as the frame of the window instead of a cut-off row. */
+  background: var(--app-bg);
+  border-bottom: 1px solid rgba(128, 128, 128, 0.18);
+}
+.view__body {
+  grid-row: 2;
+  /* Without this the `1fr` track refuses to shrink below its content — a grid track's floor is
+     min-content — and the view grows past the window instead of this row scrolling. */
+  min-height: 0;
+  overflow-y: auto;
+  /* Keep a scroll that reaches either end from becoming the window's own overscroll: the
+     rubber-band that used to drag the whole layout, taking every fixed element with it. */
+  overscroll-behavior: contain;
+  /* Reserve the scrollbar's width whether or not this body is scrolling. Without it the app
+     visibly breathes: the column is centred, so a view long enough to scroll loses the
+     scrollbar's width and *both* edges move inward by half of it. Invisible on a Mac set to
+     overlay scrollbars, which is the kind of defect worth pinning rather than eyeballing. */
+  scrollbar-gutter: stable;
+  /* The padding five views had each written for themselves, in three different values, so the
+     header visibly shifted as you navigated between them. */
+  padding-block: 1.25rem 2rem;
+}
+.view__foot {
+  grid-row: 3;
 }
 
 /* Global so every view can ease its results in with one class, instead of each
@@ -524,21 +584,18 @@ button:disabled {
 </style>
 
 <style scoped>
+/* Two rows: whichever view is on screen, then the command bar. Exactly the window tall, so the
+   bar is the bottom of the window by construction rather than by positioning itself there (D22).
+   The view fills the first row and provides its own chrome rows inside it. */
 .app {
-  max-width: 860px;
-  margin: 0 auto;
-  /* No top padding: the sticky header carries its own, so the gap above the title
-     stays part of the opaque surface instead of scrolling away from under it. */
-  padding: 0 1.25rem 5rem;
+  height: 100%;
+  display: grid;
+  grid-template-rows: 1fr auto;
 }
-.topbar {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  padding: 0.75rem 0;
-  background: var(--app-bg-sticky);
-  backdrop-filter: blur(8px);
-}
+/* A grid of its own so the single view inside it is stretched to the row rather than sized by
+   its content, and `min-height: 0` so that row can be shorter than what the view holds — which
+   is what lets the view's body scroll instead of the window growing. */
+
 h1 {
   margin: 0 0 0.75rem;
   font-size: 1.5rem;

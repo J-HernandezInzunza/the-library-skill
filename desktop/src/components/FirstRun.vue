@@ -79,77 +79,83 @@ async function setUp() {
 </script>
 
 <template>
-  <section class="first-run">
-    <StatusBanner v-if="failure" kind="error" :detail="failure" />
+  <section class="view first-run">
+    <div class="view__body">
+      <StatusBanner v-if="failure" kind="error" :detail="failure" />
 
-    <template v-if="stage === 'bootstrap'">
-      <h2 class="first-run__title">Let's set up your library</h2>
-      <p class="first-run__lead">
-        The tool at <code>{{ path }}</code> hasn't been prepared yet, so it can't read your
-        catalog. Setting it up creates a private Python environment inside that folder and
-        installs the one package the CLI needs.
-      </p>
-      <p class="first-run__note">
-        Nothing outside that folder is touched, and running it again later is harmless.
-      </p>
+      <template v-if="stage === 'bootstrap'">
+        <h2 class="first-run__title">Let's set up your library</h2>
+        <p class="first-run__lead">
+          The tool at <code>{{ path }}</code> hasn't been prepared yet, so it can't read your
+          catalog. Setting it up creates a private Python environment inside that folder and
+          installs the one package the CLI needs.
+        </p>
+        <p class="first-run__note">
+          Nothing outside that folder is touched, and running it again later is harmless.
+        </p>
 
-      <button type="button" class="first-run__action" :disabled="running" @click="setUp">
-        Set up the library
-      </button>
-      <Busy v-if="running" inline label="Creating the environment and installing PyYAML…" />
-    </template>
-
-    <template v-else>
-      <h2 class="first-run__title">Point it at your catalog</h2>
-      <p class="first-run__lead">
-        The tool is ready to run, but it doesn't know which catalog to read. Your team's catalog
-        is a git repository with a <code>library.yaml</code> at its root.
-      </p>
-
-      <form class="first-run__form" @submit.prevent="register">
-        <label class="first-run__field">
-          <span>Catalog repository</span>
-          <input
-            v-model="repo"
-            type="text"
-            placeholder="git@github.com:your-team/agent-library.git"
-            autofocus
-            v-bind="RAW_TEXT"
-          />
-        </label>
-
-        <label class="first-run__field">
-          <span>Branch</span>
-          <input v-model="branch" type="text" placeholder="main" v-bind="RAW_TEXT" />
-        </label>
-
-        <p class="first-run__preview">{{ initCommand }}</p>
-
-        <button type="submit" class="first-run__action" :disabled="!canRegister || registering">
-          Connect catalog
+        <button type="button" class="first-run__action" :disabled="running" @click="setUp">
+          Set up the library
         </button>
-        <Busy v-if="registering" inline label="Cloning the catalog over the network…" />
-      </form>
+        <Busy v-if="running" inline label="Creating the environment and installing PyYAML…" />
+      </template>
 
-      <p class="first-run__note">
-        Registering writes <code>{{ configPath }}</code> and clones the catalog, which can take a
-        few seconds.
-      </p>
-    </template>
+      <template v-else>
+        <h2 class="first-run__title">Point it at your catalog</h2>
+        <p class="first-run__lead">
+          The tool is ready to run, but it doesn't know which catalog to read. Your team's catalog
+          is a git repository with a <code>library.yaml</code> at its root.
+        </p>
 
-    <dl v-if="report" class="first-run__report">
-      <dt>Python</dt>
-      <dd>{{ report.venv_python }}</dd>
-      <dt>CLI</dt>
-      <dd>{{ report.wrapper }}</dd>
-    </dl>
+        <form class="first-run__form" @submit.prevent="register">
+          <label class="first-run__field">
+            <span>Catalog repository</span>
+            <input
+              v-model="repo"
+              type="text"
+              placeholder="git@github.com:your-team/agent-library.git"
+              autofocus
+              v-bind="RAW_TEXT"
+            />
+          </label>
+
+          <label class="first-run__field">
+            <span>Branch</span>
+            <input v-model="branch" type="text" placeholder="main" v-bind="RAW_TEXT" />
+          </label>
+
+          <p class="first-run__preview">{{ initCommand }}</p>
+
+          <button type="submit" class="first-run__action" :disabled="!canRegister || registering">
+            Connect catalog
+          </button>
+          <Busy v-if="registering" inline label="Cloning the catalog over the network…" />
+        </form>
+
+        <p class="first-run__note">
+          Registering writes <code>{{ configPath }}</code> and clones the catalog, which can take a
+          few seconds.
+        </p>
+      </template>
+
+      <dl v-if="report" class="first-run__report">
+        <dt>Python</dt>
+        <dd>{{ report.venv_python }}</dd>
+        <dt>CLI</dt>
+        <dd>{{ report.wrapper }}</dd>
+      </dl>
+    </div>
   </section>
 </template>
 
 <style scoped>
-.first-run {
+/* Narrower than the app's column and centred inside it: this is one decision on a blank machine,
+   not a page of content. The measure goes on the scrolling body rather than on the root, which is
+   the view's grid and has to stay the window's width. */
+.first-run .view__body {
   max-width: 34rem;
-  margin: 3rem auto;
+  margin: 0 auto;
+  padding-block: 3rem;
   text-align: center;
 }
 .first-run__title {

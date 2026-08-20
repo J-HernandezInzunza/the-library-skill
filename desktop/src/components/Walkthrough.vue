@@ -38,6 +38,9 @@ const reply = ref("");
 const session = ref("");
 const ended = ref(false);
 const foot = useTemplateRef<HTMLElement>("foot");
+/** This view's scrolling body — the transcript is followed by scrolling it, not the window. */
+/** The header, for the one thing this view needs from it: the body element it scrolls. */
+const header = useTemplateRef<InstanceType<typeof PageHeader>>("header");
 /**
  * Whether the intro has been left behind.
  *
@@ -78,20 +81,18 @@ function receive(event: AgentEvent) {
 /**
  * Follow the transcript, but only from the bottom.
  *
- * The page scrolls, not a box inside it: every other full-screen view flows down the window
- * (D19), and a chat with its own scroll region inside a scrolling page gives the user two
- * scrollbars for one conversation.
+ * This view's own body, which is also the only thing in it that scrolls (D22) — the header above
+ * it and the composer below it are rows of the window, so the user never gets two scrollbars for
+ * one conversation.
  *
  * Only when they are already at the bottom. Scrolling on every event would yank the view out from
  * under someone reading back through what the agent did — which, during a long turn, is exactly
  * when they are doing it.
  */
 function scrollToEnd() {
-  const atBottom =
-    document.documentElement.scrollHeight -
-      window.scrollY -
-      document.documentElement.clientHeight <
-    120;
+  const box = header.value?.body;
+  if (!box) return;
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
   if (!atBottom) return;
   nextTick(() => {
     // Feature-checked because `scrollIntoView` is a browser API with no jsdom implementation,
@@ -161,99 +162,96 @@ onUnmounted(() => {
 
 <template>
   <section class="view">
-    <PageHeader :title="`Set up ${skill}`" :back="backTo" @back="close" />
+    <PageHeader ref="header" :title="`Set up ${skill}`" :back="backTo" @back="close">
+      <!-- R7.6: one place for how this turned out, at the top of the surface that owns it. -->
+      <StatusBanner v-if="error" kind="error" :detail="error" />
 
-    <!-- R7.6: one place for how this turned out, at the top of the surface that owns it. -->
-    <StatusBanner v-if="error" kind="error" :detail="error" />
+      <div v-if="!begun" class="walkthrough__intro card">
+        <p class="walkthrough__lede">
+          An assistant will read <strong>{{ skill }}</strong
+          >'s own documentation, tell you what it needs, and run the setup commands the skill
+          itself declares.
+        </p>
+        <!-- Stated before the walkthrough starts, not after a field appears. This is the one
+             promise the user is being asked to rely on, and the moment to read it is while
+             deciding, not while holding a token.
 
-    <div v-if="!begun" class="walkthrough__intro card">
-      <p class="walkthrough__lede">
-        An assistant will read <strong>{{ skill }}</strong
-        >'s own documentation, tell you what it needs, and run the setup commands the skill itself
-        declares.
-      </p>
-      <!-- Stated before the walkthrough starts, not after a field appears. This is the one
-           promise the user is being asked to rely on, and the moment to read it is while
-           deciding, not while holding a token.
-
-           It says where a credential *goes* before it says who does not get it. Everywhere else
-           in the world, typing into a chat means the assistant reads it — so a line that only
-           denies that leaves the reader to invent their own account of what happens instead. -->
-      <p class="walkthrough__assurance">
-        If a credential is needed, <strong>this app collects it and writes it to the skill's own
-        config file itself</strong> — in a field in this window, with owner-only permissions. The
-        assistant is not involved in that step and never receives the value, its length, or any
-        part of it. It is told only that you answered.
-      </p>
-      <p class="walkthrough__assurance">
-        It can read this skill's files and run the commands the skill declares. It cannot run a
-        shell, and it cannot change your catalog.
-      </p>
-      <button type="button" class="walkthrough__start" @click="start">Start setup</button>
-    </div>
-
-    <template v-else>
-      <div class="walkthrough__thread">
-      <div class="walkthrough__transcript">
-        <div
-          v-for="turn in turns"
-          :key="turn.id"
-          class="turn"
-          :class="[`turn--${turn.kind}`, { 'turn--nested': 'subagent' in turn && turn.subagent }]"
-        >
-          <p v-if="turn.kind === 'said'" class="turn__said">{{ turn.text }}</p>
-          <p v-else-if="turn.kind === 'text'" class="turn__text">{{ turn.text }}</p>
-          <p v-else-if="turn.kind === 'notice'" class="turn__notice">{{ turn.text }}</p>
-
-          <!-- What it did, then what came back, inside one bounded block. The border is doing
-               real work: agent prose and machine activity are different kinds of thing, and
-               running them at the same weight down one column made the transcript unreadable —
-               the first thing said about it after using the app (R5.5). -->
-          <template v-else>
-            <p class="turn__tool">
-              <span class="turn__tool-mark" aria-hidden="true">▸</span>
-              <code>{{ turn.label }}</code>
-              <span v-if="turn.result === null" class="turn__running">running…</span>
-            </p>
-            <pre
-              v-if="turn.result !== null"
-              class="turn__result"
-              :class="{ 'turn__result--failed': turn.failed }"
-              >{{ turn.result }}</pre
-            >
-          </template>
-        </div>
-
-        <p v-if="running" class="walkthrough__thinking">Working…</p>
+             It says where a credential *goes* before it says who does not get it. Everywhere else
+             in the world, typing into a chat means the assistant reads it — so a line that only
+             denies that leaves the reader to invent their own account of what happens instead. -->
+        <p class="walkthrough__assurance">
+          If a credential is needed, <strong>this app collects it and writes it to the skill's own
+          config file itself</strong> — in a field in this window, with owner-only permissions. The
+          assistant is not involved in that step and never receives the value, its length, or any
+          part of it. It is told only that you answered.
+        </p>
+        <p class="walkthrough__assurance">
+          It can read this skill's files and run the commands the skill declares. It cannot run a
+          shell, and it cannot change your catalog.
+        </p>
+        <button type="button" class="walkthrough__start" @click="start">Start setup</button>
       </div>
 
-      <!-- Mounted inside the walkthrough because the ask belongs to it, and above the reply box
-           because it is what the user should answer rather than the chat. -->
-      <SecretPrompt />
+      <div v-else class="walkthrough__thread">
+        <div class="walkthrough__transcript">
+          <div
+            v-for="turn in turns"
+            :key="turn.id"
+            class="turn"
+            :class="[`turn--${turn.kind}`, { 'turn--nested': 'subagent' in turn && turn.subagent }]"
+          >
+            <p v-if="turn.kind === 'said'" class="turn__said">{{ turn.text }}</p>
+            <p v-else-if="turn.kind === 'text'" class="turn__text">{{ turn.text }}</p>
+            <p v-else-if="turn.kind === 'notice'" class="turn__notice">{{ turn.text }}</p>
 
-      <div ref="foot"></div>
-      </div>
+            <!-- What it did, then what came back, inside one bounded block. The border is doing
+                 real work: agent prose and machine activity are different kinds of thing, and
+                 running them at the same weight down one column made the transcript unreadable —
+                 the first thing said about it after using the app (R5.5). -->
+            <template v-else>
+              <p class="turn__tool">
+                <span class="turn__tool-mark" aria-hidden="true">▸</span>
+                <code>{{ turn.label }}</code>
+                <span v-if="turn.result === null" class="turn__running">running…</span>
+              </p>
+              <pre
+                v-if="turn.result !== null"
+                class="turn__result"
+                :class="{ 'turn__result--failed': turn.failed }"
+                >{{ turn.result }}</pre
+              >
+            </template>
+          </div>
 
-      <!-- Full-bleed, with the content column rebuilt inside it. The band has to reach the
-           bottom of the window: anything less leaves a strip the transcript scrolls through,
-           between this and the command bar. -->
-      <form class="walkthrough__reply" @submit.prevent="send">
-        <div class="walkthrough__composer">
-          <textarea
-            v-model="reply"
-            v-bind="RAW_TEXT"
-            class="walkthrough__input"
-            rows="2"
-            :disabled="!canReply"
-            :placeholder="canReply ? 'Reply…' : 'Waiting for the assistant…'"
-            @keydown.enter.exact.prevent="send"
-          />
-          <button type="submit" class="walkthrough__send" :disabled="!canReply || !reply.trim()">
-            Send
-          </button>
+          <p v-if="running" class="walkthrough__thinking">Working…</p>
         </div>
-      </form>
-    </template>
+
+        <!-- Mounted inside the walkthrough because the ask belongs to it, and above the reply box
+             because it is what the user should answer rather than the chat. -->
+        <SecretPrompt />
+
+        <div ref="foot"></div>
+      </div>
+    </PageHeader>
+
+    <!-- The view's bottom chrome row, so it lands directly on the command bar: the composer is
+         chrome for this view, not the last paragraph of a transcript that scrolls (D22). -->
+    <form v-if="begun" class="walkthrough__reply view__foot" @submit.prevent="send">
+      <div class="walkthrough__composer column">
+        <textarea
+          v-model="reply"
+          v-bind="RAW_TEXT"
+          class="walkthrough__input"
+          rows="2"
+          :disabled="!canReply"
+          :placeholder="canReply ? 'Reply…' : 'Waiting for the assistant…'"
+          @keydown.enter.exact.prevent="send"
+        />
+        <button type="submit" class="walkthrough__send" :disabled="!canReply || !reply.trim()">
+          Send
+        </button>
+      </div>
+    </form>
   </section>
 </template>
 
@@ -302,18 +300,18 @@ onUnmounted(() => {
 }
 
 /*
- * The transcript and the credential field are one thread, and the clearance for the pinned
- * composer belongs below *both* of them.
+ * The transcript and the credential field are one thread.
  *
- * It was on the transcript alone, which put seven rems of nothing between the last thing the
- * agent said and the field it had just opened — the gap read as the app having lost its place at
- * exactly the moment the user was being asked for a token.
+ * No clearance under it: the composer is in the flow after this, so the last thing the agent said
+ * ends where the composer begins. The seven rems that used to be here were room for a composer
+ * fixed over the page, and they put a screenful of nothing between the agent's last word and the
+ * field it had just opened — which read as the app having lost its place at exactly the moment
+ * the user was being asked for a token.
  */
 .walkthrough__thread {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-  padding-bottom: 7rem;
 }
 .walkthrough__transcript {
   display: flex;
@@ -420,47 +418,26 @@ onUnmounted(() => {
 }
 
 /*
- * Pinned to the window, not to the document.
+ * The composer, as this view's bottom chrome row (D22).
  *
- * `sticky` was wrong here: it pins an element while its container is still on screen, and this
- * one's container ends immediately after it — so the box simply sat at the end of the transcript
- * and scrolled away with it. A composer you have to scroll to reach is a composer you lose every
- * time the agent says something long, which is most turns.
+ * Nothing positions it: it is a row of the view, which is itself the window, so it lands directly
+ * on the command bar with no strip between the two for the transcript to show through and nothing
+ * to recalculate when the log expands. `fixed` and then `sticky` were both approximations of that.
  *
- * Fixed to the full window width with the content column reconstructed inside, rather than to the
- * column itself: a fixed element cannot inherit `.app`'s centring, since it is positioned against
- * the viewport rather than against its parent.
+ * The border is the frame between it and the transcript above, full-bleed because the row is.
  */
 .walkthrough__reply {
-  position: fixed;
-  left: 0;
-  right: 0;
-  /* All the way down, not to the top of the command bar. Stopping short left a transparent
-     strip between the two, and the transcript scrolled through it — visible as text sliding
-     past underneath the reply box. The bar's height becomes padding instead, so the opaque
-     band is continuous from the composer to the bottom of the window. */
-  bottom: 0;
-  z-index: 15;
-  padding-bottom: var(--command-bar-h);
   border-top: 1px solid rgba(128, 128, 128, 0.25);
-  /* Opaque: it floats over the transcript, and a translucent one leaves the text showing
-     through from behind. */
-  background: var(--app-bg);
 }
 
-/* `.app`'s column: its max-width, its horizontal padding, and its centring — rebuilt here
-   because a fixed element is positioned against the viewport and cannot inherit them. */
 .walkthrough__composer {
   display: flex;
   gap: 0.5rem;
+  /* Its own vertical padding: the column class only sets the horizontal measure. */
+  padding-block: 0.7rem;
   /* Stretch, so the button is the input's height rather than hanging off its bottom edge. The
      two are one control; sizing them independently reads as a misalignment. */
   align-items: stretch;
-  max-width: 860px;
-  margin: 0 auto;
-  /* Even top and bottom: the band is the only thing framing the input, so an asymmetric one
-     shows up as the box sitting slightly high in it. */
-  padding: 0.7rem 1.25rem;
 }
 
 .walkthrough__input {

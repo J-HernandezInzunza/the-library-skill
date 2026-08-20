@@ -813,8 +813,14 @@ D10/D11/D14 were revised to match. The tasks below assume the revised text, not 
     is the whitelist. The spike proved the flags alone let the agent run `Bash` and get its output,
     so anything that treats them as the boundary is a security bug, not a style choice.
   - **Verify:** Tests that the generated settings deny a name outside the prefix and allow one inside
-    it. Manually, once T6.4 exists: ask the agent to run a shell command and confirm the denial
-    surfaces as an errored `tool_result`. Gate passes.
+    it. Gate passes. ~~Manually, once T6.4 exists: ask the agent to run a shell command and confirm
+    the denial surfaces as an errored `tool_result`.~~ **Attempted and closed as unreachable**, not
+    skipped: four escalating prompts in the real panel (`Bash` directly, `just do it`, `Read`, then
+    `WebFetch` with the purpose stated) produced no `tool_use` at all, so no denial was ever
+    rendered. The agent holds `Bash` — `tool-denied.jsonl`'s `init.tools` advertises it under the
+    app's own settings — and declines on policy, which is D11 from the other end. Enforcement is
+    proven by the live hook binary plus that recorded denial; the *display* of a denial is covered
+    by `Walkthrough.spec.ts` rather than by eye. See progress.md.
   - **Commit:** `feat(desktop/agent): enforce the tool whitelist with a deny-by-default hook`
 
 - [x] **T6.2 — Session capture and resume**
@@ -979,6 +985,7 @@ owns it and what would make it urgent, so a gap cannot quietly become folklore i
 | G6 | **`npm run check` fails in a non-login shell** because `cargo` is not on its `PATH` | T8.1 | Any CI attempt, or the first teammate who runs the gate from a non-login shell |
 | G7 | **`bootstrap()` resolves `python3` from `PATH`**, which is the shell's under `tauri dev` and a minimal one for a Finder-launched bundle. Holds today because macOS ships `/usr/bin/python3` | T8.1 | Only if D9 is revisited and the app ships as a bundle |
 | G9 | **`remove --purge` cannot reach a project install from the app.** `--purge` resolves project destinations against `LIBRARY_CWD`, and `remove` is anchored at the tool repo, so a purge deletes the global copy and silently leaves project ones behind. The app works around it by offering the checkbox only when every copy is global. Same root as G4: there is no single anchor for an entry installed in several projects | `library.py` | The workaround holds, but it means a project-installed entry can still be stranded — removed from the catalog with files nothing can now uninstall |
+| G10 | **`optional` conflates "works without it" with "one of several ways to satisfy the same requirement", so `configured` degenerates for an either/or skill.** `slack-toolkit` is webhook *or* bot token; both must be `optional: true`, and `missing` counts only non-optional secrets, so `configured` is `true` with nothing set at all — measured against an empty config | `library.py` + schema | Real now: the second manifest written hit it immediately. The app would badge an unconfigured skill as configured, and `check` is the only thing that knows better |
 | G8 | **`add` raises an unhandled `LibraryError` when the destination catalog's YAML has no section for the chosen type**, so the caller gets a Python traceback on stderr instead of a message. Found by adding an `agent` to a hand-written catalog with only a `skills:` section | `library.py` | The add form lets any type target any catalog, so this is now one dropdown away rather than a typo. `catalog init` scaffolds all three sections, which is why it has not been hit before |
 
 ---

@@ -41,8 +41,10 @@ describe("page chrome", () => {
   it("roots every full-screen view in the shared .view padding", () => {
     // The padding is what the eye actually measures the header against, so a view with
     // its own is a header that lands somewhere else even with the same component.
+    // A view may add a class of its own beside it — the walkthrough does, to zero the bottom
+    // padding its pinned composer has to reach through — but `.view` has to be there.
     const offenders = fullScreenViews()
-      .filter(([, source]) => !source.includes('class="view"'))
+      .filter(([, source]) => !/class="view[ "]/.test(source))
       .map(([name]) => name);
 
     expect(offenders).toEqual([]);
@@ -64,8 +66,8 @@ describe("page chrome", () => {
     // where the eye is looking for the title rather than for something to press.
     const offenders = fullScreenViews()
       .filter(([, source]) => {
-        const header = source.match(/<PageHeader[\s\S]*?<\/PageHeader>/);
-        return !!header && header[0].includes("<button") && !header[0].includes("#actions");
+        const badges = source.match(/<template #badges>[\s\S]*?<\/template>/);
+        return !!badges && badges[0].includes("<button");
       })
       .map(([name]) => name);
 
@@ -73,13 +75,72 @@ describe("page chrome", () => {
   });
 
   it("reserves the scrollbar's width so a long page does not move the layout", () => {
-    // `.app` is centred, so without a stable gutter a page long enough to scroll narrows
-    // the viewport and both edges move inward by half the scrollbar width. Invisible on a
-    // Mac using overlay scrollbars, which is why it survived several passes of looking at
-    // the app and is worth a check that does not depend on the machine.
+    // The column is centred, so without a stable gutter a view long enough to scroll narrows
+    // its body and both edges move inward by half the scrollbar width. Invisible on a Mac using
+    // overlay scrollbars, which is why it survived several passes of looking at the app and is
+    // worth a check that does not depend on the machine.
     const app = SOURCES["./App.vue"];
 
-    expect(app).toMatch(/html\s*\{[^}]*scrollbar-gutter:\s*stable/);
+    expect(app).toMatch(/\.view__body\s*\{[^}]*scrollbar-gutter:\s*stable/);
+  });
+
+  /*
+   * The two app-wide truths of D22, checked against the source for the same reason the header
+   * checks are: both are invariants *between* screens and states, and each was broken by a rule
+   * that looked correct on its own — `position: fixed` on a bar that is supposed to be the
+   * bottom of the window, and a back row that scrolls because the whole document does.
+   */
+  it("scrolls one surface inside the view rather than the document", () => {
+    const app = SOURCES["./App.vue"];
+
+    // A scrolling document is what the WebView's rubber-band overscroll dragged around, taking
+    // every fixed element with it — the command bar visibly leaving the bottom of the window.
+    expect(app).toMatch(/body\s*\{[^}]*overflow:\s*hidden/);
+    expect(app).toMatch(/\.view__body\s*\{[^}]*overflow-y:\s*auto/);
+    // Without this, a scroll that reaches either end becomes the window's own overscroll again.
+    expect(app).toMatch(/\.view__body\s*\{[^}]*overscroll-behavior:\s*contain/);
+  });
+
+  it("keeps the command bar in the flow, and its panel an overlay", () => {
+    const log = SOURCES["./components/CommandLog.vue"];
+
+    // In the flow as the shell's last row, so nothing can move it off the bottom.
+    expect(log).not.toMatch(/\.command-log\s*\{[^}]*position:\s*fixed/);
+    // Expanding is an overlay over the view, never a resize of it: a bar that pushed content
+    // would reflow the transcript underneath at the moment the user opened the log to read it.
+    expect(log).toMatch(/\.command-log__list\s*\{[^}]*position:\s*absolute/);
+    expect(log).toMatch(/\.command-log__list\s*\{[^}]*bottom:\s*100%/);
+  });
+
+  it("frames every view as chrome rows around one scrolling body", () => {
+    const app = SOURCES["./App.vue"];
+
+    // The app is the view and then the command bar, so the bar is the bottom of the window by
+    // construction. The view is three rows, and only the middle one scrolls — which is what
+    // makes its chrome unscrollable rather than merely sticky.
+    expect(app).toMatch(/\.app\s*\{[^}]*grid-template-rows:\s*1fr auto/);
+    expect(app).toMatch(/\.view\s*\{[^}]*grid-template-rows:\s*auto 1fr auto/);
+
+    // The rows themselves come from PageHeader, once: the head row, then the body, with the
+    // title as the body's first line — chrome that never scrolls above content that does.
+    const header = SOURCES["./components/PageHeader.vue"];
+    expect(header.indexOf('class="page-head view__head')).toBeLessThan(
+      header.indexOf('class="view__body'),
+    );
+    expect(header.indexOf('class="view__body')).toBeLessThan(header.indexOf('class="page-title"'));
+
+    for (const [name, source] of fullScreenViews()) {
+      // No view builds its own rows — the catalog list in App.vue is the deliberate exception,
+      // since its head is a search toolbar rather than a back row, and it is not in this set. This is what stops the five-views-five-headers drift of D19
+      // from coming back in a new form: a view that wrote its own body could put the back row
+      // inside it, and nothing but a rendered test would notice.
+      expect(source, name).not.toMatch(/class="[^"]*\bview__(head|body)\b/);
+
+      // No view may pin its own chrome — the rows are layout, not positioning. Every positioned
+      // version of this moved: fixed rode the WebView's overscroll, and sticky pins an element
+      // only while its containing block is still in view.
+      expect(source, name).not.toMatch(/position:\s*(fixed|sticky)/);
+    }
   });
 
   it("finds the views it is meant to be guarding", () => {

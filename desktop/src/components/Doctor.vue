@@ -51,41 +51,41 @@ run();
           {{ loading ? "Checking…" : "Re-run" }}
         </button>
       </template>
+
+      <Busy v-if="loading" :label="deep ? 'Checking every source…' : 'Checking the catalog…'" />
+      <StatusBanner v-else-if="error" kind="error" :detail="error" />
+
+      <template v-else-if="report">
+        <p class="doctor__summary fade-in">
+          {{ report.entries }} entries · {{ report.errors.length }} errors ·
+          {{ report.warnings.length }} warnings
+        </p>
+
+        <p v-if="!report.errors.length && !report.warnings.length" class="doctor__clean">
+          Nothing to report.
+        </p>
+
+        <template v-if="report.errors.length">
+          <h3 class="doctor__section doctor__section--error">Errors</h3>
+          <ul class="doctor__list fade-in">
+            <li v-for="(item, i) in report.errors" :key="`e${i}`" class="doctor__item doctor__item--error">
+              <span v-if="subject(item)" class="doctor__subject">{{ subject(item) }}</span>
+              <span class="doctor__message">{{ item.message }}</span>
+            </li>
+          </ul>
+        </template>
+
+        <template v-if="report.warnings.length">
+          <h3 class="doctor__section">Warnings</h3>
+          <ul class="doctor__list fade-in">
+            <li v-for="(item, i) in report.warnings" :key="`w${i}`" class="doctor__item">
+              <span v-if="subject(item)" class="doctor__subject">{{ subject(item) }}</span>
+              <span class="doctor__message">{{ item.message }}</span>
+            </li>
+          </ul>
+        </template>
+      </template>
     </PageHeader>
-
-    <Busy v-if="loading" :label="deep ? 'Checking every source…' : 'Checking the catalog…'" />
-    <StatusBanner v-else-if="error" kind="error" :detail="error" />
-
-    <template v-else-if="report">
-      <p class="doctor__summary fade-in">
-        {{ report.entries }} entries · {{ report.errors.length }} errors ·
-        {{ report.warnings.length }} warnings
-      </p>
-
-      <p v-if="!report.errors.length && !report.warnings.length" class="doctor__clean">
-        Nothing to report.
-      </p>
-
-      <template v-if="report.errors.length">
-        <h3 class="doctor__section doctor__section--error">Errors</h3>
-        <ul class="doctor__list fade-in">
-          <li v-for="(item, i) in report.errors" :key="`e${i}`" class="doctor__item doctor__item--error">
-            <span v-if="subject(item)" class="doctor__subject">{{ subject(item) }}</span>
-            <span class="doctor__message">{{ item.message }}</span>
-          </li>
-        </ul>
-      </template>
-
-      <template v-if="report.warnings.length">
-        <h3 class="doctor__section">Warnings</h3>
-        <ul class="doctor__list fade-in">
-          <li v-for="(item, i) in report.warnings" :key="`w${i}`" class="doctor__item">
-            <span v-if="subject(item)" class="doctor__subject">{{ subject(item) }}</span>
-            <span class="doctor__message">{{ item.message }}</span>
-          </li>
-        </ul>
-      </template>
-    </template>
   </section>
 </template>
 

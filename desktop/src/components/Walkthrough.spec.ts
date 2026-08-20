@@ -200,7 +200,7 @@ describe("Walkthrough", () => {
   it("ends the walkthrough when it is closed", async () => {
     const panel = await started();
 
-    await panel.get(".page-head__nav button").trigger("click");
+    await panel.get(".page-head button").trigger("click");
     await flushPromises();
 
     // The token is retired, the values forgotten, the agent's config removed. The user leaving is
@@ -260,5 +260,31 @@ describe("Walkthrough", () => {
     // It never became a turn, and nothing rendered it.
     expect(commandsCalled()).not.toContain("walkthrough_say");
     expect(panel.text()).not.toContain("ATATT-the-token");
+  });
+
+  /*
+   * The chrome is outside the one thing that scrolls (D22).
+   *
+   * Checked in the rendered DOM rather than against the source, because that is where the defect
+   * lived: the back button and the composer both used to sit inside the page that scrolled, so
+   * the way out of a long transcript was thousands of pixels above where the user had read to,
+   * and the composer was the transcript's last paragraph rather than a row of the window.
+   */
+  it("keeps the back row and the composer out of the scrolling body", async () => {
+    const panel = await started();
+
+    const body = panel.get(".view__body");
+    expect(body.element.querySelector(".page-head")).toBe(null);
+    expect(body.element.querySelector(".walkthrough__reply")).toBe(null);
+
+    // And they are still rendered — above and below it, as the view's own two chrome rows.
+    expect(panel.get(".page-head").text()).toContain("← atlassian-toolkit");
+    expect(panel.find(".walkthrough__reply").exists()).toBe(true);
+    const children = Array.from(panel.get(".view").element.children).map((el) => el.className);
+    expect(children).toEqual([
+      expect.stringContaining("page-head"),
+      expect.stringContaining("view__body"),
+      expect.stringContaining("walkthrough__reply"),
+    ]);
   });
 });

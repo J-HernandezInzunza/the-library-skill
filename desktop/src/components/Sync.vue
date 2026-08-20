@@ -57,62 +57,62 @@ run(false);
           Force re-fetch
         </button>
       </template>
+
+      <Busy v-if="loading" label="Checking every installed entry against its source…" />
+      <StatusBanner v-else-if="error" kind="error" :detail="error" />
+
+      <template v-else-if="report">
+        <p class="sync__summary fade-in">
+          {{ refreshed.length }} refreshed · {{ unchanged.length }} already up to date
+          <span v-if="report.failed.length"> · {{ report.failed.length }} failed</span>
+        </p>
+
+        <p v-if="overwritten.length" class="sync__warning">
+          {{ overwritten.map((item) => item.name).join(", ") }} had local edits, which the
+          refresh replaced with the catalog's copy.
+        </p>
+
+        <template v-if="report.failed.length">
+          <h3 class="sync__section sync__section--error">Failed</h3>
+          <ul class="sync__list fade-in">
+            <li v-for="item in report.failed" :key="item.name" class="sync__item sync__item--error">
+              <span class="sync__name">{{ item.name }}</span>
+              <span class="sync__detail">{{ item.reason }}</span>
+            </li>
+          </ul>
+        </template>
+
+        <template v-if="refreshed.length">
+          <h3 class="sync__section">Refreshed</h3>
+          <ul class="sync__list fade-in">
+            <li
+              v-for="item in refreshed"
+              :key="item.name"
+              class="sync__item"
+              :class="{ 'sync__item--drifted': item.state === 'drifted' }"
+            >
+              <span class="sync__name">{{ item.name }}</span>
+              <span class="sync__detail">{{ describeItem(item) }}</span>
+              <ul class="sync__files">
+                <li v-for="file in item.changes.modified" :key="`~${file}`">~ {{ file }}</li>
+                <li v-for="file in item.changes.added" :key="`+${file}`">+ {{ file }}</li>
+                <li v-for="file in item.changes.removed" :key="`-${file}`">- {{ file }}</li>
+              </ul>
+            </li>
+          </ul>
+        </template>
+
+        <template v-if="unchanged.length">
+          <h3 class="sync__section">Already up to date</h3>
+          <ul class="sync__list fade-in">
+            <li v-for="item in unchanged" :key="item.name" class="sync__item sync__item--quiet">
+              <span class="sync__name">{{ item.name }}</span>
+              <span class="sync__detail">{{ item.scope }} · nothing to fetch</span>
+            </li>
+          </ul>
+        </template>
+      </template>
     </PageHeader>
-
-    <Busy v-if="loading" label="Checking every installed entry against its source…" />
-    <StatusBanner v-else-if="error" kind="error" :detail="error" />
-
-    <template v-else-if="report">
-      <p class="sync__summary fade-in">
-        {{ refreshed.length }} refreshed · {{ unchanged.length }} already up to date
-        <span v-if="report.failed.length"> · {{ report.failed.length }} failed</span>
-      </p>
-
-      <p v-if="overwritten.length" class="sync__warning">
-        {{ overwritten.map((item) => item.name).join(", ") }} had local edits, which the
-        refresh replaced with the catalog's copy.
-      </p>
-
-      <template v-if="report.failed.length">
-        <h3 class="sync__section sync__section--error">Failed</h3>
-        <ul class="sync__list fade-in">
-          <li v-for="item in report.failed" :key="item.name" class="sync__item sync__item--error">
-            <span class="sync__name">{{ item.name }}</span>
-            <span class="sync__detail">{{ item.reason }}</span>
-          </li>
-        </ul>
-      </template>
-
-      <template v-if="refreshed.length">
-        <h3 class="sync__section">Refreshed</h3>
-        <ul class="sync__list fade-in">
-          <li
-            v-for="item in refreshed"
-            :key="item.name"
-            class="sync__item"
-            :class="{ 'sync__item--drifted': item.state === 'drifted' }"
-          >
-            <span class="sync__name">{{ item.name }}</span>
-            <span class="sync__detail">{{ describeItem(item) }}</span>
-            <ul class="sync__files">
-              <li v-for="file in item.changes.modified" :key="`~${file}`">~ {{ file }}</li>
-              <li v-for="file in item.changes.added" :key="`+${file}`">+ {{ file }}</li>
-              <li v-for="file in item.changes.removed" :key="`-${file}`">- {{ file }}</li>
-            </ul>
-          </li>
-        </ul>
-      </template>
-
-      <template v-if="unchanged.length">
-        <h3 class="sync__section">Already up to date</h3>
-        <ul class="sync__list fade-in">
-          <li v-for="item in unchanged" :key="item.name" class="sync__item sync__item--quiet">
-            <span class="sync__name">{{ item.name }}</span>
-            <span class="sync__detail">{{ item.scope }} · nothing to fetch</span>
-          </li>
-        </ul>
-      </template>
-    </template>
   </section>
 </template>
 

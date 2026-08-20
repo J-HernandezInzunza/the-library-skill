@@ -3542,3 +3542,351 @@ user's to read verbatim.
 the agent said and the field it had just opened — the layout reading as though the app had lost
 its place at exactly the moment it was asking for a token. The transcript and the field are one
 thread, so they are now one element and the clearance sits below both.
+
+---
+
+## T6.1a's manual check — the gate is unreachable by asking, and the agent said why
+
+Four prompts, escalating: `Bash` requested directly with the recorder's own wording, then
+`just do it`, then `Read` framed as verifying the config file the walkthrough had just written,
+then `WebFetch` with the purpose stated outright — *"I'm testing the app's tool gate, not trying
+to fetch a page."* The agent declined every one. No `tool_use` was ever generated, so no denial
+came back, so the panel had nothing to render. **The manual clause of this task's verify step is
+not satisfied, and it cannot be satisfied by this route.**
+
+Which is worth more than the tick would have been, because of what the four refusals settled.
+
+**`--allowedTools` really does not exclude, and the fixture proves it against the app's own
+settings.** `tool-denied.jsonl`'s `init.tools` — a real `claude` run with the real gate file —
+advertises `Task`, `Bash`, `Read`, `Write`, `Edit`, `WebFetch`, `WebSearch`, `Workflow` and the
+rest. So the agent in a walkthrough is not an agent lacking `Bash`. It is an agent holding `Bash`
+and declining to reach for it. D11 was a spike finding about flags; this is the same finding at the
+other end, in the configuration that actually ships.
+
+**The hook binary was confirmed live, not from a fixture.** Piping
+`{"tool_name":"Bash",…}` into the running `target/debug/desktop --pretooluse-hook` returns
+`"permissionDecision":"deny"` with the reason addressed to the agent; `mcp__library__library_cmd`
+returns `allow`. Nothing else on stdout, exit 0. That is the same binary the running app writes
+into `settings.json`, so the gate itself is verified end to end by hand — only its *arrival in the
+panel* is not.
+
+**The prompt layer is more accurate than it needed to be.** Unprompted, the agent enumerated all
+four tools and the three declared command ids (`check`, `config-init`, `smoke`), and when asked to
+read `config.json` it reconstructed the D7 argument without having been given it: both tokens, in
+plaintext, at `0600`, written by the app, never seen by the agent, therefore not a thing to dump
+into a chat log. T6.4c wrote that prompt to stop the agent hunting for a manifest the app already
+had; it turns out to also carry the secret boundary's reasoning well enough for the model to
+re-derive it.
+
+**And the agent drew the conclusion this task exists to enforce.** Asked what was in its tool list,
+it corrected its own earlier phrasing — *"when I said there was 'no shell' and I 'don't have Read',
+that was imprecise… they appear in the schema, and I'm treating them as out of scope because the
+app scoped this panel to setup. The refusal was a policy choice, not an absence"* — and then:
+*"if you want a hard gate rather than a compliant one, it has to be enforced at the tool layer,
+since a model-side boundary is only as good as the model honoring it."* That is §4.1a, arrived at
+independently by the thing being constrained. It is also the precise reason the hook cannot be
+retired in favor of the prompt, however well the prompt performs: today's model honored it four
+times, and honoring is not withholding.
+
+**So the item closes as unreachable rather than unverified.** Every link in the chain is proven
+except a person's eyes on the last one:
+
+| Link | Proven by |
+| --- | --- |
+| The hook decides correctly | The live binary, run by hand this session |
+| A real `claude` actually attempts the call and is stopped | `tool-denied.jsonl` — real run, real settings, a `tool_use` for `Bash`, an errored `tool_result` back |
+| The backend parses the string-shaped result | `src-tauri/tests/agent.rs` |
+| The reducer marks it failed | `walkthrough.spec.ts` — a denied `Bash` folded |
+| The panel renders it as failed | `Walkthrough.spec.ts` — `is_error: true` emitted through the event bridge |
+| A human watches it happen in the panel | **Not done, and not reachable by conversation with a compliant model** |
+
+Leaving that as an open manual step would read as though the hook were untested, which is the
+opposite of what four refusals and a recorded denial establish. The honest statement is that the
+enforcement path is proven and the *display* of enforcement is covered by test rather than by eye,
+because the outer layer prevents a cooperative agent from producing the input the inner layer
+catches.
+
+**The agent's own testability suggestion is worth keeping.** It proposed *"the app's own audit log,
+or a hook that records attempted calls, since that shows what actually reached the tool layer
+rather than what I said about it."* That is a real improvement and not just a test fixture: the
+hook already runs on every call, and having it record denials would turn an invisible boundary into
+an auditable one — the difference between believing the gate holds and being able to show it. Two
+things would have to be decided first. A denied call's `tool_input` is model-authored text, so it
+goes through T7.4's redaction like every other output path rather than around it. And a log that
+only the app reads is a debugging aid, while one the user can see is a feature with a place in the
+UI to argue about. Neither is in scope here; noted as a candidate, not a gap, since nothing is
+currently broken for want of it.
+
+---
+
+## F1, re-run on a current CLI, and the declarative boundary the app is not using
+
+Prompted by an obvious question the manual check raised: rather than catching a call to `Bash`,
+why not launch `claude` without `Bash` at all? Four experiments against **CLI 2.1.236**, since
+D11 rested on a T0.2 finding recorded many releases ago and the published docs now assert the
+opposite of it.
+
+**F1 still holds, and the docs are wrong about it.** `code.claude.com/docs/en/agent-sdk/permissions`
+states that `permissionMode: "dontAsk"` "converts any permission prompt into a denial, except for
+tools pre-approved by `allowed_tools`" — read plainly, `--allowedTools` plus `dontAsk` is a
+whitelist. Run with the app's exact flags and the `--settings` hook removed, the agent was
+advertised `Bash`, called it, and got `GATE_OPEN` back on a run that ended `is_error: false`.
+So `--allowedTools` pre-approves and never excludes, on today's binary as on the spike's. §4.1a's
+central claim is now backed by a current measurement rather than an old one, which matters because
+the *documentation* is the thing a future reader would most plausibly trust over the design note.
+
+**`permissions.deny` in `--settings` does what the flags do not.** With
+`{"permissions":{"deny":["Bash"]}}`, `Bash` was **absent from `init.tools`** — removed from the
+surface, not refused on call. The model went looking for it via `ToolSearch` and found nothing.
+This is materially stronger than what T0.2 concluded about deny-lists, and the app currently
+writes no `permissions` block at all.
+
+**It cannot express our rule, though, and two measurements say why.** `deny: ["*"]` yields
+`tool count: 0`, so the wildcard is total; and `deny: ["*"]` with `allow: ["Bash"]` still hides
+`Bash`, so deny outranks allow. "Everything except `mcp__library__*`" is therefore not sayable in
+settings: the wildcard would strip our own four tools and the allow list could not win them back.
+Only the hook *computes* the answer from the prefix, which is exactly why it covers tools no
+release has shipped. **The hook is not replaceable.** What is available is a second layer.
+
+**The candidate, stated so the decision is a decision.** Add an enumerated `permissions.deny`
+to the settings document `write_settings` already produces, covering the builtins a real
+`init.tools` reports (`Bash`, `Read`, `Write`, `Edit`, `Task`, `WebFetch`, `WebSearch`, `Workflow`,
+and the rest of the list in `tool-denied.jsonl`). What it buys: a model that is talked into
+reaching for a shell has nothing to reach for, so the prompt stops being the layer holding the
+line — and after four refusals it is clear the prompt *is* currently that layer in practice, with
+the hook never once invoked in a real walkthrough. What it costs: a list that goes stale, which
+fails safe (a tool added by a later release is merely visible, and the hook still denies it), plus
+the honest admission that it makes this task's manual clause permanently unreachable rather than
+situationally unreachable, since there would be no `Bash` left to ask for.
+
+Not built. It changes the tool boundary, and D11/§4.1a is the wrong place for an unrequested
+change of mind.
+
+---
+
+## The second layer, and the deny-list that was stale before it shipped
+
+`write_settings` now emits `permissions.deny` alongside the hook: 32 builtins, denied by name so
+they never reach `init.tools`. The hook is unchanged and still the boundary — nothing on that list
+was reachable before, because none of it carries the `mcp__library__` prefix. What changed is
+visibility, and the reason to want it is the four refusals above: the opening prompt was
+demonstrably the layer holding the line, and a prompt holds only while the model chooses to honor
+it.
+
+**The live check found two tools the recorded fixture does not contain.** `mcp_live` now writes the
+real gate document — deny block plus a hook pointed at the built binary — instead of proving the
+transport in a configuration the app never launches. First run, `init.tools` came back as:
+
+    ["Glob", "Grep", "mcp__library__library_cmd", "mcp__library__read_skill_doc",
+     "mcp__library__request_secret", "mcp__library__run_skill_setup"]
+
+Thirty builtins gone, our four intact, server `connected`, the tool called for real, run ended
+`DONE`. And `Glob` and `Grep` still standing — two file-reading tools, absent from
+`tool-denied.jsonl`'s `init.tools` and present in a live session. So the list was stale on arrival,
+before it had ever run in the app. The doc comment arguing that a deny-list is stale by
+construction was written twenty minutes earlier as a caveat; it turned out to be a description.
+Both are now denied, and the live assertion walks `DENIED_BUILTINS` rather than spot-checking
+names, so the next divergence is a failing test rather than a paragraph nobody re-reads.
+
+That is also the clearest available answer to why the hook cannot be retired in favor of this
+layer. The failure mode is not hypothetical drift in some future release — it was two tools, on the
+first run, on the machine that wrote the list.
+
+**And `mcp_live` had gone stale in the other direction while nobody was looking.** It asserted the
+server advertises two tools, which was true when T7.1 wrote it and has been wrong since the surface
+grew to four. `#[ignore]` is the right call for a test that spends money, but it means the test
+cannot notice its own arithmetic rotting. It now derives the count from `mcp::TOOLS`, so the server
+and its live check cannot disagree.
+
+---
+
+## A second manifest, and the first thing it broke
+
+`atlassian-toolkit` was the only `setup.yaml` in the library, so every claim about the schema
+generalizing rested on the file it was designed around. `slack-toolkit` is the second, chosen
+because it is shaped differently in ways the first never exercised: two *alternative* credential
+modes rather than independent ones, a non-secret value, and env vars that override the config file.
+
+**The app has no coupling to the first skill.** Zero `atlassian` references in production Rust or
+Vue — all 33 are in `.spec.ts` files or below `#[cfg(test)] mod tests`. What was coupled was the
+*evidence*, which is the part that matters: one manifest, one delivery mode ever run for real.
+
+**The schema expressed the new skill without a new field.** `problems: []` first try, prerequisite
+met, three secrets and three command ids parsed as written. `secret: false` already covered the
+non-secret value (`default_channel`), which the first draft of this investigation wrongly assumed
+was missing — `atlassian-toolkit` uses it for email, site, and workspace. Two command ids are the
+reserved ones and `auth` is a plain third, which §3.2 allows by design.
+
+**And then it reported a skill with no credentials as configured.** Measured, not read:
+
+    config path: /tmp/slack-probe.json     (a valid, empty config)
+      webhook_url:     present=False optional=True
+      bot_token:       present=False optional=True
+      default_channel: present=False optional=True
+    configured: True
+    ready: True
+
+`missing` is `[s for s in checkable if not s["present"] and not s["optional"]]`, so optional secrets
+cannot contribute to it. A skill whose secrets are *alternatives* has to mark every one optional —
+webhook-only is a complete setup, token-only is a complete setup, and the schema has no way to say
+"at least one of these" — at which point `missing` is empty by construction and `configured`
+collapses to a constant `true`. It is not wrong about any individual secret; it is answering a
+question the manifest cannot pose.
+
+Worth being precise about what is and is not broken, because the shape of the fix depends on it.
+`configured` was defined as "every *required* value that can be seen is there", and it is faithfully
+computing that. The gap is expressive: `optional` is doing two unrelated jobs — "this setup works
+without it" (`bitbucket.workspace`) and "this is one of several ways to satisfy the same
+requirement" (`webhook_url`). The first is genuinely optional; the second is a required choice
+wearing the same word. Filed as G10; it is a `library.py` and schema question, not an app one, and
+the app renders whatever it is told.
+
+**Adding a manifest is push-gated, which is worth knowing before trying it.** The catalog is
+`kind: local`, but every entry's `source` is a `github.com` blob URL, so `use` installs from the
+pushed repo rather than the working tree. A new `setup.yaml` sitting untracked is invisible: `use`
+reported `added: []` and `verified: true`, correctly, because the source it compared against does
+not have the file. Validation here was done by placing the manifest in the installed copy directly,
+which is why `list` now reports slack-toolkit as `drifted` — the honest reading of a dest holding a
+file its source does not.
+
+**One prediction, untested and worth testing.** slack-toolkit's SKILL.md says: *"Never ask the user
+for tokens, webhook URLs, or credentials — in chat or otherwise… tell the user to add their
+credentials to that file themselves"*, and *"If a user pastes a credential into the conversation, do
+not write it to the config for them."* The walkthrough agent reads SKILL.md through
+`read_skill_doc`. That text is the §4.1 conflict again — a policy written when the only actor was an
+agent in a chat, which is exactly the actor the app is not — except atlassian's version lives in its
+README (tracked in schema §10.1) while this one is in SKILL.md, the file the agent is most likely to
+read. So the agent will probably decline `request_secret` and point at the file, and today's four
+refusals over the tool gate are evidence it takes such instructions literally. That is a real test
+of whether §4.1's argument survives contact with a skill that argues back.
+
+---
+
+## The second skill configured cleanly, and the prediction was wrong
+
+Both paths run: updating an existing value and collecting from scratch. So the collection path is
+no longer evidence from a single manifest, which was the whole point of picking a second skill.
+
+**The SKILL.md conflict did not materialize, and the reason is the useful part.** The prediction was
+that slack-toolkit's *"Never ask the user for tokens, webhook URLs, or credentials — in chat or
+otherwise… tell the user to add their credentials to that file themselves"* would make the agent
+decline `request_secret` and point at the config path. It did not. The agent asked through the
+masked field and the values landed.
+
+That is not the prompt overpowering the skill; the two are not actually in conflict once the agent
+can see the mechanism. SKILL.md forbids a credential reaching the *conversation* — which is the
+right rule, and the app obeys it more strictly than a human following the README would, since the
+value never enters the transcript at all. The opening prompt supplies the thing the skill's text
+assumes does not exist: a native secure input, named, with an instruction to use it. So the agent
+had an authorized way to satisfy both, and took it.
+
+Read against today's four refusals over `Bash`, the pattern is consistent rather than contradictory.
+The agent honors a stated policy in both cases. What differs is whether an alternative was offered:
+asked to run a shell command it had no sanctioned route and refused; asked for a credential it had
+one and used it. **A prohibition with a named alternative gets followed; a prohibition without one
+gets argued with.** That is worth remembering the next time a prompt needs to stop the agent doing
+something — the effective move is naming what to do instead, which is exactly what T7.2 concluded
+about `request_secret`'s own acknowledgement text, from the other end.
+
+It also downgrades schema §10.1. Revising atlassian-toolkit's README secret policy is still worth
+doing for the humans who read it, but it is no longer a prerequisite for the walkthrough working
+against a skill whose docs predate the app.
+
+**What remains from this exercise is G10 alone.** The manifest needed no new field, both credential
+paths work, and the one real defect is that `configured` cannot distinguish "optional" from "one of
+several ways to satisfy the same requirement" — which means slack-toolkit currently reads as
+configured because a value happens to be set, and would read the same with nothing set at all.
+
+---
+
+## The window is a frame now, and `fixed` was the wrong tool all along
+
+Found by using the app on a long setup: scrolling a two-hundred-line `atlassian-toolkit` transcript,
+the surface kept moving after it had run out of content at both ends, and the Commands bar — whose
+whole definition is "the bottom of the window" — drifted off the bottom while it did.
+
+**One cause for both.** The document scrolled, so the WebView's rubber-band overscroll had the
+entire layout to drag, and it takes `position: fixed` elements with it. Every pin in the app was
+fixed: the command bar, the walkthrough's composer, the activity bar. Each one's CSS was correct in
+isolation and each one moved anyway, because "pinned to the viewport" means nothing while the
+viewport is what is being rubber-banded. The bar was not failing to obey its rule; the rule was
+describing something the platform was free to move.
+
+So the fix is structural rather than a bigger `z-index` or a `-webkit-overflow-scrolling` incantation.
+`body` stops scrolling entirely, `.app` becomes a flex column exactly the window's height, and the
+middle row is the one scrolling surface. The command bar is then the column's last row — in the
+flow, with nothing left that could move it — and `overscroll-behavior: contain` on the scroller
+stops a scroll that reaches either end from becoming the window's bounce. Recorded as **D22**, with
+design.md §6.6c.
+
+**Three passes, and the third deleted the second.** The first kept every pin and only changed what
+scrolls: the bar in the flow, the back row `sticky; top: 0`, the composer `sticky; bottom: 0`. That
+fixed the drift and left two tells — the composer sat a few rems above the bar at full scroll,
+because sticky reaches only as far as its container, and the back row still slid once the view's
+edge passed. The second built an app shell with a header row and a footer row, and had views render
+their chrome into them by `<Teleport>` with the target elements handed down as injected refs. It
+worked. A review of it, with the rules stated up front instead of discovered, produced the third:
+**make the view itself the frame.** `.view` is a grid of `auto 1fr auto` — a chrome row, one
+scrolling body, an optional bottom chrome row — and `App.vue` is the view and then the command bar.
+
+**The shell was paying about ninety lines for something the grid gives away.** A view that *is*
+three rows needs to be told nothing: no `shell.ts`, no `provide`/`inject`, no teleports, no
+`:disabled` fallback, no `onList` in `App.vue` (a seven-clause negation restating the `v-if` chain
+that already decided the same thing), and no `closest(".app__scroll")` string lookups — each view
+holds a ref to the body it owns. The plumbing existed only because the header and footer belonged to
+the shell while the content of them belonged to the views.
+
+**The reason to prefer it is that it can be tested.** Teleport needs a fallback for a view mounted
+without a shell, which is how every test mounts one — so the chrome renders in place and *correct
+and broken look identical to any rendered test*. The rows are a DOM assertion instead: the back row
+and the composer are provably not children of the scrolling body, and a view declares exactly one
+body. That is the same argument D19 made about source-level guards, except now it does not need to
+read source.
+
+The review also found what the shell had left behind, which is the part worth remembering: a dead
+`.app__column` rule cited as live in three comments including a test's, a `topbar` class with no
+rule, an `.app__slot:empty` guard whose justification described a border that element never had, and
+an empty header band with a hairline under it on `FirstRun` (no back row, not the list). **Three of
+those were comments confidently explaining behaviour the code did not have** — written in the same
+pass that wrote the code, which is exactly when a rationale is easiest to invent and hardest to
+check. The frame removes the whole class: a view with no back row simply has an empty `auto` track,
+which collapses.
+
+**Two bugs the frame introduced, both worth recording.**
+
+`.view` was sized with `height: 100%` inside a wrapper whose implicit grid row was `auto` — a
+percentage height against a content-sized track, which is cyclic. The view grew to its content
+instead of to the window, so the `1fr` body track never had to shrink (nothing scrolled at all) and
+the foot row landed under the command bar, which paints over it at `z-index: 20`. Resizing the window
+smaller just increased the overlap, which is how it was reported: *"the chat input can just get
+hidden and disappear."* The fix deletes the wrapper: the view is a grid item of `.app` itself, with
+`grid-row: 1` and `min-height: 0`, so its height comes from the track and no percentage is involved
+anywhere. **A layout with a definite height at the top and `min-height: 0` at every level is the only
+version that cannot do this**; `height: 100%` looked equivalent and was not.
+
+And splitting `PageHeader` into `PageNav` + `PageTitle` put D19's own drift back. Every view then
+repeated three things in the right order — a nav element, a body wrapper, a title element — which is
+exactly the duplication one shared header existed to remove, and a view that wrote its own body could
+have put the back row inside it. `PageHeader` now renders the head row, the body, and the title, with
+the page in its default slot; the two views that scroll their own body read the element from
+`defineExpose` rather than a class lookup. **The split was reasoning about where the rows go instead
+of about who is allowed to get it wrong.**
+
+**One thing the review got wrong in my favour, and one in its own.** It reported the teleport target
+as `null` on a view's first render — correct, and better reasoned than my comment, which had the
+mechanism backwards: the row does mount first, but the template ref is assigned after the subtree
+patch. Unreachable today only because the app always boots on the catalog list. Against that, it
+proposed merging nav and title into one pinned header, which would have put a taller permanent band
+on every screen and re-coupled the two rows the split exists to separate; the title scrolls, and
+`PageNav`/`PageTitle` are now two components for that reason.
+
+**The same primitive was wrong, then right, then unnecessary** — `sticky` was rejected against a
+scrolling document, correct against a scrolling row, and beside the point once the chrome was not in
+the scrolling part of the app at all. What changed each time was not the CSS but which box the
+element was supposed to belong to.
+
+One residue worth naming: `window.scrollTo` in `AddEntry` had become a silent no-op — it scrolled a
+document that no longer moves, so the outcome banner it exists to reveal would have stayed
+off-screen on a long requires list. Found by grepping for what the old model had licensed rather
+than by opening the form, which is the only way it *would* have been found: nothing throws, and the
+test suite renders one view at a time.

@@ -537,18 +537,30 @@ already shown is how a convention drifts.
 
 ### 6.6 One page header, and no raw field values on screen (D19, R4.6b)
 
-`<PageHeader>` is the only component that draws a back button, and `.view` (global, in `App.vue`)
-is the only root padding. Both are guarded by `src/pageChrome.spec.ts` reading the sources, because
-a header that lands 0.5rem lower on one screen is invisible to the type checker, to the build, and
-to any test that renders one view at a time.
+`<PageHeader>` is the only component that draws a back button, and `.view` (global, in `App.vue`) is
+the only root padding. Both are guarded by `src/pageChrome.spec.ts` reading the sources, because a
+header that lands 0.5rem lower on one screen is invisible to the type checker, to the build, and to
+any test that renders one view at a time.
 
-The header is **two rows**:
+It renders **three things**, because §6.6c put its two rows on opposite sides of the scroll
+boundary:
 
-- **Navigation alone.** The back button's position must not depend on the title's length or on how
-  many actions the view has, which is what a single shared row would make it depend on.
-- **Title, then that page's actions, pushed right.** Badges describing the title go in the default
-  slot beside it; anything pressable goes in `#actions`, which is `margin-left: auto`. Guarded, so
-  a control cannot drift back to sitting next to the heading where the eye is reading a title.
+- **The back row**, as the view's head row — chrome, outside the scroller. Its position must not
+  depend on the title's length, on how many actions the view has, or on where in the page the user
+  has scrolled to.
+- **The scrolling body**, whose first line is **the title and that page's actions**. The title is
+  the page's first line rather than chrome, and pinning it would mean a taller permanent band and a
+  second row whose alignment the back button has to agree with. Badges describing the title go in
+  `#badges` beside it; anything pressable goes in `#actions`, which is `margin-left: auto`.
+- **The page**, in the default slot.
+
+So a view is `<section class="view"><PageHeader …>…</PageHeader></section>`, plus a `.view__foot`
+sibling where it has bottom chrome of its own. Owning all three is what keeps the order out of each
+view's hands: split into a nav component and a title component, every view repeated a nav element, a
+body wrapper, and a title element in the right sequence, and a view that wrote its own body could
+put the back row inside it — the D19 drift again, in a new form. The two views that scroll their own
+body (the walkthrough following its transcript, `AddEntry` revealing its outcome banner) read the
+element from `defineExpose`, so renaming the class cannot silently break them.
 
 **A back label names the title of the page it returns to** — `← The Library`, `← Catalogs`,
 `← personal`, `← grilling`. Derived rather than written, because the hand-written versions had
@@ -604,6 +616,54 @@ That row's `dest` also removed a whole control: `--from` accepts a **base direct
 scope name, so a copy outside the anchor is pushed with `--from <parent of dest>`. The project
 directory picker and the `LIBRARY_CWD` anchoring in `push` are both gone — the receipt already
 knows where the copy is.
+
+### 6.6c Every view is the window's frame (D22)
+
+```
+.app                  height: 100%, grid-template-rows: 1fr auto
+  <the one view>      .view — height: 100%, grid-template-rows: auto 1fr auto
+    .view__head         row 1 — PageNav, or the catalog list's title and search
+    .view__body         row 2 — the only thing that scrolls; PageTitle, then the page
+    .view__foot         row 3 — where a view has bottom chrome (the walkthrough's composer)
+  CommandLog          the app's last row
+```
+
+`body` is `overflow: hidden`, deliberately. With a scrolling document the app was at the mercy of
+the WebView's rubber-band overscroll: a long walkthrough transcript could be dragged away from
+either end, and every `position: fixed` element went with it — the command bar left the bottom of
+the window while it was doing exactly what its own CSS said. `overscroll-behavior: contain` on the
+body row keeps a scroll that runs out of content from becoming the window's bounce again.
+
+**The chrome is rows, not positioning.** No view may use `fixed` or `sticky` — guarded — because
+every positioned version of this moved: fixed rides the overscroll, and sticky pins an element only
+while its containing block is in view, so chrome as long as the page slides once the container's
+edge passes. A row that is not inside the scroller cannot be scrolled at all. Rows are placed by
+explicit `grid-row`, so a conditional sibling (a `StatusBanner`, say) cannot push the body into the
+wrong track.
+
+**The view is the frame, rather than reaching into a shell that is one.** The rejected alternative
+was an app shell owning a header and footer that views rendered into by `<Teleport>` — with the
+target elements handed down as injected refs, since named slots or props would have required
+`App.vue` to know each view's back label, and `Catalogs` has three levels with three different
+ones. It worked, and it cost about ninety lines of plumbing between components for something the
+grid gives away: a view that *is* three rows needs to be told nothing. It also could not be tested
+properly — a teleport that falls back to rendering in place when there is no shell (which is how
+every test mounts a view) makes correct and broken look identical, whereas the rows are a DOM
+assertion: the back row and the composer are provably not inside the scrolling body.
+
+`.column` is a global padding rule rather than a centred max-width box, because the rows have to be
+full-bleed while their *content* lines up on one measure — `padding-inline: max(1.25rem, (100% -
+860px) / 2)`. A `max-width` box cannot do both.
+
+**The command bar is the app's last row**, in the flow, so it is the bottom of the window by
+construction and a view's foot row lands directly on it. Its expanded panel is
+`position: absolute; bottom: 100%` — an overlay hanging off the bar's top edge, so opening the log
+never reflows the view underneath. That matters most where it is most used: reading the log during
+a turn, over a transcript that would otherwise jump.
+
+Anything that scrolled the window now scrolls the body it belongs to, through a plain template ref
+on the element the view owns: the walkthrough following its transcript, and `AddEntry` bringing its
+outcome banner into view.
 
 ### 6.6b Rows are cards with a controls slot (R3.6)
 

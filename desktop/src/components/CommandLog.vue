@@ -83,22 +83,18 @@ function shown(run: LoggedCommand): string {
 </template>
 
 <style scoped>
+/* The last thing in the app shell's footer row, in the flow rather than fixed over it (D22).
+
+   Fixed was how the bar left the bottom of the window: the document scrolled, and the WebView's
+   rubber-band overscroll carried every fixed element with it. As the footer's final row it is at
+   the bottom by construction, with nothing to drag it.
+
+   `relative` so the expanded list can hang off it: the list is positioned against this bar, and
+   an overlay is what keeps expanding from resizing the surface above (truth 1). */
 .command-log {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
+  position: relative;
   z-index: 20;
-  /* Never taller than the window it floats over. One agent spawn carries the whole walkthrough
-     prompt as a single argv element — hundreds of words — and an uncapped fixed panel grew past
-     the viewport and rendered the log *through* the page behind it, since the background is
-     deliberately translucent. Two layers of text on top of each other, found by using the app. */
-  max-height: 60vh;
-  overflow-y: auto;
   border-top: 1px solid rgba(128, 128, 128, 0.25);
-  /* Opaque, not the translucent sticky surface. This panel floats *over* the page rather than
-     scrolling with it, and a translucent one let the page render straight through the log —
-     two layers of text on top of each other, which is what it looked like in the app. */
   background: var(--app-bg);
 }
 .command-log__toggle {
@@ -106,13 +102,13 @@ function shown(run: LoggedCommand): string {
   align-items: center;
   gap: 0.4rem;
   width: 100%;
-  /* The collapsed bar is exactly `--command-bar-h` tall, border included, because anything else
-     pinning itself above it offsets by that token. It was a measurement of this button's padding
-     and line box — about 0.3rem out — and the difference showed up as slack under the walkthrough
-     composer, where it read as uneven padding around the input. The token defines the height now
-     rather than estimating it, so a font change cannot reintroduce the drift. */
+  /* Stated, not left to the font: a bar sized by its padding and line box is a bar whose height
+     moves with the text, and the bottom of the app moves with it. Border included, hence
+     `border-box` and the `- 1px` for the hairline above — the bar is 2.1rem in total. Nothing
+     outside this component needs the number any more: the bar is a row of the app's grid, so the
+     view above it simply ends where it begins rather than clearing it by a token. */
   box-sizing: border-box;
-  height: calc(var(--command-bar-h) - 1px);
+  height: calc(2.1rem - 1px);
   padding: 0 1rem;
   border: none;
   border-radius: 0;
@@ -129,12 +125,27 @@ function shown(run: LoggedCommand): string {
   font-variant-numeric: tabular-nums;
   opacity: 0.55;
 }
+/* Upward, over whatever is on screen, never pushing it. Anchored to the bar's top edge, so
+   the bar itself does not move when the log opens and the view behind it does not reflow.
+
+   Height-capped for the same reason it always was: one agent spawn carries the whole walkthrough
+   prompt as a single argv element, hundreds of words of it, and an uncapped panel grew past the
+   window. */
 .command-log__list {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
   list-style: none;
-  max-height: 14rem;
+  max-height: min(14rem, 60vh);
   overflow-y: auto;
   margin: 0;
-  padding: 0 1rem 0.75rem;
+  padding: 0.5rem 1rem 0.75rem;
+  border-top: 1px solid rgba(128, 128, 128, 0.25);
+  /* Opaque, not the translucent sticky surface: it floats over the view, and a translucent
+     one let the transcript render straight through the log — two layers of text on top of
+     each other, which is what it looked like in the app. */
+  background: var(--app-bg);
 }
 .command-log__row {
   display: flex;

@@ -225,12 +225,14 @@ watch(
          for "go do a focused thing, then come back" was the inconsistency, not the
          inline form itself. -->
     <template v-if="registering">
-      <PageHeader title="Add a catalog" back="Catalogs" @back="registering = false" />
-      <RegisterCatalog
-        :catalogs="catalogs"
-        @registered="emit('changed')"
-        @close="registering = false"
-      />
+      <PageHeader title="Add a catalog" back="Catalogs" @back="registering = false">
+
+        <RegisterCatalog
+          :catalogs="catalogs"
+          @registered="emit('changed')"
+          @close="registering = false"
+        />
+      </PageHeader>
     </template>
 
     <!-- Level 1: the registry. -->
@@ -246,181 +248,178 @@ watch(
             Check catalog health
           </button>
         </template>
-      </PageHeader>
 
-      <StatusBanner v-if="failure" kind="error" :detail="failure" />
-      <StatusBanner v-else-if="removed" kind="success">
-        <p class="catalogs__done">
-          Unregistered {{ removed.id }}.
-          <template v-if="removed.purged_installs.length">
-            Deleted {{ removed.purged_installs.length }} installed
-            {{ removed.purged_installs.length === 1 ? "copy" : "copies" }}. The catalog's own
-            entries stay in its file.
-          </template>
-          <!-- The third outcome, and the one that made this banner look broken: the box
-               was ticked and nothing matched. Silence there reads as the tick being
-               ignored. -->
-          <template v-else-if="askedToPurge">
-            <strong>No copies were deleted.</strong> None of the installs on this machine
-            record having come from {{ removed.id }}, so nothing was attributable to it.
-          </template>
-          <template v-else>
-            Its entries and every file installed from them are untouched.
-          </template>
-          <template v-if="removed.purged_clone">Its clone was deleted.</template>
-          <template v-else-if="removed.clone_kept_at">
-            Its clone is still at {{ removed.clone_kept_at }}.
-          </template>
+        <StatusBanner v-if="failure" kind="error" :detail="failure" />
+        <StatusBanner v-else-if="removed" kind="success">
+          <p class="catalogs__done">
+            Unregistered {{ removed.id }}.
+            <template v-if="removed.purged_installs.length">
+              Deleted {{ removed.purged_installs.length }} installed
+              {{ removed.purged_installs.length === 1 ? "copy" : "copies" }}. The catalog's own
+              entries stay in its file.
+            </template>
+            <!-- The third outcome, and the one that made this banner look broken: the box
+                 was ticked and nothing matched. Silence there reads as the tick being
+                 ignored. -->
+            <template v-else-if="askedToPurge">
+              <strong>No copies were deleted.</strong> None of the installs on this machine
+              record having come from {{ removed.id }}, so nothing was attributable to it.
+            </template>
+            <template v-else>
+              Its entries and every file installed from them are untouched.
+            </template>
+            <template v-if="removed.purged_clone">Its clone was deleted.</template>
+            <template v-else-if="removed.clone_kept_at">
+              Its clone is still at {{ removed.clone_kept_at }}.
+            </template>
+          </p>
+          <ul v-if="removed.purged_installs.length" class="catalogs__deleted">
+            <li v-for="path in removed.purged_installs" :key="path"><code>{{ path }}</code></li>
+          </ul>
+          <p v-if="removed.cleared_receipts.length" class="catalogs__done-detail">
+            Also cleared {{ removed.cleared_receipts.length }} stale
+            {{ removed.cleared_receipts.length === 1 ? "receipt" : "receipts" }} for copies that
+            were already gone.
+          </p>
+        </StatusBanner>
+
+        <p class="catalogs__lead">
+          Where your entries come from, in precedence order: when two catalogs define the same
+          name, the one nearer the top is the copy that installs.
         </p>
-        <ul v-if="removed.purged_installs.length" class="catalogs__deleted">
-          <li v-for="path in removed.purged_installs" :key="path"><code>{{ path }}</code></li>
-        </ul>
-        <p v-if="removed.cleared_receipts.length" class="catalogs__done-detail">
-          Also cleared {{ removed.cleared_receipts.length }} stale
-          {{ removed.cleared_receipts.length === 1 ? "receipt" : "receipts" }} for copies that
-          were already gone.
+        <p v-if="nothingEditable" class="catalogs__lead">
+          None of these is a catalog you can edit from here. A catalog of your own is a
+          <code>library.yaml</code> file on this machine — <strong>Add a catalog</strong> above
+          will create an empty one and register it.
         </p>
-      </StatusBanner>
-
-      <p class="catalogs__lead">
-        Where your entries come from, in precedence order: when two catalogs define the same
-        name, the one nearer the top is the copy that installs.
-      </p>
-      <p v-if="nothingEditable" class="catalogs__lead">
-        None of these is a catalog you can edit from here. A catalog of your own is a
-        <code>library.yaml</code> file on this machine — <strong>Add a catalog</strong> above
-        will create an empty one and register it.
-      </p>
-      <ul class="catalogs__list">
-        <li
-          v-for="option in catalogs"
-          :key="option.id"
-          class="catalogs__row"
-          :style="{ '--catalog-hue': catalogHue(option.precedence) }"
-        >
-          <div class="catalogs__row-head">
-            <span class="catalogs__chip">{{ option.id }}</span>
-            <span class="catalogs__meta">
-              {{ describeCatalog(option).what }} ·
-              {{ option.entries === null ? "entry count unknown" : `${option.entries} entries` }}
-            </span>
-            <button
-              v-if="editableIds.has(option.id)"
-              type="button"
-              class="ghost catalogs__manage"
-              @click="goTo(option.id)"
-            >
-              Manage entries
-            </button>
-          </div>
-          <p class="catalogs__where">{{ option.location }}</p>
-          <p class="catalogs__why">{{ describeCatalog(option).note }}</p>
-
-          <button
-            v-if="canUnregister && unregistering?.id !== option.id"
-            type="button"
-            class="ghost danger catalogs__unregister"
-            @click="unregistering = option"
+        <ul class="catalogs__list">
+          <li
+            v-for="option in catalogs"
+            :key="option.id"
+            class="catalogs__row"
+            :style="{ '--catalog-hue': catalogHue(option.precedence) }"
           >
-            Unregister
-          </button>
-
-          <div v-if="unregistering?.id === option.id" class="catalogs__confirm fade-in">
-            <p class="catalogs__question">Stop reading from {{ option.id }}?</p>
-            <p class="catalogs__note">
-              Its entries stay in their catalog file and every copy installed from them stays
-              on disk. Only this machine's list of catalogs changes, and registering it again
-              brings it back.
-            </p>
-            <!-- Not a convenience: `uninstall` resolves through the catalog, so once this
-                 is unregistered its installed copies are invisible to the app and refused
-                 by the CLI. Without this tick, removing them means doing it by hand. -->
-            <label class="catalogs__purge">
-              <input v-model="purgeInstalls" type="checkbox" />
-              <span>
-                Also delete the copies installed from it<template v-if="installedFrom">
-                  — around {{ installedFrom }}</template
-                >. Otherwise they stay on disk with no catalog left to remove them through,
-                and only deleting the folders by hand will clear them. Copies you put there
-                yourself are never touched.
+            <div class="catalogs__row-head">
+              <span class="catalogs__chip">{{ option.id }}</span>
+              <span class="catalogs__meta">
+                {{ describeCatalog(option).what }} ·
+                {{ option.entries === null ? "entry count unknown" : `${option.entries} entries` }}
               </span>
-            </label>
-            <label v-if="option.kind !== 'local'" class="catalogs__purge">
-              <input v-model="purgeClone" type="checkbox" />
-              <span>Also delete the clone this machine keeps of that repository.</span>
-            </label>
-            <div class="catalogs__confirm-actions">
-              <button type="button" class="ghost" @click="unregistering = null">Cancel</button>
-              <button type="button" class="danger" @click="unregister()">
-                {{ purgeInstalls ? "Unregister and delete the copies" : "Unregister" }}
+              <button
+                v-if="editableIds.has(option.id)"
+                type="button"
+                class="ghost catalogs__manage"
+                @click="goTo(option.id)"
+              >
+                Manage entries
               </button>
             </div>
-          </div>
-        </li>
-      </ul>
+            <p class="catalogs__where">{{ option.location }}</p>
+            <p class="catalogs__why">{{ describeCatalog(option).note }}</p>
+
+            <button
+              v-if="canUnregister && unregistering?.id !== option.id"
+              type="button"
+              class="ghost danger catalogs__unregister"
+              @click="unregistering = option"
+            >
+              Unregister
+            </button>
+
+            <div v-if="unregistering?.id === option.id" class="catalogs__confirm fade-in">
+              <p class="catalogs__question">Stop reading from {{ option.id }}?</p>
+              <p class="catalogs__note">
+                Its entries stay in their catalog file and every copy installed from them stays
+                on disk. Only this machine's list of catalogs changes, and registering it again
+                brings it back.
+              </p>
+              <!-- Not a convenience: `uninstall` resolves through the catalog, so once this
+                   is unregistered its installed copies are invisible to the app and refused
+                   by the CLI. Without this tick, removing them means doing it by hand. -->
+              <label class="catalogs__purge">
+                <input v-model="purgeInstalls" type="checkbox" />
+                <span>
+                  Also delete the copies installed from it<template v-if="installedFrom">
+                    — around {{ installedFrom }}</template
+                  >. Otherwise they stay on disk with no catalog left to remove them through,
+                  and only deleting the folders by hand will clear them. Copies you put there
+                  yourself are never touched.
+                </span>
+              </label>
+              <label v-if="option.kind !== 'local'" class="catalogs__purge">
+                <input v-model="purgeClone" type="checkbox" />
+                <span>Also delete the clone this machine keeps of that repository.</span>
+              </label>
+              <div class="catalogs__confirm-actions">
+                <button type="button" class="ghost" @click="unregistering = null">Cancel</button>
+                <button type="button" class="danger" @click="unregister()">
+                  {{ purgeInstalls ? "Unregister and delete the copies" : "Unregister" }}
+                </button>
+              </div>
+            </div>
+          </li>
+        </ul>
+      </PageHeader>
     </template>
 
     <!-- Level 2: one catalog's entries, each row carrying its own actions. -->
     <template v-else>
-      <PageHeader
-        :title="openCatalog"
-        :back="arrivedHere ? backTo : 'Catalogs'"
-        @back="leaveCatalog()"
-      >
+      <PageHeader :title="openCatalog" :back="arrivedHere ? backTo : 'Catalogs'" @back="leaveCatalog()">
         <template #actions>
           <button type="button" class="ghost" @click="emit('add', openCatalog)">
             Add an entry
           </button>
         </template>
-      </PageHeader>
-      <p class="catalogs__lead">{{ catalog?.location }}</p>
-      <p v-if="!held.length" class="catalogs__lead">
-        This catalog has no entries yet.
-      </p>
-      <ul v-else class="catalogs__entries">
-        <li
-          v-for="entry in held"
-          :id="`entry-${entry.name}`"
-          :key="entry.name"
-          class="catalogs__entry"
-          :class="{ 'catalogs__entry--open': panel?.name === entry.name }"
-        >
-          <div class="catalogs__entry-line">
-            <span class="catalogs__entry-name">{{ entry.name }}</span>
-            <span class="catalogs__entry-type">{{ entry.type }}</span>
-            <span class="catalogs__entry-desc">{{ entry.description }}</span>
-            <span class="catalogs__entry-actions">
-              <button
-                type="button"
-                class="ghost"
-                :aria-pressed="isOpen(entry.name, 'edit')"
-                @click="show(entry.name, 'edit')"
-              >
-                Edit
-              </button>
-              <button
-                type="button"
-                class="ghost danger"
-                :aria-pressed="isOpen(entry.name, 'remove')"
-                @click="show(entry.name, 'remove')"
-              >
-                Remove
-              </button>
-            </span>
-          </div>
 
-          <div v-if="panel?.name === entry.name" class="catalogs__panel fade-in">
-            <EntryEditor
-              v-if="panel.mode === 'edit'"
-              :entry="entry"
-              :entries="entries"
-              @saved="emit('changed')"
-              @close="panel = null"
-            />
-            <EntryRemove v-else :entry="entry" @removed="afterRemove()" @close="panel = null" />
-          </div>
-        </li>
-      </ul>
+        <p class="catalogs__lead">{{ catalog?.location }}</p>
+        <p v-if="!held.length" class="catalogs__lead">
+          This catalog has no entries yet.
+        </p>
+        <ul v-else class="catalogs__entries">
+          <li
+            v-for="entry in held"
+            :id="`entry-${entry.name}`"
+            :key="entry.name"
+            class="catalogs__entry"
+            :class="{ 'catalogs__entry--open': panel?.name === entry.name }"
+          >
+            <div class="catalogs__entry-line">
+              <span class="catalogs__entry-name">{{ entry.name }}</span>
+              <span class="catalogs__entry-type">{{ entry.type }}</span>
+              <span class="catalogs__entry-desc">{{ entry.description }}</span>
+              <span class="catalogs__entry-actions">
+                <button
+                  type="button"
+                  class="ghost"
+                  :aria-pressed="isOpen(entry.name, 'edit')"
+                  @click="show(entry.name, 'edit')"
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  class="ghost danger"
+                  :aria-pressed="isOpen(entry.name, 'remove')"
+                  @click="show(entry.name, 'remove')"
+                >
+                  Remove
+                </button>
+              </span>
+            </div>
+
+            <div v-if="panel?.name === entry.name" class="catalogs__panel fade-in">
+              <EntryEditor
+                v-if="panel.mode === 'edit'"
+                :entry="entry"
+                :entries="entries"
+                @saved="emit('changed')"
+                @close="panel = null"
+              />
+              <EntryRemove v-else :entry="entry" @removed="afterRemove()" @close="panel = null" />
+            </div>
+          </li>
+        </ul>
+      </PageHeader>
     </template>
   </section>
 </template>
