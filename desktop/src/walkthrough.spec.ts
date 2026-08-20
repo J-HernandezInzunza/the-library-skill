@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { applyEvent, applySaid, describeToolCall, toolName, type Turn } from "./walkthrough";
+import {
+  applyEvent,
+  applySaid,
+  describeSecretResult,
+  describeToolCall,
+  toolName,
+  type Turn,
+} from "./walkthrough";
 import type { AgentEvent } from "./types";
 
 /**
@@ -132,6 +139,44 @@ describe("applySaid", () => {
   });
 });
 
+describe("describeSecretResult", () => {
+  /**
+   * The acknowledgement is written for the model, and it shipped to the user verbatim.
+   *
+   * It names the key, states that the app holds the value, and forbids asking for it, echoing it,
+   * or requesting it in chat — rules addressed to the agent. In the panel it read as the app
+   * lecturing the user, in the second person, about the thing they had just correctly done.
+   */
+  it("replaces the agent's acknowledgement with something a person needs", () => {
+    const ack =
+      "SECRET_RECEIVED: the user submitted a value for 'bitbucket.api_token' via the app's " +
+      "secure field. The app holds it; you do not, and you must not ask for it, echo it, or ask " +
+      "the user to paste it here. Continue with run_skill_setup.";
+
+    const shown = describeSecretResult(ack, false);
+
+    expect(shown).toBe("Received — the app has it.");
+    expect(shown).not.toContain("you must not");
+    expect(shown).not.toContain("run_skill_setup");
+  });
+
+  it("reads a decline back as the user's own choice", () => {
+    const refusal =
+      "the user declined to provide 'bitbucket.api_token'. Do not ask again; explain what the " +
+      "skill cannot do without it.";
+
+    expect(describeSecretResult(refusal, true)).toBe("You chose not to provide this.");
+  });
+
+  it("shows a real failure from the tool, which is the user's problem to see", () => {
+    // Two fields open at once is the app disagreeing with itself about what is on screen, and
+    // swallowing it behind a friendly sentence would hide the one case worth reading.
+    const failure = "the app is already collecting 'account.email' — that field has to be answered first";
+
+    expect(describeSecretResult(failure, true)).toBe(failure);
+  });
+});
+
 describe("toolName", () => {
   it("strips the wire prefix Claude Code puts on an MCP tool", () => {
     // The name in the stream is never the name the backend declares: `mcp__<server>__<tool>`,
@@ -209,5 +254,30 @@ describe("describeToolCall", () => {
     expect(
       describeToolCall("mcp__library__library_cmd", { subcommand: "list", args: [1, null, "jira"] }),
     ).toBe("library list jira");
+  });
+});
+
+describe("applyEvent · request_secret", () => {
+  it("shows the human line under the ask, not the agent's instructions", () => {
+    const turns = fold([
+      tool("t1", "mcp__library__request_secret", { key: "bitbucket.workspace" }),
+      result("t1", "SECRET_RECEIVED: the user submitted a value … Continue with run_skill_setup."),
+    ]);
+
+    expect(turns[0]).toMatchObject({
+      label: "asking you for bitbucket.workspace",
+      result: "Received — the app has it.",
+    });
+  });
+
+  it("leaves every other tool's result exactly as it arrived", () => {
+    // Only this one tool answers in prose addressed to the model. A `check` command's output is
+    // the user's to read verbatim, redaction aside.
+    const turns = fold([
+      tool("t1", "mcp__library__run_skill_setup", { skill: "x", command_id: "check" }),
+      result("t1", "jira: ready\nbitbucket: not configured"),
+    ]);
+
+    expect(turns[0]).toMatchObject({ result: "jira: ready\nbitbucket: not configured" });
   });
 });

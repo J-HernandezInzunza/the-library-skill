@@ -3509,3 +3509,36 @@ already names as unfinished, and neither is a code change:
   denial arrive as an errored `tool_result`. Now possible for the first time, and still not done.
   The hook is unit-tested from both sides, so this is confirmation rather than discovery, but the
   whole tool boundary rests on it and nobody has watched it happen.
+
+---
+
+## T6.4e — the panel was showing the agent its own mail
+
+Two from a clean-config run, and the first is the more interesting.
+
+**`request_secret`'s result is written for the model, and it was rendering verbatim.** *"The app
+holds it; you do not, and you must not ask for it, echo it, or ask the user to paste it here.
+Continue with run_skill_setup."* Every clause of that is addressed to the agent, and T7.2 argued
+each one into existence: the spike's bare `"received"` read as an empty result and the agent
+offered to retry, and an ack that does not forbid asking gets followed by a polite request to
+paste the token in chat. All correct — for its reader. On screen it read as the app lecturing the
+user, in the second person, about the thing they had just correctly done.
+
+The panel now shows **"Received — the app has it."** No string matching was needed for the success
+case: `acknowledgement()` is the only value the Ok arm returns, so a non-errored result from that
+tool is always that one sentence. A decline reads back as the user's own choice rather than as the
+instruction the agent was given about it, and any *other* error from the tool passes through
+untouched — two fields open at once is the app disagreeing with itself, and a friendly sentence
+over the top of it would hide the one case worth reading.
+
+Worth naming the general shape, since this app has four tools and three of them answer in prose
+aimed at a model: **a tool result is written for its caller, and its caller is not the person
+watching.** `run_skill_setup` is the exception that proves it — a `check` command's output is the
+user's to read verbatim.
+
+**The seven-rem hole above the credential field.** The transcript carried
+`padding-bottom: 7rem` to keep its tail clear of the pinned composer. `SecretPrompt` renders
+*between* the transcript and the composer, so that clearance became a gap between the last thing
+the agent said and the field it had just opened — the layout reading as though the app had lost
+its place at exactly the moment it was asking for a token. The transcript and the field are one
+thread, so they are now one element and the clearance sits below both.

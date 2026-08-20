@@ -193,6 +193,7 @@ onUnmounted(() => {
     </div>
 
     <template v-else>
+      <div class="walkthrough__thread">
       <div class="walkthrough__transcript">
         <div
           v-for="turn in turns"
@@ -226,11 +227,12 @@ onUnmounted(() => {
         <p v-if="running" class="walkthrough__thinking">Working…</p>
       </div>
 
-      <div ref="foot"></div>
-
       <!-- Mounted inside the walkthrough because the ask belongs to it, and above the reply box
            because it is what the user should answer rather than the chat. -->
       <SecretPrompt />
+
+      <div ref="foot"></div>
+      </div>
 
       <!-- Full-bleed, with the content column rebuilt inside it. The band has to reach the
            bottom of the window: anything less leaves a strip the transcript scrolls through,
@@ -297,13 +299,25 @@ onUnmounted(() => {
   cursor: default;
 }
 
+/*
+ * The transcript and the credential field are one thread, and the clearance for the pinned
+ * composer belongs below *both* of them.
+ *
+ * It was on the transcript alone, which put seven rems of nothing between the last thing the
+ * agent said and the field it had just opened — the gap read as the app having lost its place at
+ * exactly the moment the user was being asked for a token.
+ */
+.walkthrough__thread {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding-bottom: 7rem;
+}
 .walkthrough__transcript {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-  /* Bottom room for the pinned composer, so the last thing the agent said is readable rather
-     than sitting underneath it. */
-  padding: 0.5rem 0.15rem 7rem;
+  padding: 0.5rem 0.15rem 0;
 }
 
 .turn--nested {

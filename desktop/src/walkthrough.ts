@@ -70,7 +70,14 @@ export function applyEvent(turns: Turn[], event: AgentEvent): Turn[] {
       // command (design §4.3) even though several events separate them in the stream.
       return turns.map((turn) =>
         turn.kind === "tool" && turn.id === event.tool_use_id
-          ? { ...turn, result: event.text, failed: event.is_error }
+          ? {
+              ...turn,
+              result:
+                toolName(turn.name) === "request_secret"
+                  ? describeSecretResult(event.text, event.is_error)
+                  : event.text,
+              failed: event.is_error,
+            }
           : turn,
       );
 
@@ -128,6 +135,28 @@ export function describeToolCall(name: string, input: unknown): string {
     default:
       return name;
   }
+}
+
+/**
+ * What a `request_secret` result should say to a person.
+ *
+ * The tool's own result is written for the model: it names the key, states that the app holds the
+ * value, and forbids asking for it, echoing it, or requesting it in chat. Every word of that is
+ * addressed to the agent. Rendered verbatim in the panel it is noise at best — and at worst it
+ * reads as the app sternly explaining to the user, in the second person, a rule about something
+ * they just did.
+ *
+ * Success needs no string matching: `acknowledgement()` is the only value the tool returns on the
+ * Ok arm, so a non-errored result from this tool is always that one sentence.
+ */
+export function describeSecretResult(text: string, isError: boolean): string {
+  if (!isError) return "Received — the app has it.";
+  // Declining is a normal answer the user chose, so it reads back as their choice rather than as
+  // the instruction the agent was given about it.
+  if (/declin/i.test(text)) return "You chose not to provide this.";
+  // Anything else from this tool is a real problem — two fields open at once, a key nobody asked
+  // for — and the user is the one who has to see it.
+  return text;
 }
 
 /**
