@@ -3480,3 +3480,32 @@ Three smaller consequences:
 inference from a single literal, so the new cases failed to compile rather than failing to pass.
 It now takes a real `SecretRequest`, which is what the testing harness's own comment argues for:
 a double that has drifted from the real signature should fail the gate.
+
+---
+
+## T8.2 — the collection path, finally exercised
+
+A walkthrough run against a cleared `atlassian-toolkit` config collected the values, wrote them,
+and `config check` passed.
+
+Worth stating plainly what that closed, because it is the one thing the whole feature had never
+actually done. Every previous run was on a machine where all five values were already stored, so
+the agent correctly identified each as present and skipped it — which meant the suspended tool
+call, the masked field, and the `0600` write had been exercised only by tests, never together, and
+never by a person holding a real token. The path with the most moving parts was the path with the
+least evidence.
+
+That also settles the last of the manifest questions. `setup.yaml` version 1 as written describes a
+real skill well enough for an agent to configure it from cold: five secrets across two products,
+two of them optional, three command ids, and per-product readiness reporting rather than a single
+pass/fail. Nothing in the schema needed changing to make it work.
+
+**Every task in the plan is now checked.** What remains is not tasks but the two things the ledger
+already names as unfinished, and neither is a code change:
+
+- **G2** — `UninstallControl`'s `REFUSED` branch has still never been clicked through in the GUI.
+  Proven against the real CLI, and the panel renders; the two have not been joined.
+- **T6.1a's manual check** — ask the agent to run a shell command mid-walkthrough and watch the
+  denial arrive as an errored `tool_result`. Now possible for the first time, and still not done.
+  The hook is unit-tested from both sides, so this is confirmation rather than discovery, but the
+  whole tool boundary rests on it and nobody has watched it happen.

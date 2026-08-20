@@ -945,7 +945,7 @@ The security-critical phase. Every task here is a place where a mistake leaks a 
     is documented as needing `cargo` on `PATH`.
   - **Commit:** `docs(desktop): document prerequisites and setup for the app`
 
-- [ ] **T8.2 — Verify the first real `setup.yaml` end to end**
+- [x] **T8.2 — Verify the first real `setup.yaml` end to end**
   - **Files:** `skills/atlassian-toolkit/setup.yaml` (in `my-engineering-library`, not this repo)
   - **Requirements:** validates skill-setup-schema.md end to end
   - **Do:** ~~Write the manifest from schema §3~~ — **it already exists and validates**, found
@@ -955,6 +955,9 @@ The security-critical phase. Every task here is a place where a mistake leaks a 
     first-time reader needs. The runs so far have all been re-runs on a machine where every value
     was already stored, which is the one path that never exercises collection.
   - **Verify:** A clean-machine walkthrough configures the toolkit and its own verify command passes.
+    **Done** — a walkthrough run against a cleared config collected the values, wrote them, and
+    `config check` passed. That is the collection path itself, which every earlier run had skipped
+    by having every value already stored.
   - **Commit:** (in the other repo) `feat(atlassian-toolkit): declare setup for guided installation`
 
 ---
