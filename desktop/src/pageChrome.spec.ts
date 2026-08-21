@@ -60,6 +60,23 @@ describe("page chrome", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("leaves the scrolling body full width, so nothing is clipped against its edge", () => {
+    // `.view__body` is the element that scrolls, which means it also clips what overflows it. A
+    // `max-width` there turns the scroller itself into a narrow box, and an input stretched to that
+    // box puts its border box exactly on the clip edge — so the focus ring, which the platform
+    // draws *outside* the box, is cut off. FirstRun did this and the ring was visibly sheared on
+    // both sides. It also left a long error banner wrapping in a 34rem column, tall enough to
+    // scroll a window with room to spare. The measure belongs to an element *inside* the body.
+    //
+    // Not scoped to `fullScreenViews()`: FirstRun is one, but it has no back row to go back to and
+    // so does not use PageHeader, which is exactly why every other guard here could not see it.
+    const offenders = components()
+      .filter(([, source]) => /\.view__body\s*\{[^}]*max-width/.test(source))
+      .map(([name]) => name);
+
+    expect(offenders).toEqual([]);
+  });
+
   it("puts a view's own actions in the actions slot, not beside the title", () => {
     // The default slot is for badges describing the title; `#actions` is right-aligned.
     // A control passed to the default slot renders left, next to the heading, which is
