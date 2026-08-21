@@ -968,6 +968,160 @@ The security-critical phase. Every task here is a place where a mistake leaks a 
 
 ---
 
+## Phase 9 — Installable bundle
+
+Revisits D9. The app was previously run only under `npm run tauri dev`; the goal here is that
+someone clones the repo, runs two commands, and then launches **The Library** from Spotlight like
+any other Mac app. Distributing a *prebuilt* app stays out of scope (see Deferred) — each person
+builds their own, which is also what keeps `library_home()`'s compile-time path correct for them.
+
+- [x] **T9.1 — Give the bundle a real identity**
+  - **Files:** `desktop/src-tauri/tauri.conf.json`, `desktop/package.json`,
+    `desktop/src-tauri/Cargo.toml`
+  - **Requirements:** R8.4
+  - **Do:** `productName` → `The Library`, so the bundle is `The Library.app` rather than
+    `desktop.app`. Version → `1.0.0` in all three manifests, which must stay in lockstep. Replace
+    the template's `description = "A Tauri App"` and `authors = ["you"]`, both of which land in
+    `Info.plist`. Narrow `bundle.targets` from `"all"` to `["app", "dmg"]` — the other formats are
+    Linux/Windows and no-op here. Add `category`, `copyright`, `shortDescription`,
+    `longDescription`, and `macOS.minimumSystemVersion`. Give the window a 1000x700 default and a
+    720x520 floor, since a bundle has no dev-server window size to inherit.
+  - **Verify:** `plutil -p "…/The Library.app/Contents/Info.plist"` reports `CFBundleName`
+    `The Library`, `CFBundleShortVersionString` `1.0.0`, `LSMinimumSystemVersion` `10.15`, and
+    `LSApplicationCategoryType` `public.app-category.developer-tools`.
+    **Done** — all four confirmed on the built bundle.
+  - **Commit:** `feat(desktop): Give the bundle a real name, version, and macOS metadata`
+
+- [x] **T9.2 — Widen `PATH` at startup so a Finder launch finds the same tools a shell does**
+  - **Files:** `desktop/src-tauri/src/path.rs` (new), `desktop/src-tauri/src/lib.rs`
+  - **Requirements:** R8.5. **Closes G7.**
+  - **Do:** A bundle is started by `launchd`, not a shell, so it inherits a minimal `PATH`.
+    `python3` and `git` survive that (macOS ships both in `/usr/bin`); `claude` does not — it
+    installs to `~/.local/bin` or under an nvm/volta prefix — so the app would report it missing
+    and disable every walkthrough on a machine where it works. Ask the login shell for its `PATH`
+    (`$SHELL -ilc`, with a marker so profile chatter cannot corrupt the answer) and **append** what
+    the process lacks; fall back to a fixed list of the usual install dirs when the probe returns
+    nothing. Append rather than prepend: under `app-dev` the inherited `PATH` is already the user's
+    and its precedence is deliberate, so the dev case must be a byte-for-byte no-op. Call it from
+    `run()` before the builder — `set_var` is only sound while single-threaded, and a `PATH` widened
+    after the first spawn did not apply to it.
+  - **Verify:** Nine unit tests, including that a `PATH` already containing everything is returned
+    unchanged. **Done** — and the probe was confirmed to recover `~/.local/bin` under
+    `env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin`.
+  - **Commit:** `fix(desktop): Widen PATH at startup so a bundled launch finds claude`
+
+- [x] **T9.3 — One command to build, one to install**
+  - **Files:** `justfile`, `desktop/README.md`
+  - **Requirements:** R8.4
+  - **Do:** `app-setup` (npm install), `app-build`, `app-install` (build then copy into
+    `/Applications`, replacing any earlier copy), `app` (launch), `app-dev`, `app-check`. Rewrite
+    the README's run section install-first, and replace the old "python3 from `PATH` is an
+    assumption" caveat with what `path.rs` now does.
+  - **Verify:** `just app-install` from a clean `target/` produces and installs the bundle.
+    **Done.**
+  - **Commit:** `feat(desktop): Add just recipes to build and install the app`
+
+- [x] **T9.4 — Rehearse a brand-new install, from a clone with nothing set up**
+  - **Files:** likely `desktop/README.md`; whatever the rehearsal proves is broken
+  - **Requirements:** R8.4, and the Acceptance clause's "a teammate who has never used the CLI"
+  - **Do:** The claim to test is that `app-setup` + `app-install` is the *whole* terminal story:
+    no `just bootstrap`, no `config.local.yaml`, no environment variables. Clone into a scratch
+    directory so the clone has no `.venv`, no `config.local.yaml`, and no `.installs.json` (all
+    gitignored, so a fresh clone genuinely lacks them), build from *that* clone so
+    `CARGO_MANIFEST_DIR` points at it, and launch the bundle. Walk the two prompts the app is
+    supposed to offer: the unbootstrapped tool dir (CLI exit 3 → run `bootstrap.py`) and the
+    missing config (first-run screen → `init` + `catalog add`).
+  - **Watch for:** (a) `bootstrap()` spawning `python3` under a `launchd` `PATH` — T9.2 should cover
+    it, but this is the first time it has been exercised from a bundle; (b) the first-run screen
+    needing a catalog URL and, for a private repo, git credentials the app cannot supply; (c) any
+    step that only worked because *this* machine had already done it.
+  - **Verify:** From `git clone` to a catalog rendered in the window, with no terminal command
+    other than the two, and every prompt taken inside the app.
+    **Done.** Rehearsed in a scratch clone with no `.venv`, no `config.local.yaml`, no
+    `.installs.json`, and no `target/`, built from that clone so its own path was the one baked in
+    (confirmed with `strings` on the binary). Under `env -i` with
+    `PATH=/usr/bin:/bin:/usr/sbin:/sbin`: `list` exits **3**, `bootstrap.py` then succeeds on
+    system `python3` 3.9.6, and `list` afterwards exits 1 with the config absent, which is the
+    pair of signals the app's two prompts are built on. Both prompts then walked through in the
+    GUI to a rendered catalog.
+  - **What it found:**
+    1. The README told people to run `just bootstrap` first. They do not need to — the app's
+       whole point here is that it offers it. Removed, and the same wrong claim fixed in the
+       `justfile` section comment.
+    2. Two things the app genuinely cannot supply, now stated: network for the PyYAML install,
+       and the catalog repo URL plus git access to it.
+    3. `FirstRun`'s layout, which only an error on a blank machine reveals — see T9.4a.
+    4. Two assumptions confirmed rather than assumed, by reading a bundled launch's real
+       environment: `SHELL` is set, so T9.2's login-shell probe runs rather than silently falling
+       back to its fixed list; and `SSH_AUTH_SOCK` is present, so cloning a private catalog over
+       SSH from inside the app works.
+  - **Commit:** `docs(desktop): Record what a clean install actually needs`
+
+- [x] **T9.4a — Fix FirstRun's measure, found by the rehearsal**
+  - **Files:** `desktop/src/components/FirstRun.vue`, `desktop/src/pageChrome.spec.ts`
+  - **Requirements:** R8.4
+  - **Do:** `FirstRun` put its 34rem measure on `.view__body`, which is the element that scrolls
+    and therefore the element that clips. With no inline padding an input stretched to exactly the
+    clip edge, and the focus ring — drawn *outside* the border box — was sheared on both sides.
+    The same rule wrapped a long error banner into a narrow column, tall enough to scroll a 900px
+    window with room to spare, and its own `padding-block: 3rem` overrode the shared value. Move
+    the measure to an inner `.first-run__panel`, give the body `.column` like every other view, and
+    leave the banner outside the panel at the full measure so a long error wraps wide instead of
+    tall.
+  - **Watch for:** why no existing guard in `pageChrome.spec.ts` caught this. Every one of them
+    filters through `fullScreenViews()`, which identifies a view by `<PageHeader` — and `FirstRun`
+    is a full-screen view that has no back row to draw, so it uses no `PageHeader` and was invisible
+    to all of them. The new guard scans every component instead.
+  - **Verify:** A guard that no component puts a `max-width` on `.view__body`, checked to match the
+    rule it replaced and not the fix. **Done** — 267 tests pass, typecheck clean.
+  - **Commit:** `fix(desktop): Stop FirstRun clipping its inputs against the scrolling body`
+
+- [ ] **T9.5 — Replace the stock Tauri icon set**
+  - **Files:** `desktop/src-tauri/icons/*`
+  - **Requirements:** R8.4 (an app you install should be identifiable in the Dock)
+  - **Do:** Every icon is still template art. Draw or commission one source PNG (1024x1024) and run
+    `npm run tauri icon <source>` to regenerate the set, including `icon.icns`. Note the DMG's
+    volume icon comes from the same `.icns`.
+  - **Verify:** The Dock, Cmd-Tab, Spotlight, and the DMG window all show the new icon; no stock
+    art left in `icons/`.
+  - **Commit:** `feat(desktop): Replace the template icon set`
+
+- [ ] **T9.6 — Settle the bundle identifier**
+  - **Files:** `desktop/src-tauri/tauri.conf.json`
+  - **Requirements:** R8.4
+  - **Do:** `com.josehernandezinzunza.desktop` still carries the template's `desktop`. Rename to
+    something like `com.josehernandezinzunza.the-library`. **Do this deliberately, not
+    incidentally:** the identifier keys the WebView's data directory under
+    `~/Library/Application Support`, so changing it orphans whatever is stored there and the app
+    starts against an empty one. Check what actually lives there first.
+  - **Verify:** `CFBundleIdentifier` updated, app launches, and nothing that should persist was
+    lost. Note in progress.md what the old directory held.
+  - **Commit:** `refactor(desktop): Rename the bundle identifier off the template default`
+
+- [ ] **T9.7 — Rename the crate so `CFBundleExecutable` is not `desktop`**
+  - **Files:** `desktop/src-tauri/Cargo.toml`, `desktop/src-tauri/src/main.rs`, every
+    `desktop_lib::` reference, `desktop/src-tauri/tests/*`
+  - **Requirements:** none directly; consistency
+  - **Do:** The binary inside the bundle is `Contents/MacOS/desktop`, which is also what shows in
+    Activity Monitor and in `pgrep`. Rename the crate and `desktop_lib` with it.
+  - **Watch for:** `main.rs` dispatches the agent's `PreToolUse` hook by re-invoking **this same
+    binary** (`agent::HOOK_ARG`), so the rename touches the hook path; and the `[lib] name` comment
+    explains why the `_lib` suffix exists. Keep both working.
+  - **Verify:** Gate green, and a walkthrough still passes its tool-denial test — the hook is the
+    part a rename can quietly break.
+  - **Commit:** `refactor(desktop): Rename the crate off the template default`
+
+- [ ] **T9.8 — Drop the template assets from the shipped frontend**
+  - **Files:** `desktop/public/*`, `desktop/index.html` if it references them
+  - **Requirements:** none directly
+  - **Do:** `tauri.svg` and `vite.svg` are template leftovers that get copied into `dist/` and
+    bundled. Remove them and anything referencing them.
+  - **Verify:** `just app-build`, then confirm neither file is inside
+    `The Library.app/Contents/Resources`. Gate green.
+  - **Commit:** `chore(desktop): Remove the template's unused frontend assets`
+
+---
+
 ## Known gaps
 
 Found while building, not yet scheduled. Distinct from **Deferred** below: those are decisions not
@@ -983,7 +1137,7 @@ owns it and what would make it urgent, so a gap cannot quietly become folklore i
 | G4 | **`uninstall_entry` considers only destinations the *current* scopes resolve to** (deliberately, so `uninstall alpha` cannot take out an unrelated `--dir` install). So a receipt whose dest no longer resolves is unreachable: the entry reads `missing` with `scopes: []` and the app renders no control | `library.py` | Hit once already, cleaning up a moved project directory. Recurs whenever a project install's directory is deleted |
 | ~~G5~~ | ~~No `dependents[]` in `show --json`~~ | — | **Closed.** `resolve_dependents` added to `library.py`; `show --json` reports `dependents[] {type, name, catalog, description, direct}`. The app types it, renders a "Required by" section, and the uninstall confirmation names the installed entries it will leave incomplete. |
 | G6 | **`npm run check` fails in a non-login shell** because `cargo` is not on its `PATH` | T8.1 | Any CI attempt, or the first teammate who runs the gate from a non-login shell |
-| G7 | **`bootstrap()` resolves `python3` from `PATH`**, which is the shell's under `tauri dev` and a minimal one for a Finder-launched bundle. Holds today because macOS ships `/usr/bin/python3` | T8.1 | Only if D9 is revisited and the app ships as a bundle |
+| ~~G7~~ | ~~`bootstrap()` resolves `python3` from `PATH`~~ | — | **Closed** by T9.2. D9 *was* revisited and the app now ships as a bundle, which is exactly what G7 said would make it urgent. `path.rs` widens `PATH` at startup, so a `launchd`-launched bundle resolves what a login shell would. Still exercised from a bundle for the first time in T9.4 |
 | G9 | **`remove --purge` cannot reach a project install from the app.** `--purge` resolves project destinations against `LIBRARY_CWD`, and `remove` is anchored at the tool repo, so a purge deletes the global copy and silently leaves project ones behind. The app works around it by offering the checkbox only when every copy is global. Same root as G4: there is no single anchor for an entry installed in several projects | `library.py` | The workaround holds, but it means a project-installed entry can still be stranded — removed from the catalog with files nothing can now uninstall |
 | G10 | **`optional` conflates "works without it" with "one of several ways to satisfy the same requirement", so `configured` degenerates for an either/or skill.** `slack-toolkit` is webhook *or* bot token; both must be `optional: true`, and `missing` counts only non-optional secrets, so `configured` is `true` with nothing set at all — measured against an empty config | `library.py` + schema | Real now: the second manifest written hit it immediately. The app would badge an unconfigured skill as configured, and `check` is the only thing that knows better |
 | G8 | **`add` raises an unhandled `LibraryError` when the destination catalog's YAML has no section for the chosen type**, so the caller gets a Python traceback on stderr instead of a message. Found by adding an `agent` to a hand-written catalog with only a `skills:` section | `library.py` | The add form lets any type target any catalog, so this is now one dropdown away rather than a typo. `catalog init` scaffolds all three sections, which is why it has not been hit before |
@@ -996,7 +1150,7 @@ Parked deliberately; each would expand scope without changing what v1 must prove
 
 | Item | Why not now |
 | --- | --- |
-| Codesigning / notarization | D9 — run from source; needed only for distribution beyond source |
+| Codesigning / notarization, and handing anyone a prebuilt `.app` | D9, as amended by Phase 9: each person builds their own bundle, which needs no signing because a locally compiled binary is not quarantined. A *downloaded* one would be refused by Gatekeeper, so distribution needs a Developer ID certificate **and** `library_home()` becoming a runtime question (first-run clone, or the tool root shipped as a bundle resource) — the compile-time path is meaningless on someone else's disk. Both, or neither |
 | Editing the catalog registry from the GUI | Out of scope in requirements; registration stays a CLI concern |
 | **Writing to a remote catalog from the app** (`add`/`update`/`remove` against a `direct` or `pr` catalog) | A write there pushes a branch to a shared repository and, for a protected one, leaves a PR to open by hand — a review event, and one the app would report as "branch pushed" when the user reads it as "added". Contributing to a shared catalog stays a deliberate act in that repository. Revisit only with a dry-run diff preview and mode-aware confirm/success text (the shape T3.1 established for `use`), not before |
 | `ini` / `env` config formats | No skill needs them yet (schema §10.3) |

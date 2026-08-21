@@ -8,8 +8,10 @@ wrapper, runs a subcommand with `--json`, and renders the result. Every judgemen
 rather than recomputed. If a screen seems to need behaviour the CLI lacks, that change belongs in
 `library.py`, where the terminal and agent front doors get it too.
 
-You are meant to run this **from source**. It is not codesigned or notarized, which is fine for a
-tool you build yourself and a blocker for handing anyone a `.app`.
+You **build it from your own clone** and then run it like any other Mac app. It is not codesigned
+or notarized, which is fine for a bundle you compiled yourself — macOS only quarantines binaries
+that were *downloaded* — and a blocker for shipping anyone a prebuilt `.app`. Everyone who wants it
+clones the repo and runs one command.
 
 ## Prerequisites
 
@@ -28,22 +30,40 @@ tool you build yourself and a blocker for handing anyone a `.app`.
 already uses — a subscription login or an API key, whichever you have. There is nothing to
 configure here and nothing for the app to store.
 
-## Run it
+## Install it
+
+From the tool root, once per machine:
 
 ```bash
-cd desktop
-npm install
-npm run tauri dev      # the native window, with HMR
+just app-setup      # npm install
+just app-install    # build, then copy into /Applications
+```
+
+`just app-install` takes several minutes the first time, because Rust compiles the backend from
+scratch. After that it is in `/Applications` and in Spotlight as **The Library**, launched by
+double-clicking it like anything else. `just app` opens it from the terminal.
+
+You need the network for the in-app setup step (it pip-installs PyYAML) and the URL of your team's
+catalog repository, with git access to it — the app clones it for you but cannot invent the address
+or your credentials.
+
+To pick the bundle up yourself instead of installing it, `just app-build` leaves it at
+`desktop/src-tauri/target/release/bundle/macos/The Library.app`, alongside a `.dmg` in
+`../dmg/`.
+
+Rebuild after pulling: `git pull && just app-install`. There is no auto-update, and the app does
+not check for one.
+
+## Work on it
+
+```bash
+just app-dev      # the native window, with HMR
 ```
 
 ## The check gate
 
-```bash
-npm run check
-```
-
-Runs `vue-tsc --noEmit`, `vitest run`, `cargo check`, `cargo test`, and `vite build`. Every change
-is expected to leave it green.
+`just app-check` (or `npm run check` from `desktop/`) runs `vue-tsc --noEmit`, `vitest run`,
+`cargo check`, `cargo test`, and `vite build`. Every change is expected to leave it green.
 
 > **Run it from a login shell.** `rustup` puts `cargo` on your `PATH` from `~/.cargo/env`, which
 > your shell profile sources. A non-login shell — a bare `sh -c`, most CI defaults, some editor
@@ -119,6 +139,7 @@ Vue UI ──invoke('library_list')──▶ Tauri command (lib.rs)
 | --- | --- |
 | `src/` | Vue views and components, plus their Vitest specs |
 | `src-tauri/src/cli.rs` | Wrapper resolution, the one spawn path, and every subcommand call |
+| `src-tauri/src/path.rs` | Widening `PATH` at startup, so a Finder-launched bundle finds `claude` |
 | `src-tauri/src/agent.rs` | Spawning `claude`, parsing its stream, the tool-whitelist hook |
 | `src-tauri/src/mcp.rs` | The loopback MCP server and the four tools the agent gets |
 | `src-tauri/src/secrets.rs` | Where a collected credential lives, and the only place it may live |
@@ -131,17 +152,28 @@ Tests never touch a real catalog, the network, or a live `claude`. The fixture w
 recorded CLI payloads and the agent tests replay recorded streams, so the suite passes or fails on
 this code rather than on whose machine it ran on.
 
-## Building a bundle
+## What a bundle inherits, and what it doesn't
 
-```bash
-npm run tauri build    # → src-tauri/target/release/bundle/macos/
-```
+A bundle launched from Finder is started by `launchd`, not by your shell, so it gets a minimal
+`PATH` — roughly `/usr/bin:/bin:/usr/sbin:/sbin`. That is enough for `python3` and `git`, which
+macOS ships in `/usr/bin`, and not enough for `claude`, which installs to `~/.local/bin` or under
+an nvm/volta prefix. Left alone, the app would report `claude` as missing and disable every
+walkthrough on a machine where it works fine.
 
-Fine for your own machine. Distributing it to anyone else needs Apple codesigning and
-notarization, which is deliberately out of scope.
+`src-tauri/src/path.rs` fixes that at startup: it asks your login shell for its `PATH` and appends
+whatever the process is missing. Appends, never prepends — under `just app-dev` the inherited
+`PATH` is already yours and its precedence is deliberate, so the dev case is a no-op and only the
+bundled case changes. A fixed list of the usual install dirs covers the case where the shell probe
+returns nothing.
 
-> **One caveat if you do bundle it.** The app resolves `python3` from `PATH` when it bootstraps the
-> tool directory. Under `npm run tauri dev` that is your shell's `PATH`; an app launched from
-> Finder gets a minimal one. It holds today because macOS ships `/usr/bin/python3`, which is on
-> every `PATH` — but it is an assumption, not a guarantee, and it is the running-from-source
-> decision that keeps it from mattering.
+**Why the bundle finds the right clone.** `library_home()` resolves from `CARGO_MANIFEST_DIR`,
+baked in when *you* compiled, so it points at the clone you built from. That is why each person
+builds their own rather than being handed a `.app`: a prebuilt one would carry someone else's
+absolute path. `LIBRARY_HOME` still overrides it if you move the clone.
+
+## Distributing a prebuilt app
+
+Out of scope, and not a small gap. It would need a Developer ID certificate and notarization
+(otherwise Gatekeeper refuses a downloaded bundle), plus `library_home()` becoming a runtime
+question — first-run clone into `~/Library/Application Support` or the tool root shipped as a
+bundle resource — since the compile-time path is meaningless on someone else's disk.

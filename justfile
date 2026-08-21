@@ -110,6 +110,38 @@ install-hooks:
     @git -C {{justfile_directory()}} config core.hooksPath .githooks
     @echo "Git hooks enabled: .githooks (pre-push)"
 
+# --- Desktop app ---------------------------------------------------------
+# The app is a thin client over this same CLI, but it does not need `bootstrap` run first: the CLI
+# exits 3 when the .venv is missing and the app offers to fix it, so setup is a prompt in the app.
+# Building is a one-time cost per clone; after that you launch it like any other app.
+
+# Install the app's own dependencies (npm packages; needs Node >= 20 and Rust)
+app-setup:
+    @cd {{justfile_directory()}}/desktop && npm install
+
+# Build the release app bundle (several minutes the first time — Rust compiles from scratch)
+app-build:
+    @cd {{justfile_directory()}}/desktop && npm run tauri build
+    @echo "Built: {{justfile_directory()}}/desktop/src-tauri/target/release/bundle/macos/The Library.app"
+
+# Build and copy the app into /Applications, replacing any earlier copy
+app-install: app-build
+    @rm -rf "/Applications/The Library.app"
+    @cp -R "{{justfile_directory()}}/desktop/src-tauri/target/release/bundle/macos/The Library.app" /Applications/
+    @echo "Installed: /Applications/The Library.app — launch it from Spotlight or Finder."
+
+# Launch the installed app (same as double-clicking it)
+app:
+    @open -a "The Library"
+
+# Run the app from source with hot reload (for working on the app itself)
+app-dev:
+    @cd {{justfile_directory()}}/desktop && npm run tauri dev
+
+# The app's full check gate: types, Vitest, cargo check, cargo test, frontend build
+app-check:
+    @cd {{justfile_directory()}}/desktop && npm run check
+
 # --- Fuzzy / write ops: fall back to the agent ----------------------------
 # These need judgment (vague names, dependency detection from prose, YAML
 # edits + PR creation, conflict narration), so they route through Claude.

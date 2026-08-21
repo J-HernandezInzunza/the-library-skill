@@ -61,7 +61,7 @@ implementation; changing one is a spec change, not an implementation choice.
 | D6 | The agent handles only interactive walkthroughs. All deterministic ops are GUI forms over `library.py --json`. | A GUI form makes source, requires, and destination catalog explicit, which removes the ambiguity the agent used to resolve for `add`/`push`. |
 | D7 | Secrets are collected in a native secure input, never through chat. The agent emits a `request_secret` signal; the app collects the value and injects it as an env var into the setup subprocess. The agent never receives the secret. | A team-shared tool must not leak API tokens into a model transcript. |
 | D8 | One resumable `claude` session per walkthrough (`--resume <session-id>`). | Walkthroughs are multi-turn; a persisted session id continues the same conversation across turns. |
-| D9 | The app is run from source. No codesigning or notarization in scope. | Team is technical and has Rust + Node; signing is deferred until distribution beyond source is needed. |
+| D9 | The app is **built** from source by each person who runs it, then installed as a normal `.app`. No codesigning or notarization in scope. | Team is technical and has Rust + Node. A locally compiled bundle is not quarantined by Gatekeeper, so it double-clicks without signing; and building per-clone is what makes the compile-time `library_home()` correct on each machine (R8.3). Signing is deferred until someone needs a *prebuilt* app. |
 | D10 | The agent is invoked **without** `--bare`, but **with** `--strict-mcp-config`. | `--bare` never reads OAuth credentials or the keychain, so it would break subscription auth and force `ANTHROPIC_API_KEY`, contradicting D2. `--strict-mcp-config` recovers most of the cost by keeping the teammate's personal MCP servers out (verified in the T0.2 spike). Remaining accepted cost: their hooks, plugins, auto memory, and `CLAUDE.md` still load, so walkthroughs are not bit-identical across machines. |
 | D11 | The D4 whitelist is delivered as an app-hosted MCP server (`--mcp-config`) for the allowed capabilities, and enforced by a **`PreToolUse` hook that denies every tool not named `mcp__library__*`**. `--allowedTools` and `--permission-mode dontAsk` only suppress prompting for the allowed calls; they are not the boundary. | The MCP server gives `request_secret` (D7) a structured tool call instead of prose the app would have to pattern-match. The hook is what makes the whitelist enforceable: the T0.2 spike proved `--allowedTools` + `dontAsk` still let the agent run `Bash` freely, and that a deny-list of builtins is a moving target across Claude Code releases. Deny-by-default on tool name is the only form that survives a CLI upgrade. |
 | D14 | The app hosts its MCP server **in-process over loopback HTTP** (`127.0.0.1`, ephemeral port, per-walkthrough bearer token), not over stdio. | A stdio server is spawned by `claude` as a fresh child process per turn (twice per turn, measured in T0.2), so it cannot own walkthrough state or reach the GUI. `request_secret` (D7) must suspend until the user submits in a Vue field, which requires the tool handler to live in the process that owns the UI. |
@@ -269,10 +269,18 @@ implementation; changing one is a spec change, not an implementation choice.
   invents its own check.
 - R8.3 The prototype's build-time wrapper resolution keeps working when the app runs from within
   the repo; `LIBRARY_HOME` documented for running the app from a moved copy.
+- R8.4 `just app-setup` + `just app-install` on a fresh clone produce an app in `/Applications`
+  that launches from Finder and needs no further terminal step. Bootstrapping the CLI and
+  registering a catalog are prompts the app offers (R7.1, R1a), not prerequisites the person has
+  to satisfy first.
+- R8.5 A bundle launched by `launchd` finds the same tools a login shell would. It gets a minimal
+  `PATH`, so anything resolved by name — `python3`, `git`, `claude` — must still resolve, or be
+  reported as genuinely absent rather than as absent-because-of-`PATH`.
 
 ## Out of scope
 
-- Codesigning, notarization, and distribution as a signed `.app` (deferred; D9).
+- Codesigning, notarization, and handing anyone a **prebuilt** `.app` (deferred; D9). Building
+  your own bundle and installing it is in scope (R8.4).
 - Bundling or embedding an agent runtime or the Agent SDK (rejected; D1/D2).
 - Windows/Linux builds (macOS-only per the desktop initiative's target).
 - Hand-editing `config.local.yaml` from the GUI. The app registers catalogs by *invoking*

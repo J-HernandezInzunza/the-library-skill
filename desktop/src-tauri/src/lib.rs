@@ -16,6 +16,7 @@ pub mod cli;
 pub mod error;
 pub mod events;
 pub mod mcp;
+pub mod path;
 pub mod secrets;
 pub mod setup;
 pub mod walkthrough;
@@ -346,6 +347,11 @@ async fn bootstrap_tool(app: tauri::AppHandle) -> Result<BootstrapReport, AppErr
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Before the builder, and so before any thread or child process exists: `set_var` is
+    // only sound while the process is single-threaded, and a `PATH` widened after the first
+    // spawn is a `PATH` that did not apply to it.
+    path::widen();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
