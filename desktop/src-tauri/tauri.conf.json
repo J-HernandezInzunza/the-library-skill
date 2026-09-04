@@ -14,7 +14,7 @@
       {
         "title": "The Library",
         "width": 900,
-        "height": 700,
+        "height": 800,
         "minWidth": 720,
         "minHeight": 520
       }
@@ -25,7 +25,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
+    "targets": [
+      "app"
+    ],
     "category": "DeveloperTool",
     "shortDescription": "A native GUI over The Library CLI.",
     "longDescription": "Browse, install, and sync the skills, agents, and prompts in your private Library catalog, and run guided setup walkthroughs for the ones that need a credential.",

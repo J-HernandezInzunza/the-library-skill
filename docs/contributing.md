@@ -93,11 +93,9 @@ local and bypassable) — CI is the durable gate.
 ## Catalog CI (catalog repo)
 
 Catalog integrity (`doctor`) belongs on the **catalog** repo's PRs, not here, because
-that's where the catalog actually changes. `ci-examples/bitbucket-pipelines.catalog.yml`
-is a template: copy it into the catalog repo, point `<TOOL_REPO_URL>` at this tool, and it
-runs `./library doctor` against each PR's working copy (duplicates, dangling/cyclic
-`requires`, malformed sources, sort drift). A GitHub Actions equivalent is noted in the
-same file.
+that's where the catalog actually changes. Add a CI step there that clones this tool and
+runs `./library doctor` against each PR's working copy — it catches duplicates,
+dangling/cyclic `requires`, malformed sources, and sort drift before they merge.
 
 ## Tests
 

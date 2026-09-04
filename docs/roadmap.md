@@ -170,16 +170,16 @@ that touched `doctor` afterwards.
 
 ---
 
-## `ci-examples/` is referenced but does not exist
+## Ship catalog-CI templates
 
-**What.** `README.md` and `docs/contributing.md` both point at `ci-examples/`, and contributing.md
-names `ci-examples/bitbucket-pipelines.catalog.yml` as a template to copy into the catalog repo.
-The directory has never been committed.
+**What.** No CI templates ship for the catalog repo. `README.md`, `docs/contributing.md`, and
+`docs/troubleshooting.md` now describe the CI step in prose (clone the tool, run `doctor` against
+each PR) rather than pointing at a committed file — the earlier dangling `ci-examples/` references
+have been removed. Shipping an actual copy-paste template is the open work.
 
-**Why not now.** It predates the personal-catalogs work and writing the templates is real work, not
-a doc fix: a catalog-repo pipeline needs to clone the tool, bootstrap a venv, and run `doctor`
-against the PR's working copy, for both Bitbucket Pipelines and GitHub Actions. Deleting the
-references instead would discard a documented intent that still looks right.
+**Why not now.** Writing the templates is real work, not a doc fix: a catalog-repo pipeline needs to
+clone the tool, bootstrap a venv, and run `doctor` against the PR's working copy, for both Bitbucket
+Pipelines and GitHub Actions.
 
 **Unlocks / depends on.** Makes catalog integrity a durable gate rather than something each
 maintainer runs by hand. Depends on nothing; `doctor` already exits non-zero on errors only, which

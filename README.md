@@ -16,6 +16,44 @@ The sections below get you installed and productive. For the full pitch and desi
 the catalog looks like, why it's built this way — see [What It Is](#what-it-is) and
 [How It Works](#how-it-works) further down.
 
+## How You Drive It
+
+The Library has three front doors, all over the same catalog and the same `library.py`:
+
+- **The agent** (Claude Code, Pi, any harness that reads skill files) — natural language for
+  the fuzzy parts: vague names, dependency detection, source resolution, confirmations.
+- **The CLI** (`./library …`) — deterministic, no LLM, no tokens. The read-mostly commands
+  run instantly, and scripts and CI drive it directly.
+- **The desktop app** — a native macOS GUI over the same CLI, for browsing, installing, and
+  running guided setup walkthroughs without a terminal. See **[desktop/README.md](desktop/README.md)**.
+
+The agent and the CLI are the original front doors, and everything below documents them. The
+desktop app is a **thin client** over the CLI — it computes nothing of its own, so anything it
+shows or does is the CLI's answer, mirrored. Its own README covers building and running it.
+
+## The Desktop App
+
+For most people this is the way in: a native macOS app over the same catalog and the same
+`library.py`, so browsing, installing, and setting up a skill never needs a terminal.
+
+![The Library desktop app browsing the catalog](images/desktop/hero.png)
+
+Every catalog at a glance, with install state, scope, catalog origin, and override badges on each
+entry. Search filters the loaded list instantly, and offline.
+
+### See exactly what installs, before it installs
+
+![Installing a skill from the catalog, with a preview of what will be written first](images/desktop/install-preview.gif)
+
+Pick a skill and the app previews every file it would write — the skill itself plus the
+dependencies it pulls in — before anything touches disk. Install, and the entry's badge flips to
+installed.
+
+**Getting it:** build it once from your own clone (`just app-setup && just app-install`), then
+launch it like any Mac app. Full build steps, and the guided-setup walkthrough that configures a
+credentialed skill without the secret ever entering the agent's context, are in
+**[desktop/README.md](desktop/README.md)**.
+
 ## Prerequisites
 
 - **Claude Code** (or a compatible agent harness that reads `.claude/skills/` — e.g., Pi)
@@ -277,13 +315,21 @@ Two ways to drive it, same result:
 | Register / drop a catalog | "register this catalog as read-only" | `./library catalog add\|remove …` |
 | Update the tool | "update the library tool" | `./library self-update` |
 
-**CLI flags:** `--json` (machine-readable) · `--no-pull` (skip catalog refresh) ·
-`--check-remote` (`list`: mark installs whose source has moved as `stale`) ·
-`--force` (`sync`: re-fetch even unchanged items) ·
-`--dry-run` (preview `add`/`update`/`remove`/`push`, or resolve a `use` destination
-without installing) · `--project`/`--dir` (`use` target; default is global) ·
+**Common flags** (per-command reference in the [cookbook](cookbook/)): `--json`
+(machine-readable) · `--no-pull` (skip catalog refresh) · `--check-remote` (`list`: mark
+installs whose source has moved as `stale`) · `--force` (`sync`: re-fetch even unchanged
+items) · `--dry-run` (preview `add`/`update`/`remove`/`push`, or resolve a `use` destination
+without installing) · `--project`/`--dir` (`use` target; default is global) · `--cwd`
+(anchor relative `project`-scope installs to a directory other than where you run) ·
 `--deep` (`doctor` source-liveness) · `--catalog <id>` (restrict any name-taking command
 to one catalog, bypassing precedence — see [Personal Catalogs](#personal-catalogs)).
+
+**Write-op flags:** `add --batch <file>` (register many entries in one PR; mutually exclusive
+with `--name`/`--source`) · `push --from <path|scope>` (which installed copy to push) and
+`push --message` (commit message for GitHub sources) · `remove --purge` (also delete the
+local copy) · `uninstall --scope {global|project|all}`/`--dir`/`--force` · `update
+--set-description`/`--set-source`/`--set-requires`/`--remove-requires` (alongside
+`--add-requires`) · `add`/`update --allow-local` (allow a local source in a personal catalog).
 
 > **`use --project` and your working directory:** bare `use` installs globally
 > (`~/.claude/…`) and doesn't care where you run it. `--project` installs are
@@ -317,6 +363,7 @@ just sync                  # Re-pull all installed items (skips what hasn't chan
 just sync --force          # ...re-fetch everything anyway
 just show my-skill         # One entry in full: copies, overrides, deps, source, installs
 just setup my-skill        # What an installed skill needs to work (never runs it)
+just suggest-source <path> # Infer a source URL for a local SKILL.md (for a later add)
 just uninstall my-skill    # Delete the installed copy (the catalog entry is kept)
 just doctor                # Validate config, registry, and every catalog
 just doctor --deep         # ...and check every source is reachable
@@ -582,8 +629,9 @@ autopush: false
 
 Per catalog:
 
-- **`id`** — short name, used by `--catalog <id>` on the commands that take one (`list`,
-  `search`, `use`, `sync`, `add`, `update`, `remove`, `push`). Must be unique.
+- **`id`** — short name, used by `--catalog <id>` on any command that takes an entry name
+  (`list`, `search`, `use`, `setup`, `show`, `uninstall`, `sync`, `add`, `update`, `remove`,
+  `push`). Must be unique.
 - **`path`** — *local catalog:* a `library.yaml` on this machine (or a directory holding
   one). Must be absolute or start with `~`. Mutually exclusive with `repo`.
 - **`repo`** / **`yaml_path`** / **`branch`** — *remote catalog:* the clone URL, the catalog
@@ -713,9 +761,9 @@ auth/setup gotchas, lives in **[docs/troubleshooting.md](docs/troubleshooting.md
     library                   # Wrapper that selects .venv python, then runs library.py
     check_docs.py             # Doc/CLI drift guard (run by `just check` + the pre-push hook)
     tests/test_library.py     # stdlib unittest suite (`just test`; also run by `just check`)
+    desktop/                  # Native macOS GUI over the CLI (Tauri + Vue; see desktop/README.md)
     justfile                  # Terminal shortcuts (CLI direct + agent fallback)
     .githooks/pre-push        # Local checks before push (enable: `just install-hooks`)
-    ci-examples/              # CI templates for the catalog repo (doctor on PRs)
     docs/                     # Human docs: troubleshooting, contributing, roadmap
     .venv/                    # PyYAML for the CLI (gitignored)
     README.md                 # This file
@@ -729,7 +777,7 @@ and the tool only stores its path.
 Working on the tool, or maintaining a catalog? See **[docs/contributing.md](docs/contributing.md)**.
 The short version: run `just check` before pushing (Python compile + doc/CLI drift + tests), enable
 the pre-push hook once with `just install-hooks`, and let catalog integrity (`doctor`) run in
-CI on the catalog repo — template in `ci-examples/`.
+CI on the catalog repo.
 
 Got an idea, or a feature you want that isn't here? **[docs/roadmap.md](docs/roadmap.md)** is
 where deferred work and feature requests are collected, each with what it is, why it isn't
@@ -758,5 +806,6 @@ Three concepts, not one ladder — **composition** is the only part that's truly
 |                  | Prompts         | Orchestration — coordinate skills and agents     |
 | **Access**       | Agent chat      | Natural-language entry from an interactive session |
 | (peer doors)     | Justfile / CLI  | Terminal entry without an interactive session    |
+|                  | Desktop app     | Native macOS GUI over the CLI, no terminal needed |
 |                  | CI / hooks      | Automated, non-interactive entry                 |
 | **Distribution** | The Library     | Delivery across devices, teams, and agents       |

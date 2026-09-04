@@ -130,6 +130,11 @@ app-install: app-build
     @cp -R "{{justfile_directory()}}/desktop/src-tauri/target/release/bundle/macos/The Library.app" /Applications/
     @echo "Installed: /Applications/The Library.app — launch it from Spotlight or Finder."
 
+# Build a distributable .dmg for sharing the app (mounts a disk image during styling, so a Finder window flashes)
+app-dmg:
+    @cd {{justfile_directory()}}/desktop && npm run tauri build -- --bundles dmg
+    @echo "Built: {{justfile_directory()}}/desktop/src-tauri/target/release/bundle/dmg/"
+
 # Launch the installed app (same as double-clicking it)
 app:
     @open -a "The Library"

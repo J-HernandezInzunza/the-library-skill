@@ -48,8 +48,8 @@ catalog repository, with git access to it — the app clones it for you but cann
 or your credentials.
 
 To pick the bundle up yourself instead of installing it, `just app-build` leaves it at
-`desktop/src-tauri/target/release/bundle/macos/The Library.app`, alongside a `.dmg` in
-`../dmg/`.
+`desktop/src-tauri/target/release/bundle/macos/The Library.app`. If you want a shareable `.dmg`
+instead, `just app-dmg` builds one under `desktop/src-tauri/target/release/bundle/dmg/`.
 
 Rebuild after pulling: `git pull && just app-install`. There is no auto-update, and the app does
 not check for one.
@@ -91,12 +91,14 @@ other call is anchored at the tool root.
 - **Browse and search** the catalog, with install state, scope, catalog origin, and override
   badges. Search filters the already-loaded list, so it is instant and works offline.
 - **Install and uninstall**, globally or into a project you pick, with a preview of exactly what
-  would be written before anything is.
+  would be written before anything is. Select several entries to install them at once, and the
+  project picker remembers your recent install directories.
 - **Sync** every installed entry, and **doctor** for catalog health.
 - **Add, edit, and remove** entries in a local catalog, and **push** a local copy back to its
   source. Writes against a shared remote catalog stay a deliberate act in that repository.
 - **Register and unregister catalogs**, including scaffolding an empty one.
-- **See every command it runs, verbatim**, in the command log. There is no per-action approval
+- **See every command it runs, verbatim**, in the command log, with a live activity bar at the
+  top of the window reflecting each in-flight backend command. There is no per-action approval
   gate, so showing the exact argv is the safeguard — and it is structural: emission lives in the
   one spawn path.
 
@@ -122,8 +124,8 @@ and signed in. Leaving the panel ends the walkthrough: the token is retired, the
 are forgotten, and the agent's config files are deleted.
 
 What a walkthrough can do for a skill is declared by that skill, in its own `setup.yaml` — the
-values it needs, the one file they go in, and the commands that may run. `atlassian-toolkit` has
-one; a skill without one gets the readiness panel and no walkthrough offer. The schema is
+values it needs, the one file they go in, and the commands that may run. A skill without one gets
+the readiness panel and no walkthrough offer. The schema is
 [`specs/skill-setup-schema.md`](specs/skill-setup-schema.md).
 
 ## Layout
@@ -166,10 +168,10 @@ whatever the process is missing. Appends, never prepends — under `just app-dev
 bundled case changes. A fixed list of the usual install dirs covers the case where the shell probe
 returns nothing.
 
-**Why the bundle finds the right clone.** `library_home()` resolves from `CARGO_MANIFEST_DIR`,
-baked in when *you* compiled, so it points at the clone you built from. That is why each person
-builds their own rather than being handed a `.app`: a prebuilt one would carry someone else's
-absolute path. `LIBRARY_HOME` still overrides it if you move the clone.
+**Why the bundle finds the right clone.** The compile-time crate path baked into `library_home()`
+points at the clone *you* built from — see [Where the CLI comes from](#where-the-cli-comes-from).
+That is why each person builds their own rather than being handed a prebuilt `.app` carrying
+someone else's absolute path.
 
 ## Distributing a prebuilt app
 

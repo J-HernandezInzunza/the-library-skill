@@ -38,4 +38,4 @@ catalog in one pass and is the fastest way to find what's wrong.
 
 `doctor` exits non-zero when it finds errors, so you can wire it into CI on your **catalog**
 repo to block a broken catalog before it merges — see
-[contributing.md](contributing.md) and `ci-examples/`.
+[contributing.md](contributing.md).
