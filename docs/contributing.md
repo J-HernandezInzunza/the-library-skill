@@ -10,16 +10,62 @@ End users who just consume skills don't need any of this.
 - **Catalog repo** (e.g. `agent-library` — the `library.yaml` + the agentics): never edited
   by hand. Changes go through the CLI's `add` / `update` / `remove` / `push`, which open PRs
   against the catalog's protected branch.
+- **Any other registered catalog** — same rule, different mechanics. See the write modes
+  below; the CLI still owns every edit.
+
+## The three write modes
+
+A write's mechanics are **derived from the destination catalog**, never configured
+separately, and every write command reports which one it took in `mode`:
+
+| `mode` | Destination | Mechanics | Reversible before it lands? |
+|---|---|---|---|
+| `local` | local catalog (`path`) | Read the file, splice, write it back. With `git_commit: true`, also commit + push | No — it's already written |
+| `pr` | remote, `protected: true` | Temp-clone, branch, commit, push, open a PR (or print a compare URL) | Yes — the PR is the gate |
+| `direct` | remote, `protected: false` | Pull the persistent clone, splice, commit, push to the branch | No |
+
+Consequences worth knowing when working on `library.py`:
+
+- **`local` and `direct` share one code path** (`_apply_edit_in_place`); only `pr` uses a
+  temp-clone (`_apply_edit_via_pr`). Both sit behind `apply_catalog_edit`, which is the
+  single seam every write command goes through — add a write command by calling it, not by
+  writing git plumbing.
+- **A commit or push failure in `local`/`direct` warns rather than raising.** The catalog
+  file is already correct on disk; failing the command would imply the edit didn't happen.
+  The payload carries `committed` / `pushed` so the caller can report honestly.
+- **Never claim a PR from `mode` alone.** Only `pr` + `method: "gh"` means one was opened.
+  This is the rule `SKILL.md` puts on the agent, and the reason `mode` exists in the
+  payload at all.
+
+## Source parsing (`parse_source`)
+
+One function turns an entry's `source` string into a `Source` record, and every fetch and
+push depends on it. The mappings it implements, for reference when changing it:
+
+| `source` | Parses to | Clone URL |
+|---|---|---|
+| `/abs/path/…` or `~/…` | `kind="local"`, `path` | none — copied from disk |
+| `https://github.com/<org>/<repo>/blob/<branch>/<path>` | org, repo, branch, file_path | `https://github.com/<org>/<repo>.git` |
+| `https://raw.githubusercontent.com/<org>/<repo>/<branch>/<path>` | org, repo, branch, file_path | `https://github.com/<org>/<repo>.git` |
+| `https://bitbucket.org/<ws>/<repo>/src/<branch>/<path>` (or `/raw/`) | workspace, repo, branch, file_path | `https://bitbucket.org/<ws>/<repo>.git` |
+
+Trailing `?at=` / `#lines` fragments are stripped from Bitbucket URLs. A source always names
+a *file*, and the fetch copies that file's whole parent directory. `clone_urls()` returns
+candidates in order so SSH can be tried before HTTPS.
+
+This is deliberately not in `SKILL.md`: the agent never parses a source itself, and telling
+it how to would invite it to try.
 
 ## Local checks (tool repo)
 
-Run the fast checks before pushing — Python compiles + doc/CLI drift:
+Run the fast checks before pushing — Python compiles, doc/CLI drift, and the test suite:
 
 ```bash
 just check
-# or, without just:
+# or, without just — these three are exactly what `check` runs:
 .venv/bin/python -m py_compile library.py check_docs.py
 .venv/bin/python check_docs.py
+.venv/bin/python -m unittest discover -s tests -t .
 ```
 
 - **`py_compile`** catches broken Python before it ships.
@@ -55,10 +101,45 @@ same file.
 
 ## Tests
 
-There is no unit-test suite yet. The highest-value addition would be `pytest` coverage of
-the pure logic in `library.py` — `parse_source`, `splice_entry` / `remove_entry`, and
-`_remote_web` — which the hook/CI could then run alongside `check_docs.py`. Contributions
-welcome.
+`tests/test_library.py` is a stdlib `unittest` suite — `just bootstrap` installs PyYAML and
+nothing else. They're plain `unittest.TestCase` classes, so `pytest tests/` collects them too
+if you have pytest; the `.venv` deliberately doesn't ship it.
+
+```bash
+just test                                             # the whole suite, verbose
+.venv/bin/python -m unittest discover -s tests -t .   # ...without just
+.venv/bin/python -m unittest tests.test_library.TestDoctorCatalogScope -v   # one class
+```
+
+`just check` and the pre-push hook both run it, so tests are covered by the same gate as
+compile and doc drift. (Both inline the `unittest` command rather than calling `just test`
+— the hook is deliberately `just`-free, so the duplication is the price of that.)
+
+**Two conventions the suite leans on**, worth following when you add to it:
+
+- **Golden output for a single catalog is a contract, not a snapshot.**
+  `TestSingleCatalogGoldens` pins `list`, `search`, and `doctor` byte-for-byte against a
+  legacy `catalog:` config. A diff there means a change leaked into single-catalog output
+  and is a bug — except in `doctor`, which may add a finding when it genuinely has a new
+  problem to report. `--json` key sets are expected to grow: new keys are additive.
+- **New output gets gated on `multi_catalog(cfg)`.** Provenance columns, catalog ids in
+  labels, override notes — all of it appears only once a second catalog is registered, which
+  is what keeps the goldens above passing.
+
+**Tests never touch your real environment.** `TempTool` builds a throwaway tool directory and
+redirects `library.py`'s path globals — the config file, the catalog clone, the global skills
+dir, the project cwd — plus `$HOME`, so even a `~/.claude/...` path expanded inside the CLI
+lands in the sandbox. `TempTool.path()` raises `SandboxEscape` on any path that resolves
+outside it, which is what turns a hardcoded real path into a loud failure rather than a write
+to your machine. Git-touching tests use `TempGitRepo`: a work tree whose origin is a local
+`--bare` repo, never a real remote.
+
+## Roadmap
+
+Ideas, feature requests, and work we decided *not* to do yet live in
+**[roadmap.md](roadmap.md)**. Each entry records what it is, why not now, and what it would
+unlock or depend on. Park an idea there rather than losing it in a PR comment — a
+one-paragraph entry beats a lost idea.
 
 ## Conventions
 

@@ -61,9 +61,28 @@ Optional flags:
 - `--cwd <dir>` → explicitly set the project dir that `--project`/relative paths anchor to.
 - `--dry-run` → resolve destination + dependencies without installing.
 - `--no-pull` → skip pulling the catalog clone.
+- `--catalog <id>` → install *that* catalog's copy, bypassing precedence.
+
+**Which copy gets installed.** A name defined in several catalogs resolves to the
+highest-precedence one, and the CLI says so in the report:
+
+```
+Installed [skill] session-retro → ~/.claude/skills/session-retro · new install (from personal, overrides shared)
+```
+
+Relay that clause. "Installed session-retro" is an incomplete answer when two copies
+exist — the user needs to know they got their own, not the team's. If they actually wanted
+the overridden one, re-run with `--catalog shared`.
+
+**Dependencies resolve inside the resolved entry's own catalog.** A `requires` ref is never
+satisfied by an entry in a different catalog, even a higher-precedence one. When a ref
+can't be found there, the CLI warns on stderr (`dependency skill:x not found in catalog`)
+and installs everything else — surface that warning rather than reporting an unqualified
+success, and point out that the fix is a copy of the dependency in the same catalog (see
+[add.md](add.md)).
 
 **Install-location contract:** bare `use` installs globally (`~/.claude/...`, absolute,
-CWD-independent). `--project` uses the catalog's `project` scope (`.claude/skills/`), a
+CWD-independent). `--project` uses the tool's `project` scope (`.claude/skills/`), a
 relative path that anchors to the directory you invoke from (the user's CWD). The wrapper
 captures `$PWD` into `LIBRARY_CWD` so this holds even though the CLI itself lives in the
 tool dir.
@@ -73,17 +92,19 @@ tool dir.
 The CLI exits non-zero and emits one of these when it can't act on its own:
 
 - `status: "OK"` → done. Report what was installed or changed (and any dependencies) to the user.
-- `status: "AMBIGUOUS"` → the `candidates` array lists near matches. **This is the
-  step that needs you.** Pick the best match if it's obvious from the user's intent,
-  or ask the user to choose, then re-run `<tool-dir>/library use "<exact-name>"`.
+- `status: "AMBIGUOUS"` → the `candidates` array lists near matches, each labelled with
+  its catalog. **This is the step that needs you.** Pick the best match if it's obvious
+  from the user's intent, or ask the user to choose, then re-run
+  `<tool-dir>/library use "<exact-name>"`. Note that two candidates sharing a name are one
+  entry overriding another, not two things to choose between.
 - `status: "NOT_FOUND"` → no match. Suggest `<tool-dir>/library search <keyword>` or ask the user
   to clarify.
 
 ### 3. Confirm
 
-On success, tell the user what was installed, where, whether dependencies were also
-pulled, and whether it was a fresh install or a refresh — all of this is in the CLI's
-JSON output.
+On success, tell the user what was installed, where, **which catalog it came from when
+more than one is registered**, whether dependencies were also pulled, and whether it was a
+fresh install or a refresh — all of this is in the CLI's JSON output.
 
 > The CLI is the source of truth for the mechanics. Do not hand-roll cloning, copying,
 > URL parsing, or dependency walking — if something is broken there, fix `library.py`.

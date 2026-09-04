@@ -5,19 +5,14 @@
 # as `library.yaml` at its root. Copy this structure there and
 # replace every placeholder (myworkspace / myorg / paths) with your own.
 
-# Where `use`/`sync` install items. `global` (home ~/.claude/) is where bare `use`
-# installs; `project` = project-local .claude/, selected with --project. --dir <path>
-# overrides both. (`default` is accepted as a legacy alias for `project`.)
-default_dirs:
-  skills:
-    - project: .claude/skills/
-    - global: ~/.claude/skills/
-  agents:
-    - project: .claude/agents/
-    - global: ~/.claude/agents/
-  prompts:
-    - project: .claude/commands/
-    - global: ~/.claude/commands/
+# NOTE — no `default_dirs:` block here, on purpose. Install locations belong to the tool,
+# not to a catalog: a `default_dirs:` block inside any catalog is IGNORED, and `doctor`
+# warns when it finds one and names the paths actually in force. Override them per machine
+# in config.local.yaml instead. (Older catalogs still carry the block harmlessly;
+# `library catalog migrate` lifts it into your local config so nothing moves.)
+#
+# What you get by default: bare `use` installs to ~/.claude/ (global), `use --project` to
+# the project-local .claude/, and `use --dir <path>` to anywhere you name.
 
 library:
   skills:
@@ -38,8 +33,12 @@ library:
       source: https://bitbucket.org/myworkspace/agent-library/src/main/skills/dependent-skill/SKILL.md
       requires: ["skill:example-skill"]
 
-    # Local filesystem source — personal, single-machine catalogs only. Won't resolve
-    # for teammates; `library add` refuses local sources unless you pass --allow-local.
+    # Local filesystem source — this entry belongs in a LOCAL catalog, not in a shared
+    # one like this file models. The path resolves on exactly one machine, so a teammate
+    # pulling this catalog cannot install it. `library add` refuses a local source when
+    # the destination is a remote catalog (--allow-local overrides, and `doctor` then
+    # warns about it forever); adding it to a local catalog needs no flag at all.
+    # Make your own with: library catalog init ~/dev/my-library/library.yaml
     - name: local-only-skill
       description: A skill referenced by absolute path on one machine.
       source: /Users/you/projects/skills/local-only-skill/SKILL.md

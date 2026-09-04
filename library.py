@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import difflib
 import filecmp
 import json
 import os
@@ -27,7 +28,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 try:
     import yaml
@@ -50,12 +51,22 @@ os.environ.setdefault("GIT_SSH_COMMAND", "ssh -oBatchMode=yes")
 
 SKILL_DIR = Path(__file__).resolve().parent
 LOCAL_CONFIG_PATH = SKILL_DIR / "config.local.yaml"
-CATALOG_CLONE_DIR = SKILL_DIR / ".catalog-repo"
+CATALOG_CLONE_DIR = SKILL_DIR / ".catalog-repo"  # the 'shared' catalog's clone
+CATALOGS_DIR = SKILL_DIR / ".catalogs"           # every other remote catalog's clone
 GLOBAL_SKILLS_DIR = Path("~/.claude/skills").expanduser()
 LINK_NAME = "library"  # name the tool is discoverable under in a skills dir
+SHARED_ID = "shared"   # conventional id of the team catalog; keeps CATALOG_CLONE_DIR
 TYPES = ("skills", "agents", "prompts")
 SINGULAR = {"skills": "skill", "agents": "agent", "prompts": "prompt"}
 PLURAL = {v: k for k, v in SINGULAR.items()}
+
+# Where things install, owned by the tool. config.local.yaml may override per
+# section and scope; a catalog's own default_dirs block is ignored (doctor warns).
+BUILTIN_DEFAULT_DIRS = {
+    "skills": {"project": ".claude/skills/", "global": "~/.claude/skills/"},
+    "agents": {"project": ".claude/agents/", "global": "~/.claude/agents/"},
+    "prompts": {"project": ".claude/commands/", "global": "~/.claude/commands/"},
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -79,49 +90,343 @@ class LibraryError(Exception):
     """
 
 
+class AmbiguousCatalog(Exception):
+    """A write has no single obvious destination; `catalogs` are the usable choices.
+
+    Its own type rather than a LibraryError because this is not a failure: the
+    decision belongs to whoever asked, so commands report it and exit 2 — the same
+    "you decide" convention `use` follows for an ambiguous name.
+    """
+
+    def __init__(self, catalogs: list[str]) -> None:
+        super().__init__("more than one writable catalog: " + ", ".join(catalogs))
+        self.catalogs = catalogs
+
+
 # --------------------------------------------------------------------------- #
 # Local config (per-device; gitignored config.local.yaml)
 # --------------------------------------------------------------------------- #
+
+def _normalize_catalogs(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Legacy `catalog:` mapping or canonical `catalogs:` list -> raw catalog dicts.
+
+    The entire read-time backwards-compatibility story lives in this one function: a
+    legacy config becomes a single protected remote catalog with id 'shared', and
+    nothing downstream ever learns which shape was on disk. Assumes the config has
+    already passed `Config.problems` — exactly one of the two forms is present.
+    """
+    if "catalogs" in (data or {}):
+        return [dict(item) for item in (data.get("catalogs") or []) if isinstance(item, dict)]
+    cat = (data or {}).get("catalog") or {}
+    return [{
+        "id": SHARED_ID,
+        "repo": cat.get("repo"),
+        "yaml_path": cat.get("yaml_path"),
+        "branch": cat.get("branch"),
+        "protected": True,  # the team catalog keeps its PR gate
+    }]
+
+
+def _catalog_from_raw(item: dict[str, Any]) -> Catalog:
+    """Build a Catalog from a raw registry item that has already been validated."""
+    cid = str(item["id"]).strip()
+    writable = bool(item.get("writable", True))
+    if item.get("path"):
+        return Catalog(
+            id=cid, kind="local", writable=writable,
+            path_raw=str(item["path"]),
+            git_commit=bool(item.get("git_commit", False)),
+        )
+    return Catalog(
+        id=cid, kind="remote", writable=writable,
+        repo=str(item["repo"]),
+        yaml_path=str(item["yaml_path"]),
+        branch=str(item["branch"]),
+        protected=bool(item.get("protected", True)),
+    )
+
 
 @dataclass
 class Config:
     """Per-device settings, loaded from config.local.yaml.
 
-    Replaces the old hardcoded ## Variables block in SKILL.md. Never committed
-    to the tool repo — each teammate points the tool at the shared catalog repo
-    (agent-library) here. Write ops branch + PR against `catalog_branch`.
-    """
-    catalog_repo: str            # clone URL of the catalog repo (agent-library)
-    catalog_yaml_path: str       # path to the catalog file within that repo
-    catalog_branch: str          # protected branch that PRs target
-    autopush: bool = False       # if true, write ops also run `gh pr create`
+    Replaces the old hardcoded ## Variables block in SKILL.md. Never committed to
+    the tool repo — each teammate points the tool at the shared catalog repo
+    (agent-library) here.
 
+    Holds the catalog registry in precedence order, highest first, so the first
+    match for a name wins and a personal catalog registered ahead of the shared one
+    overrides it.
+    """
+    catalogs: list[Catalog] = field(default_factory=list)
+    autopush: bool = False        # if true, pr-mode writes also run `gh pr create`
+    default_add_catalog: str = ""  # write destination when --catalog is omitted
+    dirs: dict[str, dict[str, str]] = field(default_factory=dict)  # install dirs
+    legacy_shape: bool = False    # config still uses the singular `catalog:` mapping
+
+    # ── registry views ──────────────────────────────────────────────────
+    @property
+    def active(self) -> list[Catalog]:
+        """Catalogs usable this run — everything that hydrated successfully."""
+        return [c for c in self.catalogs if not c.skipped]
+
+    @property
+    def writable(self) -> list[Catalog]:
+        return [c for c in self.active if c.writable]
+
+    @property
+    def remotes(self) -> list[Catalog]:
+        """Every remote catalog, skipped ones included — a missing clone is exactly
+        the case that still needs a clone/pull attempt."""
+        return [c for c in self.catalogs if c.is_remote]
+
+    def by_id(self, cid: str) -> Catalog:
+        """The active catalog *cid*, or raise listing what is available."""
+        for c in self.active:
+            if c.id == cid:
+                return c
+        available = ", ".join(c.id for c in self.active) or "none"
+        raise LibraryError(f"unknown catalog '{cid}' (available: {available})")
+
+    # ── entry resolution ────────────────────────────────────────────────
+    def entries(self) -> list[Entry]:
+        """Every active catalog's entries, in precedence order, stamped with origin."""
+        out: list[Entry] = []
+        for c in self.active:
+            out.extend(iter_catalog_entries(c))
+        return out
+
+    def entries_of(self, cid: str) -> list[Entry]:
+        """One catalog's entries — the scope dependencies resolve within."""
+        return iter_catalog_entries(self.by_id(cid))
+
+    def resolve(self, name: str, catalog: str | None = None) -> Entry | None:
+        """First entry named *name* by precedence, or within one catalog if given."""
+        return find_exact(self.entries_of(catalog) if catalog else self.entries(), name)
+
+    def overridden(self, name: str) -> list[Entry]:
+        """Entries named *name* that lost to the resolved one, in precedence order."""
+        return [e for e in self.entries() if e.name == name][1:]
+
+    # ── transitional single-catalog accessors ───────────────────────────
+    # The commands still read these three; they go away once each one reads the
+    # catalog list directly.
+    @property
+    def _first_remote(self) -> Catalog:
+        for c in self.remotes:
+            return c
+        raise LibraryError("no remote catalog is configured")
+
+    @property
+    def catalog_repo(self) -> str:
+        return self._first_remote.repo
+
+    @property
+    def catalog_yaml_path(self) -> str:
+        return self._first_remote.yaml_path
+
+    @property
+    def catalog_branch(self) -> str:
+        return self._first_remote.branch
+
+    # ── validation ──────────────────────────────────────────────────────
     @staticmethod
-    def missing_keys(data: dict[str, Any]) -> list[str]:
-        """Required keys absent from *data* (non-dying; used by doctor)."""
-        cat = (data or {}).get("catalog") or {}
-        return [f"catalog.{k}" for k in ("repo", "yaml_path", "branch") if not cat.get(k)]
+    def problems(data: dict[str, Any]) -> list[str]:
+        """Every registry validation failure in *data*, worst first.
+
+        One implementation shared by `load_config`, which dies on the first, and
+        `doctor`, which reports them all — so the two can never disagree about what
+        a valid registry is. Messages are noun phrases, so a caller can prefix them
+        with the config path.
+        """
+        data = data or {}
+        has_legacy, has_list = "catalog" in data, "catalogs" in data
+        if has_legacy and has_list:
+            return ["both 'catalog:' and 'catalogs:' are present — keep one; they are ambiguous"]
+        if not has_legacy and not has_list:
+            return ["neither 'catalog:' nor 'catalogs:' is present"]
+
+        if has_legacy:
+            legacy = data.get("catalog")
+            if not isinstance(legacy, dict):
+                return ["'catalog:' is not a mapping"]
+            missing = [f"catalog.{k}" for k in ("repo", "yaml_path", "branch") if not legacy.get(k)]
+            if missing:
+                return [f"missing {', '.join(missing)}"]
+        elif not isinstance(data.get("catalogs"), list):
+            return ["'catalogs:' is not a list"]
+        elif not data.get("catalogs"):
+            return ["'catalogs:' is empty"]
+
+        out: list[str] = []
+        seen_ids: set[str] = set()
+        clones: dict[tuple[str, str], str] = {}
+        for i, item in enumerate(_normalize_catalogs(data) if has_legacy
+                                 else data.get("catalogs") or []):
+            if not isinstance(item, dict):
+                out.append(f"catalogs[{i}] is not a mapping")
+                continue
+            cid = str(item.get("id") or "").strip()
+            label = f"'{cid}'" if cid else f"catalogs[{i}]"
+            if not cid:
+                out.append(f"catalogs[{i}] has no 'id'")
+            elif cid in seen_ids:
+                out.append(f"duplicate catalog id '{cid}'")
+            else:
+                seen_ids.add(cid)
+
+            has_path, has_repo = bool(item.get("path")), bool(item.get("repo"))
+            if has_path and has_repo:
+                out.append(f"catalog {label} declares both 'path' and 'repo' — pick one")
+                continue
+            if not has_path and not has_repo:
+                out.append(f"catalog {label} declares neither 'path' nor 'repo'")
+                continue
+
+            if has_repo:
+                for key in ("yaml_path", "branch"):
+                    if not item.get(key):
+                        out.append(f"remote catalog {label} has no '{key}'")
+                yaml_path = str(item.get("yaml_path") or "")
+                if yaml_path and (yaml_path.startswith("/") or ":" in yaml_path
+                                  or ".." in Path(yaml_path).parts):
+                    out.append(f"catalog {label} has invalid yaml_path {yaml_path!r}: use a "
+                               "relative path inside the repo (no leading '/', no '..', no ':')")
+                # Two remotes on the same repo+branch would contend for one clone.
+                clone_key = (str(item["repo"]), str(item.get("branch") or ""))
+                if clone_key in clones:
+                    out.append(f"catalogs {label} and '{clones[clone_key]}' share repo and "
+                               "branch; they would contend for one clone")
+                else:
+                    clones[clone_key] = cid or f"catalogs[{i}]"
+            else:
+                # A catalog location is machine-global, so — unlike an install dir —
+                # it must not inherit the invocation cwd as an anchor.
+                path = str(item.get("path") or "")
+                if not (path.startswith("/") or path.startswith("~")):
+                    out.append(f"catalog {label} path {path!r} must be absolute or start with '~'")
+        return out
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Config":
-        missing = cls.missing_keys(data)
-        if missing:
-            die(f"{LOCAL_CONFIG_PATH} is missing {', '.join(missing)} — run `library init` to (re)create it")
-        cat = data["catalog"]
-        yaml_path = str(cat["yaml_path"])
-        if yaml_path.startswith("/") or ":" in yaml_path or ".." in Path(yaml_path).parts:
-            die(f"invalid catalog.yaml_path {yaml_path!r}: use a relative path inside "
-                "the repo (no leading '/', no '..', no ':')")
+        problems = cls.problems(data)
+        if problems:
+            more = "\n  run `library doctor` for the full list" if len(problems) > 1 else ""
+            die(f"{LOCAL_CONFIG_PATH} is invalid: {problems[0]}{more}\n"
+                "  or run `library init` to (re)create the config")
         return cls(
-            catalog_repo=str(cat["repo"]),
-            catalog_yaml_path=yaml_path,
-            catalog_branch=str(cat["branch"]),
+            catalogs=[_catalog_from_raw(item) for item in _normalize_catalogs(data)],
             autopush=bool(data.get("autopush", False)),
+            default_add_catalog=str(data.get("default_add_catalog") or ""),
+            dirs=effective_dirs(default_dirs(data)),
+            legacy_shape="catalog" in data,
         )
 
 
+def multi_catalog(cfg: Config) -> bool:
+    """True when the registry holds more than one catalog — the gate for per-catalog output.
+
+    Keyed on registered rather than active count, so a catalog that got skipped still
+    appears in per-catalog output instead of the display silently reverting to the
+    single-catalog shape and hiding it.
+    """
+    return len(cfg.catalogs) > 1
+
+
+def _hydrate_one(cat: Catalog) -> None:
+    """Load *cat*'s catalog data, or record why it can't be used.
+
+    Deliberately does not clone: `pull_catalog` owns clone-if-absent and dies with
+    an auth hint, so leaving that there keeps `load_config` cheap and offline, and
+    lets `doctor` report on a config whose clones are missing.
+    """
+    cat.data, cat.skipped = {}, ""  # idempotent: safe to re-run after a pull
+    if cat.is_remote and not cat.clone_dir.exists():
+        cat.skipped = f"not cloned yet at {cat.clone_dir}"
+        return
+    path = cat.yaml_file
+    if not path.exists():
+        cat.skipped = f"catalog file not found at {path}"
+        return
+    try:
+        with path.open() as fh:
+            data = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError) as ex:
+        cat.skipped = f"could not read {path}: {ex}"
+        return
+    if not isinstance(data, dict):
+        cat.skipped = f"{path} is malformed (expected a YAML mapping)"
+        return
+    cat.data = data
+
+
+_CONFIG_HEADER = """\
+# The Library — per-device config (gitignored; never commit this).
+#
+# Machine-owned: `library catalog …` rewrites this file, so hand-added comments are
+# not preserved. See cookbook/catalog.md.
+#
+# catalogs: precedence order, highest first — the first catalog defining a name wins.
+#   local  = id + path (a library.yaml file, or a directory containing one)
+#   remote = id + repo + yaml_path + branch (protected: true -> writes open a PR)
+"""
+
+
+def write_config(data: dict[str, Any]) -> Config:
+    """Write config.local.yaml from *data*, then re-read and re-validate it.
+
+    Dumped rather than text-spliced because this file is machine-owned — unlike a
+    catalog, which is hand-authored and PR-reviewed and so keeps its style-preserving
+    splice. Validating before the write means a rejected config leaves the existing
+    file untouched.
+    """
+    problems = Config.problems(data)
+    if problems:
+        die(f"refusing to write an invalid config: {problems[0]}")
+    LOCAL_CONFIG_PATH.write_text(_CONFIG_HEADER + "\n" + yaml.safe_dump(data, sort_keys=False))
+    return load_config()  # re-read: success is only reported for a config that loads
+
+
+def migrated_config(data: dict[str, Any], catalog_data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Legacy `catalog:` config -> canonical `catalogs:` config, plus what changed.
+
+    Lifts the shared catalog's `default_dirs` into the config override, so install
+    locations do not move now that a catalog's own block is ignored. Unrecognized
+    top-level keys are carried over rather than dropped.
+    """
+    legacy = data.get("catalog") or {}
+    notes = [f"catalog: -> catalogs: with one entry (id '{SHARED_ID}', protected: true)"]
+    entry = {
+        "id": SHARED_ID,
+        "repo": str(legacy.get("repo", "")),
+        "yaml_path": str(legacy.get("yaml_path", "")),
+        "branch": str(legacy.get("branch", "")),
+        "protected": True,
+    }
+    new: dict[str, Any] = {"catalogs": [entry], "autopush": bool(data.get("autopush", False))}
+    for key, value in data.items():
+        if key not in ("catalog", "catalogs", "autopush", "default_dirs"):
+            new[key] = value
+
+    override = data.get("default_dirs")
+    lifted = {section: [{scope: path} for scope, path in scopes.items()]
+              for section, scopes in default_dirs(catalog_data).items() if scopes}
+    if override:
+        new["default_dirs"] = override
+        notes.append("kept the existing default_dirs override in config.local.yaml")
+    elif lifted:
+        new["default_dirs"] = lifted
+        notes.append("lifted the catalog's default_dirs into config.local.yaml, so install "
+                     "locations do not change")
+    return new, notes
+
+
 def load_config() -> Config:
-    """Load + validate the per-device config, or die with a setup hint."""
+    """Load, validate, and hydrate the per-device config, or die with a setup hint.
+
+    Dies on a bad registry; a catalog whose *source* can't be read is skipped with a
+    reason rather than fatal, so one broken catalog never breaks a read from another.
+    """
     if not LOCAL_CONFIG_PATH.exists():
         die(
             f"no local config at {LOCAL_CONFIG_PATH}\n"
@@ -131,7 +436,236 @@ def load_config() -> Config:
         data = yaml.safe_load(fh) or {}
     if not isinstance(data, dict):
         die(f"{LOCAL_CONFIG_PATH} is malformed (expected a YAML mapping)")
-    return Config.from_dict(data)
+    cfg = Config.from_dict(data)
+    hydrate_all(cfg)
+    return cfg
+
+
+def hydrate_all(cfg: Config, quiet: bool = False) -> None:
+    """(Re-)read every catalog's file. Idempotent, so it can run again after a pull.
+
+    A catalog that can't be read is skipped with a reason. With a single catalog the
+    command itself still reports the problem (or clones on demand), so warning here
+    would add output to today's behavior — hence the gate.
+    """
+    for cat in cfg.catalogs:
+        _hydrate_one(cat)
+        if cat.skipped and not quiet and multi_catalog(cfg):
+            warn(f"catalog '{cat.id}' skipped: {cat.skipped}")
+
+
+def refresh_catalogs(cfg: Config, no_pull: bool) -> dict[str, "str | None"]:
+    """Bring every catalog up to date for a read command; {catalog id: pull error}.
+
+    Hydration in `load_config` runs before any clone or pull, so a refreshed clone
+    has to be re-read — otherwise a first run would see the pre-clone state.
+    """
+    if no_pull:
+        return {}
+    errors = pull_all(cfg)
+    hydrate_all(cfg, quiet=True)  # load_config already warned about any skip
+    return errors
+
+
+def require_entries(cfg: Config) -> list[Entry]:
+    """Every active catalog's entries, or die when none could be read.
+
+    Preserves today's hard failure: with one catalog configured, an unreadable
+    catalog is fatal rather than an empty list. Hydration only downgrades that to a
+    skip when another catalog can still serve the request.
+    """
+    if not cfg.active:
+        if len(cfg.catalogs) == 1:
+            cat = cfg.catalogs[0]
+            path = catalog_yaml(cat)
+            die(f"catalog not found at {path}" if not path.exists() else cat.skipped)
+        die("no readable catalog: " + "; ".join(
+            f"{c.id} ({c.skipped})" for c in cfg.catalogs))
+    return cfg.entries()
+
+
+def effective_dirs(override: dict[str, dict[str, str]] | None) -> dict[str, dict[str, str]]:
+    """The one install-dir mapping in force: built-in defaults under the config override.
+
+    Merged per section and per scope, so a config that names only
+    `skills: [- global: ...]` keeps the built-in project dir and both agent dirs. No
+    catalog is consulted: a catalog says what exists, not where a machine puts it.
+    """
+    out = {section: dict(scopes) for section, scopes in BUILTIN_DEFAULT_DIRS.items()}
+    for section, scopes in (override or {}).items():
+        if section in out:
+            out[section].update(scopes)
+    return out
+
+
+def catalog_restriction(cfg: Config, args: argparse.Namespace) -> "str | None":
+    """The validated `--catalog` id to resolve within, or None for full precedence.
+
+    Dies listing the available ids when the catalog is unknown or was skipped this
+    run, so a typo never silently falls back to searching everything.
+    """
+    cid = getattr(args, "catalog", None)
+    if not cid:
+        return None
+    try:
+        return cfg.by_id(cid).id
+    except LibraryError as ex:
+        die(str(ex))
+
+
+def resolved_entries(cfg: Config, args: argparse.Namespace) -> list[Entry]:
+    """Entries to resolve against: one catalog when restricted, else all in precedence."""
+    only = catalog_restriction(cfg, args)
+    return cfg.entries_of(only) if only else require_entries(cfg)
+
+
+def write_target(cfg: Config, requested: "str | None") -> Catalog:
+    """The catalog a write lands in, or raise AmbiguousCatalog with the choices.
+
+    A named catalog wins, then the sole writable one, then `default_add_catalog`. The
+    default is matched *within* the writable list rather than looked up on its own, so
+    a stale one — naming a catalog that is now missing, skipped, or read-only — is
+    simply ignored. That makes R7.5 structural: it can neither break the only write
+    possible on this machine nor turn a genuine choice into a lookup error.
+    """
+    if requested:
+        cat = cfg.by_id(requested)  # raises listing the available ids
+        if not cat.writable:
+            raise LibraryError(f"catalog '{cat.id}' is read-only (writable: false)")
+        return cat
+
+    writable = cfg.writable
+    if not writable:
+        raise LibraryError("no writable catalog is configured; nothing can be written")
+    if len(writable) == 1:
+        return writable[0]
+    for cat in writable:
+        if cat.id == cfg.default_add_catalog:
+            return cat
+    raise AmbiguousCatalog([c.id for c in writable])
+
+
+def report_ambiguous_catalog(ex: AmbiguousCatalog, as_json: bool,
+                             lead: "str | None" = None) -> int:
+    """Hand the choice back to the caller at exit 2, the code that already means "decide".
+
+    One payload shape for two situations the caller resolves the same way: no obvious
+    destination for a new entry, and an existing name held by several catalogs. *lead*
+    replaces the human wording for the second.
+    """
+    if as_json:
+        print(json.dumps({"status": "AMBIGUOUS_CATALOG", "catalogs": ex.catalogs}, indent=2))
+    elif lead:
+        print(lead)
+    else:
+        print("More than one catalog can be written to: " + ", ".join(ex.catalogs))
+        print("Pass --catalog <id>, or set default_add_catalog in config.local.yaml.")
+    return 2
+
+
+def cross_catalog_conflict(cfg: Config, name: str) -> "AmbiguousCatalog | None":
+    """The catalogs holding *name* when more than one does, else None (R7.8).
+
+    `update` and `remove` rewrite an entry that already exists, so precedence alone is
+    not enough to act on: silently editing the winning copy would leave the user looking
+    at an unchanged entry of the same name and no explanation.
+    """
+    holders = list(dict.fromkeys(e.catalog for e in cfg.entries() if e.name == name))
+    return AmbiguousCatalog(holders) if len(holders) > 1 else None
+
+
+def override_split(cfg: Config, entry: Entry) -> tuple[list[str], list[str]]:
+    """(catalogs *entry* overrides, catalogs that override *entry*), by precedence.
+
+    "Override" is about which copy resolves, never about editing the other one: the
+    lower-precedence entry is untouched and still installable with `--catalog`.
+
+    Relative to *entry*, not to precedence alone: under `--catalog` the resolved entry
+    can be the overridden one. `cfg.overridden()` slices the merged list positionally, so
+    reading it here reported that a `--catalog shared` install overrode shared itself.
+    """
+    order = [c.id for c in cfg.active]
+    rank = order.index(entry.catalog) if entry.catalog in order else len(order)
+    below: list[str] = []
+    above: list[str] = []
+    for e in cfg.entries():
+        if e.name != entry.name or e.catalog == entry.catalog:
+            continue
+        (above if order.index(e.catalog) < rank else below).append(e.catalog)
+    return list(dict.fromkeys(below)), list(dict.fromkeys(above))
+
+
+def override_note(cfg: Config, entry: Entry) -> str:
+    """'' when no other catalog holds the name, else how *entry* relates to the rest.
+
+    Overriding is the point of a personal catalog, so it is always reported rather
+    than being silent — the user should know which copy they just got.
+    """
+    below, above = override_split(cfg, entry)
+    if above:  # the surprising direction: what you asked for is not what resolves
+        return "is overridden by " + ", ".join(above)
+    return "overrides " + ", ".join(below) if below else ""
+
+
+def new_entry_override_warnings(cfg: Config, cat: Catalog, name: str) -> list[str]:
+    """Warnings for adding *name* to *cat* when another catalog already has it (R7.7).
+
+    The add is allowed — overriding is the point of a personal catalog — but which copy
+    wins is invisible in the command the user typed, so the direction is always named.
+    """
+    order = [c.id for c in cfg.active]
+    if cat.id not in order:
+        return []
+    rank = order.index(cat.id)
+    overrides: list[str] = []
+    overridden_by: list[str] = []
+    for other in cfg.active:
+        if other.id == cat.id or find_exact(iter_catalog_entries(other), name) is None:
+            continue
+        (overrides if order.index(other.id) > rank else overridden_by).append(other.id)
+
+    out: list[str] = []
+    if overrides:
+        out.append(f"'{name}' also exists in {', '.join(overrides)}; the copy in "
+                   f"'{cat.id}' takes precedence and will override it")
+    if overridden_by:
+        out.append(f"'{name}' also exists in {', '.join(overridden_by)}, which takes "
+                   f"precedence; the copy in '{cat.id}' will be overridden")
+    return out
+
+
+def push_source_warning(cfg: Config, entry: Entry) -> str:
+    """'' unless the installed copy could have come from more than one catalog (R11.2).
+
+    Nothing on disk records which catalog an installed item came from, so for an overridden
+    name the source being pushed to is an inference from precedence. Both candidates are
+    named, because the cost of guessing wrong is an edit landing in someone else's repo.
+    """
+    # Every *other* catalog holding the name, not `cfg.overridden()`: that slices by
+    # precedence, so under `--catalog` it would report the resolved entry as its own
+    # alternative. What matters here is simply "who else defines this name".
+    others = [e for e in cfg.entries()
+              if e.name == entry.name and e.catalog != entry.catalog]
+    if not others:
+        return ""
+    alternatives = "; ".join(f"'{e.catalog}' → {e.source}" for e in others)
+    return (f"'{entry.name}' is defined in more than one catalog and nothing on disk "
+            f"records which copy was installed. Pushing to '{entry.catalog}' → "
+            f"{entry.source} (also defined by {alternatives})")
+
+
+def staleness_warnings(cfg: Config, pull_errors: dict[str, "str | None"], syncing: bool = False) -> None:
+    """Warn per remote catalog whose clone is behind its branch."""
+    for cat in cfg.remotes:
+        behind = catalog_behind(cat)
+        if not behind:
+            continue
+        reason = (f"pull failed: {pull_errors[cat.id]}" if pull_errors.get(cat.id)
+                  else "catalog was not refreshed")
+        tail = ("syncing against stale catalog metadata" if syncing
+                else "output may be stale")
+        label = f"catalog '{cat.id}'" if multi_catalog(cfg) else "catalog"
+        warn(f"{label} is {behind} commit(s) behind origin/{cat.branch} ({reason}); {tail}")
 
 
 _VAR_RE = re.compile(r"^\s*-\s*\*\*(\w+)\*\*:\s*`([^`]+)`")
@@ -169,20 +703,88 @@ class Entry:
     description: str
     source: str
     requires: list[str] = field(default_factory=list)
+    catalog: str = ""  # id of the catalog this came from (stamped by iter_catalog_entries)
 
     @property
     def section(self) -> str:
         return PLURAL[self.type]
 
 
+@dataclass
+class Catalog:
+    """One configured catalog: a local file on disk, or a remote repo with a clone.
+
+    The shared team catalog is just the conventional case — a remote catalog with
+    id 'shared' and protected: true. Everything else about a catalog (where it
+    lives, whether it can be written, how a write reaches it) follows from these
+    fields, so no command needs to special-case "the" catalog.
+    """
+    id: str
+    kind: str  # "local" | "remote"
+    writable: bool = True
+    # local
+    path_raw: str = ""
+    git_commit: bool = False  # commit + push the catalog file after a write
+    # remote
+    repo: str = ""
+    yaml_path: str = ""
+    branch: str = ""
+    protected: bool = True  # never pushed to directly; writes go through a PR
+    # runtime
+    data: dict[str, Any] = field(default_factory=dict)  # parsed catalog YAML
+    skipped: str = ""  # non-empty = excluded from this run, and why
+
+    @property
+    def is_remote(self) -> bool:
+        return self.kind == "remote"
+
+    @property
+    def write_mode(self) -> str:
+        """How a write reaches this catalog: local | pr | direct.
+
+        Derived, never configured: a local catalog is edited in place, a protected
+        remote gets a branch + PR, an unprotected remote is committed and pushed.
+        """
+        if not self.is_remote:
+            return "local"
+        return "pr" if self.protected else "direct"
+
+    @property
+    def clone_dir(self) -> Path | None:
+        """Persistent clone for a remote catalog, or None for a local one.
+
+        The shared catalog keeps .catalog-repo/ so no existing clone is invalidated.
+        """
+        if not self.is_remote:
+            return None
+        return CATALOG_CLONE_DIR if self.id == SHARED_ID else CATALOGS_DIR / self.id
+
+    @property
+    def yaml_file(self) -> Path:
+        """The catalog file itself.
+
+        local: the configured path, or library.yaml inside it when it's a directory.
+        remote: yaml_path within the persistent clone.
+        """
+        if self.is_remote:
+            return self.clone_dir / self.yaml_path
+        p = Path(self.path_raw).expanduser()
+        return p / "library.yaml" if p.is_dir() else p
+
+    @property
+    def root(self) -> Path:
+        """Directory holding the catalog file — the git work tree for a git-backed one."""
+        return self.yaml_file.parent
+
+
 def load_catalog(path: Path | None = None) -> dict[str, Any]:
     """Load the catalog YAML from *path*.
 
-    If path is omitted, falls back to catalog_path(load_config()) — requires
+    If path is omitted, falls back to catalog_yaml(load_config()._first_remote) — requires
     a valid local config and an existing catalog clone.
     """
     if path is None:
-        path = catalog_path(load_config())
+        path = catalog_yaml(load_config()._first_remote)
     if not path.exists():
         die(f"catalog not found at {path}")
     with path.open() as fh:
@@ -228,6 +830,19 @@ def iter_entries(catalog: dict[str, Any]) -> list[Entry]:
                     requires=list(raw.get("requires", []) or []),
                 )
             )
+    return entries
+
+
+def iter_catalog_entries(cat: Catalog) -> list[Entry]:
+    """Entries from *cat*, each stamped with its originating catalog id.
+
+    Thin wrapper so `iter_entries` stays the pure YAML→entries function it is
+    today — it is also called on a temp clone's parsed text during a write, where
+    there is no Catalog object to stamp from.
+    """
+    entries = iter_entries(cat.data)
+    for e in entries:
+        e.catalog = cat.id
     return entries
 
 
@@ -378,7 +993,7 @@ def resolve_install_dir(raw: str) -> Path:
 
 
 def resolve_target_base(
-    catalog: dict[str, Any],
+    dirs: dict[str, dict[str, str]],
     entry: Entry,
     scope: str,
     custom: str | None,
@@ -387,31 +1002,32 @@ def resolve_target_base(
 
     Resolution order:
     1. Explicit --dir / custom path (highest priority).
-    2. Catalog default_dirs[section][scope] ('global' = home ~/.claude/ — the
+    2. The effective install dirs[section][scope] ('global' = home ~/.claude/ — the
        default — 'project' = project-local .claude/ anchored to the invocation
        cwd, selected with --project).
+
+    *dirs* is the one effective mapping owned by the tool and the local config; no
+    catalog gets a say in where a machine puts things.
 
     Relative paths follow the dir contract in :func:`resolve_install_dir`:
     they anchor to the user's working directory, not the CLI's runtime cwd.
     """
     if custom:
         return resolve_install_dir(custom)
-    dirs = default_dirs(catalog)[entry.section]
-    raw = dirs.get(scope)
+    raw = dirs[entry.section].get(scope)
     if not raw:
         raise LibraryError(f"no '{scope}' dir configured for {entry.section}")
     return resolve_install_dir(raw)
 
 
-def installed_scopes(catalog: dict[str, Any], entry: Entry) -> list[str]:
+def installed_scopes(dirs: dict[str, dict[str, str]], entry: Entry) -> list[str]:
     """Return scopes ('project'/'global') where the item appears installed.
 
     'global' is listed first when present — it is the primary scope, and
     `sync` refreshes each item in its first listed scope.
     """
     found: list[str] = []
-    dirs = default_dirs(catalog)[entry.section]
-    for scope, raw in sorted(dirs.items(), key=lambda kv: kv[0] != "global"):
+    for scope, raw in sorted(dirs[entry.section].items(), key=lambda kv: kv[0] != "global"):
         base = resolve_install_dir(raw)
         if not base.exists():
             continue
@@ -624,22 +1240,27 @@ def main_file_for(entry: Entry, dest: Path) -> Path:
 # Catalog repo sync (Phase 2: replaces git_pull_library)
 # --------------------------------------------------------------------------- #
 
-def pull_catalog(cfg: Config, quiet: bool = True) -> "str | None":
-    """Ensure the catalog repo clone is present and up to date.
+def pull_catalog(cat: Catalog, quiet: bool = True) -> "str | None":
+    """Ensure *cat*'s clone is present and up to date. No-op for a local catalog.
 
-    If CATALOG_CLONE_DIR is absent → clone (shallow, single-branch on
-    cfg.catalog_branch). On clone failure → die with auth hint.
-    If it already exists → git pull --ff-only. On pull failure → warn and
-    continue (stale cache is better than nothing for offline workflows).
+    If the clone is absent → clone (shallow, single-branch on cat.branch). On clone
+    failure → die with auth hint. If it already exists → git pull --ff-only. On pull
+    failure → warn and continue (stale cache is better than nothing for offline
+    workflows).
 
     Returns the pull error summary on failure, None on success.
     """
-    if not CATALOG_CLONE_DIR.exists():
+    if not cat.is_remote:
+        return None  # a local catalog is read straight from disk
+
+    clone_dir = cat.clone_dir
+    if not clone_dir.exists():
+        clone_dir.parent.mkdir(parents=True, exist_ok=True)
         proc = subprocess.run(
             [
                 "git", "clone", "--depth", "1", "--single-branch",
-                "--branch", cfg.catalog_branch,
-                cfg.catalog_repo, str(CATALOG_CLONE_DIR),
+                "--branch", cat.branch,
+                cat.repo, str(clone_dir),
             ],
             capture_output=True, text=True,
         )
@@ -651,7 +1272,7 @@ def pull_catalog(cfg: Config, quiet: bool = True) -> "str | None":
         return None
 
     proc = subprocess.run(
-        ["git", "-C", str(CATALOG_CLONE_DIR), "pull", "--ff-only"],
+        ["git", "-C", str(clone_dir), "pull", "--ff-only"],
         capture_output=True, text=True,
     )
     if proc.returncode != 0:
@@ -663,16 +1284,27 @@ def pull_catalog(cfg: Config, quiet: bool = True) -> "str | None":
     return None
 
 
-def catalog_behind(cfg: Config) -> int:
-    """Commits the catalog clone's HEAD is behind origin/<branch>.
+def pull_all(cfg: Config) -> dict[str, "str | None"]:
+    """Refresh every remote catalog best-effort; returns {catalog id: pull error}.
+
+    One catalog's pull failure warns and leaves its cached copy in place, so the
+    other catalogs and the command still proceed.
+    """
+    return {cat.id: pull_catalog(cat) for cat in cfg.remotes}
+
+
+def catalog_behind(cat: Catalog) -> int:
+    """Commits *cat*'s clone is behind origin/<branch>. 0 for a local catalog.
 
     Based on the last-fetched origin ref, so it catches a failed ff-only pull
     (fetch succeeded, merge didn't) and stale --no-pull runs. Returns 0 when
     the count can't be determined.
     """
+    if not cat.is_remote:
+        return 0
     proc = subprocess.run(
-        ["git", "-C", str(CATALOG_CLONE_DIR), "rev-list", "--count",
-         f"HEAD..origin/{cfg.catalog_branch}"],
+        ["git", "-C", str(cat.clone_dir), "rev-list", "--count",
+         f"HEAD..origin/{cat.branch}"],
         capture_output=True, text=True,
     )
     if proc.returncode != 0:
@@ -683,9 +1315,13 @@ def catalog_behind(cfg: Config) -> int:
         return 0
 
 
-def catalog_path(cfg: Config) -> Path:
-    """Absolute path to the catalog YAML inside the persistent clone."""
-    return CATALOG_CLONE_DIR / cfg.catalog_yaml_path
+def catalog_yaml(cat: Catalog) -> Path:
+    """Absolute path to *cat*'s catalog file, wherever it lives.
+
+    Saves every caller from knowing whether a catalog is a local file or a path
+    inside a persistent clone.
+    """
+    return cat.yaml_file
 
 
 # --------------------------------------------------------------------------- #
@@ -1004,42 +1640,293 @@ def _create_pr(
 
 
 # --------------------------------------------------------------------------- #
+# The catalog edit seam (one splice + safety net behind three write modes)
+# --------------------------------------------------------------------------- #
+
+def _is_git_tree(path: Path) -> bool:
+    proc = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True, text=True,
+    )
+    return proc.returncode == 0
+
+
+def _pull_ff_only(work: Path, label: str) -> None:
+    """Best-effort ff-only pull before an in-place write (R6.10).
+
+    A failure is a warning, never fatal: the alternative is refusing to write at
+    all because a laptop is offline. The write then lands on the local copy, which
+    is exactly what happens today for a catalog that was never pulled.
+    """
+    proc = subprocess.run(
+        ["git", "-C", str(work), "pull", "--ff-only"], capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        warn(f"could not pull {label} before writing "
+             f"({_git_error_summary(proc.stderr)}); writing against the local copy")
+
+
+def _commit_catalog_file(
+    work: Path, yaml_rel: str, commit_msg: str, push_branch: "str | None", label: str,
+) -> dict[str, Any]:
+    """Commit the catalog file and push, reporting rather than raising on failure.
+
+    R6.9: the file is already on disk by the time this runs, so a git failure must
+    not be reported as a failed write — that is a lie the user would act on, e.g.
+    by re-running an `add` that already landed. Warn, report, carry on.
+    """
+    out: dict[str, Any] = {"committed": False, "pushed": False}
+    try:
+        _git_in(work, ["add", yaml_rel])
+        _git_in(work, ["commit", "-m", commit_msg])
+        out["committed"] = True
+    except LibraryError as ex:
+        warn(f"{label} written, but the commit failed: {ex}")
+        return out
+
+    push = ["push"] if push_branch is None else ["push", "origin", f"HEAD:{push_branch}"]
+    try:
+        _git_in(work, push)
+        out["pushed"] = True
+    except LibraryError as ex:
+        warn(f"{label} committed, but the push failed: {ex}")
+    return out
+
+
+def _apply_edit_in_place(
+    cat: Catalog,
+    edit: Callable[[str], "str | None"],
+    verify: Callable[[dict[str, Any]], None],
+    *,
+    commit_msg: str,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """`local` and `direct` modes: one read, one write, of the same bytes (R6.12).
+
+    They differ only in where the file lives and whether git is involved
+    unconditionally, so they share this body — which is also what gives them
+    `update`'s determinism guarantee for free: there is no temp-clone that could
+    be newer than the copy the edit was computed from.
+    """
+    if cat.is_remote:                       # direct: the persistent clone
+        pull_catalog(cat)                   # clones on demand, ff-only pull, warns
+        work, use_git, push_branch = cat.clone_dir, True, cat.branch
+        yaml_rel = cat.yaml_path
+    else:                                   # local: the file on disk
+        work, push_branch = cat.root, None
+        yaml_rel = cat.yaml_file.name
+        use_git = cat.git_commit and _is_git_tree(work)
+        if cat.git_commit and not use_git:
+            warn(f"catalog '{cat.id}' sets git_commit but {work} is not a git working "
+                 "tree; the file is written, not committed")
+        elif use_git and not dry_run:
+            _pull_ff_only(work, f"catalog '{cat.id}'")
+
+    path = cat.yaml_file
+    if not path.exists():
+        die(f"catalog not found at {path}")
+
+    text = path.read_text()
+    new_text = edit(text)
+    if new_text is None:
+        return {"changed": False, "path": str(path)}
+    verify(yaml.safe_load(new_text) or {})
+
+    diff = "".join(difflib.unified_diff(
+        text.splitlines(keepends=True), new_text.splitlines(keepends=True),
+        fromfile=f"a/{yaml_rel}", tofile=f"b/{yaml_rel}",
+    ))
+    if dry_run:
+        return {"changed": True, "dry_run": True, "path": str(path), "diff": diff,
+                "branch": push_branch}
+
+    path.write_text(new_text)
+    out: dict[str, Any] = {"changed": True, "path": str(path), "diff": diff,
+                           "committed": False, "pushed": False, "branch": push_branch}
+    if use_git:
+        out.update(_commit_catalog_file(
+            work, yaml_rel, commit_msg, push_branch, f"catalog '{cat.id}'"))
+    return out
+
+
+def _apply_edit_via_pr(
+    cat: Catalog,
+    edit: Callable[[str], "str | None"],
+    verify: Callable[[dict[str, Any]], None],
+    *,
+    commit_msg: str,
+    pr_title: str,
+    pr_body: str,
+    branch: str,
+    cfg: Config,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """`pr` mode: today's temp-clone → branch → commit → PR flow, unchanged."""
+    repo_dir, cleanup = _pr_clone(cat.repo, cat.branch)
+    try:
+        yaml_p = repo_dir / cat.yaml_path
+        text = yaml_p.read_text()
+        new_text = edit(text)
+        if new_text is None:
+            return {"changed": False, "path": str(yaml_p)}
+        verify(yaml.safe_load(new_text) or {})
+        yaml_p.write_text(new_text)
+        _git_in(repo_dir, ["checkout", "-b", branch])
+        _git_in(repo_dir, ["add", cat.yaml_path])
+        _git_in(repo_dir, ["commit", "-m", commit_msg])
+
+        if dry_run:
+            diff = subprocess.run(
+                ["git", "-C", str(repo_dir), "show", "HEAD"],
+                capture_output=True, text=True,
+            ).stdout
+            return {"changed": True, "dry_run": True, "branch": branch, "diff": diff}
+
+        return {"changed": True, **_create_pr(
+            cfg, repo_dir, branch, cat.branch,
+            title=pr_title, body=pr_body, repo_url=cat.repo,
+        )}
+    finally:
+        cleanup()
+
+
+def apply_catalog_edit(
+    cat: Catalog,
+    edit: Callable[[str], "str | None"],
+    verify: Callable[[dict[str, Any]], None],
+    *,
+    commit_msg: str,
+    pr_title: str,
+    pr_body: str,
+    branch_op: str,
+    branch_name_hint: str,
+    cfg: Config,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """Apply one text edit to *cat*'s catalog file, however that catalog is written.
+
+    `edit` receives the file's current text and returns the new text, or None to
+    mean "nothing to change" — the callers compare fields rather than bytes, since
+    a re-rendered entry can differ in whitespace while meaning the same thing.
+    `verify` receives the re-parsed YAML and aborts if the splice went wrong; it
+    always runs before anything is written.
+
+    Every result carries `mode` and `catalog` (R6.5). The rest is mode-specific and
+    the agent is told to branch on `mode` first (R16.2) — only `pr` has a `method`.
+    """
+    if cat.writable is False:
+        raise LibraryError(f"catalog '{cat.id}' is read-only (writable: false)")
+
+    mode = cat.write_mode
+    if mode == "pr":
+        result = _apply_edit_via_pr(
+            cat, edit, verify, commit_msg=commit_msg, pr_title=pr_title,
+            pr_body=pr_body, branch=_pr_branch_name(branch_op, branch_name_hint),
+            cfg=cfg, dry_run=dry_run,
+        )
+    else:
+        result = _apply_edit_in_place(
+            cat, edit, verify, commit_msg=commit_msg, dry_run=dry_run,
+        )
+    return {"mode": mode, "catalog": cat.id, **result}
+
+
+def write_result_keys(result: dict[str, Any]) -> dict[str, Any]:
+    """The write-result keys that belong in a command's JSON payload.
+
+    The diff is dropped (commands place it themselves, and only for a dry run) along
+    with the two control signals the caller has already acted on.
+    """
+    return {k: v for k, v in result.items() if k not in ("diff", "changed", "dry_run")}
+
+
+def print_write_tail(result: dict[str, Any]) -> None:
+    """The mode-appropriate last lines of a human write report."""
+    if result["mode"] == "pr":
+        if result.get("method") == "gh":
+            print(f"  PR opened: {result.get('pr_url')}")
+        else:
+            print(f"  Branch pushed: {result.get('branch')}")
+            if result.get("compare_url"):
+                print(f"  Open PR at:   {result.get('compare_url')}")
+        return
+
+    if result["mode"] == "direct":
+        target = f"{result['catalog']} ({result['branch']})"
+    else:
+        print(f"  Wrote {result['path']}")
+        if not result.get("committed"):
+            return
+        target = result["catalog"]
+    if result.get("pushed"):
+        print(f"  Committed and pushed to {target}.")
+    elif result.get("committed"):
+        print(f"  Committed to {target}; the push failed (see warning above).")
+    else:
+        print(f"  Written to {result['path']}; the commit failed (see warning above).")
+
+
+def print_dry_run_tail(result: dict[str, Any]) -> None:
+    """What a dry run would have done, then the diff."""
+    if result["mode"] == "pr":
+        print(f"[dry-run] would open PR: {result['branch']}\n")
+    elif result["mode"] == "direct":
+        print(f"[dry-run] would commit to {result['catalog']} ({result['branch']})\n")
+    else:
+        print(f"[dry-run] would write {result['path']}\n")
+    print(result["diff"])
+
+
+# --------------------------------------------------------------------------- #
 # Commands — reads (Phase 2: config + catalog clone)
 # --------------------------------------------------------------------------- #
 
 def _install_one(
-    catalog: dict[str, Any],
+    dirs: dict[str, dict[str, str]],
     entry: Entry,
     scope: str,
     custom: str | None,
 ) -> dict[str, Any]:
-    base = resolve_target_base(catalog, entry, scope, custom)
+    base = resolve_target_base(dirs, entry, scope, custom)
     dest, changes = fetch(entry, base)
     main = main_file_for(entry, dest)
     ok = main.exists()
-    return {"type": entry.type, "name": entry.name, "dest": str(dest),
-            "verified": ok, "changes": changes}
+    return {"type": entry.type, "name": entry.name, "catalog": entry.catalog,
+            "dest": str(dest), "verified": ok, "changes": changes}
+
+
+def winning_catalogs(cfg: Config) -> dict[str, str]:
+    """{entry name: catalog id that wins it} across every active catalog.
+
+    Keyed by name, matching how `find_exact` and `resolve` pick a winner — a name is
+    resolved the same way regardless of which section it sits in.
+    """
+    winners: dict[str, str] = {}
+    for e in cfg.entries():
+        winners.setdefault(e.name, e.catalog)
+    return winners
 
 
 def cmd_list(args: argparse.Namespace) -> int:
     cfg = load_config()
-    pull_err = None
-    if not args.no_pull:
-        pull_err = pull_catalog(cfg)
-    behind = catalog_behind(cfg)
-    if behind:
-        reason = f"pull failed: {pull_err}" if pull_err else "catalog was not refreshed"
-        warn(
-            f"catalog is {behind} commit(s) behind origin/{cfg.catalog_branch} "
-            f"({reason}); output may be stale"
-        )
-    catalog = load_catalog(catalog_path(cfg))
-    entries = iter_entries(catalog)
+    pull_errors = refresh_catalogs(cfg, args.no_pull)
+    staleness_warnings(cfg, pull_errors)
+    entries = resolved_entries(cfg, args)
+    multi = multi_catalog(cfg)
+    winners = winning_catalogs(cfg)
+
     rows = []
     for e in entries:
-        scopes = installed_scopes(catalog, e)
-        status = f"installed ({', '.join(scopes)})" if scopes else "not installed"
-        rows.append((e, status, scopes))
+        winner = winners.get(e.name)
+        overridden_by = winner if winner and winner != e.catalog else None
+        # Install status belongs to the resolved winner; an overridden entry is not the
+        # copy that would be installed, so it never claims to be installed.
+        scopes = [] if overridden_by else installed_scopes(cfg.dirs, e)
+        if overridden_by:
+            status = f"overridden by {overridden_by}"
+        else:
+            status = f"installed ({', '.join(scopes)})" if scopes else "not installed"
+        rows.append((e, status, scopes, overridden_by))
 
     if args.json:
         out = [
@@ -1047,38 +1934,59 @@ def cmd_list(args: argparse.Namespace) -> int:
                 "type": e.type, "name": e.name, "description": e.description,
                 "source": e.source, "requires": e.requires,
                 "installed": bool(scopes), "scopes": scopes,
+                "catalog": e.catalog, "overridden_by": overridden_by,
             }
-            for e, _, scopes in rows
+            for e, _, scopes, overridden_by in rows
         ]
         print(json.dumps(out, indent=2))
         return 0
 
     for section in TYPES:
-        group = [(e, s) for e, s, _ in rows if e.section == section]
+        group = [(e, s) for e, s, _, _ in rows if e.section == section]
         title = section.capitalize()
         if not group:
             print(f"\n{title}: (none in catalog)")
             continue
         print(f"\n{title}")
         name_w = max(len(e.name) for e, _ in group)
+        cat_w = max(len(e.catalog) for e, _ in group) if multi else 0
         for e, status in sorted(group, key=lambda x: x[0].name):
-            print(f"  {e.name.ljust(name_w)}  {status.ljust(22)}  {e.description[:70]}")
-    installed = sum(1 for _, _, sc in rows if sc)
-    print(f"\n{len(rows)} entries · {installed} installed · {len(rows) - installed} not installed")
+            catalog_col = f"{e.catalog.ljust(cat_w)}  " if multi else ""
+            print(f"  {e.name.ljust(name_w)}  {catalog_col}{status.ljust(22)}  {e.description[:70]}")
+
+    installed = sum(1 for _, _, sc, _ in rows if sc)
+    overridden = sum(1 for _, _, _, ov in rows if ov)
+    not_installed = len(rows) - installed - overridden
+    tail = f" · {overridden} overridden" if multi and overridden else ""
+    print(f"\n{len(rows)} entries · {installed} installed · {not_installed} not installed{tail}")
+
+    if multi:
+        print("\nCatalogs")
+        width = max(len(c.id) for c in cfg.catalogs)
+        for cat in cfg.catalogs:
+            if cat.skipped:
+                print(f"  {cat.id.ljust(width)}  skipped: {cat.skipped}")
+            else:
+                count = len(iter_catalog_entries(cat))
+                print(f"  {cat.id.ljust(width)}  {count} entries")
     return 0
 
 
 def cmd_search(args: argparse.Namespace) -> int:
     cfg = load_config()
-    if not args.no_pull:
-        pull_catalog(cfg)
-    catalog = load_catalog(catalog_path(cfg))
-    entries = iter_entries(catalog)
-    matches = fuzzy_candidates(entries, args.keyword)
+    refresh_catalogs(cfg, args.no_pull)
+    matches = fuzzy_candidates(resolved_entries(cfg, args), args.keyword)
+    multi = multi_catalog(cfg)
+    winners = winning_catalogs(cfg)
+
+    def overridden_by(entry: Entry) -> "str | None":
+        winner = winners.get(entry.name)
+        return winner if winner and winner != entry.catalog else None
 
     if args.json:
         print(json.dumps(
-            [{"type": e.type, "name": e.name, "description": e.description, "source": e.source}
+            [{"type": e.type, "name": e.name, "description": e.description, "source": e.source,
+              "catalog": e.catalog, "overridden_by": overridden_by(e)}
              for e in matches],
             indent=2,
         ))
@@ -1089,57 +1997,70 @@ def cmd_search(args: argparse.Namespace) -> int:
         return 0
     print(f'Results for "{args.keyword}":\n')
     name_w = max(len(e.name) for e in matches)
+    cat_w = max(len(e.catalog) for e in matches) if multi else 0
     for e in sorted(matches, key=lambda x: x.name):
-        print(f"  [{e.type}] {e.name.ljust(name_w)}  {e.description[:70]}")
+        catalog_col = f"{e.catalog.ljust(cat_w)}  " if multi else ""
+        print(f"  [{e.type}] {e.name.ljust(name_w)}  {catalog_col}{e.description[:70]}")
     print(f"\nRun `library use <name>` to install one.")
     return 0
 
 
 def cmd_use(args: argparse.Namespace) -> int:
     cfg = load_config()
-    if not args.no_pull:
-        pull_catalog(cfg)
-    catalog = load_catalog(catalog_path(cfg))
-    entries = iter_entries(catalog)
+    refresh_catalogs(cfg, args.no_pull)
+    entries = resolved_entries(cfg, args)
+    dirs = cfg.dirs
 
+    multi = multi_catalog(cfg)
     entry = find_exact(entries, args.name)
     if entry is None:
         cands = fuzzy_candidates(entries, args.name)
         payload = {
             "status": "AMBIGUOUS" if cands else "NOT_FOUND",
             "query": args.name,
-            "candidates": [{"type": c.type, "name": c.name, "description": c.description} for c in cands],
+            "candidates": [{"type": c.type, "name": c.name, "description": c.description,
+                            "catalog": c.catalog} for c in cands],
         }
         if args.json:
             print(json.dumps(payload, indent=2))
         elif cands:
             print(f'No exact match for "{args.name}". Did you mean:')
             for c in cands:
-                print(f"  [{c.type}] {c.name}")
+                print(f"  [{c.type}] {c.name}" + (f"  ({c.catalog})" if multi else ""))
         else:
             print(f'No match for "{args.name}". Try `library search`.')
         return 2
 
     scope = "project" if args.project else "global"
-    order = resolve_deps(entries, entry)
+    # Dependencies resolve within the resolved entry's OWN catalog, never the merged
+    # list: a `requires` ref that names an entry in another catalog is simply dangling,
+    # which is the error users already understand.
+    order = resolve_deps(cfg.entries_of(entry.catalog), entry)
+    note = override_note(cfg, entry)
 
     if args.dry_run:
         plan = [
-            {"type": e.type, "name": e.name,
-             "dest": str(install_dest(e, resolve_target_base(catalog, e, scope, args.dir)))}
+            {"type": e.type, "name": e.name, "catalog": e.catalog,
+             "dest": str(install_dest(e, resolve_target_base(dirs, e, scope, args.dir)))}
             for e in order
         ]
         if args.json:
+            overrides, overridden_by = override_split(cfg, entry)
             print(json.dumps({"status": "OK", "dry_run": True, "scope": scope,
+                              "overrides": overrides,
+                              "overridden_by": overridden_by[0] if overridden_by else None,
                               "would_install": plan}, indent=2))
         else:
             print("Dry run — nothing installed. Would install:")
             for p in plan:
-                print(f"  [{p['type']}] {p['name']} → {p['dest']}")
+                catalog_col = f"  ({p['catalog']})" if multi else ""
+                print(f"  [{p['type']}] {p['name']}{catalog_col} → {p['dest']}")
+            if note:
+                print(f"  {entry.name} {note}")
         return 0
 
     try:
-        results = [_install_one(catalog, e, scope, args.dir) for e in order]
+        results = [_install_one(dirs, e, scope, args.dir) for e in order]
     except LibraryError as ex:
         if args.json:
             print(json.dumps({"status": "ERROR", "name": entry.name, "reason": str(ex)}, indent=2))
@@ -1148,7 +2069,9 @@ def cmd_use(args: argparse.Namespace) -> int:
         return 1
 
     if args.json:
-        print(json.dumps({"status": "OK", "installed": results}, indent=2))
+        overrides, overridden_by = override_split(cfg, entry)
+        print(json.dumps({"status": "OK", "installed": results, "overrides": overrides,
+                          "overridden_by": overridden_by[0] if overridden_by else None}, indent=2))
         return 0
 
     deps = results[:-1]
@@ -1159,7 +2082,11 @@ def cmd_use(args: argparse.Namespace) -> int:
             print(f"  [{r['type']}] {r['name']} → {r['dest']}")
     flag = "" if target["verified"] else "  (warning: main file not found)"
     summary = _summarize_changes(target["changes"])
-    print(f"Installed [{target['type']}] {target['name']} → {target['dest']} · {summary}{flag}")
+    provenance = ""
+    if multi:
+        provenance = f" (from {entry.catalog}{', ' + note if note else ''})"
+    print(f"Installed [{target['type']}] {target['name']} → {target['dest']} · "
+          f"{summary}{provenance}{flag}")
     for line in _change_detail_lines(target["changes"]):
         print(line)
     return 0 if all(r["verified"] for r in results) else 1
@@ -1167,22 +2094,22 @@ def cmd_use(args: argparse.Namespace) -> int:
 
 def cmd_sync(args: argparse.Namespace) -> int:
     cfg = load_config()
-    pull_err = None
-    if not args.no_pull:
-        pull_err = pull_catalog(cfg)
-    behind = catalog_behind(cfg)
-    if behind:
-        reason = f"pull failed: {pull_err}" if pull_err else "catalog was not refreshed"
-        warn(
-            f"catalog is {behind} commit(s) behind origin/{cfg.catalog_branch} "
-            f"({reason}); syncing against stale catalog metadata"
-        )
-    catalog = load_catalog(catalog_path(cfg))
-    entries = iter_entries(catalog)
+    pull_errors = refresh_catalogs(cfg, args.no_pull)
+    staleness_warnings(cfg, pull_errors, syncing=True)
+    entries = resolved_entries(cfg, args)
+    dirs = cfg.dirs
+    multi = multi_catalog(cfg)
 
+    # Each name is scanned once, against the copy resolution would pick. An overridden
+    # entry is not what `use` installs, so refreshing it too would quietly replace the
+    # winner's files with the loser's.
     installed: list[tuple[Entry, str]] = []
+    seen: set[str] = set()
     for e in entries:
-        scopes = installed_scopes(catalog, e)
+        if e.name in seen:
+            continue
+        seen.add(e.name)
+        scopes = installed_scopes(dirs, e)
         if scopes:
             installed.append((e, scopes[0]))
 
@@ -1195,12 +2122,15 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
     synced, failed = [], []
     for e, scope in installed:
+        # Dependencies come from the item's own catalog, as in `use` (D9).
         try:
-            results = [_install_one(catalog, dep, scope, None) for dep in resolve_deps(entries, e)]
-            synced.append({"type": e.type, "name": e.name, "scope": scope,
-                           "changes": results[-1]["changes"]})
+            results = [_install_one(dirs, dep, scope, None)
+                       for dep in resolve_deps(cfg.entries_of(e.catalog), e)]
+            synced.append({"type": e.type, "name": e.name, "catalog": e.catalog,
+                           "scope": scope, "changes": results[-1]["changes"]})
         except LibraryError as ex:
-            failed.append({"type": e.type, "name": e.name, "reason": str(ex)})
+            failed.append({"type": e.type, "name": e.name, "catalog": e.catalog,
+                           "reason": str(ex)})
 
     if args.json:
         status = "PARTIAL" if failed else "OK"
@@ -1213,11 +2143,13 @@ def cmd_sync(args: argparse.Namespace) -> int:
         summary = _summarize_changes(ch)
         if summary != "no changes":
             changed_count += 1
-        print(f"  refreshed [{r['type']}] {r['name']} ({r['scope']}) · {summary}")
+        origin = f" (from {r['catalog']})" if multi else ""
+        print(f"  refreshed [{r['type']}] {r['name']} ({r['scope']}) · {summary}{origin}")
         for line in _change_detail_lines(ch):
             print(line)
     for r in failed:
-        print(f"  FAILED    [{r['type']}] {r['name']}: {r['reason']}")
+        origin = f" (from {r['catalog']})" if multi else ""
+        print(f"  FAILED    [{r['type']}] {r['name']}{origin}: {r['reason']}")
     print(f"\nSynced {len(synced)} · {changed_count} changed · failed {len(failed)}")
     return 0 if not failed else 1
 
@@ -1248,13 +2180,40 @@ def _parse_requires_refs(requires_raw: "str | list[str] | None") -> list[str]:
     return requires
 
 
+def _refuse_local_source(path: "Path | None", dest: Catalog, multi: bool) -> "NoReturn":  # type: ignore[name-defined]
+    """Die on a local-path source that won't resolve for whoever else pulls *dest*.
+
+    R8.4 wants the destination named, but with one catalog configured there is no other
+    destination to name and no local catalog to point at, so the message stays exactly
+    as it is today (R2.3). Shared by `add` and `update --set-source` so the two can't
+    drift apart.
+    """
+    if multi:
+        msg = (
+            f"local-path sources don't resolve for anyone else pulling catalog '{dest.id}'.\n"
+            "  Provide a GitHub/Bitbucket URL, pass --allow-local, or point this at a local\n"
+            "  catalog, which accepts paths."
+        )
+    else:
+        msg = (
+            "local-path sources don't resolve for teammates pulling the shared catalog.\n"
+            "  Provide a GitHub/Bitbucket URL, or pass --allow-local for a personal catalog."
+        )
+    hint = _suggest_remote_for_local(path)
+    if hint:
+        msg += f"\n  This file is in a git repo — did you mean:\n    {hint}"
+    die(msg)
+
+
 def _prepare_entry(
     name: str,
     description: str,
     source: str,
     typ: str | None,
     requires_raw: "str | list[str] | None",
+    dest: Catalog,
     allow_local: bool,
+    multi: bool = False,
 ) -> Entry:
     """Validate one entry's fields and return an Entry. Dies on any problem.
 
@@ -1277,17 +2236,11 @@ def _prepare_entry(
     if src.kind == "local" and (src.path is None or not src.path.exists()):
         die(f"local source not found: {source}")
 
-    # The catalog is shared, so a local-path source won't resolve for teammates.
-    # Refuse it by default; suggest the remote URL when the file is in a git repo.
-    if src.kind == "local" and not allow_local:
-        msg = (
-            "local-path sources don't resolve for teammates pulling the shared catalog.\n"
-            "  Provide a GitHub/Bitbucket URL, or pass --allow-local for a personal catalog."
-        )
-        hint = _suggest_remote_for_local(src.path)
-        if hint:
-            msg += f"\n  This file is in a git repo — did you mean:\n    {hint}"
-        die(msg)
+    # A local path only resolves on this machine, so it is fine for a local catalog and
+    # broken for any remote one — a *remote personal* catalog exists to be pulled
+    # elsewhere, so a path breaks it exactly as it breaks the shared catalog (D10, R8.1).
+    if src.kind == "local" and dest.is_remote and not allow_local:
+        _refuse_local_source(src.path, dest, multi)
 
     requires = _parse_requires_refs(requires_raw)
 
@@ -1317,26 +2270,51 @@ def _load_batch_file(path_str: str) -> list[dict[str, Any]]:
 
 
 def cmd_add(args: argparse.Namespace) -> int:
-    # Build the list of entries to add. Single-add is a batch of one, so both
-    # paths share the same clone -> splice* -> one commit -> one PR flow below.
+    # Read the request before touching the catalog. Single-add is a batch of one, so both
+    # paths share the same edit -> verify -> one write flow below.
+    batch_catalog = ""
+    raw: list[dict[str, Any]]
     if getattr(args, "batch", None):
         if args.name or args.source:
             die("--batch can't be combined with --name/--source; put every entry in the batch file")
         raw = _load_batch_file(args.batch)
-        entries = [
-            _prepare_entry(
-                it.get("name"), it.get("description"), it.get("source"),
-                it.get("type"), it.get("requires"), args.allow_local,
-            )
-            for it in raw
-        ]
+        # One batch is one write, so it targets one catalog (R7.10). An item may name
+        # it, which makes the file self-describing, but they all have to agree.
+        named = {str(it["catalog"]) for it in raw if it.get("catalog")}
+        if len(named) > 1:
+            die("batch file mixes catalogs (" + ", ".join(sorted(named))
+                + "); one batch targets one catalog")
+        batch_catalog = next(iter(named), "")
+        if batch_catalog and args.catalog and batch_catalog != args.catalog:
+            die(f"batch file targets catalog '{batch_catalog}' but --catalog says "
+                f"'{args.catalog}'; one batch targets one catalog")
     else:
         if not (args.name and args.description and args.source):
             die("add needs --name, --description, and --source (or --batch <file> for multiple)")
-        entries = [_prepare_entry(
-            args.name, args.description, args.source,
-            args.type, args.requires, args.allow_local,
-        )]
+        raw = [{"name": args.name, "description": args.description, "source": args.source,
+                "type": args.type, "requires": args.requires}]
+
+    cfg = load_config()
+    refresh_catalogs(cfg, args.no_pull)
+    require_entries(cfg)  # keeps today's hard failure when no catalog can be read
+
+    try:
+        cat = write_target(cfg, args.catalog or batch_catalog or None)
+    except AmbiguousCatalog as ex:
+        return report_ambiguous_catalog(ex, args.json)
+    except LibraryError as ex:
+        die(str(ex))
+
+    # Entry validation needs the destination: whether a local-path source is acceptable
+    # follows from where the entry is going (R8.1), so it can't run before targeting.
+    multi = multi_catalog(cfg)
+    entries = [
+        _prepare_entry(
+            it.get("name"), it.get("description"), it.get("source"),
+            it.get("type"), it.get("requires"), cat, args.allow_local, multi,
+        )
+        for it in raw
+    ]
 
     # Reject duplicate names *within* the batch before touching the catalog.
     seen: set[str] = set()
@@ -1345,20 +2323,21 @@ def cmd_add(args: argparse.Namespace) -> int:
             die(f"duplicate entry '{e.name}' in batch")
         seen.add(e.name)
 
-    cfg = load_config()
-    if not args.no_pull:
-        pull_catalog(cfg)
-
-    # Validate against the persistent clone.
-    catalog = load_catalog(catalog_path(cfg))
-    catalog_entries = iter_entries(catalog)
+    # Validate against the destination catalog's current contents — not the merged
+    # list. A name held by a *different* catalog is an override decision (warned about
+    # below), not a duplicate; only the destination can actually collide.
+    dest_entries = cfg.entries_of(cat.id)
+    label = f"catalog '{cat.id}'" if multi else "catalog"
     for e in entries:
-        existing = find_exact(catalog_entries, e.name)
+        existing = find_exact(dest_entries, e.name)
         if existing:
-            die(f"'{e.name}' already in catalog (type {existing.type}); use `library use` to refresh or `push` to update")
+            die(f"'{e.name}' already in {label} (type {existing.type}); use `library use` to refresh or `push` to update")
+        for note in new_entry_override_warnings(cfg, cat, e.name):
+            warn(note)
 
-    # A dependency satisfied by another entry in the same batch counts as known.
-    known = {(ce.type, ce.name) for ce in catalog_entries} | {(e.type, e.name) for e in entries}
+    # A dependency counts as known if the destination catalog has it (D9) or another
+    # entry in this batch provides it.
+    known = {(ce.type, ce.name) for ce in dest_entries} | {(e.type, e.name) for e in entries}
     for e in entries:
         for r in e.requires:
             t, n = r.split(":", 1)
@@ -1368,67 +2347,56 @@ def cmd_add(args: argparse.Namespace) -> int:
     # Branch name + commit/PR copy differ for a single entry vs a batch.
     if len(entries) == 1:
         e = entries[0]
-        branch = _pr_branch_name("add", e.name)
+        branch_op, branch_hint = "add", e.name
         commit_msg = f"library: added {e.type} {e.name}"
         pr_title = f"library: add {e.type} {e.name}"
         pr_body = f"Adds `{e.name}` ({e.type}) to the catalog.\n\nSource: {e.source}"
     else:
-        branch = _pr_branch_name("add-batch", f"{len(entries)}-entries")
+        branch_op, branch_hint = "add-batch", f"{len(entries)}-entries"
         names = ", ".join(e.name for e in entries)
         commit_msg = f"library: add {len(entries)} entries ({names})"
         pr_title = f"library: add {len(entries)} entries"
         body_lines = "\n".join(f"- `{e.name}` ({e.type}) — {e.source}" for e in entries)
         pr_body = f"Adds {len(entries)} entries to the catalog:\n\n{body_lines}"
 
-    repo_dir, cleanup = _pr_clone(cfg.catalog_repo, cfg.catalog_branch)
-    try:
-        yaml_p = repo_dir / cfg.catalog_yaml_path
-        text = yaml_p.read_text()
+    def edit(text: str) -> str:
         for e in entries:
             text = splice_entry(text, e)
+        return text
+
+    def verify(parsed: dict[str, Any]) -> None:
         # Safety net: result must still parse and contain every new entry.
-        parsed = yaml.safe_load(text) or {}
         for e in entries:
             sec = (parsed.get("library", {}) or {}).get(e.section, []) or []
             if not any((it or {}).get("name") == e.name for it in sec):
                 die(f"internal error: entry {e.name} missing after splice; aborting")
-        yaml_p.write_text(text)
-        _git_in(repo_dir, ["checkout", "-b", branch])
-        _git_in(repo_dir, ["add", cfg.catalog_yaml_path])
-        _git_in(repo_dir, ["commit", "-m", commit_msg])
 
-        added = [{"type": e.type, "name": e.name, "section": e.section} for e in entries]
+    result = apply_catalog_edit(
+        cat, edit, verify, commit_msg=commit_msg, pr_title=pr_title, pr_body=pr_body,
+        branch_op=branch_op, branch_name_hint=branch_hint, cfg=cfg, dry_run=args.dry_run,
+    )
+    added = [{"type": e.type, "name": e.name, "section": e.section} for e in entries]
+    one_or_many = added[0] if len(added) == 1 else added
 
-        if args.dry_run:
-            diff_text = subprocess.run(
-                ["git", "-C", str(repo_dir), "show", "HEAD"],
-                capture_output=True, text=True,
-            ).stdout
-            if args.json:
-                print(json.dumps({
-                    "status": "DRY_RUN",
-                    "would_change": True,
-                    "added": added[0] if len(added) == 1 else added,
-                    "branch": branch,
-                    "diff": diff_text,
-                }, indent=2))
-            else:
-                print(f"[dry-run] would open PR: {branch}\n")
-                print(diff_text)
-            return 0
-
-        pr_info = _create_pr(
-            cfg, repo_dir, branch, cfg.catalog_branch,
-            title=pr_title, body=pr_body, repo_url=cfg.catalog_repo,
-        )
-    finally:
-        cleanup()
+    if args.dry_run:
+        if args.json:
+            print(json.dumps({
+                "status": "DRY_RUN",
+                "would_change": True,
+                "added": one_or_many,
+                "branch": result.get("branch"),
+                "diff": result["diff"],
+                **write_result_keys(result),
+            }, indent=2))
+        else:
+            print_dry_run_tail(result)
+        return 0
 
     if args.json:
         print(json.dumps({
             "status": "OK",
-            "added": added[0] if len(added) == 1 else added,
-            **pr_info,
+            "added": one_or_many,
+            **write_result_keys(result),
         }, indent=2))
         return 0
 
@@ -1438,94 +2406,79 @@ def cmd_add(args: argparse.Namespace) -> int:
         print(f"Added {len(entries)} entries:")
         for e in entries:
             print(f"  [{e.type}] {e.name} -> {e.section}")
-    if pr_info.get("method") == "gh":
-        print(f"  PR opened: {pr_info.get('pr_url')}")
-    else:
-        print(f"  Branch pushed: {pr_info.get('branch')}")
-        if pr_info.get("compare_url"):
-            print(f"  Open PR at:   {pr_info.get('compare_url')}")
+    print_write_tail(result)
     return 0
 
 
 def cmd_remove(args: argparse.Namespace) -> int:
     cfg = load_config()
-    if not args.no_pull:
-        pull_catalog(cfg)
-    catalog = load_catalog(catalog_path(cfg))
-    entries = iter_entries(catalog)
+    refresh_catalogs(cfg, args.no_pull)
+    entries = resolved_entries(cfg, args)
+    dirs = cfg.dirs
     entry = find_exact(entries, args.name)
     if entry is None:
         die(f"'{args.name}' not found in catalog")
 
-    dependents = [e for e in entries if f"{entry.type}:{entry.name}" in e.requires]
+    if not getattr(args, "catalog", None):
+        clash = cross_catalog_conflict(cfg, args.name)
+        if clash:
+            return report_ambiguous_catalog(
+                clash, args.json,
+                lead=f"'{args.name}' exists in {', '.join(clash.catalogs)}; pass "
+                     "--catalog <id> to say which copy to remove.")
+
+    # As in `update`: the destination is the catalog the entry resolved from, and
+    # `write_target` is here for its writability refusal (R6.11).
+    try:
+        cat = write_target(cfg, entry.catalog)
+    except LibraryError as ex:
+        die(str(ex))
+
+    # D9: only the destination catalog's entries can depend on this one, so a `requires`
+    # ref from another catalog is already dangling and not this removal's business.
+    dependents = [e for e in cfg.entries_of(cat.id)
+                  if f"{entry.type}:{entry.name}" in e.requires]
     if dependents:
         warn("removing a dependency of: " + ", ".join(f"{d.type}:{d.name}" for d in dependents))
 
-    branch = _pr_branch_name("remove", entry.name)
-
-    if args.dry_run:
-        repo_dir, cleanup = _pr_clone(cfg.catalog_repo, cfg.catalog_branch)
-        try:
-            yaml_p = repo_dir / cfg.catalog_yaml_path
-            new_text = remove_entry(yaml_p.read_text(), entry.type, entry.name)
-            # Safety net: entry must be gone after removal.
-            parsed = yaml.safe_load(new_text) or {}
-            sec = (parsed.get("library", {}) or {}).get(entry.section, []) or []
-            if any((it or {}).get("name") == entry.name for it in sec):
-                die("internal error: entry still present after removal; aborting")
-            yaml_p.write_text(new_text)
-            _git_in(repo_dir, ["checkout", "-b", branch])
-            _git_in(repo_dir, ["add", cfg.catalog_yaml_path])
-            _git_in(repo_dir, ["commit", "-m", f"library: removed {entry.type} {entry.name}"])
-            diff_proc = subprocess.run(
-                ["git", "-C", str(repo_dir), "show", "HEAD"],
-                capture_output=True, text=True,
-            )
-            diff_text = diff_proc.stdout
-            if args.json:
-                print(json.dumps({
-                    "status": "DRY_RUN",
-                    "would_change": True,
-                    "removed": {"type": entry.type, "name": entry.name, "section": entry.section},
-                    "dependents": [f"{d.type}:{d.name}" for d in dependents],
-                    "branch": branch,
-                    "diff": diff_text,
-                }, indent=2))
-            else:
-                print(f"[dry-run] would open PR: {branch}\n")
-                print(diff_text)
-        finally:
-            cleanup()
-        return 0
-
-    repo_dir, cleanup = _pr_clone(cfg.catalog_repo, cfg.catalog_branch)
-    try:
-        yaml_p = repo_dir / cfg.catalog_yaml_path
-        new_text = remove_entry(yaml_p.read_text(), entry.type, entry.name)
+    def verify(parsed: dict[str, Any]) -> None:
         # Safety net: entry must be gone after removal.
-        parsed = yaml.safe_load(new_text) or {}
         sec = (parsed.get("library", {}) or {}).get(entry.section, []) or []
         if any((it or {}).get("name") == entry.name for it in sec):
             die("internal error: entry still present after removal; aborting")
-        yaml_p.write_text(new_text)
-        _git_in(repo_dir, ["checkout", "-b", branch])
-        _git_in(repo_dir, ["add", cfg.catalog_yaml_path])
-        _git_in(repo_dir, ["commit", "-m", f"library: removed {entry.type} {entry.name}"])
-        pr_info = _create_pr(
-            cfg, repo_dir, branch, cfg.catalog_branch,
-            title=f"library: remove {entry.type} {entry.name}",
-            body=f"Removes `{entry.name}` ({entry.type}) from the catalog.",
-            repo_url=cfg.catalog_repo,
-        )
-    finally:
-        cleanup()
 
-    # --purge: delete local copies immediately (unrelated to the PR)
+    result = apply_catalog_edit(
+        cat,
+        lambda text: remove_entry(text, entry.type, entry.name),
+        verify,
+        commit_msg=f"library: removed {entry.type} {entry.name}",
+        pr_title=f"library: remove {entry.type} {entry.name}",
+        pr_body=f"Removes `{entry.name}` ({entry.type}) from the catalog.",
+        branch_op="remove", branch_name_hint=entry.name,
+        cfg=cfg, dry_run=args.dry_run,
+    )
+
+    if args.dry_run:
+        if args.json:
+            print(json.dumps({
+                "status": "DRY_RUN",
+                "would_change": True,
+                "removed": {"type": entry.type, "name": entry.name, "section": entry.section},
+                "dependents": [f"{d.type}:{d.name}" for d in dependents],
+                "branch": result.get("branch"),
+                "diff": result["diff"],
+                **write_result_keys(result),
+            }, indent=2))
+        else:
+            print_dry_run_tail(result)
+        return 0
+
+    # --purge: delete local copies immediately (unrelated to the catalog edit)
     deleted: list[str] = []
     if args.purge:
-        for scope in ("default", "global"):
+        for scope in ("project", "global"):
             try:
-                base = resolve_target_base(catalog, entry, scope, None)
+                base = resolve_target_base(dirs, entry, scope, None)
             except LibraryError:
                 continue
             target = base / entry.name if entry.type == "skill" else base / f"{entry.name}.md"
@@ -1542,7 +2495,7 @@ def cmd_remove(args: argparse.Namespace) -> int:
             "removed": {"type": entry.type, "name": entry.name, "section": entry.section},
             "deleted": deleted,
             "dependents": [f"{d.type}:{d.name}" for d in dependents],
-            **pr_info,
+            **write_result_keys(result),
         }, indent=2))
         return 0
 
@@ -1551,12 +2504,7 @@ def cmd_remove(args: argparse.Namespace) -> int:
         print(f"  deleted local copy: {d}")
     if dependents:
         print("  WARNING still required by: " + ", ".join(f"{d.type}:{d.name}" for d in dependents))
-    if pr_info.get("method") == "gh":
-        print(f"  PR opened: {pr_info.get('pr_url')}")
-    else:
-        print(f"  Branch pushed: {pr_info.get('branch')}")
-        if pr_info.get("compare_url"):
-            print(f"  Open PR at:   {pr_info.get('compare_url')}")
+    print_write_tail(result)
     return 0
 
 
@@ -1607,44 +2555,51 @@ def cmd_update(args: argparse.Namespace) -> int:
     if args.set_requires is not None and (args.add_requires or args.remove_requires):
         die("--set-requires replaces the whole list; can't combine with --add-requires/--remove-requires")
 
-    # Validate a replacement source up front — this doesn't depend on the entry's
-    # current state, so fail fast before cloning.
-    if args.set_source:
-        src = parse_source(args.set_source)
-        if src.kind == "local" and not args.allow_local:
-            msg = (
-                "local-path sources don't resolve for teammates pulling the shared catalog.\n"
-                "  Provide a GitHub/Bitbucket URL, or pass --allow-local for a personal catalog."
-            )
-            hint = _suggest_remote_for_local(src.path)
-            if hint:
-                msg += f"\n  This file is in a git repo — did you mean:\n    {hint}"
-            die(msg)
-
     cfg = load_config()
-    if not args.no_pull:
-        pull_catalog(cfg)
-    catalog = load_catalog(catalog_path(cfg))
-    # Friendly early exit on an obvious typo, from the persistent clone. The
-    # *authoritative* read happens against the temp-clone below — see the
-    # determinism note there.
-    if find_exact(iter_entries(catalog), args.name) is None:
+    refresh_catalogs(cfg, args.no_pull)
+    # Friendly early exit on an obvious typo, from the registry. The *authoritative*
+    # read happens inside `edit` below — see the determinism note there.
+    base = find_exact(resolved_entries(cfg, args), args.name)
+    if base is None:
         die(f"'{args.name}' not found in catalog")
 
-    branch = _pr_branch_name("update", args.name)
+    if not getattr(args, "catalog", None):
+        clash = cross_catalog_conflict(cfg, args.name)
+        if clash:
+            return report_ambiguous_catalog(
+                clash, args.json,
+                lead=f"'{args.name}' exists in {', '.join(clash.catalogs)}; pass "
+                     "--catalog <id> to say which copy to update.")
 
-    repo_dir, cleanup = _pr_clone(cfg.catalog_repo, cfg.catalog_branch)
+    # The destination is the catalog the entry resolved from — `update` edits something
+    # that already exists, so `default_add_catalog` (a rule for *new* entries) has no say.
+    # `write_target` is here for its writability refusal (R6.11).
     try:
-        yaml_p = repo_dir / cfg.catalog_yaml_path
-        text = yaml_p.read_text()
+        cat = write_target(cfg, base.catalog)
+    except LibraryError as ex:
+        die(str(ex))
 
-        # Determinism: compute the edit against the SAME bytes we're about to
-        # write. Reading the entry's current fields from the persistent clone
-        # (which may be stale) and then overwriting a fresh temp-clone would
-        # silently clobber any change merged upstream since the last pull —
-        # e.g. an `--add-requires` computed from a stale `requires` would drop a
-        # ref another PR just added. So the base entry, the no-op check, and the
-        # requires-known warning all key off the temp-clone.
+    # A replacement source doesn't depend on the entry's current state, but whether a
+    # local path is acceptable depends on the destination — so this waits for it rather
+    # than failing fast the way it used to.
+    if args.set_source:
+        src = parse_source(args.set_source)
+        if src.kind == "local" and cat.is_remote and not args.allow_local:
+            _refuse_local_source(src.path, cat, multi_catalog(cfg))
+
+    def edit(text: str) -> "str | None":
+        # Determinism (R6.12): compute the edit against the SAME bytes we're about
+        # to write. Reading the entry's current fields from one copy of the catalog
+        # and then overwriting another would silently clobber any change merged
+        # upstream since the last pull — e.g. an `--add-requires` computed from a
+        # stale `requires` would drop a ref another PR just added. So the base
+        # entry, the no-op check, and the requires-known warning all key off the
+        # text handed in here, whichever mode produced it.
+        #
+        # In `pr` mode that text comes from a fresh temp clone, which is why the
+        # registry read above can only be a friendly typo check. In `local` and
+        # `direct` mode there is no second copy — the two reads are the same file,
+        # so the guarantee holds by construction rather than by discipline.
         fresh_entries = iter_entries(yaml.safe_load(text) or {})
         entry = find_exact(fresh_entries, args.name)
         if entry is None:
@@ -1660,84 +2615,76 @@ def cmd_update(args: argparse.Namespace) -> int:
             if (t, n) not in known:
                 warn(f"required dependency {r} is not in the catalog yet")
 
+        # Fields, not bytes: a re-rendered entry can differ in whitespace while
+        # meaning the same thing, so byte equality would miss a genuine no-op.
         if (new_entry.description == entry.description and new_entry.source == entry.source
                 and new_entry.requires == entry.requires):
-            if args.json:
-                print(json.dumps({"status": "OK", "name": entry.name, "changed": False}, indent=2))
-            else:
-                print(f"No changes — {entry.name} already matches the requested update.")
-            return 0
+            return None
+        return replace_entry(text, entry.type, entry.name, new_entry)
 
-        commit_msg = f"library: updated {entry.type} {entry.name}"
-        new_text = replace_entry(text, entry.type, entry.name, new_entry)
+    def verify(parsed: dict[str, Any]) -> None:
         # Safety net: result must still parse and reflect the change.
-        parsed = yaml.safe_load(new_text) or {}
-        sec = (parsed.get("library", {}) or {}).get(entry.section, []) or []
-        match = next((it for it in sec if (it or {}).get("name") == entry.name), None)
-        if match is None:
-            die(f"internal error: entry {entry.name} missing after update; aborting")
-        yaml_p.write_text(new_text)
-        _git_in(repo_dir, ["checkout", "-b", branch])
-        _git_in(repo_dir, ["add", cfg.catalog_yaml_path])
-        _git_in(repo_dir, ["commit", "-m", commit_msg])
+        sec = (parsed.get("library", {}) or {}).get(base.section, []) or []
+        if not any((it or {}).get("name") == base.name for it in sec):
+            die(f"internal error: entry {base.name} missing after update; aborting")
 
-        if args.dry_run:
-            diff_text = subprocess.run(
-                ["git", "-C", str(repo_dir), "show", "HEAD"],
-                capture_output=True, text=True,
-            ).stdout
-            if args.json:
-                print(json.dumps({
-                    "status": "DRY_RUN", "would_change": True,
-                    "name": entry.name, "branch": branch, "diff": diff_text,
-                }, indent=2))
-            else:
-                print(f"[dry-run] would open PR: {branch}\n")
-                print(diff_text)
-            return 0
+    # The copy/branch text keys off the registry entry rather than the authoritative
+    # read: `update` cannot change a name or type, so these are the same strings.
+    commit_msg = f"library: updated {base.type} {base.name}"
+    result = apply_catalog_edit(
+        cat, edit, verify, commit_msg=commit_msg, pr_title=commit_msg,
+        pr_body=f"Updates `{base.name}` ({base.type}) in the catalog.",
+        branch_op="update", branch_name_hint=args.name, cfg=cfg, dry_run=args.dry_run,
+    )
 
-        pr_info = _create_pr(
-            cfg, repo_dir, branch, cfg.catalog_branch,
-            title=commit_msg,
-            body=f"Updates `{entry.name}` ({entry.type}) in the catalog.",
-            repo_url=cfg.catalog_repo,
-        )
-    finally:
-        cleanup()
-
-    if args.json:
-        print(json.dumps({"status": "OK", "name": entry.name, "changed": True, **pr_info}, indent=2))
+    if not result["changed"]:
+        if args.json:
+            print(json.dumps({"status": "OK", "name": base.name, "changed": False}, indent=2))
+        else:
+            print(f"No changes — {base.name} already matches the requested update.")
         return 0
 
-    print(f"Updated [{entry.type}] {entry.name}.")
-    if pr_info.get("method") == "gh":
-        print(f"  PR opened: {pr_info.get('pr_url')}")
-    else:
-        print(f"  Branch pushed: {pr_info.get('branch')}")
-        if pr_info.get("compare_url"):
-            print(f"  Open PR at:   {pr_info.get('compare_url')}")
+    if args.dry_run:
+        if args.json:
+            print(json.dumps({
+                "status": "DRY_RUN", "would_change": True,
+                "name": base.name, "branch": result.get("branch"), "diff": result["diff"],
+                **write_result_keys(result),
+            }, indent=2))
+        else:
+            print_dry_run_tail(result)
+        return 0
+
+    if args.json:
+        print(json.dumps({"status": "OK", "name": base.name, "changed": True,
+                          **write_result_keys(result)}, indent=2))
+        return 0
+
+    print(f"Updated [{base.type}] {base.name}.")
+    print_write_tail(result)
     return 0
 
 
 def cmd_push(args: argparse.Namespace) -> int:
     cfg = load_config()
-    if not getattr(args, "no_pull", False):
-        pull_catalog(cfg)
-    catalog = load_catalog(catalog_path(cfg))
-    entry = find_exact(iter_entries(catalog), args.name)
+    refresh_catalogs(cfg, getattr(args, "no_pull", False))
+    dirs = cfg.dirs
+    entry = find_exact(resolved_entries(cfg, args), args.name)
     if entry is None:
         die(f"'{args.name}' not found in catalog")
 
-    # Locate which local copy to push.
-    if args.frm and args.frm not in ("default", "global"):
+    # Locate which local copy to push. Anything that isn't a scope name is a path.
+    if args.frm and args.frm not in ("project", "global", "default"):
         scope_base = Path(args.frm).expanduser()
     else:
-        scopes = [args.frm] if args.frm else installed_scopes(catalog, entry)
+        # 'default' is the legacy alias for 'project' (see default_dirs).
+        frm = "project" if args.frm == "default" else args.frm
+        scopes = [frm] if frm else installed_scopes(dirs, entry)
         if not scopes:
             die(f"'{entry.name}' is not installed locally; nothing to push")
         if len(scopes) > 1 and not args.frm:
-            die(f"'{entry.name}' installed in multiple places ({', '.join(scopes)}); pass --from default|global")
-        scope_base = resolve_target_base(catalog, entry, scopes[0], None)
+            die(f"'{entry.name}' installed in multiple places ({', '.join(scopes)}); pass --from project|global")
+        scope_base = resolve_target_base(dirs, entry, scopes[0], None)
 
     if entry.type == "skill":
         local_path = scope_base / entry.name
@@ -1748,6 +2695,12 @@ def cmd_push(args: argparse.Namespace) -> int:
         if not local_path.is_file():
             die(f"local copy not found: {local_path}")
 
+    # The local copy exists and is about to be pushed somewhere — say where, and say so
+    # now if that destination was inferred rather than known.
+    note = push_source_warning(cfg, entry)
+    if note:
+        warn(note)
+
     src = parse_source(entry.source)
     message = args.message or f"library: updated {entry.name}"
 
@@ -1755,7 +2708,8 @@ def cmd_push(args: argparse.Namespace) -> int:
     if src.kind == "local":
         res = _push_local(src, entry, local_path)
         if args.json:
-            print(json.dumps({"status": "OK", "name": entry.name, **res}, indent=2))
+            print(json.dumps({"status": "OK", "name": entry.name,
+                              "catalog": entry.catalog, **res}, indent=2))
             return 0
         if not res.get("changed"):
             print(f"No changes — local copy of {entry.name} matches source.")
@@ -1803,7 +2757,8 @@ def cmd_push(args: argparse.Namespace) -> int:
         )
         if diff_check.returncode == 0:
             if args.json:
-                print(json.dumps({"status": "OK", "name": entry.name, "changed": False}, indent=2))
+                print(json.dumps({"status": "OK", "name": entry.name,
+                                  "catalog": entry.catalog, "changed": False}, indent=2))
             else:
                 print(f"No changes — local copy of {entry.name} matches source.")
             return 0
@@ -1818,7 +2773,7 @@ def cmd_push(args: argparse.Namespace) -> int:
             if args.json:
                 print(json.dumps({
                     "status": "DRY_RUN", "would_change": True, "name": entry.name,
-                    "branch": branch, "diff": diff_proc.stdout,
+                    "catalog": entry.catalog, "branch": branch, "diff": diff_proc.stdout,
                 }, indent=2))
             else:
                 print(f"[dry-run] would open PR: {branch}\n")
@@ -1834,7 +2789,8 @@ def cmd_push(args: argparse.Namespace) -> int:
         )
 
         if args.json:
-            print(json.dumps({"status": "OK", "name": entry.name, "changed": True, **pr_info}, indent=2))
+            print(json.dumps({"status": "OK", "name": entry.name, "catalog": entry.catalog,
+                              "changed": True, **pr_info}, indent=2))
             return 0
 
         if pr_info.get("method") == "gh":
@@ -1847,7 +2803,8 @@ def cmd_push(args: argparse.Namespace) -> int:
 
     except LibraryError as ex:
         if args.json:
-            print(json.dumps({"status": "ERROR", "name": entry.name, "reason": str(ex)}, indent=2))
+            print(json.dumps({"status": "ERROR", "name": entry.name,
+                              "catalog": entry.catalog, "reason": str(ex)}, indent=2))
         else:
             print(f"Failed to push {entry.name}: {ex}")
         return 1
@@ -1962,163 +2919,609 @@ def cmd_link(args: argparse.Namespace) -> int:
     return report(action)
 
 
+def raw_config() -> dict[str, Any]:
+    """The config file as a validated raw mapping — what the `catalog` writers edit.
+
+    They rewrite the whole file, so they work on the raw dict rather than a `Config`:
+    the dataclass models only the keys it needs, and a rewrite must not drop the rest.
+    """
+    if not LOCAL_CONFIG_PATH.exists():
+        die(f"no local config at {LOCAL_CONFIG_PATH}\n"
+            "  run `library init --repo <catalog-repo-url>` first")
+    with LOCAL_CONFIG_PATH.open() as fh:
+        raw = yaml.safe_load(fh) or {}
+    if not isinstance(raw, dict):
+        die(f"{LOCAL_CONFIG_PATH} is malformed (expected a YAML mapping)")
+    problems = Config.problems(raw)
+    if problems:
+        die(f"cannot edit {LOCAL_CONFIG_PATH}: {problems[0]}\n"
+            "  fix the config by hand; nothing was written")
+    return raw
+
+
+def canonical_raw_config() -> tuple[dict[str, Any], list[str]]:
+    """The raw config in `catalogs:` form, migrating a legacy one on the way (R15.9).
+
+    Registering a catalog in a legacy config would otherwise be impossible: the
+    singular `catalog:` mapping has nowhere to put a second one.
+    """
+    raw = raw_config()
+    if "catalog" not in raw:
+        return raw, []
+    cfg = load_config()
+    return migrated_config(raw, cfg.catalogs[0].data)
+
+
+def probe_catalog(cat: Catalog) -> "str | None":
+    """None when *cat* is a readable, parseable catalog, else why it isn't (R15.4).
+
+    Cloning a remote to check is the point: the config is only edited once the target
+    has been shown to work, so a typo'd URL never lands in it.
+    """
+    if cat.is_remote:
+        pull_catalog(cat)  # clones on demand, dying with the existing auth hint
+    _hydrate_one(cat)
+    if cat.skipped:
+        return cat.skipped
+    if "library" not in cat.data:
+        return f"{cat.yaml_file} has no 'library:' block"
+    if cat.data["library"] is not None and not isinstance(cat.data["library"], dict):
+        return f"{cat.yaml_file} has a malformed 'library:' block"
+    return None
+
+
+def catalog_location(cat: Catalog) -> str:
+    """Where *cat* lives, in one line — the path for a local one, repo+branch+file else."""
+    if cat.is_remote:
+        return f"{cat.repo} ({cat.branch}, {cat.yaml_path})"
+    return str(cat.yaml_file)
+
+
+def cmd_catalog_list(args: argparse.Namespace) -> int:
+    """Show the registry as configured (R15.2).
+
+    Deliberately offline: this reports what the config says and what is readable right
+    now, so a catalog whose clone is missing shows its skip reason rather than being
+    silently cloned by a command that reads like an inspection.
+    """
+    cfg = load_config()
+    rows = [
+        {
+            "precedence": i,
+            "id": cat.id,
+            "kind": cat.kind,
+            "location": catalog_location(cat),
+            "write_mode": cat.write_mode,
+            "writable": cat.writable,
+            "entries": None if cat.skipped else len(iter_catalog_entries(cat)),
+            "skipped": cat.skipped or None,
+        }
+        for i, cat in enumerate(cfg.catalogs, 1)
+    ]
+
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return 0
+
+    print("\nCatalogs (highest precedence first)\n")
+    id_w = max(len(r["id"]) for r in rows)
+    kind_w = max(len(r["kind"]) for r in rows)
+    for r in rows:
+        write = f"write: {r['write_mode']}" if r["writable"] else "read-only"
+        count = "—" if r["skipped"] else f"{r['entries']} entries"
+        print(f"  {r['precedence']}. {r['id'].ljust(id_w)}  {r['kind'].ljust(kind_w)}  "
+              f"{write.ljust(12)}  {count.rjust(10)}  {r['location']}")
+        if r["skipped"]:
+            print(f"       skipped: {r['skipped']}")
+
+    if cfg.legacy_shape:
+        print("\nThis config still uses the singular `catalog:` form. "
+              "`library catalog migrate` rewrites it.")
+    return 0
+
+
+def register_catalog(item: dict[str, Any], position: str) -> dict[str, Any]:
+    """Verify *item* is a usable catalog, then add it to the registry (R15.3–R15.5, R15.9).
+
+    Shared by `catalog add` and `catalog init` so both apply the same order: validate the
+    item, migrate a legacy config, reject a duplicate id, prove the target works, and only
+    then rewrite the config (R15.4, R15.10).
+    """
+    cid = str(item["id"])
+    # Validate the item on its own first, so a malformed one is rejected with a precise
+    # message before anything is cloned.
+    problems = Config.problems({"catalogs": [item]})
+    if problems:
+        die(f"cannot register catalog '{cid}': {problems[0]}")
+
+    raw, notes = canonical_raw_config()
+    registered = [str(c.get("id")) for c in raw["catalogs"]]
+    if cid in registered:
+        die(f"catalog '{cid}' is already registered (ids: {', '.join(registered)})")
+
+    cat = _catalog_from_raw(item)
+    fresh_clone = bool(cat.is_remote and cat.clone_dir and not cat.clone_dir.exists())
+    problem = probe_catalog(cat)
+    if problem:
+        if fresh_clone and cat.clone_dir and cat.clone_dir.exists():
+            shutil.rmtree(cat.clone_dir, ignore_errors=True)  # leave no orphan clone
+        die(f"'{cid}' is not a usable catalog: {problem}\n"
+            f"  {LOCAL_CONFIG_PATH} was not modified")
+
+    # `first` by default: a personal catalog is registered in order to win (design §9).
+    if position == "last":
+        raw["catalogs"].append(item)
+    else:
+        raw["catalogs"].insert(0, item)
+    cfg = write_config(raw)
+
+    return {
+        "status": "OK", "id": cid, "kind": cat.kind,
+        "precedence": next(i for i, c in enumerate(cfg.catalogs, 1) if c.id == cid),
+        "registered": len(cfg.catalogs),
+        "write_mode": cat.write_mode, "writable": cat.writable,
+        "entries": len(iter_catalog_entries(cat)),
+        "location": catalog_location(cat), "migrated": notes,
+    }
+
+
+def print_registration(result: dict[str, Any]) -> None:
+    for note in result["migrated"]:
+        print(f"  migrated config: {note}")
+    print(f"Registered [{result['kind']}] {result['id']} at precedence "
+          f"{result['precedence']} of {result['registered']} · {result['entries']} entries "
+          f"· writes go through: {result['write_mode']}")
+    print(f"  {result['location']}")
+
+
+def cmd_catalog_add(args: argparse.Namespace) -> int:
+    """Register an existing catalog (R15.3–R15.5, R15.9, R15.10)."""
+    cid = (args.id or "").strip()
+    if not cid:
+        die("catalog add needs a non-empty --id")
+    if bool(args.path) == bool(args.repo):
+        die("catalog add needs exactly one of --path (local) or --repo (remote)")
+
+    if args.path:
+        item: dict[str, Any] = {"id": cid, "path": args.path}
+        if args.git_commit:
+            item["git_commit"] = True
+    else:
+        # D8: a new remote catalog is unprotected unless asked otherwise, so writing to
+        # your own catalog is a commit rather than a PR to review with yourself.
+        item = {"id": cid, "repo": args.repo, "yaml_path": args.yaml_path,
+                "branch": args.branch, "protected": bool(args.protected)}
+    if args.read_only:
+        item["writable"] = False
+
+    result = register_catalog(item, args.position)
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print_registration(result)
+    return 0
+
+
+_SCAFFOLD = """\
+# Personal library catalog. Registered in the tool's config.local.yaml.
+# Add entries with: library add --catalog {cid} --name … --description … --source …
+#
+# No default_dirs here: install locations belong to the tool, not the catalog.
+library:
+  skills: []
+  agents: []
+  prompts: []
+"""
+
+
+def cmd_catalog_init(args: argparse.Namespace) -> int:
+    """Scaffold an empty catalog and register it (R15.7, R15.8, R15.9).
+
+    One command from "I want a personal catalog" to a working one, which is why it
+    refuses to overwrite: the failure mode worth preventing is scaffolding over a
+    catalog someone already has entries in.
+    """
+    raw_path = str(args.path)
+    if not (raw_path.startswith("/") or raw_path.startswith("~")):
+        die(f"catalog path {raw_path!r} must be absolute or start with '~'\n"
+            "  a catalog location is machine-global, so it can't depend on the cwd")
+
+    path = Path(raw_path).expanduser()
+    if path.is_dir():
+        path = path / "library.yaml"
+    if path.exists():
+        die(f"{path} already exists; refusing to overwrite it\n"
+            "  register it as-is with `library catalog add --id <id> --path <path>`")
+
+    cid = (args.id or "personal").strip()
+    if not cid:
+        die("catalog init needs a non-empty --id")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_SCAFFOLD.format(cid=cid))
+
+    item: dict[str, Any] = {"id": cid, "path": str(path)}
+    if args.git_commit:
+        item["git_commit"] = True
+    try:
+        result = register_catalog(item, args.position)
+    except SystemExit:
+        path.unlink(missing_ok=True)  # nothing was registered, so leave no stray file
+        raise
+    result["created"] = str(path)
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return 0
+    print(f"Created {path}")
+    print_registration(result)
+    print(f"  add to it with: library add --catalog {cid} --name … --description … --source …")
+    return 0
+
+
+def cmd_catalog_remove(args: argparse.Namespace) -> int:
+    """Unregister a catalog, leaving its clone unless asked (R15.6)."""
+    raw, notes = canonical_raw_config()
+    catalogs = raw["catalogs"]
+    idx = next((i for i, c in enumerate(catalogs) if str(c.get("id")) == args.id), None)
+    if idx is None:
+        ids = ", ".join(str(c.get("id")) for c in catalogs)
+        die(f"unknown catalog '{args.id}' (registered: {ids})")
+    if len(catalogs) == 1:
+        die(f"'{args.id}' is the only registered catalog; the tool needs one to read "
+            "from.\n  register another first, or run `library init` to start over")
+
+    removed = catalogs.pop(idx)
+    cat = _catalog_from_raw(removed)
+    write_config(raw)  # config first: a failed purge must not leave a stale registration
+
+    purged = None
+    if getattr(args, "purge_clone", False) and cat.clone_dir and cat.clone_dir.exists():
+        shutil.rmtree(cat.clone_dir, ignore_errors=True)
+        purged = str(cat.clone_dir)
+
+    kept = cat.clone_dir if cat.clone_dir and cat.clone_dir.exists() else None
+    if args.json:
+        print(json.dumps({"status": "OK", "id": args.id, "purged_clone": purged,
+                          "clone_kept_at": str(kept) if kept else None,
+                          "migrated": notes}, indent=2))
+        return 0
+
+    for note in notes:
+        print(f"  migrated config: {note}")
+    print(f"Unregistered {args.id}.")
+    if purged:
+        print(f"  removed clone: {purged}")
+    elif kept:
+        print(f"  clone left in place: {kept} (pass --purge-clone to delete it)")
+    return 0
+
+
+def cmd_catalog_migrate(args: argparse.Namespace) -> int:
+    """Rewrite a legacy `catalog:` config into the canonical `catalogs:` list.
+
+    A convenience, never a prerequisite: read-time normalization keeps the legacy
+    shape working forever.
+    """
+    if not LOCAL_CONFIG_PATH.exists():
+        die(f"no local config at {LOCAL_CONFIG_PATH}\n"
+            "  run `library init --repo <catalog-repo-url>` first")
+    with LOCAL_CONFIG_PATH.open() as fh:
+        raw = yaml.safe_load(fh) or {}
+    if not isinstance(raw, dict):
+        die(f"{LOCAL_CONFIG_PATH} is malformed (expected a YAML mapping)")
+
+    problems = Config.problems(raw)
+    if problems:
+        die(f"cannot migrate {LOCAL_CONFIG_PATH}: {problems[0]}\n"
+            "  fix the config by hand; nothing was written")
+
+    if "catalog" not in raw:
+        if args.json:
+            print(json.dumps({"status": "OK", "changed": False,
+                              "reason": "config is already in the catalogs form",
+                              "changes": []}, indent=2))
+        else:
+            print("Already canonical — nothing to migrate.")
+        return 0
+
+    cfg = load_config()
+    shared = cfg.catalogs[0]
+    if shared.skipped and not args.json:
+        warn(f"catalog '{shared.id}' could not be read ({shared.skipped}); "
+             "any default_dirs block in it cannot be lifted")
+    new, notes = migrated_config(raw, shared.data)
+
+    if args.dry_run:
+        rendered = _CONFIG_HEADER + "\n" + yaml.safe_dump(new, sort_keys=False)
+        if args.json:
+            print(json.dumps({"status": "DRY_RUN", "changed": True,
+                              "changes": notes, "config": rendered}, indent=2))
+        else:
+            print("[dry-run] would write:\n")
+            print(rendered, end="")
+            for note in notes:
+                print(f"  - {note}")
+        return 0
+
+    write_config(new)
+    if args.json:
+        print(json.dumps({"status": "OK", "changed": True, "changes": notes,
+                          "path": str(LOCAL_CONFIG_PATH)}, indent=2))
+        return 0
+    print(f"Migrated {LOCAL_CONFIG_PATH}:")
+    for note in notes:
+        print(f"  - {note}")
+    return 0
+
+
+def _doctor_label(catalog: "str | None", entry: "str | None", multi: bool) -> str:
+    """`doctor`'s one-column finding label: `catalog/entry`, either alone, or `-`.
+
+    The catalog id appears only when more than one is registered (R14.2) — naming it
+    for a single catalog would change output R2.3 pins byte-for-byte.
+    """
+    return "/".join(p for p in ((catalog if multi else None), entry) if p) or "-"
+
+
+def _override_findings(cfg: Config) -> list[tuple[str, str]]:
+    """One warning per name held by more than one catalog: (entry name, message).
+
+    Overriding is deliberate — it is the whole reason to register a personal catalog —
+    so this is a warning naming winner and losers (R14.5, R4.5), never an error.
+    `cfg.entries()` is in precedence order, so the first holder is the winner.
+    """
+    holders: dict[str, list[str]] = {}
+    for e in cfg.entries():
+        ids = holders.setdefault(e.name, [])
+        if e.catalog not in ids:  # a within-catalog duplicate is a different finding
+            ids.append(e.catalog)
+    return [
+        (name, f"'{name}' is defined in {len(ids)} catalogs — '{ids[0]}' overrides "
+               f"{', '.join(ids[1:])}")
+        for name, ids in holders.items() if len(ids) > 1
+    ]
+
+
+def _catalog_findings(
+    cfg: Config, cat: Catalog, deep: bool,
+) -> tuple[list[tuple["str | None", str]], list[tuple["str | None", str]]]:
+    """Content checks for one catalog: (errors, warnings) as (entry name, message).
+
+    Every check here is about a single catalog file — its own sort order, its own
+    default_dirs block, the sources, duplicate names, and dependencies it declares — so
+    running them per catalog is both what makes the findings attributable (R14.2) and
+    what scopes dependency resolution to one catalog (D9, R14.4).
+    """
+    errors: list[tuple["str | None", str]] = []
+    warns: list[tuple["str | None", str]] = []
+    catalog, entries = cat.data, iter_catalog_entries(cat)
+
+    if catalog.get("default_dirs"):
+        # Install dirs belong to the tool and the local config, so a catalog's own
+        # default_dirs block does nothing — say so, and name what is actually in force.
+        in_effect = ", ".join(f"{section}:{scope}={path}"
+                              for section, scopes in cfg.dirs.items()
+                              for scope, path in scopes.items())
+        warns.append((None,
+            "catalog declares default_dirs, which has no effect — install dirs come from "
+            f"the tool, overridable in {LOCAL_CONFIG_PATH}. In effect: {in_effect}"))
+
+    # Legacy scope key: 'default' was renamed to 'project' (still accepted as an alias).
+    legacy = [
+        section for section in TYPES
+        if any(isinstance(item, dict) and "default" in item
+               for item in (catalog.get("default_dirs", {}).get(section) or []))
+    ]
+    if legacy:
+        warns.append((None,
+            f"default_dirs uses the legacy 'default' scope key ({', '.join(legacy)}) — "
+            f"rename it to 'project' in the catalog"))
+
+    # Duplicate names *within* one catalog: find_exact takes the first, so the rest are
+    # unreachable. Scoped per catalog because the same name in two catalogs is
+    # deliberate overriding, not a mistake — `_override_findings` reports that instead.
+    by_name: dict[str, list[Entry]] = {}
+    for e in entries:
+        by_name.setdefault(e.name, []).append(e)
+    for name, group in by_name.items():
+        if len(group) > 1:
+            errors.append((name, f"duplicate name in {', '.join(g.type for g in group)}"))
+
+    # Dependencies resolve within this catalog and nowhere else (D9), so `known` holds
+    # only its own entries. Other catalogs are named in the message but never consulted
+    # to decide (R14.4) — a ref that resolves only elsewhere is still an error.
+    known = {(e.type, e.name) for e in entries}
+    for e in entries:
+        try:
+            src = parse_source(e.source)
+            if src.kind == "local":
+                if src.path is None or not src.path.exists():
+                    errors.append((e.name, f"local source not found: {e.source}"))
+                if cat.is_remote:
+                    warns.append((e.name,
+                        f"local source {e.source} won't resolve for teammates pulling "
+                        "this catalog — a remote catalog's sources should be URLs"))
+        except LibraryError as ex:
+            errors.append((e.name, str(ex)))
+        for r in e.requires:
+            if ":" not in r or r.split(":", 1)[0] not in ("skill", "agent", "prompt"):
+                errors.append((e.name, f"malformed requires ref '{r}'"))
+                continue
+            t, n = r.split(":", 1)
+            if (t.strip(), n.strip()) in known:
+                continue
+            elsewhere = [c.id for c in cfg.active if c.id != cat.id
+                         and (t.strip(), n.strip()) in {(x.type, x.name)
+                                                        for x in iter_catalog_entries(c)}]
+            if elsewhere:
+                errors.append((e.name,
+                    f"dangling dependency '{r}'; it exists in {', '.join(elsewhere)}, but "
+                    f"dependencies resolve within one catalog — add a copy to '{cat.id}'"))
+            else:
+                errors.append((e.name, f"dangling dependency '{r}'"))
+
+    # Per catalog for the same reason: with deps scoped, a cycle can no longer span two.
+    for cyc in _find_cycles(entries):
+        errors.append((None, "dependency cycle: " + " -> ".join(cyc)))
+
+    for section in TYPES:
+        names = [e.name for e in entries if e.section == section]
+        if names != sorted(names, key=str.lower):
+            warns.append((None, f"{section} not alphabetically sorted"))
+
+    if deep:
+        for e in entries:
+            try:
+                src = parse_source(e.source)
+            except LibraryError:
+                continue  # already reported as malformed
+            if src.kind != "local" and not _source_alive(src):
+                errors.append((e.name, f"repo or branch unreachable: {src.org}/{src.repo}@{src.branch}"))
+
+    return errors, warns
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
-    errors: list[tuple[str | None, str]] = []
-    warns: list[tuple[str | None, str]] = []
+    # (catalog id, entry name, message) — either id may be None for a finding that
+    # belongs to the machine or the config rather than to one catalog or entry.
+    errors: list[tuple["str | None", "str | None", str]] = []
+    warns: list[tuple["str | None", "str | None", str]] = []
 
     # ── Link health: is the tool discoverable as a skill? ───────────────
     link = GLOBAL_SKILLS_DIR / LINK_NAME
     lstate, ltarget = _link_state(link)
     if lstate == "dangling":
-        errors.append((None, f"skill link {link} is dangling (→ {ltarget}) — run `library link` to repair"))
+        errors.append((None, None, f"skill link {link} is dangling (→ {ltarget}) — run `library link` to repair"))
     elif lstate == "wrong-target":
-        warns.append((None, f"skill link {link} points at a different copy ({ltarget}); "
-                            f"this clone is {SKILL_DIR} — `library link --force` to repoint"))
+        warns.append((None, None, f"skill link {link} points at a different copy ({ltarget}); "
+                                  f"this clone is {SKILL_DIR} — `library link --force` to repoint"))
     elif lstate == "occupied":
-        warns.append((None, f"a different copy of the tool lives at {link} (this clone is {SKILL_DIR})"))
+        warns.append((None, None, f"a different copy of the tool lives at {link} (this clone is {SKILL_DIR})"))
     elif lstate == "missing":
-        warns.append((None, f"tool not linked at {link} — the /library skill won't load globally; run `library link`"))
+        warns.append((None, None, f"tool not linked at {link} — the /library skill won't load globally; run `library link`"))
 
-    # ── Phase 5.1: config validation ────────────────────────────────────
+    # ── Config validation ───────────────────────────────────────────────
     cfg: Config | None = None
     if not LOCAL_CONFIG_PATH.exists():
-        errors.append((None, f"no local config at {LOCAL_CONFIG_PATH} — run `library init --repo <url>` first"))
+        errors.append((None, None, f"no local config at {LOCAL_CONFIG_PATH} — run `library init --repo <url>` first"))
     else:
         try:
             with LOCAL_CONFIG_PATH.open() as fh:
                 raw_cfg = yaml.safe_load(fh) or {}
             if not isinstance(raw_cfg, dict):
                 raise ValueError("expected a YAML mapping")
-            missing = Config.missing_keys(raw_cfg)
-            if missing:
-                errors.append((None, f"config at {LOCAL_CONFIG_PATH} is missing {', '.join(missing)} — run `library init`"))
+            problems = Config.problems(raw_cfg)
+            if problems:
+                for problem in problems:
+                    errors.append((None, None, f"config at {LOCAL_CONFIG_PATH}: {problem}"))
             else:
                 cfg = Config.from_dict(raw_cfg)
         except Exception as ex:
-            errors.append((None, f"config parse error: {ex}"))
+            errors.append((None, None, f"config parse error: {ex}"))
 
-    # ── Phase 5.1: catalog clone check ──────────────────────────────────
+    entries: list[Entry] = []
+
     if cfg is not None:
-        if not CATALOG_CLONE_DIR.exists():
-            warns.append((None, f"catalog not yet cloned at {CATALOG_CLONE_DIR}; it will clone on first read (`library list`)"))
-        else:
-            r = subprocess.run(
-                ["git", "-C", str(CATALOG_CLONE_DIR), "remote", "get-url", "origin"],
-                capture_output=True, text=True,
-            )
-            if r.returncode != 0:
-                errors.append((None, "catalog clone is missing 'origin' remote — re-run `library init --force`"))
-            elif r.stdout.strip() != cfg.catalog_repo:
-                warns.append((None,
-                    f"catalog clone remote ({r.stdout.strip()!r}) differs from "
-                    f"config catalog.repo ({cfg.catalog_repo!r})"))
+        # ── Registry validation (R14.3, R14.9) ──────────────────────────
+        if cfg.legacy_shape:
+            warns.append((None, None,
+                "config still uses the singular 'catalog:' shape — run "
+                "`library catalog migrate` to adopt the catalog registry"))
+        writable = [c.id for c in cfg.writable]
+        if cfg.default_add_catalog and cfg.default_add_catalog not in writable:
+            # A warning, not an error: with exactly one writable catalog the write still
+            # lands there (R7.5). A stale default only bites once several are writable.
+            warns.append((None, None,
+                f"default_add_catalog names '{cfg.default_add_catalog}', which is not a "
+                f"writable catalog (writable: {', '.join(writable) or 'none'})"))
 
-        # ── Phase 5.2: auth check (catalog repo read access) ────────────
-        try:
-            ls = subprocess.run(
-                ["git", "ls-remote", "--heads", cfg.catalog_repo],
-                capture_output=True, text=True, timeout=15,
-            )
-            if ls.returncode != 0:
-                errors.append((None,
-                    f"catalog repo unreachable ({cfg.catalog_repo}): "
-                    f"{_git_error_summary(ls.stderr)}"))
-        except subprocess.TimeoutExpired:
-            errors.append((None, f"catalog repo timed out — is {cfg.catalog_repo} reachable?"))
+        # ── Per remote catalog: clone presence, origin match, read access ─
+        for cat in cfg.remotes:
+            if not cat.clone_dir.exists():
+                warns.append((cat.id, None,
+                    f"catalog not yet cloned at {cat.clone_dir}; it will clone on first read (`library list`)"))
+            else:
+                r = subprocess.run(
+                    ["git", "-C", str(cat.clone_dir), "remote", "get-url", "origin"],
+                    capture_output=True, text=True,
+                )
+                if r.returncode != 0:
+                    errors.append((cat.id, None, "catalog clone is missing 'origin' remote — re-run `library init --force`"))
+                elif r.stdout.strip() != cat.repo:
+                    warns.append((cat.id, None,
+                        f"catalog clone remote ({r.stdout.strip()!r}) differs from "
+                        f"config catalog.repo ({cat.repo!r})"))
+            try:
+                ls = subprocess.run(
+                    ["git", "ls-remote", "--heads", cat.repo],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if ls.returncode != 0:
+                    errors.append((cat.id, None,
+                        f"catalog repo unreachable ({cat.repo}): "
+                        f"{_git_error_summary(ls.stderr)}"))
+            except subprocess.TimeoutExpired:
+                errors.append((cat.id, None, f"catalog repo timed out — is {cat.repo} reachable?"))
 
-        # ── Phase 5.2: gh CLI check ──────────────────────────────────────
-        try:
-            gh_status = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True)
-            if gh_status.returncode != 0:
-                warns.append((None, "gh CLI not authenticated — `autopush: true` will fall back to compare URL"))
-        except FileNotFoundError:
-            warns.append((None, "gh CLI not installed — `autopush: true` will fall back to compare URL"))
+        # ── gh CLI check — only matters where a write opens a PR ─────────
+        if any(c.write_mode == "pr" for c in cfg.catalogs):
+            try:
+                gh_status = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True)
+                if gh_status.returncode != 0:
+                    warns.append((None, None, "gh CLI not authenticated — `autopush: true` will fall back to compare URL"))
+            except FileNotFoundError:
+                warns.append((None, None, "gh CLI not installed — `autopush: true` will fall back to compare URL"))
 
-        # ── Phase 5.3: tool staleness check ─────────────────────────────
+        # ── Tool staleness check ────────────────────────────────────────
         try:
             fetch_dry = subprocess.run(
                 ["git", "-C", str(SKILL_DIR), "fetch", "--dry-run"],
                 capture_output=True, text=True, timeout=10,
             )
             if fetch_dry.returncode == 0 and any("->" in ln for ln in fetch_dry.stderr.splitlines()):
-                warns.append((None, "tool has upstream changes available; run `library self-update`"))
+                warns.append((None, None, "tool has upstream changes available; run `library self-update`"))
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass  # offline or no git — not worth warning about
 
-    # ── Catalog content checks ───────────────────────────────────────────
-    entries: list[Entry] = []
-    catalog: dict[str, Any] = {}
+        # ── Refresh, then re-read: from_dict does not hydrate ───────────
+        pull_errors = pull_all(cfg) if not args.no_pull else {}
+        hydrate_all(cfg, quiet=True)  # doctor reports skips itself, below
 
-    if cfg is not None and CATALOG_CLONE_DIR.exists():
-        if not args.no_pull:
-            pull_catalog(cfg)  # safe: clone exists, worst case is a warn
-        p = catalog_path(cfg)
-        if p.exists():
-            catalog = load_catalog(p)
-            entries = iter_entries(catalog)
-        else:
-            errors.append((None, f"catalog file not found at {p}"))
+        # ── Clone staleness per remote catalog ──────────────────────────
+        for cat in cfg.remotes:
+            behind = catalog_behind(cat)
+            if behind:
+                reason = (f"pull failed: {pull_errors[cat.id]}" if pull_errors.get(cat.id)
+                          else "catalog was not refreshed")
+                warns.append((cat.id, None,
+                    f"clone is {behind} commit(s) behind origin/{cat.branch} ({reason})"))
 
-    if catalog:
-        # Legacy scope key: 'default' was renamed to 'project' (still accepted as an alias).
-        legacy = [
-            section for section in TYPES
-            if any(isinstance(item, dict) and "default" in item
-                   for item in (catalog.get("default_dirs", {}).get(section) or []))
-        ]
-        if legacy:
-            warns.append((None,
-                f"default_dirs uses the legacy 'default' scope key ({', '.join(legacy)}) — "
-                f"rename it to 'project' in the catalog"))
+        # ── A catalog whose source could not be read (R14.3) ────────────
+        for cat in cfg.catalogs:
+            if not cat.skipped or (cat.is_remote and not cat.clone_dir.exists()):
+                continue  # an absent clone is already reported, as a warning
+            errors.append((cat.id, None, cat.skipped))
 
-    if entries:
-        # Duplicate names (use/find_exact matches globally, so a dup silently shadows).
-        by_name: dict[str, list[Entry]] = {}
-        for e in entries:
-            by_name.setdefault(e.name, []).append(e)
-        for name, group in by_name.items():
-            if len(group) > 1:
-                errors.append((name, f"duplicate name in {', '.join(g.type for g in group)}"))
+        # ── Per-catalog content checks (R14.1, R14.2) ───────────────────
+        entries = cfg.entries()
+        for cat in cfg.active:
+            cat_errors, cat_warns = _catalog_findings(cfg, cat, args.deep)
+            errors.extend((cat.id, n, m) for n, m in cat_errors)
+            warns.extend((cat.id, n, m) for n, m in cat_warns)
 
-        known = {(e.type, e.name) for e in entries}
-        for e in entries:
-            try:
-                src = parse_source(e.source)
-                if src.kind == "local" and (src.path is None or not src.path.exists()):
-                    errors.append((e.name, f"local source not found: {e.source}"))
-            except LibraryError as ex:
-                errors.append((e.name, str(ex)))
-            for r in e.requires:
-                if ":" not in r or r.split(":", 1)[0] not in ("skill", "agent", "prompt"):
-                    errors.append((e.name, f"malformed requires ref '{r}'"))
-                    continue
-                t, n = r.split(":", 1)
-                if (t.strip(), n.strip()) not in known:
-                    errors.append((e.name, f"dangling dependency '{r}'"))
+        # ── Cross-catalog overrides (R14.5) — the one check no single ───
+        #    catalog owns, so it carries an entry but no catalog id.
+        warns.extend((None, n, m) for n, m in _override_findings(cfg))
 
-        for cyc in _find_cycles(entries):
-            errors.append((None, "dependency cycle: " + " -> ".join(cyc)))
-
-        for section in TYPES:
-            names = [e.name for e in entries if e.section == section]
-            if names != sorted(names, key=str.lower):
-                warns.append((None, f"{section} not alphabetically sorted"))
-
-        if args.deep:
-            for e in entries:
-                try:
-                    src = parse_source(e.source)
-                except LibraryError:
-                    continue  # already reported as malformed
-                if src.kind != "local" and not _source_alive(src):
-                    errors.append((e.name, f"repo or branch unreachable: {src.org}/{src.repo}@{src.branch}"))
+    multi = cfg is not None and multi_catalog(cfg)
 
     if args.json:
         print(json.dumps({
             "status": "PROBLEMS" if errors else "OK",
             "entries": len(entries),
-            "errors": [{"entry": n, "message": m} for n, m in errors],
-            "warnings": [{"entry": n, "message": m} for n, m in warns],
+            "errors": [{"catalog": c, "entry": n, "message": m} for c, n, m in errors],
+            "warnings": [{"catalog": c, "entry": n, "message": m} for c, n, m in warns],
         }, indent=2))
         return 1 if errors else 0
 
@@ -2126,10 +3529,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         count_str = f"{len(entries)} catalog entries" if entries else "no catalog loaded"
         print(f"All checks passed — {count_str}, no problems found.")
         return 0
-    for n, m in errors:
-        print(f"  ERROR  [{n or '-'}] {m}")
-    for n, m in warns:
-        print(f"  WARN   [{n or '-'}] {m}")
+    for c, n, m in errors:
+        print(f"  ERROR  [{_doctor_label(c, n, multi)}] {m}")
+    for c, n, m in warns:
+        print(f"  WARN   [{_doctor_label(c, n, multi)}] {m}")
     print(f"\n{len(errors)} errors · {len(warns)} warnings")
     return 1 if errors else 0
 
@@ -2142,20 +3545,75 @@ _LOCAL_CONFIG_TEMPLATE = """\
 # The Library — per-device config (gitignored; never commit this).
 # Points this machine's tool at the shared catalog repo. See cookbook/init.md.
 
-catalog:
-  repo: {repo}            # clone URL of the catalog repo (e.g. agent-library)
-  yaml_path: {yaml_path}  # path to the catalog file within that repo
-  branch: {branch}        # protected branch that add/remove/push open PRs against
+# catalogs: precedence order, highest first. Register a personal catalog ahead of the
+# shared one to override it locally — see cookbook/catalog.md.
+catalogs:
+  - id: shared              # the team catalog
+    repo: {repo}            # clone URL of the catalog repo (e.g. agent-library)
+    yaml_path: {yaml_path}  # path to the catalog file within that repo
+    branch: {branch}        # protected branch that add/remove/push open PRs against
+    protected: true         # writes go through a PR, never a direct push
 
 # If true, add/remove/push also run `gh pr create` after pushing the PR branch.
 # The protected branch is never pushed to directly regardless of this setting.
 autopush: {autopush}
 
-# Install locations come from the catalog's default_dirs:
+# Install locations are owned by the tool (a default_dirs block inside a catalog is
+# ignored). Override them for this machine with a default_dirs block here:
 #   `use <name>`           -> home ~/.claude/ (global scope — the default)
 #   `use <name> --project` -> project-local .claude/ anchored to your CWD
 #   `use <name> --dir X`   -> custom path
 """
+
+
+def _reinit_preserving(
+    shared: dict[str, Any], autopush: bool,
+) -> tuple["dict[str, Any] | None", list[str]]:
+    """(config to write, catalog ids being dropped) for a re-`init`.
+
+    `init --force` writes its whole file from `_LOCAL_CONFIG_TEMPLATE`, which knows about
+    exactly one catalog — so it used to unregister every other one silently. Repointing
+    the team catalog is no reason to lose a personal one, so anything else already in the
+    config (other catalogs, `default_add_catalog`, a `default_dirs` override, unrecognized
+    keys) is carried across and the file is written in the machine-owned form instead.
+
+    Returns (None, …) when there is nothing worth preserving, so an ordinary first run
+    still gets the commented template verbatim, and a config too broken to parse can still
+    be repaired by overwriting it. The second element is non-empty only in that repair
+    case, and names what the overwrite costs.
+    """
+    if not LOCAL_CONFIG_PATH.exists():
+        return None, []
+    try:
+        with LOCAL_CONFIG_PATH.open() as fh:
+            raw = yaml.safe_load(fh) or {}
+        existing = _normalize_catalogs(raw) if isinstance(raw, dict) else []
+    except (OSError, yaml.YAMLError):
+        return None, []
+    if not isinstance(raw, dict):
+        return None, []
+
+    others = [c for c in existing if c.get("id") != SHARED_ID]
+    extras = {k: v for k, v in raw.items() if k not in ("catalog", "catalogs", "autopush")}
+    if not others and not extras:
+        return None, []  # only the shared catalog was there; the template says the same
+
+    catalogs, replaced = [], False
+    for item in existing:
+        if not replaced and item.get("id") == SHARED_ID:
+            catalogs.append(shared)
+            replaced = True
+        else:
+            catalogs.append(item)
+    if not replaced:
+        catalogs.append(shared)  # nothing was called 'shared'; the team catalog goes last
+
+    merged: dict[str, Any] = {"catalogs": catalogs, "autopush": autopush, **extras}
+    if Config.problems(merged):
+        # Something already on disk is invalid. --force is the documented repair path, so
+        # let the overwrite happen — but never quietly.
+        return None, [str(c.get("id") or "?") for c in others]
+    return merged, []
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -2168,12 +3626,24 @@ def cmd_init(args: argparse.Namespace) -> int:
         default_yaml = Path(old["LIBRARY_YAML_PATH"]).name or "library.yaml"
     yaml_path = args.yaml_path or default_yaml
 
-    LOCAL_CONFIG_PATH.write_text(_LOCAL_CONFIG_TEMPLATE.format(
-        repo=args.repo,
-        yaml_path=yaml_path,
-        branch=args.branch,
-        autopush="true" if args.autopush else "false",
-    ))
+    merged, dropped = _reinit_preserving(
+        {"id": SHARED_ID, "repo": args.repo, "yaml_path": yaml_path,
+         "branch": args.branch, "protected": True},
+        bool(args.autopush),
+    )
+    if merged is None:
+        LOCAL_CONFIG_PATH.write_text(_LOCAL_CONFIG_TEMPLATE.format(
+            repo=args.repo,
+            yaml_path=yaml_path,
+            branch=args.branch,
+            autopush="true" if args.autopush else "false",
+        ))
+    else:
+        write_config(merged)
+    for cid in dropped:
+        warn(f"catalog '{cid}' could not be carried over and is no longer registered; "
+             f"re-add it with `library catalog add --id {cid} …`")
+    kept = [c["id"] for c in (merged or {}).get("catalogs", []) if c["id"] != SHARED_ID]
 
     cfg = load_config()  # validate what we just wrote
 
@@ -2188,10 +3658,10 @@ def cmd_init(args: argparse.Namespace) -> int:
             shutil.rmtree(CATALOG_CLONE_DIR)
     if not CATALOG_CLONE_DIR.exists():
         sys.stderr.write(f"Cloning catalog repo → {CATALOG_CLONE_DIR} ...\n")
-        pull_catalog(cfg)  # clones if absent; dies on failure with auth hint
+        pull_catalog(cfg._first_remote)  # clones if absent; dies on failure with auth hint
 
     # Verify the catalog YAML exists inside the clone.
-    cp = catalog_path(cfg)
+    cp = catalog_yaml(cfg._first_remote)
     if not cp.exists():
         die(
             f"catalog file not found at {cp}\n"
@@ -2208,6 +3678,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             "autopush": cfg.autopush,
             "catalog_clone": str(CATALOG_CLONE_DIR),
             "catalog_entries": len(iter_entries(load_catalog(cp))),
+            "kept_catalogs": kept,
         }, indent=2))
         return 0
 
@@ -2218,6 +3689,8 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(f"  catalog clone: {CATALOG_CLONE_DIR}")
     n_entries = len(iter_entries(load_catalog(cp)))
     print(f"  catalog ready: {n_entries} entries")
+    if kept:
+        print(f"  kept         : {', '.join(kept)} (still registered)")
     if "LIBRARY_REPO_URL" in old:
         print(
             "\nnote: the legacy LIBRARY_REPO_URL pointed at the tool repo, not the catalog —\n"
@@ -2259,6 +3732,10 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--cwd", help="project dir to anchor relative ('project'-scope) installs to "
                                       "(default: $LIBRARY_CWD or the current working directory)")
 
+    def add_catalog_flag(sp: argparse.ArgumentParser) -> None:
+        sp.add_argument("--catalog", metavar="<id>",
+                        help="restrict to one registered catalog, bypassing precedence")
+
     sp = sub.add_parser("init", help="create the per-device local config (config.local.yaml)")
     sp.add_argument("--repo", required=True, help="clone URL of the shared catalog repo (e.g. agent-library)")
     sp.add_argument("--yaml-path", dest="yaml_path", help="path to the catalog within that repo (default: library.yaml)")
@@ -2280,11 +3757,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("list", help="show the catalog with install status")
     add_common(sp)
+    add_catalog_flag(sp)
     sp.set_defaults(func=cmd_list)
 
     sp = sub.add_parser("search", help="find entries by keyword")
     sp.add_argument("keyword")
     add_common(sp)
+    add_catalog_flag(sp)
     sp.set_defaults(func=cmd_search)
 
     sp = sub.add_parser("use", help="install or refresh an entry (exact name)")
@@ -2298,10 +3777,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dry-run", dest="dry_run", action="store_true",
                     help="resolve destination and dependencies without installing")
     add_common(sp)
+    add_catalog_flag(sp)
     sp.set_defaults(func=cmd_use)
 
     sp = sub.add_parser("sync", help="re-pull every installed item")
     add_common(sp)
+    add_catalog_flag(sp)
     sp.set_defaults(func=cmd_sync)
 
     sp = sub.add_parser("add", help="register one or more entries in the catalog (opens one PR)")
@@ -2318,17 +3799,19 @@ def build_parser() -> argparse.ArgumentParser:
                     help="show what the PR diff would be without pushing")
     sp.add_argument("--json", action="store_true")
     sp.add_argument("--no-pull", action="store_true")
+    add_catalog_flag(sp)
     sp.set_defaults(func=cmd_add)
 
     sp = sub.add_parser("remove", help="remove an entry from the catalog (opens a PR)")
     sp.add_argument("name")
-    sp.add_argument("--purge", action="store_true", help="also delete the local copy (default + global)")
+    sp.add_argument("--purge", action="store_true", help="also delete the local copy (project + global)")
     sp.add_argument("--dry-run", action="store_true",
                     help="show what the PR diff would be without pushing")
     sp.add_argument("--json", action="store_true")
     sp.add_argument("--no-pull", action="store_true")
     sp.add_argument("--cwd", help="project dir to anchor relative ('default'-scope) paths to "
                                   "(default: $LIBRARY_CWD or the current working directory)")
+    add_catalog_flag(sp)
     sp.set_defaults(func=cmd_remove)
 
     sp = sub.add_parser("update", help="edit an existing entry's description/source/requires (opens a PR)")
@@ -2345,17 +3828,67 @@ def build_parser() -> argparse.ArgumentParser:
                     help="show what the PR diff would be without pushing")
     sp.add_argument("--json", action="store_true")
     sp.add_argument("--no-pull", action="store_true")
+    add_catalog_flag(sp)
     sp.set_defaults(func=cmd_update)
 
     sp = sub.add_parser("push", help="push a local copy back to its source (opens a PR for GitHub sources)")
     sp.add_argument("name")
-    sp.add_argument("--from", dest="frm", help="which local copy: default | global | <path>")
+    sp.add_argument("--from", dest="frm",
+                    help="which local copy: project | global | <path> ('default' = project)")
     sp.add_argument("--message", help="commit message (GitHub sources)")
     sp.add_argument("--no-pull", action="store_true", help="skip refreshing the catalog clone")
     sp.add_argument("--dry-run", action="store_true",
                     help="show what the PR diff would be without pushing (GitHub sources only)")
     sp.add_argument("--json", action="store_true")
+    add_catalog_flag(sp)
     sp.set_defaults(func=cmd_push)
+
+    sp = sub.add_parser("catalog", help="manage the catalog registry in config.local.yaml")
+    cat_actions = sp.add_subparsers(dest="action", required=True, metavar="<action>")
+    cat_list = cat_actions.add_parser("list", help="show every registered catalog")
+    cat_list.add_argument("--json", action="store_true", help="machine-readable output")
+    cat_list.set_defaults(func=cmd_catalog_list)
+
+    cat_add = cat_actions.add_parser("add", help="register an existing catalog")
+    cat_add.add_argument("--id", required=True, help="short id, used by --catalog")
+    cat_add.add_argument("--path", help="local catalog: a library.yaml, or a dir holding one")
+    cat_add.add_argument("--repo", help="remote catalog: clone URL")
+    cat_add.add_argument("--branch", default="main", help="remote branch (default: main)")
+    cat_add.add_argument("--yaml-path", dest="yaml_path", default="library.yaml",
+                         help="path to the catalog within the repo (default: library.yaml)")
+    cat_add.add_argument("--read-only", dest="read_only", action="store_true",
+                         help="register for reading only; refuse every write to it")
+    cat_add.add_argument("--git-commit", dest="git_commit", action="store_true",
+                         help="local catalog: commit and push the file after each write")
+    cat_add.add_argument("--protected", action="store_true",
+                         help="remote catalog: send writes through a PR instead of a push")
+    cat_add.add_argument("--position", choices=("first", "last"), default="first",
+                         help="precedence slot (default: first, so it overrides the rest)")
+    cat_add.add_argument("--json", action="store_true", help="machine-readable output")
+    cat_add.set_defaults(func=cmd_catalog_add)
+
+    cat_init = cat_actions.add_parser("init", help="scaffold an empty catalog and register it")
+    cat_init.add_argument("path", help="where to create it (a library.yaml, or a directory)")
+    cat_init.add_argument("--id", help="short id, used by --catalog (default: personal)")
+    cat_init.add_argument("--git-commit", dest="git_commit", action="store_true",
+                          help="commit and push the file after each write")
+    cat_init.add_argument("--position", choices=("first", "last"), default="first",
+                          help="precedence slot (default: first, so it overrides the rest)")
+    cat_init.add_argument("--json", action="store_true", help="machine-readable output")
+    cat_init.set_defaults(func=cmd_catalog_init)
+
+    cat_rm = cat_actions.add_parser("remove", help="unregister a catalog")
+    cat_rm.add_argument("id", help="id of the catalog to unregister")
+    cat_rm.add_argument("--purge-clone", dest="purge_clone", action="store_true",
+                        help="also delete its clone directory")
+    cat_rm.add_argument("--json", action="store_true", help="machine-readable output")
+    cat_rm.set_defaults(func=cmd_catalog_remove)
+
+    mig = cat_actions.add_parser("migrate",
+                                 help="rewrite a legacy catalog: config into the catalogs: list")
+    mig.add_argument("--dry-run", action="store_true", help="print the result without writing")
+    mig.add_argument("--json", action="store_true", help="machine-readable output")
+    mig.set_defaults(func=cmd_catalog_migrate)
 
     sp = sub.add_parser("doctor", help="validate config + catalog integrity (--deep checks source liveness)")
     sp.add_argument("--deep", action="store_true", help="also verify each source repo/branch is reachable")

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-push checks for the TOOL repo: Python compiles + doc/CLI drift.
+# Pre-push checks for the TOOL repo: Python compiles + doc/CLI drift + unit tests.
 # Fast, offline, no `just` required. Bypass with `git push --no-verify` if ever needed.
 #
 # Enable once per clone:  git config core.hooksPath .githooks   (or `just install-hooks`)
@@ -26,6 +26,12 @@ if [ "$rc" -eq 3 ]; then
 elif [ "$rc" -ne 0 ]; then
   echo "pre-push: doc/CLI drift — update SKILL.md/README.md (run ./check_docs.py)." >&2
   exit "$rc"
+fi
+
+# 3. Unit tests must pass (stdlib unittest, offline — see docs/contributing.md).
+if ! "$PY" -m unittest discover -s "$DIR/tests" -t "$DIR"; then
+  echo "pre-push: tests failed — fix before pushing (run 'just test')." >&2
+  exit 1
 fi
 
 exit 0

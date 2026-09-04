@@ -7,7 +7,13 @@
 __pycache__/
 *.pyc
 
-# per-device config + local catalog clone (never committed)
+# per-device config + local catalog clones (never committed)
 config.local.yaml
 .catalog-repo/
+.catalogs/
 
+
+# in-flight planning docs: requirements, design, task plan, and the build ledger.
+# Kept on disk, out of the repo — they describe how a change was built, not how the
+# tool works. Anything durable belongs in docs/ instead.
+specs/
