@@ -13,6 +13,16 @@ const props = defineProps<{
   /** On disk somewhere. The manifest belongs to the installed copy, so nothing is
    *  knowable until there is one — and asking costs a subprocess. */
   installed: boolean;
+  /**
+   * Whether the catalog already knows the installed copy ships a `setup.yaml`.
+   *
+   * It is file presence, not a parse, so a defective manifest still counts as `true` — the
+   * one case that reports `has_setup: false` and yet has something to say. When it is
+   * `false` there is provably nothing to read, so the panel skips the probe entirely
+   * instead of flashing a "Checking…" card through a subprocess whose only answer is
+   * "none" — the common case by a wide margin (R5.1c).
+   */
+  hasSetup: boolean;
 }>();
 const emit = defineEmits<{
   /** Start a guided walkthrough for this entry. The view above owns the panel. */
@@ -93,9 +103,12 @@ function describeDelivery(delivery: string): string {
 async function load(name: string) {
   report.value = null;
   error.value = "";
-  // Nothing to ask about: `setup` would answer `installed: false` and cost a
-  // subprocess to do it. The panel renders nothing until there is a copy.
-  if (!props.installed) return;
+  // Nothing to ask about, on two counts, and either one keeps the panel silent rather
+  // than flashing a "Checking…" card that resolves to nothing. There is no copy to read
+  // (`setup` would answer `installed: false`), or the catalog already knows the copy
+  // ships no `setup.yaml`. A defective manifest still counts as one, so this only skips
+  // the provably-empty case.
+  if (!props.installed || !props.hasSetup) return;
 
   loading.value = true;
   try {
@@ -129,7 +142,11 @@ async function checkAgent() {
   }
 }
 
-watch([() => props.name, () => props.installed], () => load(props.name), { immediate: true });
+watch(
+  [() => props.name, () => props.installed, () => props.hasSetup],
+  () => load(props.name),
+  { immediate: true },
+);
 </script>
 
 <template>

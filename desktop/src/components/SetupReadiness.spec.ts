@@ -25,24 +25,31 @@ const PAYLOADS: Record<string, SetupReport> = Object.fromEntries(
   ]),
 );
 
-async function mountPanel(fixture: string, installed = true) {
+async function mountPanel(fixture: string, installed = true, hasSetup = true) {
   answer("entry_setup", PAYLOADS[fixture]);
-  const panel = mount(SetupReadiness, { props: { name: "ready-skill", installed } });
+  const panel = mount(SetupReadiness, {
+    props: { name: "ready-skill", installed, hasSetup },
+  });
   await flushPromises();
   return panel;
 }
 
 describe("SetupReadiness", () => {
   it("renders nothing at all for a skill that declares no setup", async () => {
-    const panel = await mountPanel("plain");
+    const panel = await mountPanel("plain", true, false);
 
     // The common case by a wide margin. A "No setup needed" card on every entry page
-    // trains you to skip the section on the entries where it matters.
+    // trains you to skip the section on the entries where it matters — and the catalog
+    // already says there is no manifest, so the panel never even probes for one (the
+    // "Checking…" card it used to flash on install had no answer worth waiting for).
+    expect(calls).toHaveLength(0);
     expect(panel.find(".setup").exists()).toBe(false);
   });
 
   it("asks nothing at all when the entry is not installed", async () => {
-    const panel = mount(SetupReadiness, { props: { name: "ready-skill", installed: false } });
+    const panel = mount(SetupReadiness, {
+      props: { name: "ready-skill", installed: false, hasSetup: true },
+    });
     await flushPromises();
 
     // The manifest belongs to the installed copy, so there is nothing to ask about — and
@@ -53,7 +60,9 @@ describe("SetupReadiness", () => {
 
   it("loads once the entry becomes installed", async () => {
     answer("entry_setup", PAYLOADS.unconfigured);
-    const panel = mount(SetupReadiness, { props: { name: "ready-skill", installed: false } });
+    const panel = mount(SetupReadiness, {
+      props: { name: "ready-skill", installed: false, hasSetup: true },
+    });
     await flushPromises();
 
     await panel.setProps({ installed: true });
@@ -144,7 +153,9 @@ describe("SetupReadiness", () => {
     answer("entry_setup", () => {
       throw { kind: "cli", code: 2, stderr: "no such entry" };
     });
-    const panel = mount(SetupReadiness, { props: { name: "ghost", installed: true } });
+    const panel = mount(SetupReadiness, {
+      props: { name: "ghost", installed: true, hasSetup: true },
+    });
     await flushPromises();
 
     expect(panel.find("pre").text()).toContain("no such entry");

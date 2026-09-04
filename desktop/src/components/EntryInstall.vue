@@ -23,6 +23,12 @@ defineProps<{
    * card hidden until you navigated out and back.
    */
   installed: boolean;
+  /**
+   * Whether the catalog knows the installed copy ships a setup manifest. Handed to the
+   * readiness card so it can stay silent when there is provably nothing to read, rather
+   * than flashing a "Checking…" card on install of the (common) no-setup skill.
+   */
+  hasSetup: boolean;
   /** The title of the page Back returns to. */
   backTo: string;
 }>();
@@ -43,7 +49,7 @@ defineEmits<{ close: []; installed: []; walkthrough: [] }>();
 
       <!-- Below the install panel, not above it: it reports on the copy that panel puts there,
            and on a machine with nothing installed there is nothing for it to read yet. -->
-      <SetupReadiness :name="name" :installed="installed" @walkthrough="$emit('walkthrough')" />
+      <SetupReadiness :name="name" :installed="installed" :has-setup="hasSetup" @walkthrough="$emit('walkthrough')" />
     </PageHeader>
   </section>
 </template>

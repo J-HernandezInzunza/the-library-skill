@@ -206,6 +206,16 @@ const installForOnDisk = computed(() => {
   return entry ? isOnDisk(entry.state) : false;
 });
 
+/**
+ * Whether that same open entry ships a setup manifest, read from the same catalog snapshot
+ * as `installForOnDisk` so the two never disagree: after an install they refresh together,
+ * and the readiness card can trust that `hasSetup: false` truly means nothing to read.
+ */
+const installForHasSetup = computed(() => {
+  const entry = entries.value.find((candidate) => candidate.name === installFor.value);
+  return entry?.has_setup ?? false;
+});
+
 const multiCatalog = computed(() => catalogs.value.length > 1);
 
 const selectedCatalog = computed(() => {
@@ -317,6 +327,7 @@ onMounted(async () => {
         v-else-if="installFor"
         :name="installFor"
         :installed="installForOnDisk"
+        :has-setup="installForHasSetup"
         :back-to="installFor"
         @close="installFor = null"
         @installed="load()"
