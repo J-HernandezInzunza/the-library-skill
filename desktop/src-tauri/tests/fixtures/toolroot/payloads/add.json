@@ -1,0 +1,14 @@
+{
+  "status": "OK",
+  "added": {
+    "type": "skill",
+    "name": "new-skill",
+    "section": "skills"
+  },
+  "mode": "local",
+  "catalog": "personal",
+  "path": "/Users/tester/my-engineering-library/library.yaml",
+  "committed": false,
+  "pushed": false,
+  "branch": null
+}

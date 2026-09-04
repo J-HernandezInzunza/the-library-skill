@@ -1,0 +1,96 @@
+{
+  "status": "OK",
+  "name": "ready-skill",
+  "type": "skill",
+  "catalog": "fixture",
+  "installed": true,
+  "dest": "/Users/tester/.claude/skills/ready-skill",
+  "has_setup": true,
+  "manifest": {
+    "version": 1,
+    "summary": "Connect the toolkit to your Atlassian account.",
+    "prerequisites": [
+      {
+        "binary": "git"
+      },
+      {
+        "sibling-skill": "plain-skill"
+      }
+    ],
+    "config": {
+      "path": "/Users/tester/.config/ready-skill/config.json"
+    },
+    "secrets": [
+      {
+        "key": "account.email",
+        "label": "Atlassian account email",
+        "secret": false
+      },
+      {
+        "key": "account.api_token",
+        "label": "Atlassian API token (Jira + Confluence)",
+        "url": "https://id.atlassian.com/manage-profile/security/api-tokens",
+        "guidance": "Create this token WITHOUT scopes.",
+        "delivery": "config-file"
+      },
+      {
+        "key": "bitbucket.api_token",
+        "label": "Bitbucket API token (scoped)",
+        "url": "https://id.atlassian.com/manage-profile/security/api-tokens",
+        "guidance": "Separate, scoped token. Select: read:account, read:user:bitbucket, read:repository:bitbucket, read:pullrequest:bitbucket.",
+        "delivery": "config-file",
+        "optional": true
+      }
+    ],
+    "commands": {
+      "config-init": {
+        "run": "bin/setup.sh init",
+        "description": "Scaffold the config file"
+      },
+      "check": {
+        "run": "bin/setup.sh check",
+        "description": "Report readiness"
+      }
+    }
+  },
+  "problems": [],
+  "prerequisites": [
+    {
+      "kind": "binary",
+      "value": "git",
+      "met": true,
+      "detail": "/usr/bin/git"
+    },
+    {
+      "kind": "sibling-skill",
+      "value": "plain-skill",
+      "met": true,
+      "detail": "installed (global)"
+    }
+  ],
+  "secrets": [
+    {
+      "key": "account.email",
+      "delivery": "config-file",
+      "optional": false,
+      "present": false,
+      "detail": "not set \u2014 /Users/tester/.config/ready-skill/config.json has not been created yet"
+    },
+    {
+      "key": "account.api_token",
+      "delivery": "config-file",
+      "optional": false,
+      "present": false,
+      "detail": "not set \u2014 /Users/tester/.config/ready-skill/config.json has not been created yet"
+    },
+    {
+      "key": "bitbucket.api_token",
+      "delivery": "config-file",
+      "optional": true,
+      "present": false,
+      "detail": "not set \u2014 /Users/tester/.config/ready-skill/config.json has not been created yet"
+    }
+  ],
+  "configured": false,
+  "ready": true
+}

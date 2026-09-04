@@ -1,0 +1,980 @@
+// Agent layer: run `claude -p` and turn its stream into events the UI can render.
+//
+// Three pieces, deliberately separated by what each one can be tested against:
+//
+//   `command`  — builds the argv and nothing else, so the invocation contract (design
+//                §4.1) is assertable without a live `claude`.
+//   `classify` — one stream line in, zero or more events out. Pure, so the parser is
+//                tested by replaying recorded transcripts (`tests/fixtures/agent/`).
+//   `stream`   — spawns, reads stdout line by line, and hands each line to `classify`.
+//
+// The split mirrors `cli::interpret`, and for the same reason: everything interesting
+// about a run is a function of its bytes, and a test that needs a subprocess to reach
+// that logic ends up not being written.
+//
+// The stream is read incrementally and never buffered whole (R5.2): a walkthrough turn
+// runs for tens of seconds, and a transcript that appears all at once at the end is
+// indistinguishable to the user from a hang.
+
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::Instant;
+
+use serde::Serialize;
+
+use crate::error::AppError;
+use crate::events::{next_command_id, CommandFinished, CommandSink, CommandStarted};
+use crate::secrets::redact;
+
+/// The agent's tools, all of them ours. `mcp__library__` is also the prefix the
+/// `PreToolUse` hook allows, so this list and that hook say the same thing twice on
+/// purpose: this one suppresses prompting, the hook is the boundary (design §4.1a).
+pub const ALLOWED_TOOLS: &str = "mcp__library__library_cmd,mcp__library__read_skill_doc,\
+                             mcp__library__request_secret,mcp__library__run_skill_setup";
+
+/// The builtins a real session advertises, denied by name so they are never advertised at all.
+///
+/// **This cannot break a tool the walkthrough could otherwise use.** The hook already refuses
+/// every one of these at call time — none carries the `mcp__library__` prefix — so everything on
+/// this list was unreachable before it existed. What the list changes is *visibility*:
+/// `permissions.deny` removes a tool from `init.tools` entirely rather than refusing it on call
+/// (measured on CLI 2.1.236), so a model talked into reaching for a shell has nothing to reach
+/// for. That matters because four escalating attempts in a real walkthrough never produced a
+/// single `tool_use` — the opening prompt was the layer holding the line, and a prompt is only as
+/// good as the model honoring it.
+///
+/// **It is a deny-list, so it is stale by construction, and that is exactly why the hook stays.**
+/// A tool a later release ships is simply absent here and stays advertised — then denied on call
+/// by the prefix rule, which is the only construct that can speak about tools that do not exist
+/// yet. It cannot be inverted into a whitelist: `deny: ["*"]` measures as `tool count: 0` and
+/// outranks `allow`, so a wildcard would strip our own four tools with no way to win them back.
+///
+/// Taken from `tests/fixtures/agent/tool-denied.jsonl`'s `init.tools`, which is a recorded run
+/// rather than a list from the docs — plus `Glob` and `Grep`, which that recording does *not*
+/// contain and a live run does. The list was therefore stale the moment it was written, which is
+/// the argument for the hook stated as an incident rather than a worry: two file-reading tools
+/// were visible to the agent on the first live check, and `mcp_live` is what caught them.
+pub const DENIED_BUILTINS: [&str; 32] = [
+    "Task",
+    "Bash",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "DesignSync",
+    "Edit",
+    "EnterWorktree",
+    "ExitWorktree",
+    "Glob",
+    "Grep",
+    "ListAgents",
+    "ListMcpResourcesTool",
+    "Monitor",
+    "NotebookEdit",
+    "PushNotification",
+    "Read",
+    "ReadMcpResourceDirTool",
+    "ReadMcpResourceTool",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "ShareOnboardingGuide",
+    "Skill",
+    "TaskOutput",
+    "TaskStop",
+    "WaitForMcpServers",
+    "WebFetch",
+    "WebSearch",
+    "Workflow",
+    "Write",
+];
+
+/// What to run, for one user turn of one walkthrough.
+///
+/// Both file paths are required rather than optional. A run without the MCP config has no
+/// `request_secret` and would ask for the credential in chat, and a run without the
+/// settings hook has no tool boundary at all — so "spawn it anyway, minus that file" is
+/// never the safe fallback, and the type refuses to express it.
+pub struct Launch {
+    /// Turn 1 must carry the setup context — which skill, what the credential is for, and
+    /// that the app collects it outside the chat. A cold "collect this token" prompt was
+    /// *refused* on safety grounds in the T0.2 spike, so this is a precondition of the
+    /// walkthrough working at all, not prompt polish (design §4.5).
+    pub prompt: String,
+    /// Where the agent runs. A walkthrough that installs into a project needs to be
+    /// anchored there, on the same reasoning as `LIBRARY_CWD` in the CLI layer (§3.3).
+    pub cwd: PathBuf,
+    /// The app's MCP server (§5). Written per walkthrough, because it carries that
+    /// walkthrough's bearer token.
+    pub mcp_config: PathBuf,
+    /// The `PreToolUse` deny-by-default hook (§4.1a).
+    pub settings: PathBuf,
+    /// The session to continue, for turns 2..n (R5.4, D8). `None` starts one.
+    ///
+    /// An explicit id rather than `--continue`: the app can have several walkthroughs open,
+    /// and `--continue` attaches to whichever conversation was most recent — which is how
+    /// the agent ends up answering one skill's setup with another's context.
+    pub resume: Option<String>,
+}
+
+/// The exact invocation, per design §4.1.
+///
+/// **`--bare` is deliberately absent** (D10). It is the documented recommendation for
+/// scripted calls and it never reads OAuth credentials, so it would force
+/// `ANTHROPIC_API_KEY` and break every teammate on a subscription login. The app sets no
+/// credential of its own (R5.6); auth is whatever the teammate's Claude Code already uses.
+pub fn command(launch: &Launch) -> Command {
+    let mut cmd = Command::new("claude");
+    cmd.arg("-p")
+        .arg(&launch.prompt)
+        .arg("--output-format")
+        .arg("stream-json")
+        // Required by stream-json, not a diagnostic switch.
+        .arg("--verbose")
+        .arg("--mcp-config")
+        .arg(&launch.mcp_config)
+        // Our servers only. Without it the session also loads the teammate's own MCP
+        // servers, which the recorded `text-only` fixture shows arriving half-broken —
+        // seven servers, one failed, one needing auth (D10).
+        .arg("--strict-mcp-config")
+        .arg("--settings")
+        .arg(&launch.settings)
+        // Removes the lazy tool-search indirection so our MCP tools are advertised
+        // directly in `init.tools`, which is what the preflight gate reads (§4.1a).
+        .arg("--disallowedTools")
+        .arg("ToolSearch")
+        .arg("--allowedTools")
+        .arg(ALLOWED_TOOLS)
+        .arg("--permission-mode")
+        .arg("dontAsk")
+        .current_dir(&launch.cwd);
+    if let Some(session) = &launch.resume {
+        cmd.arg("--resume").arg(session);
+    }
+    cmd
+}
+
+/// Every tool the agent may call. The hook denies everything else by name.
+pub const TOOL_PREFIX: &str = "mcp__library__";
+
+/// What our MCP server is called in `--mcp-config`, and therefore in `init.mcp_servers`.
+pub const SERVER_NAME: &str = "library";
+
+/// Whether a walkthrough can be offered at all (R7.2).
+///
+/// `claude` is an enhancement, never a dependency: with it absent every deterministic
+/// feature keeps working and only the walkthrough is disabled, which is why this is a
+/// question the UI asks rather than an error a walkthrough discovers.
+pub fn available() -> bool {
+    Command::new("claude")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Whether the session the agent just opened is one a walkthrough may run in (R7.2a).
+///
+/// **The gate is positive.** An earlier draft asked whether `mcp_server_errors` was
+/// non-empty; the spike measured that as `null` with the server dead, `init.tools` carrying
+/// no `mcp__` entries — and the run then *succeeded*, with the model fabricating a
+/// plausible result for a tool it never called. So this asks for our server `connected` and
+/// every expected tool advertised, and treats anything else as a stop.
+///
+/// The stakes are why it fails closed: without `request_secret` the agent falls back to
+/// asking for the credential in chat, which is the leak D7 exists to prevent.
+pub fn preflight(event: &AgentEvent) -> Result<(), AppError> {
+    let AgentEvent::Init {
+        tools,
+        mcp_servers,
+        mcp_server_errors,
+        ..
+    } = event
+    else {
+        return Ok(());
+    };
+
+    // `mcp_server_errors` appears only as a suffix: a diagnostic worth showing, never the
+    // condition being tested.
+    let diagnostic = match mcp_server_errors {
+        Some(errors) => format!(" (reported: {errors})"),
+        None => String::new(),
+    };
+
+    match mcp_servers.iter().find(|server| server.name == SERVER_NAME) {
+        None => {
+            return Err(AppError::McpNotLoaded {
+                detail: format!(
+                    "the agent session has no '{SERVER_NAME}' server at all{diagnostic}"
+                ),
+            })
+        }
+        // `needs-auth` and `pending` are both real statuses, both observed, and neither is
+        // a session the walkthrough may proceed in.
+        Some(server) if server.status != "connected" => {
+            return Err(AppError::McpNotLoaded {
+                detail: format!("the '{SERVER_NAME}' server is {}{diagnostic}", server.status),
+            })
+        }
+        Some(_) => {}
+    }
+
+    let missing: Vec<&str> = ALLOWED_TOOLS
+        .split(',')
+        .filter(|expected| !tools.iter().any(|tool| tool == expected))
+        .collect();
+    if !missing.is_empty() {
+        // A connected server that advertises the wrong tools is the worse failure of the
+        // two: everything looks healthy, and the first thing to go missing is whichever
+        // capability the agent then invents an answer for.
+        return Err(AppError::McpNotLoaded {
+            detail: format!(
+                "the '{SERVER_NAME}' server connected but did not advertise {}{diagnostic}",
+                missing.join(", ")
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// The argument that turns this binary into the `PreToolUse` hook (§4.1a).
+///
+/// The hook is **this executable**, not a shell one-liner. A script would need an
+/// interpreter to be present and a temp file to survive the run, and if either assumption
+/// fails the hook does not run — which, for a deny-by-default gate, fails *open*. The app
+/// binary is already on disk by definition.
+pub const HOOK_ARG: &str = "--pretooluse-hook";
+
+/// The `--settings` document: deny-by-default on every tool call.
+///
+/// The *hook* — not `--allowedTools`, not `--permission-mode dontAsk`, and not the
+/// `permissions.deny` block below it — is the boundary (§4.1a, D11). The T0.2 spike ran
+/// `Bash("echo …")` and got its output with both flags set; re-run on CLI 2.1.236 with the
+/// hook removed it still does, so anything that treats the flags as the whitelist is a
+/// security bug rather than a style choice. `matcher: "*"` is what makes the hook
+/// deny-by-default: it sees every call, including tools no release has shipped yet.
+///
+/// The document carries two layers on purpose. `permissions.deny` keeps today's builtins
+/// out of `init.tools` so the agent never sees them; the hook decides every call that does
+/// arrive, which is the half that still holds when the list goes stale.
+pub fn settings(hook_command: &str) -> serde_json::Value {
+    serde_json::json!({
+        // Belt to the hook's braces: these never reach `init.tools`, so the agent cannot see
+        // them to try. `DENIED_BUILTINS` explains why this is not a replacement for the hook.
+        "permissions": { "deny": DENIED_BUILTINS },
+        "hooks": {
+            "PreToolUse": [{
+                "matcher": "*",
+                "hooks": [{ "type": "command", "command": hook_command }]
+            }]
+        }
+    })
+}
+
+/// Write the gate into *dir* and return the path to pass as `--settings`.
+///
+/// One file per walkthrough, alongside its MCP config, so a walkthrough's whole agent
+/// configuration lives and dies with it.
+pub fn write_settings(dir: &Path) -> Result<PathBuf, AppError> {
+    let path = dir.join("settings.json");
+    let document = settings(&hook_command()?);
+    std::fs::write(&path, document.to_string()).map_err(|e| AppError::AgentStream {
+        detail: format!("the tool gate could not be written to {}: {e}", path.display()),
+    })?;
+    Ok(path)
+}
+
+/// The hook command line: this binary, in hook mode.
+pub fn hook_command() -> Result<String, AppError> {
+    let exe = std::env::current_exe().map_err(|e| AppError::AgentStream {
+        detail: format!("the app could not locate its own binary to install the tool gate: {e}"),
+    })?;
+    Ok(format!("{} {HOOK_ARG}", shell_quote(&exe.display().to_string())))
+}
+
+/// Quote a path for the shell the hook command runs in.
+///
+/// The app's path can contain spaces (`/Applications/The Library.app/…`), and an unquoted
+/// one would make the hook fail to execute — silently permitting every tool.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+/// One tool call, decided.
+///
+/// Deny-by-default in the strong sense: anything this function cannot positively identify
+/// as one of ours is denied, including a hook payload it failed to parse. A hook that
+/// permits what it does not understand is not a whitelist.
+pub fn hook_decision(payload: &str) -> serde_json::Value {
+    let tool = serde_json::from_str::<serde_json::Value>(payload)
+        .ok()
+        .and_then(|input| input["tool_name"].as_str().map(String::from))
+        .unwrap_or_default();
+
+    let allowed = tool.starts_with(TOOL_PREFIX);
+    serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": if allowed { "allow" } else { "deny" },
+            // The agent reads this as an errored `tool_result` and adapts in-conversation,
+            // so it is addressed to the agent: it says what to do instead, not just no.
+            "permissionDecisionReason": if allowed {
+                "Allowed: one of the app's own tools.".to_string()
+            } else {
+                format!(
+                    "{} is not available in a setup walkthrough. Only the app's \
+                     {TOOL_PREFIX}* tools are; use those, or tell the user what you \
+                     needed and why.",
+                    if tool.is_empty() { "That tool" } else { &tool },
+                )
+            }
+        }
+    })
+}
+
+/// Serve one hook invocation: decision on stdout, nothing else.
+///
+/// Called from `main` before Tauri starts. Anything else this process might print would be
+/// parsed as part of the hook's response, which is why it happens before any window,
+/// plugin, or logger exists.
+pub fn serve_hook() {
+    let mut payload = String::new();
+    let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut payload);
+    println!("{}", hook_decision(&payload));
+}
+
+/// One thing that happened during a turn, as the UI needs it.
+///
+/// Tagged so the frontend can switch on `kind`, and every variant is a flat payload: the
+/// raw stream nests these three levels deep, and a view that has to walk
+/// `message.content[]` itself is a view that will disagree with the backend about what an
+/// event is.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AgentEvent {
+    /// `system/init`, the session's opening statement. Carries what the preflight gate
+    /// checks (T6.3) and the id a later turn resumes from (T6.2).
+    Init {
+        session_id: String,
+        /// Every tool the agent was actually given, ours and the builtins the hook will
+        /// deny. The gate wants ours *present*; it deliberately does not care what else
+        /// is in here, because a deny-list of builtins is a moving target.
+        tools: Vec<String>,
+        mcp_servers: Vec<McpServer>,
+        /// Displayed as a diagnostic, never used as the condition: the spike measured it
+        /// as `null` with the server dead (§4.3.1).
+        mcp_server_errors: Option<serde_json::Value>,
+    },
+    Text {
+        text: String,
+        /// From a subagent rather than the walkthrough itself. The UI nests or hides
+        /// these; interleaved with the main transcript they read as the agent
+        /// contradicting itself.
+        subagent: bool,
+    },
+    Tool {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+        subagent: bool,
+    },
+    ToolResult {
+        tool_use_id: String,
+        /// True for a denied call, too. A denial is a normal errored result rather than a
+        /// dead run, which is what lets the agent adapt in-conversation (§4.1a).
+        is_error: bool,
+        text: String,
+        subagent: bool,
+    },
+    /// A usage-limit notice. **Not** "retrying": one of these arrives on every healthy
+    /// run with `status: "allowed"`, so the status is what decides whether there is
+    /// anything to say. `system/api_retry`, which design §4.3 listed, does not exist.
+    RateLimit {
+        status: String,
+        /// `five_hour`, `weekly`, … Left as a string; the set grows.
+        limit_type: Option<String>,
+        resets_at: Option<i64>,
+    },
+    /// The last line of the run.
+    Done {
+        session_id: String,
+        is_error: bool,
+        /// The final assistant text, as `claude` summarised it. Absent on an errored run.
+        result: Option<String>,
+    },
+}
+
+/// One MCP server as `init` reported it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct McpServer {
+    pub name: String,
+    /// `connected`, `failed`, `needs-auth`, `pending` — all four observed in the recorded
+    /// fixtures. A `String` because only `connected` is load-bearing and the rest is an
+    /// open set.
+    pub status: String,
+}
+
+impl AgentEvent {
+    /// The Tauri channel this goes out on (design §4.3).
+    pub fn channel(&self) -> &'static str {
+        match self {
+            AgentEvent::Init { .. } => "agent://init",
+            AgentEvent::Text { .. } => "agent://text",
+            AgentEvent::Tool { .. } => "agent://tool",
+            AgentEvent::ToolResult { .. } => "agent://tool_result",
+            AgentEvent::RateLimit { .. } => "agent://rate_limit",
+            AgentEvent::Done { .. } => "agent://done",
+        }
+    }
+}
+
+/// Where the transcript is delivered.
+///
+/// A trait for the same reason `CommandSink` is one: the parser's whole job is what it
+/// emits, and a test that cannot observe that is testing nothing.
+pub trait AgentSink {
+    fn event(&self, event: &AgentEvent);
+}
+
+impl AgentSink for tauri::AppHandle {
+    fn event(&self, event: &AgentEvent) {
+        // A failed emit must not abort the run that produced it; the window may have gone.
+        let _ = tauri::Emitter::emit(self, event.channel(), event);
+    }
+}
+
+/// Turn one stream line into events.
+///
+/// Returns a `Vec` because one `assistant` message routinely carries several content
+/// blocks — the recorded tool-call transcript has text and a `tool_use` in the same
+/// message — and collapsing them would drop whichever came second.
+///
+/// An unparseable line, an unknown top-level `type`, and an unknown `system.subtype` all
+/// yield nothing rather than an error. The stream grows between releases: the spike found
+/// four event kinds design §4.3 never listed, and the recorded fixtures add
+/// `hook_started` and `hook_response` on top. Erroring on growth would mean a Claude Code
+/// upgrade breaks every walkthrough.
+///
+/// Every text-bearing field is redacted on the way out (R6.6). `pump` emits only what this
+/// returns, so this is the one gate the whole transcript passes through — and the transcript is
+/// the surface where a leak is most visible, since it is on screen and in screenshots. D7 says
+/// the value never reaches the agent, so in a working app there is nothing here to find; this is
+/// what makes that assertable rather than assumed, and what catches the case D7 does not cover —
+/// a user pasting the token into the chat box themselves.
+pub fn classify(line: &str) -> Vec<AgentEvent> {
+    let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+        return Vec::new();
+    };
+    let subagent = !event["parent_tool_use_id"].is_null();
+
+    match event["type"].as_str() {
+        Some("system") if event["subtype"] == "init" => vec![AgentEvent::Init {
+            session_id: string(&event["session_id"]),
+            tools: strings(&event["tools"]),
+            mcp_servers: event["mcp_servers"]
+                .as_array()
+                .map(|servers| {
+                    servers
+                        .iter()
+                        .map(|server| McpServer {
+                            name: string(&server["name"]),
+                            status: string(&server["status"]),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            mcp_server_errors: match &event["mcp_server_errors"] {
+                serde_json::Value::Null => None,
+                errors => Some(errors.clone()),
+            },
+        }],
+
+        Some("assistant") => blocks(&event)
+            .iter()
+            .filter_map(|block| match block["type"].as_str() {
+                Some("text") => Some(AgentEvent::Text {
+                    text: redact(&string(&block["text"])),
+                    subagent,
+                }),
+                Some("tool_use") => Some(AgentEvent::Tool {
+                    id: string(&block["id"]),
+                    name: string(&block["name"]),
+                    // Redacted leaf by leaf rather than as serialized text, so the panel still
+                    // gets the input's shape to render.
+                    input: crate::secrets::redact_json(&block["input"]),
+                    subagent,
+                }),
+                // `thinking` and whatever comes next: not part of the transcript this
+                // view shows.
+                _ => None,
+            })
+            .collect(),
+
+        // A `user` message in the stream is the harness reporting a tool result, not the
+        // teammate typing: their turns go in as the next process's prompt.
+        Some("user") => blocks(&event)
+            .iter()
+            .filter(|block| block["type"] == "tool_result")
+            .map(|block| AgentEvent::ToolResult {
+                tool_use_id: string(&block["tool_use_id"]),
+                is_error: block["is_error"].as_bool().unwrap_or(false),
+                text: redact(&result_text(&block["content"])),
+                subagent,
+            })
+            .collect(),
+
+        Some("rate_limit_event") => {
+            let info = &event["rate_limit_info"];
+            vec![AgentEvent::RateLimit {
+                status: string(&info["status"]),
+                limit_type: info["rateLimitType"].as_str().map(String::from),
+                resets_at: info["resetsAt"].as_i64(),
+            }]
+        }
+
+        Some("result") => vec![AgentEvent::Done {
+            session_id: string(&event["session_id"]),
+            is_error: event["is_error"].as_bool().unwrap_or(false),
+            result: event["result"].as_str().map(|text| redact(text)),
+        }],
+
+        _ => Vec::new(),
+    }
+}
+
+/// A message's content blocks, or none if it has none.
+fn blocks(event: &serde_json::Value) -> Vec<serde_json::Value> {
+    event["message"]["content"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// A tool result's text.
+///
+/// The recorded shape is `content: [{"type": "text", "text": …}]`, but a plain string is
+/// also valid MCP and is what an errored result tends to arrive as — including the hook's
+/// denial reason, which is the one result the user most needs to read.
+fn result_text(content: &serde_json::Value) -> String {
+    match content {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| part["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+fn string(value: &serde_json::Value) -> String {
+    value.as_str().unwrap_or_default().to_string()
+}
+
+fn strings(value: &serde_json::Value) -> Vec<String> {
+    value
+        .as_array()
+        .map(|items| items.iter().map(string).collect())
+        .unwrap_or_default()
+}
+
+/// Read a stream to its end, emitting as it goes, and report the session it belonged to.
+///
+/// Takes a reader rather than a child process so the recorded transcripts can be replayed
+/// through the same loop the app runs.
+///
+/// The session id is taken from `init` and confirmed by `result`, because that is what the
+/// next turn resumes (R5.4). A turn that produced no id is a turn with nothing to continue,
+/// which the caller has to know about rather than infer.
+///
+/// `init` is also where the preflight gate runs, and a failed gate stops the read
+/// immediately (R7.2a). The event is emitted first: the transcript should show the session
+/// the walkthrough refused, not go blank.
+pub fn pump<R: BufRead>(sink: &dyn AgentSink, reader: R) -> Result<Option<String>, AppError> {
+    let mut session = None;
+    for line in reader.lines() {
+        let line = line.map_err(|e| AppError::AgentStream {
+            detail: format!("its output stopped mid-stream: {e}"),
+        })?;
+        for event in classify(&line) {
+            match &event {
+                AgentEvent::Init { session_id, .. } | AgentEvent::Done { session_id, .. }
+                    if !session_id.is_empty() =>
+                {
+                    session = Some(session_id.clone());
+                }
+                _ => {}
+            }
+            sink.event(&event);
+            preflight(&event)?;
+        }
+    }
+    Ok(session)
+}
+
+/// Run one turn: spawn `claude`, stream its events, and return the session to resume.
+///
+/// The command log gets the invocation too (`log`), on the same reasoning as the CLI
+/// layer: there is no per-action approval gate in this app, so showing what ran is the
+/// safeguard, and the agent's own spawn is the one command a user would most want to see.
+pub fn run(
+    sink: &dyn AgentSink,
+    log: &dyn CommandSink,
+    launch: &Launch,
+) -> Result<Option<String>, AppError> {
+    let mut cmd = command(launch);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let id = next_command_id();
+    log.started(&CommandStarted {
+        id,
+        // Redacted here rather than in `argv`, which answers "what would the child see" — a
+        // question the invocation-contract tests ask and the log does not.
+        argv: argv(&cmd).iter().map(|arg| redact(arg)).collect(),
+        cwd: launch.cwd.display().to_string(),
+    });
+    let started_at = Instant::now();
+
+    // A missing `claude` is its own error rather than a failed run: it disables
+    // walkthroughs and nothing else, and the UI says so (R7.2). T6.3 checks for it before
+    // offering one, but the binary can also go away between the check and the spawn.
+    let child = cmd.spawn().map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => AppError::AgentMissing,
+        _ => AppError::AgentStream {
+            detail: format!("claude would not start: {e}"),
+        },
+    });
+    let mut child = match child {
+        Ok(child) => child,
+        Err(e) => {
+            log.finished(&CommandFinished {
+                id,
+                code: -1,
+                duration_ms: started_at.elapsed().as_millis() as u64,
+            });
+            return Err(e);
+        }
+    };
+
+    // stderr is drained on its own thread. Reading it after stdout would deadlock if
+    // `claude` ever filled the pipe buffer while we were still waiting on stdout — rare,
+    // and precisely the failure that presents as a walkthrough hung halfway.
+    let stderr = drain_stderr(&mut child);
+    let stdout = child.stdout.take().expect("stdout was piped");
+    let pumped = pump(sink, BufReader::new(stdout));
+    if pumped.is_err() {
+        // A stopped read means the turn must not continue — a failed preflight above all,
+        // where every further second is one the agent might spend asking for the credential
+        // in chat. Kill it rather than waiting for a run nobody will be shown.
+        let _ = child.kill();
+    }
+
+    let status = child.wait();
+    let code = status.as_ref().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+    log.finished(&CommandFinished {
+        id,
+        code,
+        duration_ms: started_at.elapsed().as_millis() as u64,
+    });
+
+    let stderr = stderr.join().unwrap_or_default();
+    // The stream's own verdict comes first, and a killed child's exit code second: we are
+    // the ones who killed it, and "claude exited 137" would bury the reason we did.
+    let session = pumped?;
+
+    if code != 0 {
+        return Err(AppError::AgentStream {
+            detail: if stderr.trim().is_empty() {
+                format!("claude exited {code} without explaining why")
+            } else {
+                // `claude`'s stderr is the one stream nothing else has filtered: the transcript
+                // goes through `classify`, this does not.
+                format!("claude exited {code}: {}", redact(stderr.trim()))
+            },
+        });
+    }
+    Ok(session)
+}
+
+/// Consume stderr in the background, returning a handle to its text.
+fn drain_stderr(child: &mut Child) -> std::thread::JoinHandle<String> {
+    let stderr = child.stderr.take().expect("stderr was piped");
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            text.push_str(&line);
+            text.push('\n');
+        }
+        text
+    })
+}
+
+/// What the child would see, for the command log.
+fn argv(cmd: &Command) -> Vec<String> {
+    std::iter::once(cmd.get_program())
+        .chain(cmd.get_args())
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::secrets::{redactor_turn, store_holding};
+
+    /// R6.6 across the whole transcript. `pump` emits only what `classify` returns, so a value
+    /// that survives here reaches the panel and every screenshot of it.
+    ///
+    /// D7 means the agent never had the value to repeat — this covers the case D7 does not: the
+    /// user typing it into the chat box themselves, which comes back as the agent quoting it.
+    #[test]
+    fn every_text_bearing_event_is_redacted_on_its_way_to_the_panel() {
+        let _turn = redactor_turn();
+        let store = store_holding("account.api_token", b"T7.4-STREAM-VALUE");
+        store.install();
+        let leaked = "T7.4-STREAM-VALUE";
+
+        let lines = [
+            format!(
+                r#"{{"type":"assistant","message":{{"content":[
+                   {{"type":"text","text":"I will use {leaked} now."}},
+                   {{"type":"tool_use","id":"t1","name":"run_skill_setup",
+                     "input":{{"command_id":"check","token":"{leaked}"}}}}]}}}}"#
+            ),
+            format!(
+                r#"{{"type":"user","message":{{"content":[
+                   {{"type":"tool_result","tool_use_id":"t1","is_error":true,
+                     "content":[{{"type":"text","text":"failed with {leaked}"}}]}}]}}}}"#
+            ),
+            format!(
+                r#"{{"type":"result","session_id":"s1","is_error":false,
+                    "result":"configured with {leaked}"}}"#
+            ),
+        ];
+
+        let events: Vec<AgentEvent> = lines.iter().flat_map(|line| classify(line)).collect();
+
+        assert_eq!(events.len(), 4, "{events:?}");
+        for event in &events {
+            let serialized = serde_json::to_string(event).expect("an event serializes");
+            assert!(!serialized.contains(leaked), "{serialized}");
+            assert!(serialized.contains("***"), "{serialized}");
+        }
+
+        // The `tool_use` input keeps its shape, so the panel still renders a call rather than a
+        // string: only the leaf that held the value changed.
+        let AgentEvent::Tool { input, .. } = &events[1] else {
+            panic!("the second event is the tool call: {events:?}");
+        };
+        assert_eq!(input["command_id"], "check");
+        assert_eq!(input["token"], "***");
+    }
+
+    fn launch() -> Launch {
+        Launch {
+            prompt: "Set up atlassian-toolkit.".to_string(),
+            cwd: PathBuf::from("/tmp/project"),
+            mcp_config: PathBuf::from("/tmp/walkthrough/mcp.json"),
+            settings: PathBuf::from("/tmp/walkthrough/settings.json"),
+            resume: None,
+        }
+    }
+
+    /// Turn 1 starts a session; nothing may make it continue an unrelated one.
+    #[test]
+    fn a_first_turn_resumes_nothing() {
+        let args = argv(&command(&launch()));
+
+        assert!(!args.contains(&"--resume".to_string()));
+        // `--continue` would attach to whichever conversation was most recent on this
+        // machine, which for an app that can hold several walkthroughs open is a
+        // credential collected for one skill answering a question about another (D8).
+        assert!(!args.contains(&"--continue".to_string()));
+        assert!(!args.contains(&"-c".to_string()));
+    }
+
+    #[test]
+    fn a_later_turn_resumes_the_captured_session_by_id() {
+        let args = argv(&command(&Launch {
+            resume: Some("8731f047-3a33-41b5-a0cd-26bcfd7ac924".to_string()),
+            ..launch()
+        }));
+
+        let at = args
+            .iter()
+            .position(|arg| arg == "--resume")
+            .expect("a later turn resumes");
+        assert_eq!(args[at + 1], "8731f047-3a33-41b5-a0cd-26bcfd7ac924");
+    }
+
+    #[test]
+    fn the_invocation_matches_the_verified_shape() {
+        let args = argv(&command(&launch()));
+
+        assert_eq!(args[0], "claude");
+        assert_eq!(&args[1..3], ["-p", "Set up atlassian-toolkit."]);
+        for expected in [
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--mcp-config",
+            "--strict-mcp-config",
+            "--settings",
+            "--disallowedTools",
+            "ToolSearch",
+            "--allowedTools",
+            "--permission-mode",
+            "dontAsk",
+        ] {
+            assert!(args.contains(&expected.to_string()), "missing {expected}");
+        }
+    }
+
+    /// D10, as a test rather than a comment: `--bare` is the documented way to script
+    /// `claude`, so the next person to read the docs will try to add it, and it would
+    /// break every teammate who signs in with a subscription rather than an API key.
+    #[test]
+    fn the_invocation_never_passes_bare() {
+        assert!(!argv(&command(&launch())).contains(&"--bare".to_string()));
+    }
+
+    /// `--allowedTools` pre-approves; it does not exclude (§4.1a). It still has to name
+    /// only our tools, or a builtin the hook denies would also stop prompting first.
+    #[test]
+    fn only_the_apps_tools_are_pre_approved() {
+        let names: Vec<&str> = ALLOWED_TOOLS.split(',').collect();
+        assert_eq!(names.len(), 4);
+        assert!(names.iter().all(|name| name.starts_with("mcp__library__")));
+    }
+
+    fn decision(payload: serde_json::Value) -> String {
+        hook_decision(&payload.to_string())["hookSpecificOutput"]["permissionDecision"]
+            .as_str()
+            .expect("the hook always decides")
+            .to_string()
+    }
+
+    #[test]
+    fn the_gate_allows_the_apps_own_tools() {
+        for name in ALLOWED_TOOLS.split(',') {
+            assert_eq!(
+                decision(serde_json::json!({ "tool_name": name })),
+                "allow",
+                "{name} is the app's own tool"
+            );
+        }
+    }
+
+    /// `Bash` specifically, because the spike ran it and got its output with
+    /// `--allowedTools` + `dontAsk` alone. Everything else here is a builtin that showed
+    /// up in a recorded `init.tools` — the hook has to deny by *default*, not by list.
+    #[test]
+    fn the_gate_denies_every_other_tool() {
+        for name in [
+            "Bash",
+            "Read",
+            "Write",
+            "Task",
+            "WebFetch",
+            "ToolSearch",
+            "SomeToolALaterReleaseAdds",
+            // A different MCP server's tool, and a name that only looks like ours.
+            "mcp__slack__slack_post_message",
+            "mcp__library_evil__exfiltrate",
+        ] {
+            assert_eq!(
+                decision(serde_json::json!({ "tool_name": name })),
+                "deny",
+                "{name} is not on the whitelist"
+            );
+        }
+    }
+
+    /// A payload the hook cannot read is denied, not permitted. A gate that fails open on
+    /// a shape it does not recognise is not a gate.
+    #[test]
+    fn the_gate_denies_what_it_cannot_parse() {
+        assert_eq!(hook_decision("")["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(hook_decision("{")["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(decision(serde_json::json!({ "no_tool_name": true })), "deny");
+    }
+
+    /// The denial reaches the agent as an errored `tool_result`, so it has to say what to
+    /// do instead — otherwise the agent retries the same denied call.
+    #[test]
+    fn a_denial_names_the_tool_and_what_to_use_instead() {
+        let reason = hook_decision(&serde_json::json!({ "tool_name": "Bash" }).to_string())
+            ["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .expect("a denial explains itself")
+            .to_string();
+
+        assert!(reason.contains("Bash"));
+        assert!(reason.contains(TOOL_PREFIX));
+    }
+
+    /// The deny-list is the visibility layer, and the one thing it must never do is name
+    /// something of ours. A wildcard or an `mcp__library__` entry would strip the agent's whole
+    /// surface — `deny` outranks `allow`, so `--allowedTools` could not win it back — and the
+    /// walkthrough would open with no tools and no way to say why.
+    #[test]
+    fn the_deny_list_never_names_one_of_our_own_tools() {
+        for tool in DENIED_BUILTINS {
+            assert!(!tool.starts_with(TOOL_PREFIX), "{tool} is one of ours");
+            assert!(!tool.contains('*'), "{tool} is a wildcard, which denies everything");
+        }
+        for ours in ALLOWED_TOOLS.split(',') {
+            assert!(!DENIED_BUILTINS.contains(&ours), "{ours} is denied and allowed at once");
+        }
+    }
+
+    /// `permissions.deny` removes a tool from `init.tools` rather than refusing it on call, so
+    /// the builtins the recorded run advertised have to be in the document by name.
+    #[test]
+    fn the_settings_hide_the_builtins_the_agent_would_otherwise_be_offered() {
+        let settings = settings("/tmp/desktop --pretooluse-hook");
+        let denied = settings["permissions"]["deny"]
+            .as_array()
+            .expect("a deny list")
+            .iter()
+            .map(|value| value.as_str().expect("a tool name").to_string())
+            .collect::<Vec<_>>();
+
+        // The two the spike actually got output from, and the one that spawns a surface of its own.
+        for tool in ["Bash", "Read", "Write", "Task", "WebFetch"] {
+            assert!(denied.contains(&tool.to_string()), "{tool} is still advertised");
+        }
+    }
+
+    /// `matcher: "*"` is the deny-by-default half. A matcher listing today's builtins
+    /// would permit tomorrow's.
+    #[test]
+    fn the_settings_route_every_tool_call_through_the_hook() {
+        let settings = settings("/Applications/The Library.app/bin --pretooluse-hook");
+        let entry = &settings["hooks"]["PreToolUse"][0];
+
+        assert_eq!(entry["matcher"], "*");
+        assert_eq!(entry["hooks"][0]["type"], "command");
+        assert!(entry["hooks"][0]["command"]
+            .as_str()
+            .expect("a command")
+            .ends_with(HOOK_ARG));
+    }
+
+    /// `/Applications/The Library.app/…` has a space in it, and an unquoted hook command
+    /// would simply fail to execute — which for a deny-by-default gate fails open.
+    #[test]
+    fn the_hook_command_survives_a_path_with_spaces() {
+        assert_eq!(shell_quote("/Applications/The Library.app/x"), "'/Applications/The Library.app/x'");
+        assert_eq!(shell_quote("/tmp/it's here"), r"'/tmp/it'\''s here'");
+    }
+
+    #[test]
+    fn an_unparseable_line_is_ignored_rather_than_fatal() {
+        assert!(classify("").is_empty());
+        assert!(classify("not json at all").is_empty());
+    }
+}

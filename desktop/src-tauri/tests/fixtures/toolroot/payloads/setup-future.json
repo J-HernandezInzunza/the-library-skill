@@ -1,0 +1,46 @@
+{
+  "status": "OK",
+  "name": "future-skill",
+  "type": "skill",
+  "catalog": "fixture",
+  "installed": true,
+  "dest": "/Users/tester/.claude/skills/future-skill",
+  "has_setup": true,
+  "manifest": {
+    "version": 2,
+    "summary": "Written against a schema this build does not know.",
+    "prerequisites": [
+      {
+        "binary": "git"
+      }
+    ],
+    "secrets": [
+      {
+        "key": "token",
+        "delivery": "manual"
+      }
+    ]
+  },
+  "problems": [
+    "unknown setup version 2 (known: 1); the manifest is not used rather than guessed at"
+  ],
+  "prerequisites": [
+    {
+      "kind": "binary",
+      "value": "git",
+      "met": true,
+      "detail": "/usr/bin/git"
+    }
+  ],
+  "secrets": [
+    {
+      "key": "token",
+      "delivery": "manual",
+      "optional": false,
+      "present": null,
+      "detail": "you enter this yourself, in the file"
+    }
+  ],
+  "configured": null,
+  "ready": false
+}

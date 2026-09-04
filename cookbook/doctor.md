@@ -88,6 +88,25 @@ and the output is exactly what it has always been. In `--json`, each finding car
   nowhere else
 - A section that isn't alphabetically sorted
 
+**Installed-copy errors (exit 1):**
+
+- An installed skill's `setup.yaml` fails validation. The manifest is then **disabled**,
+  not partially honored — an unknown `version` or an unrecognized `delivery`/`format`
+  value is fatal by design (see [setup.md](setup.md)). This is a bug in the skill, so the
+  fix is upstream, not on the user's machine
+
+**Installed-copy warnings (exit 0):**
+
+- An installed copy has **local modifications** — someone edited it after installing.
+  `use`/`sync` overwrite it silently, so offer [push.md](push.md) if the edits are worth
+  keeping
+- An installed copy has **no install receipt** — hand-installed, or installed before
+  receipts existed. Legitimate; re-running `library use <name>` adopts it
+- A receipt points at a destination that no longer exists (deleted outside the tool)
+
+Each installed name is checked once, against the copy precedence resolves to — the same
+rule `sync` follows.
+
 Relay the report, and keep the two severities distinct — an all-warnings run is a healthy
 run. For errors, point the user at the offending entry *and its catalog*, plus the fix
 (`<tool-dir>/library add`/`remove`/`push`, or correcting the source). For registry errors,

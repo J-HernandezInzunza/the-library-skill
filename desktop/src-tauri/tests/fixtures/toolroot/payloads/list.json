@@ -1,0 +1,41 @@
+[
+  {
+    "type": "skill",
+    "name": "atlassian-toolkit",
+    "description": "Self-contained CLI toolkit for Atlassian Cloud.",
+    "source": "https://github.com/example/library/blob/master/skills/atlassian-toolkit/SKILL.md",
+    "requires": [],
+    "installed": true,
+    "scopes": ["global"],
+    "catalog": "personal",
+    "overridden_by": null,
+    "state": "installed",
+    "receipt": {
+      "dest": "/Users/tester/.claude/skills/atlassian-toolkit",
+      "name": "atlassian-toolkit",
+      "type": "skill",
+      "catalog": "personal",
+      "scope": "global",
+      "source": "https://github.com/example/library/blob/master/skills/atlassian-toolkit/SKILL.md",
+      "commit": "ca1763b510db08a4da77076595d4732bb69f0b3d",
+      "content_hash": "sha256:1bbc7e86a6f38dc882da99338beab6235e5514170c5fe5e3ee9065a96ba3dd07",
+      "installed_at": "2026-08-13T19:11:06Z"
+    },
+    "has_setup": true
+  },
+  {
+    "type": "prompt",
+    "name": "bug-triager",
+    "description": "Find related tickets before investigating a bug.",
+    "source": "https://github.com/example/library/blob/master/prompts/bug-triager.md",
+    "requires": ["atlassian-toolkit"],
+    "installed": false,
+    "scopes": [],
+    "catalog": "team",
+    "overridden_by": "personal",
+    "state": "not_installed",
+    "receipt": null,
+    "has_setup": false,
+    "a_key_from_a_newer_cli": "must be ignored, not fatal"
+  }
+]

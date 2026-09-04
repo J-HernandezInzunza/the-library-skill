@@ -42,6 +42,20 @@ installing anything. Show the user where it will land ("this will install into
 `/Users/you/project/.claude/skills/deploy/`"), confirm, then re-run without `--dry-run`.
 Global installs skip this — the destination is unambiguous.
 
+**Check the dry run for local modifications.** Each `would_install` item carries a `state`
+for its destination, derived from the install receipt plus what's on disk:
+
+| `state` | Meaning | What to say |
+| --- | --- | --- |
+| `not_installed` | nothing there yet | nothing |
+| `installed` | present and untouched since the last install | nothing |
+| `drifted` | someone edited the installed copy | **warn before re-running**: `use` overwrites, and those edits are gone |
+| `untracked` | present, but this tool didn't install it | say so — it may be hand-written |
+
+`use` never refuses on drift; it reports it. Deciding what to do with a `drifted`
+destination is the caller's job, so surface it rather than installing over it silently.
+Offer [push.md](push.md) if the user wants those edits sent back to the source first.
+
 ## Steps
 
 ### 1. Try the CLI directly with the user's name
@@ -53,6 +67,13 @@ install to the tool dir instead of the user's project):
 ```bash
 <tool-dir>/library use "<name>" --json
 ```
+
+**Several names install as one batch:** `library use "<a>" "<b>" "<c>"`. Every name is
+resolved before anything is written, so a typo in the last one installs nothing; the
+dependency closures are merged and de-duplicated, so a dependency two of them share is
+installed once; and one clone is taken per source repository rather than one per entry.
+The payload gains `requested` (the names asked for, as opposed to the dependencies that
+came with them). With a single name the output is unchanged.
 
 Optional flags:
 - `--project` → install into the project's `.claude/` instead of the global default.

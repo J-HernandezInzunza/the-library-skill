@@ -1,0 +1,7 @@
+#!/bin/sh
+# A tool whose catalog has real problems: doctor prints a full report and exits 1.
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+case "$1" in
+  doctor) cat "$here/../toolroot/payloads/doctor-problems.json"; exit 1 ;;
+  *)      echo "fixture has no case for: $1" >&2; exit 1 ;;
+esac

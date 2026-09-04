@@ -1,0 +1,36 @@
+{
+  "status": "OK",
+  "name": "ready-skill",
+  "type": "skill",
+  "catalog": "fixture",
+  "installed": true,
+  "dest": "/Users/tester/.claude/skills/ready-skill",
+  "has_setup": true,
+  "manifest": {
+    "version": 1,
+    "summary": "Uses the git you already have.",
+    "prerequisites": [
+      {
+        "binary": "git"
+      }
+    ],
+    "commands": {
+      "check": {
+        "run": "bin/setup.sh check",
+        "description": "Report readiness"
+      }
+    }
+  },
+  "problems": [],
+  "prerequisites": [
+    {
+      "kind": "binary",
+      "value": "git",
+      "met": true,
+      "detail": "/usr/bin/git"
+    }
+  ],
+  "secrets": [],
+  "configured": null,
+  "ready": true
+}

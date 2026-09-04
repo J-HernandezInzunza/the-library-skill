@@ -32,18 +32,29 @@ becomes a no-op.
 
 ### 3. Bootstrap the CLI
 
-The CLI needs PyYAML in a self-contained `.venv`:
+The CLI needs PyYAML in a self-contained `.venv`. `bootstrap.py` creates it, installs
+PyYAML, and verifies the CLI runs — stdlib only, so it works before anything is set up,
+and idempotent, so re-running it is safe:
 
 ```bash
-cd <tool-dir>
-just bootstrap
+python3 <tool-dir>/bootstrap.py          # or: cd <tool-dir> && just bootstrap
 ```
+
+Add `--json` for a machine-readable report (`tool_dir`, `venv_python`, `wrapper`,
+`config_path`, `config_exists`). Preflight failures name the specific missing tool
+(`git not found on PATH …`), so relay that line rather than paraphrasing it.
+
+It deliberately does **not** clone the tool repo (it lives inside it) and does **not**
+write config — that's step 5.
 
 Verify it works:
 
 ```bash
 <tool-dir>/library --help
 ```
+
+**If any `library` command exits `3`, the tool is not bootstrapped** — PyYAML is missing.
+That is the signal to run this step, not a bug to investigate.
 
 ### 4. Link the Skill
 

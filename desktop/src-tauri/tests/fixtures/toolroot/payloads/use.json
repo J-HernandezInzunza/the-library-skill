@@ -1,0 +1,34 @@
+{
+  "status": "OK",
+  "installed": [
+    {
+      "type": "skill",
+      "name": "bug-investigator",
+      "catalog": "personal",
+      "dest": "/Users/dev/.claude/skills/bug-investigator",
+      "verified": true,
+      "changes": {
+        "new_install": true
+      }
+    },
+    {
+      "type": "prompt",
+      "name": "triage-bug",
+      "catalog": "personal",
+      "dest": "/Users/dev/.claude/commands/triage-bug.md",
+      "verified": true,
+      "changes": {
+        "new_install": false,
+        "added": [],
+        "removed": [],
+        "modified": [
+          "triage-bug.md"
+        ]
+      }
+    }
+  ],
+  "overrides": [
+    "shared"
+  ],
+  "overridden_by": null
+}

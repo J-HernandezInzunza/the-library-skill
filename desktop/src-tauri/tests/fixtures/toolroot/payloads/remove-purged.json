@@ -1,0 +1,18 @@
+{
+  "status": "OK",
+  "removed": {
+    "type": "prompt",
+    "name": "other",
+    "section": "prompts"
+  },
+  "deleted": [
+    "/Users/tester/.claude/prompts/other.md"
+  ],
+  "dependents": [],
+  "mode": "local",
+  "catalog": "personal",
+  "path": "/Users/tester/my-engineering-library/library.yaml",
+  "committed": false,
+  "pushed": false,
+  "branch": null
+}

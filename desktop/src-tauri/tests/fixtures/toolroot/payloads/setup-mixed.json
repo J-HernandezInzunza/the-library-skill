@@ -1,0 +1,70 @@
+{
+  "status": "OK",
+  "name": "mixed-skill",
+  "type": "skill",
+  "catalog": "fixture",
+  "installed": true,
+  "dest": "/Users/tester/.claude/skills/mixed-skill",
+  "has_setup": true,
+  "manifest": {
+    "version": 1,
+    "summary": "Stores an API token and reads a webhook secret from the environment.",
+    "prerequisites": [
+      {
+        "binary": "git"
+      }
+    ],
+    "config": {
+      "path": "/Users/tester/.config/mixed-skill/config.json"
+    },
+    "secrets": [
+      {
+        "key": "account.api_token",
+        "label": "API token",
+        "delivery": "config-file"
+      },
+      {
+        "key": "WEBHOOK_SECRET",
+        "label": "Webhook signing secret",
+        "delivery": "env"
+      }
+    ],
+    "commands": {
+      "config-init": {
+        "run": "bin/setup.sh init",
+        "description": "Scaffold the config file"
+      },
+      "check": {
+        "run": "bin/setup.sh check",
+        "description": "Report readiness"
+      }
+    }
+  },
+  "problems": [],
+  "prerequisites": [
+    {
+      "kind": "binary",
+      "value": "git",
+      "met": true,
+      "detail": "/usr/bin/git"
+    }
+  ],
+  "secrets": [
+    {
+      "key": "account.api_token",
+      "delivery": "config-file",
+      "optional": false,
+      "present": true,
+      "detail": "set in /Users/tester/.config/mixed-skill/config.json"
+    },
+    {
+      "key": "WEBHOOK_SECRET",
+      "delivery": "env",
+      "optional": false,
+      "present": null,
+      "detail": "entered each time; nothing is stored"
+    }
+  ],
+  "configured": true,
+  "ready": true
+}

@@ -1,0 +1,32 @@
+{
+  "status": "OK",
+  "dry_run": true,
+  "scope": "global",
+  "overrides": [
+    "shared"
+  ],
+  "overridden_by": null,
+  "would_install": [
+    {
+      "type": "skill",
+      "name": "atlassian-toolkit",
+      "catalog": "personal",
+      "dest": "/Users/dev/.claude/skills/atlassian-toolkit",
+      "state": "installed"
+    },
+    {
+      "type": "skill",
+      "name": "bug-investigator",
+      "catalog": "personal",
+      "dest": "/Users/dev/.claude/skills/bug-investigator",
+      "state": "not_installed"
+    },
+    {
+      "type": "prompt",
+      "name": "triage-bug",
+      "catalog": "personal",
+      "dest": "/Users/dev/.claude/commands/triage-bug.md",
+      "state": "installed"
+    }
+  ]
+}

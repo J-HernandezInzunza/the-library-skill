@@ -16,9 +16,12 @@ JSON mode (`--json`) emits machine-readable output for the agent fallback path.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import difflib
+import fcntl
 import filecmp
+import hashlib
 import json
 import os
 import re
@@ -34,9 +37,12 @@ try:
     import yaml
 except ModuleNotFoundError:
     sys.stderr.write(
-        "PyYAML not found. Run `just bootstrap` in the library dir "
-        "(or: python3 -m venv .venv && .venv/bin/pip install pyyaml).\n"
+        "PyYAML not found: this clone is not bootstrapped. "
+        "Run `python3 bootstrap.py` in the library dir (or `just bootstrap`).\n"
     )
+    # Exit 3 is a contract, not an implementation detail: it is how any front door
+    # (terminal, agent, desktop app) detects an unbootstrapped install and offers to
+    # fix it. Nothing else in this CLI exits 3. Never reuse or renumber it.
     sys.exit(3)
 
 # Keep git non-interactive: a private remote would otherwise prompt for credentials
@@ -51,6 +57,7 @@ os.environ.setdefault("GIT_SSH_COMMAND", "ssh -oBatchMode=yes")
 
 SKILL_DIR = Path(__file__).resolve().parent
 LOCAL_CONFIG_PATH = SKILL_DIR / "config.local.yaml"
+RECEIPTS_PATH = SKILL_DIR / ".installs.json"  # install receipts; device state, gitignored
 CATALOG_CLONE_DIR = SKILL_DIR / ".catalog-repo"  # the 'shared' catalog's clone
 CATALOGS_DIR = SKILL_DIR / ".catalogs"           # every other remote catalog's clone
 GLOBAL_SKILLS_DIR = Path("~/.claude/skills").expanduser()
@@ -101,6 +108,541 @@ class AmbiguousCatalog(Exception):
     def __init__(self, catalogs: list[str]) -> None:
         super().__init__("more than one writable catalog: " + ", ".join(catalogs))
         self.catalogs = catalogs
+
+
+# --------------------------------------------------------------------------- #
+# Machine-owned state files
+# --------------------------------------------------------------------------- #
+
+def write_machine_file(path: Path, text: str) -> None:
+    """Write *text* to *path* atomically, serialized against other writers.
+
+    Machine-owned files (config.local.yaml, .installs.json) are rewritten wholesale by
+    commands that can now run from three front doors at once. Two guards, because they
+    cover different failures: the advisory lock keeps two writers from interleaving,
+    and the temp-file rename means a *reader* — which takes no lock — never observes a
+    half-written file. Last writer wins; neither file merges.
+
+    The lock is `flock` on a sidecar file, so it is released by the kernel when the
+    holder exits. A lock file left behind by a crashed process is inert, not a deadlock.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_name(path.name + ".lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+# --------------------------------------------------------------------------- #
+# Install receipts (per-device; gitignored .installs.json)
+# --------------------------------------------------------------------------- #
+
+RECEIPTS_VERSION = 1
+SETUP_FILE = "setup.yaml"  # a skill's optional setup manifest, inside its installed dir
+RECEIPT_KEYS = ("dest", "name", "type", "catalog", "catalog_key", "scope", "source",
+                "commit", "content_hash", "installed_at")
+
+
+def content_hash(path: Path) -> str:
+    """Digest of an installed tree (or single file) as `sha256:<hex>`.
+
+    Hashes sorted relative paths *and* their bytes, so the digest is stable across
+    machines and copy order while a rename still counts as a change. A path that does
+    not exist hashes as empty rather than raising: "is it gone" is answered by looking
+    at the dest, not by this.
+    """
+    h = hashlib.sha256()
+    if path.is_dir():
+        base, rels = path, sorted(_walk_files(path))
+    elif path.is_file():
+        base, rels = path.parent, [path.name]
+    else:
+        base, rels = path, []
+    for rel in rels:
+        h.update(rel.encode())
+        h.update(b"\0")
+        h.update((base / rel).read_bytes())
+        h.update(b"\0")
+    return "sha256:" + h.hexdigest()
+
+
+def load_receipts() -> dict[str, dict[str, Any]]:
+    """Every install receipt, keyed by `dest` (design §3).
+
+    Fail-soft by contract (C-D3): a missing, unreadable, malformed, or
+    future-versioned file reads as "no receipts". Every install that exists today
+    predates receipts, so treating an unreadable one as fatal would have the first run
+    of this CLI declare a working setup broken. Callers report a receipt-less install
+    as `untracked`, never as an error.
+    """
+    try:
+        data = json.loads(RECEIPTS_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict) or data.get("version") != RECEIPTS_VERSION:
+        return {}
+    receipts = {}
+    for rec in data.get("installs") or []:
+        if isinstance(rec, dict) and isinstance(rec.get("dest"), str):
+            receipts[rec["dest"]] = {k: rec.get(k) for k in RECEIPT_KEYS}
+    return receipts
+
+
+def save_receipts(receipts: dict[str, dict[str, Any]]) -> None:
+    """Replace the receipt file with *receipts*, atomically and under the lock (§7).
+
+    Written sorted by dest so two runs that installed the same things produce the same
+    file, which keeps a diff of device state readable.
+    """
+    installs = [{k: receipts[dest].get(k) for k in RECEIPT_KEYS} for dest in sorted(receipts)]
+    payload = {"version": RECEIPTS_VERSION, "installs": installs}
+    write_machine_file(RECEIPTS_PATH, json.dumps(payload, indent=2) + "\n")
+
+
+def record_install(entry: "Entry", dest: Path, scope: str, commit: "str | None",
+                   catalog_key: str = "") -> dict[str, Any]:
+    """Record what was just installed at *dest*, replacing any earlier receipt for it.
+
+    Keyed by dest (not name + scope), because `--dir` allows arbitrary destinations and
+    the same entry can legitimately live in several places. Re-installing therefore
+    updates one record instead of accumulating duplicates.
+
+    Called from `_install_one`, the single choke point every install passes through, so
+    `use` and `sync` get receipts without either command knowing they exist.
+    """
+    receipt = {
+        "dest": str(dest),
+        "name": entry.name,
+        "type": entry.type,
+        # Both, because they answer different questions: `catalog` is the nickname to
+        # show, `catalog_key` is the identity to compare. Renaming a catalog changes the
+        # first and not the second (R15.12).
+        "catalog": entry.catalog,
+        "catalog_key": catalog_key,
+        "scope": scope,
+        "source": entry.source,
+        "commit": commit,
+        "content_hash": content_hash(dest),
+        "installed_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    receipts = load_receipts()
+    receipts[receipt["dest"]] = receipt
+    save_receipts(receipts)
+    return receipt
+
+
+# --------------------------------------------------------------------------- #
+# Setup manifests (<installed skill>/setup.yaml)
+# --------------------------------------------------------------------------- #
+
+SETUP_VERSIONS = (1,)                                     # recognized schema versions
+PREREQ_KINDS = ("node", "sibling-skill", "env", "binary")
+DELIVERY_MODES = ("config-file", "env", "manual")
+# Reserved command ids, in place of `config.scaffold` / `verify` pointers. A role is
+# carried by the id itself, so every manifest names these two the same thing and the
+# rules below are enforceable rather than conventional.
+SCAFFOLD_COMMAND = "config-init"   # creates config.path in the skill's own shape
+VERIFY_COMMAND = "check"           # exit code decides whether setup succeeded
+# Fields removed from the schema. Rejected rather than ignored: each one expressed an
+# intent that nothing honours now, and silently dropping it leaves a manifest looking
+# configured for behaviour it will not get.
+RETIRED_SETUP_KEYS = {
+    "config.format": f"formats are detected from the file {SCAFFOLD_COMMAND} writes, not declared",
+    "config.permissions": "config files are always chmod 0600",
+    "config.scaffold": f"the scaffold command is the one with id '{SCAFFOLD_COMMAND}'",
+    "verify": f"the verify command is the one with id '{VERIFY_COMMAND}'",
+}
+_SHELL_METACHARS = "&|;<>`$()\n"  # exactly the schema §5 set — no stricter, or valid manifests break
+
+# Canonical key order (schema §11). Convention, not validity: YAML mappings mean the
+# same thing in any order, which is exactly why they drift unless something says so.
+SETUP_KEY_ORDER = ("version", "summary", "prerequisites", "config", "secrets", "commands")
+SECRET_KEY_ORDER = ("key", "label", "secret", "url", "guidance", "delivery",
+                    "env_override", "optional")
+
+
+def _run_problems(cid: str, run: Any, skill_dir: "Path | None") -> list[str]:
+    """Argv rules for one command (schema §5): a command is argv, never a shell line."""
+    if not isinstance(run, str) or not run.strip():
+        return [f"commands.{cid}.run must be a non-empty string"]
+    bad = sorted({c for c in run if c in _SHELL_METACHARS})
+    if bad:
+        return [f"commands.{cid}.run contains shell metacharacters ({''.join(bad)}); "
+                "run is argv, not a shell line"]
+    argv0 = run.split()[0]
+    if Path(argv0).is_absolute():
+        return [f"commands.{cid}.run must be relative to the skill dir, got '{argv0}'"]
+    if ".." in Path(argv0).parts:
+        return [f"commands.{cid}.run escapes the skill dir: '{argv0}'"]
+    if skill_dir is not None:
+        # Resolved, so a symlink pointing out of the skill dir is caught too — the
+        # textual '..' check above cannot see one.
+        target = (skill_dir / argv0).resolve()
+        if not str(target).startswith(str(skill_dir.resolve())):
+            return [f"commands.{cid}.run resolves outside the skill dir: '{argv0}'"]
+    return []
+
+
+def validate_setup(data: Any, skill_dir: "Path | None" = None) -> list[str]:
+    """Every schema violation in a parsed `setup.yaml` (empty list = valid).
+
+    Implements skill-setup-schema §7. Two rules there are load-bearing rather than
+    pedantic, and both fail *closed*:
+
+    - An unknown `version` invalidates the manifest instead of being parsed optimistically.
+      A later schema could change what `delivery` means.
+    - An unknown value for a closed enum is an error, never a fallback to the default.
+      Silently downgrading `delivery: manual` to `config-file` would write a secret the
+      skill intended nothing to store.
+
+    Unknown *keys* are ignored on purpose: that is the forward-compatibility half.
+    """
+    if not isinstance(data, dict):
+        return ["setup.yaml must be a mapping"]
+    version = data.get("version")
+    if version not in SETUP_VERSIONS:
+        known = ", ".join(str(v) for v in SETUP_VERSIONS)
+        return [f"unknown setup version {version!r} (known: {known}); "
+                "the manifest is not used rather than guessed at"]
+
+    problems: list[str] = []
+
+    commands = data.get("commands") or {}
+    if not isinstance(commands, dict):
+        problems.append("commands must be a mapping of id -> {run, description}")
+        commands = {}
+    for cid, spec in commands.items():
+        if not isinstance(spec, dict):
+            problems.append(f"commands.{cid} must be a mapping with a 'run'")
+            continue
+        problems += _run_problems(str(cid), spec.get("run"), skill_dir)
+
+    config = data.get("config") or {}
+    if config and not isinstance(config, dict):
+        problems.append("config must be a mapping")
+        config = {}
+    if config:
+        path = config.get("path")
+        if not isinstance(path, str) or not path.strip():
+            problems.append("config.path is required when config is present")
+        elif not (path.startswith("/") or path.startswith("~")):
+            problems.append(f"config.path must be absolute or ~-prefixed, got '{path}'")
+
+    for field, why in RETIRED_SETUP_KEYS.items():
+        section, _, key = field.rpartition(".")
+        holder = config if section == "config" else data
+        if isinstance(holder, dict) and key in holder:
+            problems.append(f"'{field}' was removed from the schema: {why}")
+
+    secrets = data.get("secrets") or []
+    if not isinstance(secrets, list):
+        problems.append("secrets must be a list")
+        secrets = []
+    for i, sec in enumerate(secrets):
+        if not isinstance(sec, dict):
+            problems.append(f"secrets[{i}] must be a mapping")
+            continue
+        if not sec.get("key"):
+            problems.append(f"secrets[{i}] is missing 'key'")
+        delivery = sec.get("delivery", "config-file")
+        if delivery not in DELIVERY_MODES:
+            problems.append(f"unknown delivery '{delivery}' for secrets[{i}] "
+                            f"(known: {', '.join(DELIVERY_MODES)})")
+        elif delivery == "config-file" and not config.get("path"):
+            problems.append(f"secrets[{i}] delivers to the config file, which needs config.path")
+        elif delivery == "config-file" and SCAFFOLD_COMMAND not in commands:
+            # The app writes into a file the skill created, never one it invented: the
+            # skill's template carries defaults and a shape its own migrate step keys off.
+            problems.append(f"secrets[{i}] delivers to the config file, so a "
+                            f"'{SCAFFOLD_COMMAND}' command is required to create it")
+
+    prereqs = data.get("prerequisites") or []
+    if not isinstance(prereqs, list):
+        problems.append("prerequisites must be a list")
+        prereqs = []
+    for i, pre in enumerate(prereqs):
+        if not isinstance(pre, dict):
+            problems.append(f"prerequisites[{i}] must be a mapping")
+            continue
+        kinds = [k for k in pre if k in PREREQ_KINDS]
+        if len(kinds) != 1:
+            problems.append(f"prerequisites[{i}] needs exactly one of "
+                            f"{', '.join(PREREQ_KINDS)}")
+    return problems
+
+
+def _version_tuple(raw: str) -> tuple[int, ...]:
+    """'v22.19.0' / '20.1' -> (22, 19, 0). A trailing prerelease ('-rc.1') is dropped."""
+    parts = []
+    for chunk in raw.strip().lstrip("vV").split("."):
+        digits = ""
+        for c in chunk:
+            if not c.isdigit():
+                break
+            digits += c
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+def _version_satisfies(have: str, want: str) -> "bool | None":
+    """Does version *have* satisfy the range *want*? None when the range isn't understood.
+
+    Deliberately small: `>=`, `>`, `<=`, `<`, `==`, or a bare version meaning `>=`. An
+    unparseable range returns None so the caller can report "couldn't check" rather than
+    inventing a pass or a failure — the schema allows ranges this doesn't cover yet.
+    """
+    want = str(want).strip()
+    if not want or any(c.isspace() for c in want):
+        return None  # a compound range ('>=20 <23') is not something this can answer
+    for op in (">=", "<=", "==", ">", "<"):
+        if want.startswith(op):
+            target = want[len(op):].strip()
+            break
+    else:
+        op, target = ">=", want
+    if not target or not target[0].isdigit() and not target[0] in "vV":
+        return None
+    a, b = _version_tuple(have), _version_tuple(target)
+    if not a or not b:
+        return None
+    b = b + (0,) * (len(a) - len(b))
+    a = a + (0,) * (len(b) - len(a))
+    return {">=": a >= b, ">": a > b, "<=": a <= b, "<": a < b, "==": a == b}[op]
+
+
+def _node_version() -> "str | None":
+    if shutil.which("node") is None:
+        return None
+    proc = subprocess.run(["node", "--version"], capture_output=True, text=True)
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def check_prerequisite(pre: dict[str, Any], dirs: dict[str, dict[str, str]],
+                       receipts: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Check one declared prerequisite. Returns {kind, value, met, detail}.
+
+    `sibling-skill` is why this lives in Python rather than in the app: answering it
+    means knowing what is installed, which is receipts.
+    """
+    kind = next((k for k in pre if k in PREREQ_KINDS), None)
+    if kind is None:
+        return {"kind": None, "value": None, "met": False, "detail": "unknown prerequisite kind"}
+    value = pre[kind]
+    if kind == "binary":
+        found = shutil.which(str(value))
+        return {"kind": kind, "value": value, "met": bool(found),
+                "detail": found or "not on PATH"}
+    if kind == "env":
+        present = bool(os.environ.get(str(value)))
+        return {"kind": kind, "value": value, "met": present,
+                "detail": "set" if present else "not set"}
+    if kind == "node":
+        have = _node_version()
+        if have is None:
+            return {"kind": kind, "value": value, "met": False, "detail": "node not on PATH"}
+        ok = _version_satisfies(have, str(value))
+        if ok is None:
+            return {"kind": kind, "value": value, "met": False,
+                    "detail": f"{have} found; range '{value}' not understood"}
+        return {"kind": kind, "value": value, "met": ok, "detail": have}
+    sibling = Entry(type="skill", name=str(value), description="", source="")
+    scopes = installed_scopes(dirs, sibling)
+    return {"kind": kind, "value": value, "met": bool(scopes),
+            "detail": f"installed ({', '.join(scopes)})" if scopes else "not installed"}
+
+
+def _dotted_get(data: Any, key: str) -> Any:
+    """Follow a dotted `secrets[].key` into a parsed config file. Missing is None."""
+    cur = data
+    for part in key.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def _read_config_store(config: dict[str, Any]) -> tuple[Any, "tuple[bool | None, str] | None"]:
+    """Read the skill's *own* config file, so declared secrets can be looked up in it.
+
+    The format is *detected*, never declared. A `config.format` field could only ever
+    agree with the file or be wrong about it — and being wrong means writing a shape the
+    skill cannot read back. The file the scaffold command wrote is its own authority.
+
+    Returns (parsed, verdict). A verdict short-circuits every secret in the file to the
+    same answer, and its first element is the `present` value to report:
+
+    - `(False, …)` — the file is not there. Definite: nothing is stored in a file that
+      does not exist, and calling that "unknown" would hide the most common real state.
+    - `(None, …)`  — nothing to look in, or what is there does not parse. JSON is the only
+      shape read so far (schema §10.3); anything else is reported as unknown rather than
+      guessed at, because a value called missing that the app cannot store either sends
+      you to the wrong fix.
+    """
+    path_raw = config.get("path")
+    if not isinstance(path_raw, str) or not path_raw.strip():
+        return None, (None, "no config file declared")
+
+    path = Path(path_raw).expanduser()
+    if not path.is_file():
+        return None, (False, f"not set — {path} has not been created yet")
+    try:
+        return json.loads(path.read_text()), None
+    except OSError as ex:
+        return None, (None, f"{path} is unreadable ({ex.__class__.__name__})")
+    except ValueError:
+        return None, (None, f"{path} is not JSON, the only config format read so far")
+
+
+def check_secret(sec: dict[str, Any], config: dict[str, Any],
+                 store: Any, verdict: "tuple[bool | None, str] | None") -> dict[str, Any]:
+    """Check whether one declared secret already has a value on disk.
+
+    Returns {key, delivery, optional, present, detail}, mirroring `check_prerequisite`.
+
+    `present` is deliberately three-valued. Only `config-file` secrets leave anything
+    behind: `env` persists nothing *by definition* and `manual` never reaches the app at
+    all, so for those the honest answer is None. Reporting False would read as "you still
+    have to do this" on a skill that is entirely set up, which is the exact mistake a
+    completion state exists to stop making.
+    """
+    key = str(sec.get("key") or "")
+    delivery = sec.get("delivery", "config-file")
+    common = {"key": key, "delivery": delivery, "optional": bool(sec.get("optional"))}
+
+    if delivery == "env":
+        return {**common, "present": None, "detail": "entered each time; nothing is stored"}
+    if delivery == "manual":
+        return {**common, "present": None, "detail": "you enter this yourself, in the file"}
+    if verdict is not None:
+        return {**common, "present": verdict[0], "detail": verdict[1]}
+
+    value = _dotted_get(store, key)
+    filled = value is not None and (not isinstance(value, str) or value.strip() != "")
+    where = Path(str(config.get("path"))).expanduser()
+    return {**common, "present": filled,
+            "detail": f"set in {where}" if filled else f"not set in {where}"}
+
+
+SETUP_TEMPLATE = """\
+version: 1
+summary: {summary}
+
+# Each entry has exactly one of: node, sibling-skill, env, binary.
+# Checked before the walkthrough starts; an unmet one names itself and blocks.
+prerequisites:
+  - binary: git
+
+# `path` is the only field, and the only file the app will write for this skill.
+# It is always chmod 0600, and its format is detected from what config-init wrote.
+# Drop this block entirely if no secret uses delivery: config-file.
+config:
+  path: ~/.config/{name}/config.json
+
+# Keys stay in this order: key, label, secret, url, guidance, delivery,
+# env_override, optional.
+secrets:
+  - key: account.api_token
+    label: API token
+    url: https://example.test/tokens
+    guidance: Say exactly how to obtain this. Shown to the user verbatim.
+    delivery: config-file        # config-file | env | manual
+    env_override: EXAMPLE_TOKEN
+    optional: false
+
+# `run` is argv relative to the installed skill directory. No shell, no absolute
+# paths, no metacharacters.
+commands:
+  config-init:                   # RESERVED: creates config.path. Required by config-file.
+    run: bin/setup.sh init
+    description: Scaffold the config file
+  check:                         # RESERVED: its exit code decides whether setup worked.
+    run: bin/setup.sh check
+    description: Report readiness
+"""
+
+
+def _order_note(subject: str, got: "list[str]", canonical: "tuple[str, ...]") -> "str | None":
+    """Compare *got* against *canonical*, ignoring keys the canon does not name."""
+    known = [k for k in got if k in canonical]
+    want = [k for k in canonical if k in known]
+    if known == want:
+        return None
+    return (f"{subject}: keys read {', '.join(known)}; "
+            f"canonical order is {', '.join(want)}")
+
+
+def lint_setup(data: Any) -> list[str]:
+    """Convention deviations in a manifest that is already *valid* (schema §11).
+
+    A separate channel from `validate_setup` on purpose, and the separation is the whole
+    point: a problem there disables the walkthrough, which is the right response to a
+    manifest that is wrong and an absurd one to a manifest whose keys are in an unusual
+    order. These are reported by `doctor` as warnings and stop nothing.
+
+    Every rule here is about two manifests being *comparable* — a reviewer should be able
+    to diff behaviour rather than vocabulary.
+    """
+    if not isinstance(data, dict):
+        return []
+
+    notes = []
+    note = _order_note("top level", list(data), SETUP_KEY_ORDER)
+    if note:
+        notes.append(note)
+
+    for i, sec in enumerate(data.get("secrets") or []):
+        if not isinstance(sec, dict):
+            continue
+        where = f"secrets[{i}] ({sec.get('key', '?')})"
+        note = _order_note(where, list(sec), SECRET_KEY_ORDER)
+        if note:
+            notes.append(note)
+        if not sec.get("label"):
+            # The key is a dotted config path; it is not a prompt. Without a label the
+            # app has nothing to put beside the field but `account.api_token`.
+            notes.append(f"{where}: no label, so the app must show the raw key")
+        if "delivery" not in sec:
+            # Valid — it defaults to config-file — but the default decides whether the
+            # value is ever written to disk, which is too load-bearing to leave implied.
+            notes.append(f"{where}: no explicit delivery; spell out the default config-file")
+
+    commands = data.get("commands")
+    if isinstance(commands, dict):
+        for cid, spec in commands.items():
+            if isinstance(spec, dict) and not spec.get("description"):
+                notes.append(f"commands.{cid}: no description")
+
+    return notes
+
+
+def load_setup(dest: Path) -> tuple["dict[str, Any] | None", list[str]]:
+    """Parse the setup manifest of the installed copy at *dest*.
+
+    Returns (manifest, problems). No manifest is `(None, [])` — absence is the default
+    and never an error (schema §2). Unparseable YAML is `(None, [reason])`, because a
+    file that exists and doesn't load is a real fault worth reporting.
+    """
+    path = dest / SETUP_FILE
+    if not path.is_file():
+        return None, []
+    try:
+        data = yaml.safe_load(path.read_text())
+    except (OSError, yaml.YAMLError) as ex:
+        return None, [f"{path}: unreadable ({ex.__class__.__name__})"]
+    problems = validate_setup(data, dest)
+    return (data if isinstance(data, dict) else None), problems
 
 
 # --------------------------------------------------------------------------- #
@@ -383,7 +925,11 @@ def write_config(data: dict[str, Any]) -> Config:
     problems = Config.problems(data)
     if problems:
         die(f"refusing to write an invalid config: {problems[0]}")
-    LOCAL_CONFIG_PATH.write_text(_CONFIG_HEADER + "\n" + yaml.safe_dump(data, sort_keys=False))
+    # Atomic and locked (§7): three front doors can now rewrite the registry at once, and
+    # this file is rewritten whole. Without the lock, two `catalog add`s interleave; without
+    # the rename, a reader can catch a half-written registry and see no catalogs at all.
+    write_machine_file(LOCAL_CONFIG_PATH,
+                       _CONFIG_HEADER + "\n" + yaml.safe_dump(data, sort_keys=False))
     return load_config()  # re-read: success is only reported for a config that loads
 
 
@@ -634,12 +1180,26 @@ def new_entry_override_warnings(cfg: Config, cat: Catalog, name: str) -> list[st
     return out
 
 
-def push_source_warning(cfg: Config, entry: Entry) -> str:
-    """'' unless the installed copy could have come from more than one catalog (R11.2).
+def push_source_warning(cfg: Config, entry: Entry, dest: "Path | None" = None) -> str:
+    """'' unless the installed copy's provenance is genuinely unknown (R11.2).
 
-    Nothing on disk records which catalog an installed item came from, so for an overridden
-    name the source being pushed to is an inference from precedence. Both candidates are
-    named, because the cost of guessing wrong is an edit landing in someone else's repo.
+    An install **receipt** records the catalog and source a copy came from, so when one
+    covers *dest* there is nothing left to infer, and the old blanket warning was simply
+    out of date — it predates receipts and still claimed "nothing on disk records which
+    copy was installed" while the receipt beside it recorded exactly that.
+
+    Three answers now, where there used to be one:
+
+    - The receipt agrees with the catalog being pushed to → silence. This is the common
+      case, and warning through it is how a warning stops being read.
+    - The receipt names a *different* catalog → a sharper warning than ambiguity ever was,
+      because it is no longer a guess: the edit really is about to land somewhere other
+      than where the files came from. It names the flag that fixes it.
+    - No receipt → the original warning, which is correct for exactly this case: a copy
+      the tool did not place, where nothing on disk records anything.
+
+    *dest* is optional so the precedence-only answer stays reachable for callers that have
+    no particular copy in mind.
     """
     # Every *other* catalog holding the name, not `cfg.overridden()`: that slices by
     # precedence, so under `--catalog` it would report the resolved entry as its own
@@ -648,9 +1208,26 @@ def push_source_warning(cfg: Config, entry: Entry) -> str:
               if e.name == entry.name and e.catalog != entry.catalog]
     if not others:
         return ""
+
+    receipt = load_receipts().get(str(dest)) if dest is not None else None
+    came_from = (receipt or {}).get("catalog")
+    if came_from:
+        # Compare identities when the receipt has one: the id it also records is a
+        # nickname, so a renamed catalog would otherwise read as a *different* catalog and
+        # warn that the push is going somewhere the files did not come from — a false
+        # alarm about the one thing this warning exists to be trusted on (R15.12).
+        recorded_key = (receipt or {}).get("catalog_key")
+        here = catalog_key(cfg.by_id(entry.catalog)) if recorded_key else ""
+        if (recorded_key == here) if recorded_key else (came_from == entry.catalog):
+            return ""
+        return (f"this copy of '{entry.name}' was installed from '{came_from}' → "
+                f"{(receipt or {}).get('source')}, but this push targets '{entry.catalog}' "
+                f"→ {entry.source}. Pass --catalog {came_from} to send it back where it "
+                f"came from.")
+
     alternatives = "; ".join(f"'{e.catalog}' → {e.source}" for e in others)
-    return (f"'{entry.name}' is defined in more than one catalog and nothing on disk "
-            f"records which copy was installed. Pushing to '{entry.catalog}' → "
+    return (f"'{entry.name}' is defined in more than one catalog and no install receipt "
+            f"records which copy is on disk. Pushing to '{entry.catalog}' → "
             f"{entry.source} (also defined by {alternatives})")
 
 
@@ -923,31 +1500,53 @@ def _remote_web(clone_url: str) -> tuple[str, str, str] | None:
 def _suggest_remote_for_local(path: Path | None) -> str | None:
     """If *path* sits inside a git repo with a GitHub/Bitbucket origin, build the
     browser URL teammates could use as the source. Returns None if not derivable."""
+    return _remote_suggestion(path)[0]
+
+
+def _remote_suggestion(path: Path | None) -> tuple["str | None", str]:
+    """(browser URL, why not) for *path*, so a caller can explain a miss (R17.1).
+
+    Split out from `_suggest_remote_for_local` because a hint appended to an error
+    message needs only the URL, while `suggest-source` has to answer "why is there no
+    suggestion?" — the four misses below are different problems with different fixes,
+    and a bare None makes them all look like "not in a repo".
+
+    A directory resolves to the main file inside it: a URL naming a directory is a
+    `/tree/` link, not the `/blob/` link a source has to be, and pointing `add` at a
+    directory is already the mistake that installs the wrong tree.
+    """
     if path is None:
-        return None
-    d = path if path.is_dir() else path.parent
-    root = subprocess.run(["git", "-C", str(d), "rev-parse", "--show-toplevel"],
+        return None, "no path given"
+    if path.is_dir():
+        main = next((path / n for n in ("SKILL.md", "AGENT.md") if (path / n).is_file()), None)
+        if main is None:
+            return None, f"{path} is a directory with no SKILL.md or AGENT.md to point at"
+        path = main
+
+    root = subprocess.run(["git", "-C", str(path.parent), "rev-parse", "--show-toplevel"],
                           capture_output=True, text=True)
     if root.returncode != 0:
-        return None
+        return None, "not inside a git repository"
     repo_root = Path(root.stdout.strip())
     origin = subprocess.run(["git", "-C", str(repo_root), "remote", "get-url", "origin"],
                             capture_output=True, text=True)
-    web = _remote_web(origin.stdout.strip()) if origin.returncode == 0 else None
+    if origin.returncode != 0:
+        return None, f"{repo_root} has no 'origin' remote"
+    web = _remote_web(origin.stdout.strip())
     if not web:
-        return None
+        return None, f"origin is not a GitHub or Bitbucket remote ({origin.stdout.strip()})"
     host, owner, repo = web
     branch = subprocess.run(["git", "-C", str(repo_root), "rev-parse", "--abbrev-ref", "HEAD"],
                             capture_output=True, text=True).stdout.strip() or "main"
     try:
         rel = path.resolve().relative_to(repo_root.resolve()).as_posix()
     except ValueError:
-        return None
+        return None, f"{path} is outside {repo_root}"
     if host == "bitbucket.org":
-        return f"https://bitbucket.org/{owner}/{repo}/src/{branch}/{rel}"
+        return f"https://bitbucket.org/{owner}/{repo}/src/{branch}/{rel}", ""
     if host == "github.com":
-        return f"https://github.com/{owner}/{repo}/blob/{branch}/{rel}"
-    return None
+        return f"https://github.com/{owner}/{repo}/blob/{branch}/{rel}", ""
+    return None, f"no browser URL format known for {host}"
 
 
 # --------------------------------------------------------------------------- #
@@ -1044,16 +1643,112 @@ def installed_scopes(dirs: dict[str, dict[str, str]], entry: Entry) -> list[str]
     return found
 
 
+# Worst-first: what a single badge should say when an entry occupies more than one
+# destination. Drift outranks everything because silently overwriting an edit is the
+# failure that costs work; "not installed" is the floor.
+_STATE_RANK = ("not_installed", "installed", "missing", "untracked", "drifted")
+
+
+def dest_state(dest: Path, receipt: "dict[str, Any] | None") -> str:
+    """State of one installed destination (design §3.1).
+
+    Derived on every read, never stored, so it cannot disagree with the disk:
+
+    - `installed`  — present, contents match the receipt
+    - `drifted`    — present, contents differ: someone edited the installed copy
+    - `untracked`  — present, no receipt: hand-installed, or installed before receipts
+    - `missing`    — a receipt with nothing at its dest
+    - `not_installed` — neither
+    """
+    if not dest.exists():
+        return "missing" if receipt else "not_installed"
+    if receipt is None:
+        return "untracked"
+    return "installed" if receipt.get("content_hash") == content_hash(dest) else "drifted"
+
+
+def entry_dests(dirs: dict[str, dict[str, str]], entry: Entry,
+                receipts: dict[str, dict[str, Any]]) -> dict[str, "dict[str, Any] | None"]:
+    """Every destination *entry* could occupy, mapped to its receipt (or None).
+
+    The configured scopes, plus any destination a receipt claims for this name — which
+    is how a `--dir` install stays visible even though no scope resolves to it.
+    """
+    dests: dict[str, dict[str, Any] | None] = {}
+    for scope in dirs[entry.section]:
+        try:
+            base = resolve_target_base(dirs, entry, scope, None)
+        except LibraryError:
+            continue  # an unconfigured scope is not a destination
+        dests[str(install_dest(entry, base))] = None
+    for dest, rec in receipts.items():
+        if rec.get("name") == entry.name and rec.get("type") == entry.type:
+            dests[dest] = rec
+    for dest in dests:
+        if dests[dest] is None:
+            dests[dest] = receipts.get(dest)
+    return dests
+
+
+def has_setup(dest: Path) -> bool:
+    """Does the installed copy at *dest* ship a setup manifest? (design §4.5)
+
+    Answered from the installed copy, never the catalog: the catalog records where an
+    entry comes from, not what its directory contains. An entry that is not installed
+    therefore has no answer here, and reports false.
+    """
+    return (dest / SETUP_FILE).is_file()
+
+
+def entry_has_setup(dirs: dict[str, dict[str, str]], entry: Entry,
+                    receipts: dict[str, dict[str, Any]]) -> bool:
+    """Does any installed copy of *entry* ship a setup manifest?
+
+    Reads the disk rather than the receipt, so an untracked (hand-installed) copy with a
+    manifest still reports one — having no receipt says nothing about the contents.
+    """
+    return any(has_setup(Path(d)) for d in entry_dests(dirs, entry, receipts))
+
+
+def entry_install_state(dirs: dict[str, dict[str, str]], entry: Entry,
+                        receipts: dict[str, dict[str, Any]]) -> tuple[str, "dict[str, Any] | None"]:
+    """(state, receipt) for *entry* across every destination it could occupy.
+
+    One name can legitimately be installed in both scopes and under `--dir`, so the
+    reported state is the worst of them (`_STATE_RANK`) and the receipt is that
+    destination's. `installed_scopes()` stays the presence check (§3) — this adds
+    provenance on top of it and never replaces it.
+    """
+    worst, worst_receipt = "not_installed", None
+    for dest, receipt in sorted(entry_dests(dirs, entry, receipts).items()):
+        state = dest_state(Path(dest), receipt)
+        if _STATE_RANK.index(state) > _STATE_RANK.index(worst):
+            worst, worst_receipt = state, receipt
+    return worst, worst_receipt
+
+
 # --------------------------------------------------------------------------- #
 # Dependency resolution
 # --------------------------------------------------------------------------- #
 
-def resolve_deps(entries: list[Entry], target: Entry) -> list[Entry]:
-    """Return entries in install order (deps first), target last. Cycle-safe."""
+def resolve_deps(entries: list[Entry], target: Entry,
+                 unresolved: "list[dict[str, str]] | None" = None) -> list[Entry]:
+    """Return entries in install order (deps first), target last. Cycle-safe.
+
+    When *unresolved* is passed, each ref that could not be followed is appended to it as
+    `{ref, required_by, reason}` as well as warned about. A warning on stderr reaches a
+    terminal and nothing else, so a caller rendering a dependency list — a GUI, an agent —
+    would otherwise show a shorter list with no sign that anything was missing, which reads
+    as "no problem here" rather than "this entry is broken".
+    """
     by_key = {(e.type, e.name): e for e in entries}
     order: list[Entry] = []
     seen: set[tuple[str, str]] = set()
     visiting: set[tuple[str, str]] = set()
+
+    def record(ref: str, required_by: Entry, reason: str) -> None:
+        if unresolved is not None:
+            unresolved.append({"ref": ref, "required_by": required_by.name, "reason": reason})
 
     def visit(e: Entry) -> None:
         key = (e.type, e.name)
@@ -1061,16 +1756,19 @@ def resolve_deps(entries: list[Entry], target: Entry) -> list[Entry]:
             return
         if key in visiting:
             warn(f"dependency cycle detected at {e.type}:{e.name}; skipping re-entry")
+            record(f"{e.type}:{e.name}", e, "cycle")
             return
         visiting.add(key)
         for ref in e.requires:
             if ":" not in ref:
                 warn(f"malformed dependency ref '{ref}' on {e.type}:{e.name}")
+                record(ref, e, "malformed")
                 continue
             dtype, dname = ref.split(":", 1)
             dep = by_key.get((dtype.strip(), dname.strip()))
             if dep is None:
                 warn(f"dependency {ref} not found in catalog (required by {e.name})")
+                record(ref, e, "not_found")
                 continue
             visit(dep)
         visiting.discard(key)
@@ -1079,6 +1777,61 @@ def resolve_deps(entries: list[Entry], target: Entry) -> list[Entry]:
 
     visit(target)
     return order
+
+
+def resolve_dependents(entries: list[Entry], target: Entry) -> list[tuple[Entry, bool]]:
+    """Entries that break if *target* is removed, direct ones first. Cycle-safe.
+
+    The inverse of `resolve_deps`, and deliberately scoped the same way: only *entries* is
+    searched, which callers pass as the target's own catalog (D9). A ref in another catalog
+    naming this target's name resolves to that catalog's own copy, or dangles — either way
+    it is not this entry's dependent, and claiming otherwise would overstate the blast
+    radius across a catalog boundary that `use` never crosses.
+
+    The bool is whether the entry names *target* itself. Transitive dependents are included
+    because they break too: `use P` installs P's whole closure, so an entry missing three
+    levels down fails P's install as surely as its own. A caller that wants only the direct
+    ones filters on the flag; one that reports "removing this breaks N entries" needs all.
+
+    Malformed refs are skipped silently rather than warned about, unlike in `resolve_deps`:
+    a ref with no `:` cannot name anything, and the entry that owns it already reports it
+    as `unresolved_requires` when *it* is the subject. Warning here would emit noise about
+    an unrelated entry every time any entry is shown.
+    """
+    by_key = {(e.type, e.name): e for e in entries}
+    requires_of: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    for e in entries:
+        refs = set()
+        for ref in e.requires:
+            if ":" not in ref:
+                continue
+            dtype, dname = ref.split(":", 1)
+            refs.add((dtype.strip(), dname.strip()))
+        requires_of[(e.type, e.name)] = refs
+
+    target_key = (target.type, target.name)
+    # Breadth-first outward from the target, so the first ring is the direct dependents.
+    # Recording a key once is what makes a dependency cycle terminate here.
+    found: dict[tuple[str, str], bool] = {}
+    frontier = {target_key}
+    direct = True
+    while frontier:
+        ring = {
+            key for key, refs in requires_of.items()
+            if key != target_key and key not in found and refs & frontier
+        }
+        for key in ring:
+            found[key] = direct
+        frontier = ring
+        direct = False
+
+    return [
+        (by_key[key], is_direct)
+        for key, is_direct in sorted(
+            found.items(),
+            key=lambda kv: (not kv[1], by_key[kv[0]].type, by_key[kv[0]].name),
+        )
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -1181,49 +1934,144 @@ def install_dest(entry: Entry, target_base: Path) -> Path:
     return target_base / f"{entry.name}.md"
 
 
-def fetch_local(src: Source, entry: Entry, target_base: Path) -> tuple[Path, dict[str, Any]]:
+def fetch_local(src: Source, entry: Entry, target_base: Path) -> tuple[Path, dict[str, Any], "str | None"]:
+    """Install from a path on this machine. No commit to record — hence the None (§3)."""
     ref = src.path
     if ref is None or not ref.exists():
         raise LibraryError(f"local source not found: {src.path}")
     dest = install_dest(entry, target_base)
     if entry.type == "skill":
-        return dest, _copy_dir(ref.parent, dest)
-    return dest, _copy_file(ref, dest)
+        return dest, _copy_dir(ref.parent, dest), None
+    return dest, _copy_file(ref, dest), None
 
 
-def fetch_remote(src: Source, entry: Entry, target_base: Path) -> tuple[Path, dict[str, Any]]:
-    tmp = Path(tempfile.mkdtemp(prefix="library-"))
+@contextlib.contextmanager
+def clone_cache():
+    """One checkout per repo+branch for the duration of a run (R18.7).
+
+    `remote_head` already memoizes its `ls-remote` on the reasoning that "twenty skills
+    from one repo is one round trip, not twenty" — and then the same run cloned that repo
+    twenty times, once per entry, because every `fetch_remote` made its own temp dir. The
+    cheap call was shared and the expensive one was not. On a real machine that is 36
+    entries from a single repository: 36 clones of the same tree to copy 36 folders out.
+
+    Owned by the caller, like `remote_head`'s cache, so the lifetime is explicit and a
+    command that wants no sharing simply passes nothing.
+    """
+    roots: dict[str, Path] = {}
     try:
-        cloned = False
-        last_err = ""
-        for url in src.clone_urls():
-            proc = subprocess.run(
-                ["git", "clone", "--depth", "1", "--branch", src.branch, url, str(tmp / "repo")],
-                capture_output=True, text=True,
-            )
-            if proc.returncode == 0:
-                cloned = True
-                break
-            last_err = _git_error_summary(proc.stderr)
-        if not cloned:
-            raise LibraryError(f"clone failed for {src.org}/{src.repo}: {last_err or 'unknown error'}")
-        repo = tmp / "repo"
+        yield roots
+    finally:
+        for root in roots.values():
+            shutil.rmtree(root, ignore_errors=True)
+
+
+def _clone_repo(src: Source, clones: "dict[str, Path] | None") -> tuple[Path, "Path | None"]:
+    """(repo dir, temp root this call owns) for *src*, reusing a cached clone when offered.
+
+    The second element is None for a cached clone: its lifetime belongs to the cache, and
+    handing it back would invite a caller to delete a tree other entries still need.
+    """
+    # The same key `remote_head` uses, so "same checkout" means one thing in this file.
+    key = f"{src.kind}:{src.org}/{src.repo}@{src.branch}"
+    if clones is not None and key in clones:
+        return clones[key] / "repo", None
+
+    root = Path(tempfile.mkdtemp(prefix="library-"))
+    last_err = ""
+    for url in src.clone_urls():
+        proc = subprocess.run(
+            ["git", "clone", "--depth", "1", "--branch", src.branch, url, str(root / "repo")],
+            capture_output=True, text=True,
+        )
+        if proc.returncode == 0:
+            if clones is None:
+                return root / "repo", root
+            clones[key] = root
+            return root / "repo", None
+        last_err = _git_error_summary(proc.stderr)
+
+    shutil.rmtree(root, ignore_errors=True)
+    raise LibraryError(f"clone failed for {src.org}/{src.repo}: {last_err or 'unknown error'}")
+
+
+def fetch_remote(src: Source, entry: Entry, target_base: Path,
+                 clones: "dict[str, Path] | None" = None) -> tuple[Path, dict[str, Any], "str | None"]:
+    repo, owned = _clone_repo(src, clones)
+    try:
         ref = repo / src.file_path
         if not ref.exists():
             raise LibraryError(f"referenced file missing in repo: {src.file_path}")
+        # The clone is on disk, so the sha it came from is free here and impossible to
+        # recover later, once the tree is gone.
+        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                              capture_output=True, text=True)
+        commit = head.stdout.strip() if head.returncode == 0 else None
         dest = install_dest(entry, target_base)
         if entry.type == "skill":
-            return dest, _copy_dir(ref.parent, dest)
-        return dest, _copy_file(ref, dest)
+            return dest, _copy_dir(ref.parent, dest), commit
+        return dest, _copy_file(ref, dest), commit
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        # Only what this call created: a cached clone outlives it by design.
+        if owned is not None:
+            shutil.rmtree(owned, ignore_errors=True)
 
 
-def fetch(entry: Entry, target_base: Path) -> tuple[Path, dict[str, Any]]:
+def remote_head(src: Source, cache: dict[str, "str | None"]) -> "str | None":
+    """Current sha of *src*'s branch, or None when it can't be determined.
+
+    One `git ls-remote` per distinct repo+branch, memoized in *cache*: twenty skills from
+    one repo is one round trip, not twenty. None means "don't know" — unreachable,
+    offline, or auth — and callers must treat it as "refresh anyway" rather than
+    "unchanged", or a network blip would silently stop updating everything.
+    """
+    key = f"{src.kind}:{src.org}/{src.repo}@{src.branch}"
+    if key in cache:
+        return cache[key]
+    head: str | None = None
+    for url in src.clone_urls():
+        proc = subprocess.run(["git", "ls-remote", url, src.branch],
+                              capture_output=True, text=True)
+        if proc.returncode == 0 and proc.stdout.strip():
+            head = proc.stdout.split()[0]
+            break
+    cache[key] = head
+    return head
+
+
+def source_unchanged(entry: Entry, dest: Path, receipt: "dict[str, Any] | None",
+                     heads: dict[str, "str | None"]) -> bool:
+    """Can this item's refresh be skipped? (design §5)
+
+    True only when both ends are provably unchanged: the source is at the sha the receipt
+    recorded, and the installed copy still hashes to what was installed. Anything unknown
+    — no receipt, no commit, unreachable remote, drifted copy — is False, so the
+    fallback is always today's behavior: fetch it.
+    """
+    if receipt is None or dest_state(dest, receipt) != "installed":
+        return False
+    try:
+        src = parse_source(entry.source)
+    except LibraryError:
+        return False
+    if src.kind == "local":
+        # No sha to compare, so compare the trees themselves.
+        if src.path is None or not src.path.exists():
+            return False
+        if entry.type == "skill":
+            return content_hash(src.path.parent) == content_hash(dest)
+        return dest.is_file() and filecmp.cmp(src.path, dest, shallow=False)
+    head = remote_head(src, heads)
+    return bool(head) and head == receipt.get("commit")
+
+
+def fetch(entry: Entry, target_base: Path,
+          clones: "dict[str, Path] | None" = None) -> tuple[Path, dict[str, Any], "str | None"]:
+    """Install *entry* under *target_base*; returns (dest, diff, source commit or None)."""
     src = parse_source(entry.source)
     if src.kind == "local":
         return fetch_local(src, entry, target_base)
-    return fetch_remote(src, entry, target_base)
+    return fetch_remote(src, entry, target_base, clones)
 
 
 def main_file_for(entry: Entry, dest: Path) -> Path:
@@ -1501,16 +2349,31 @@ def _dir_identical(a: Path, b: Path) -> bool:
     return all(_dir_identical(a / d, b / d) for d in cmp.common_dirs)
 
 
-def _push_local(src: Source, entry: Entry, local_path: Path) -> dict[str, Any]:
+def _local_push_plan(src: Source, entry: Entry, local_path: Path) -> tuple[Path, bool]:
+    """(destination, would_change) for pushing *local_path* to a local-path source.
+
+    Split out from `_push_local` so `--dry-run` can answer without copying. A preview
+    that writes is worse than no preview, and that is exactly what this used to be: the
+    dry-run check sat *after* the local branch returned, so `push --dry-run` overwrote
+    the source and reported OK.
+    """
     if entry.type == "skill":
         dest = src.path.parent  # type: ignore[union-attr]
-        if _dir_identical(local_path, dest):
-            return {"changed": False, "pushed": False, "dest": str(dest)}
+        return dest, not _dir_identical(local_path, dest)
+
+    dest = src.path  # type: ignore[assignment]
+    same = dest.exists() and filecmp.cmp(local_path, dest, shallow=False)  # type: ignore[arg-type]
+    return dest, not same
+
+
+def _push_local(src: Source, entry: Entry, local_path: Path) -> dict[str, Any]:
+    dest, changed = _local_push_plan(src, entry, local_path)
+    if not changed:
+        return {"changed": False, "pushed": False, "dest": str(dest)}
+
+    if entry.type == "skill":
         _copy_dir(local_path, dest)
     else:
-        dest = src.path  # type: ignore[assignment]
-        if dest.exists() and filecmp.cmp(local_path, dest, shallow=False):  # type: ignore[arg-type]
-            return {"changed": False, "pushed": False, "dest": str(dest)}
         _copy_file(local_path, dest)  # type: ignore[arg-type]
     return {"changed": True, "pushed": False, "dest": str(dest)}
 
@@ -1881,16 +2744,33 @@ def print_dry_run_tail(result: dict[str, Any]) -> None:
 # Commands — reads (Phase 2: config + catalog clone)
 # --------------------------------------------------------------------------- #
 
+# Pre-install states worth interrupting a line for, phrased for a dry run (before) and
+# for a completed sync (after). The other states are unremarkable and print nothing.
+_STATE_NOTES = {
+    "drifted": ("locally modified — will be overwritten", "was locally modified — overwritten"),
+    "untracked": ("not installed by this tool", "was not installed by this tool"),
+}
+
+
+def _state_note(state: str, past: bool = False) -> str:
+    """Human suffix for a destination's pre-install state ('' when there is none)."""
+    note = _STATE_NOTES.get(state)
+    return f"  ({note[1 if past else 0]})" if note else ""
+
+
 def _install_one(
     dirs: dict[str, dict[str, str]],
     entry: Entry,
     scope: str,
     custom: str | None,
+    catalog_key: str = "",
+    clones: "dict[str, Path] | None" = None,
 ) -> dict[str, Any]:
     base = resolve_target_base(dirs, entry, scope, custom)
-    dest, changes = fetch(entry, base)
+    dest, changes, commit = fetch(entry, base, clones)
     main = main_file_for(entry, dest)
     ok = main.exists()
+    record_install(entry, dest, scope, commit, catalog_key)
     return {"type": entry.type, "name": entry.name, "catalog": entry.catalog,
             "dest": str(dest), "verified": ok, "changes": changes}
 
@@ -1907,6 +2787,50 @@ def winning_catalogs(cfg: Config) -> dict[str, str]:
     return winners
 
 
+def entry_record(cfg: Config, entry: Entry, winners: dict[str, str],
+                 receipts: dict[str, dict[str, Any]],
+                 heads: "dict[str, str | None] | None" = None) -> dict[str, Any]:
+    """The one JSON shape for a catalog entry, shared by `list` and `search` (§4.1).
+
+    Two commands answering the same question must answer it identically; when `search`
+    returned a thinner record, callers filtered `list` client-side instead of using it.
+
+    Install status belongs to the resolved winner: an overridden entry is not the copy
+    `use` would install, so it never claims to be installed. Receipts key on the
+    destination, which both copies share, so provenance follows the same rule rather
+    than letting the losing copy claim the winner's install.
+    """
+    winner = winners.get(entry.name)
+    overridden_by = winner if winner and winner != entry.catalog else None
+    scopes = [] if overridden_by else installed_scopes(cfg.dirs, entry)
+    state, receipt = (("not_installed", None) if overridden_by
+                      else entry_install_state(cfg.dirs, entry, receipts))
+    # Staleness costs a network round trip, so it is only computed when asked for
+    # (C-D5: a read command that silently hits the network hangs on a plane). Only a
+    # clean install can be `stale`; a drifted or untracked copy has a more urgent
+    # answer already, and it isn't about the source.
+    if heads is not None and state == "installed" and receipt and receipt.get("commit"):
+        try:
+            src = parse_source(entry.source)
+        except LibraryError:
+            src = None
+        if src is not None and src.kind != "local":
+            head = remote_head(src, heads)
+            if head and head != receipt["commit"]:
+                state = "stale"
+    return {
+        # The nine keys below are the documented contract (C-D8): never renamed, never
+        # retyped. New information arrives as new keys instead.
+        "type": entry.type, "name": entry.name, "description": entry.description,
+        "source": entry.source, "requires": entry.requires,
+        "installed": bool(scopes), "scopes": scopes,
+        "catalog": entry.catalog, "overridden_by": overridden_by,
+        "state": state,
+        "receipt": receipt,
+        "has_setup": bool(scopes) and entry_has_setup(cfg.dirs, entry, receipts),
+    }
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     cfg = load_config()
     pull_errors = refresh_catalogs(cfg, args.no_pull)
@@ -1915,31 +2839,23 @@ def cmd_list(args: argparse.Namespace) -> int:
     multi = multi_catalog(cfg)
     winners = winning_catalogs(cfg)
 
+    receipts = load_receipts()
+    heads: dict[str, str | None] | None = {} if args.check_remote else None
+    records = [entry_record(cfg, e, winners, receipts, heads) for e in entries]
+    if args.json:
+        print(json.dumps(records, indent=2))
+        return 0
+
     rows = []
-    for e in entries:
-        winner = winners.get(e.name)
-        overridden_by = winner if winner and winner != e.catalog else None
-        # Install status belongs to the resolved winner; an overridden entry is not the
-        # copy that would be installed, so it never claims to be installed.
-        scopes = [] if overridden_by else installed_scopes(cfg.dirs, e)
+    for e, rec in zip(entries, records):
+        overridden_by, scopes = rec["overridden_by"], rec["scopes"]
         if overridden_by:
             status = f"overridden by {overridden_by}"
+        elif rec["state"] == "stale":
+            status = f"stale ({', '.join(scopes)})"
         else:
             status = f"installed ({', '.join(scopes)})" if scopes else "not installed"
         rows.append((e, status, scopes, overridden_by))
-
-    if args.json:
-        out = [
-            {
-                "type": e.type, "name": e.name, "description": e.description,
-                "source": e.source, "requires": e.requires,
-                "installed": bool(scopes), "scopes": scopes,
-                "catalog": e.catalog, "overridden_by": overridden_by,
-            }
-            for e, _, scopes, overridden_by in rows
-        ]
-        print(json.dumps(out, indent=2))
-        return 0
 
     for section in TYPES:
         group = [(e, s) for e, s, _, _ in rows if e.section == section]
@@ -1979,17 +2895,9 @@ def cmd_search(args: argparse.Namespace) -> int:
     multi = multi_catalog(cfg)
     winners = winning_catalogs(cfg)
 
-    def overridden_by(entry: Entry) -> "str | None":
-        winner = winners.get(entry.name)
-        return winner if winner and winner != entry.catalog else None
-
     if args.json:
-        print(json.dumps(
-            [{"type": e.type, "name": e.name, "description": e.description, "source": e.source,
-              "catalog": e.catalog, "overridden_by": overridden_by(e)}
-             for e in matches],
-            indent=2,
-        ))
+        receipts = load_receipts()
+        print(json.dumps([entry_record(cfg, e, winners, receipts) for e in matches], indent=2))
         return 0
 
     if not matches:
@@ -2005,6 +2913,153 @@ def cmd_search(args: argparse.Namespace) -> int:
     return 0
 
 
+def source_record(entry: Entry) -> dict[str, Any]:
+    """The entry's source, parsed into its parts — or the reason it couldn't be.
+
+    An unparseable source is reported, not raised: `show` is a read command, and "this
+    entry's source is malformed" is exactly what someone runs it to find out.
+    """
+    try:
+        src = parse_source(entry.source)
+    except LibraryError as ex:
+        return {"raw": entry.source, "kind": "unknown", "error": str(ex)}
+    if src.kind == "local":
+        return {"raw": entry.source, "kind": "local", "path": str(src.path),
+                "exists": bool(src.path and src.path.exists())}
+    return {"raw": entry.source, "kind": src.kind, "org": src.org, "repo": src.repo,
+            "branch": src.branch, "file_path": src.file_path,
+            "clone_urls": src.clone_urls()}
+
+
+def cmd_show(args: argparse.Namespace) -> int:
+    cfg = load_config()
+    refresh_catalogs(cfg, args.no_pull)
+    entries = resolved_entries(cfg, args)
+    multi = multi_catalog(cfg)
+    winners = winning_catalogs(cfg)
+    receipts = load_receipts()
+
+    copies = [e for e in entries if e.name == args.name]
+    if not copies:
+        cands = fuzzy_candidates(entries, args.name)
+        payload = {
+            "status": "AMBIGUOUS" if cands else "NOT_FOUND",
+            "query": args.name,
+            "candidates": [{"type": c.type, "name": c.name, "description": c.description,
+                            "catalog": c.catalog} for c in cands],
+        }
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        elif cands:
+            print(f'No entry named "{args.name}". Did you mean:')
+            for c in cands:
+                print(f"  [{c.type}] {c.name}" + (f"  ({c.catalog})" if multi else ""))
+        else:
+            print(f'No entry named "{args.name}". Try `library search`.')
+        return 2
+
+    # copies are already in precedence order, so the first one is what `use` installs.
+    winner = copies[0]
+    winner_record = entry_record(cfg, winner, winners, receipts)
+
+    copy_records = []
+    for e in copies:
+        overrides, overridden_by = override_split(cfg, e)
+        copy_records.append({"catalog": e.catalog, "type": e.type,
+                             "description": e.description, "source": e.source,
+                             "requires": e.requires, "wins": e is winner,
+                             "overrides": overrides, "overridden_by": overridden_by})
+
+    # Dependencies resolve within the winner's own catalog, as `use` resolves them (D9);
+    # showing them from the merged list would promise an install that won't happen.
+    unresolved: list[dict[str, str]] = []
+    catalog_entries = cfg.entries_of(winner.catalog)
+    deps = [d for d in resolve_deps(catalog_entries, winner, unresolved)
+            if d is not winner]
+    # The other direction: what breaks if this entry goes away. Nothing could answer that
+    # before, so `remove` and `uninstall` could only ask for confirmation without naming
+    # the consequence — and a caller cannot derive it, since it needs every entry's
+    # transitive closure rather than one entry's refs.
+    dependents = resolve_dependents(catalog_entries, winner)
+
+    installs = sorted((r for r in receipts.values() if r["name"] == winner.name),
+                      key=lambda r: r["dest"])
+
+    payload = {
+        "status": "OK",
+        "name": winner.name,
+        "entry": winner_record,
+        "copies": copy_records,
+        "requires": [{"type": d.type, "name": d.name, "catalog": d.catalog,
+                      "description": d.description} for d in deps],
+        "unresolved_requires": unresolved,
+        "dependents": [{"type": d.type, "name": d.name, "catalog": d.catalog,
+                        "description": d.description, "direct": direct}
+                       for d, direct in dependents],
+        "installs": installs,
+        "has_setup": winner_record["has_setup"],
+        "source": source_record(winner),
+    }
+
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    print(f"[{winner.type}] {winner.name}" + (f"  ({winner.catalog})" if multi else ""))
+    print(f"  {winner.description}")
+    print(f"\nSource: {winner.source}")
+    src = payload["source"]
+    if src["kind"] in ("github", "bitbucket"):
+        print(f"  {src['kind']}: {src['org']}/{src['repo']} @ {src['branch']} — {src['file_path']}")
+    elif src["kind"] == "local":
+        print(f"  local path{'' if src['exists'] else ' (missing)'}: {src['path']}")
+    else:
+        print(f"  unparseable: {src['error']}")
+
+    print(f"\nState: {winner_record['state']}" +
+          (f" ({', '.join(winner_record['scopes'])})" if winner_record["scopes"] else ""))
+    if payload["has_setup"]:
+        print(f"  ships a setup walkthrough — run `library setup {winner.name}`")
+
+    if deps:
+        print("\nRequires:")
+        for d in deps:
+            print(f"  [{d.type}] {d.name}  {d.description[:60]}")
+
+    if unresolved:
+        print("\nUnresolved requires:")
+        for u in unresolved:
+            print(f"  {u['ref']}  ({u['reason'].replace('_', ' ')}, required by {u['required_by']})")
+
+    if dependents:
+        print(f"\nRequired by ({len(dependents)}):")
+        for d, direct in dependents:
+            print(f"  [{d.type}] {d.name}" + ("" if direct else "  (indirectly)"))
+
+    if multi:
+        print("\nCopies (precedence order):")
+        for c in copy_records:
+            marker = "*" if c["wins"] else " "
+            note = ""
+            if c["overridden_by"]:
+                note = f"  overridden by {', '.join(c['overridden_by'])}"
+            elif c["overrides"]:
+                note = f"  overrides {', '.join(c['overrides'])}"
+            print(f"  {marker} {c['catalog']}{note}")
+            print(f"      {c['source']}")
+
+    if installs:
+        print("\nInstalled copies:")
+        for rec in installs:
+            commit = f" @ {rec['commit'][:8]}" if rec.get("commit") else ""
+            state = dest_state(Path(rec["dest"]), rec)
+            print(f"  {rec['dest']}  ({rec['scope']}, from {rec['catalog']}{commit}) · {state}")
+            print(f"      installed {rec['installed_at']}")
+    else:
+        print("\nInstalled copies: none recorded by this tool")
+    return 0
+
+
 def cmd_use(args: argparse.Namespace) -> int:
     cfg = load_config()
     refresh_catalogs(cfg, args.no_pull)
@@ -2012,6 +3067,136 @@ def cmd_use(args: argparse.Namespace) -> int:
     dirs = cfg.dirs
 
     multi = multi_catalog(cfg)
+    # One name or many. Every name is resolved *before* anything is installed, so a typo
+    # in the fifth of five does not leave four installed and the request half-done.
+    requested: list[Entry] = []
+    for name in args.name:
+        found = find_exact(entries, name)
+        if found is None:
+            cands = fuzzy_candidates(entries, name)
+            payload = {
+                "status": "AMBIGUOUS" if cands else "NOT_FOUND",
+                "query": name,
+                "candidates": [{"type": c.type, "name": c.name, "description": c.description,
+                                "catalog": c.catalog} for c in cands],
+            }
+            if args.json:
+                print(json.dumps(payload, indent=2))
+            elif cands:
+                print(f'No exact match for "{name}". Did you mean:')
+                for c in cands:
+                    print(f"  [{c.type}] {c.name}" + (f"  ({c.catalog})" if multi else ""))
+            else:
+                print(f'No match for "{name}". Try `library search`.')
+            return 2
+        requested.append(found)
+
+    entry = requested[-1]  # the one whose provenance the single-name payload describes
+    scope = "project" if args.project else "global"
+    # Dependencies resolve within each resolved entry's OWN catalog, never the merged
+    # list: a `requires` ref that names an entry in another catalog is simply dangling,
+    # which is the error users already understand.
+    #
+    # Closures are merged and de-duplicated across the request, so a dependency two
+    # selected entries share is installed once rather than once each.
+    order: list[Entry] = []
+    seen: set[tuple[str, str]] = set()
+    for target_entry in requested:
+        for e in resolve_deps(cfg.entries_of(target_entry.catalog), target_entry):
+            if (e.type, e.name) not in seen:
+                seen.add((e.type, e.name))
+                order.append(e)
+    note = override_note(cfg, entry)
+
+    if args.dry_run:
+        # A dry run is the only chance to see the destination before `use` overwrites it,
+        # so it reports each dest's current state (C-D4: reported, never enforced). The
+        # app warns on `drifted` here; the CLI still overwrites when asked.
+        receipts = load_receipts()
+        plan = []
+        for e in order:
+            dest = install_dest(e, resolve_target_base(dirs, e, scope, args.dir))
+            plan.append({"type": e.type, "name": e.name, "catalog": e.catalog,
+                         "dest": str(dest),
+                         "state": dest_state(dest, receipts.get(str(dest)))})
+        if args.json:
+            overrides, overridden_by = override_split(cfg, entry)
+            print(json.dumps({"status": "OK", "dry_run": True, "scope": scope,
+                              "requested": [e.name for e in requested],
+                              "overrides": overrides,
+                              "overridden_by": overridden_by[0] if overridden_by else None,
+                              "would_install": plan}, indent=2))
+        else:
+            print("Dry run — nothing installed. Would install:")
+            for p in plan:
+                catalog_col = f"  ({p['catalog']})" if multi else ""
+                print(f"  [{p['type']}] {p['name']}{catalog_col} → {p['dest']}{_state_note(p['state'])}")
+            if note:
+                print(f"  {entry.name} {note}")
+        return 0
+
+    failing = entry.name
+    try:
+        # One checkout per repo for the whole install: an entry and its dependency closure
+        # very often come from the same repository, and so do entries selected together.
+        results = []
+        with clone_cache() as clones:
+            for e in order:
+                failing = e.name
+                results.append(
+                    _install_one(dirs, e, scope, args.dir, entry_catalog_key(cfg, e), clones))
+    except LibraryError as ex:
+        if args.json:
+            print(json.dumps({"status": "ERROR", "name": failing, "reason": str(ex)}, indent=2))
+        else:
+            print(f"Failed to install {failing}: {ex}")
+        return 1
+
+    if args.json:
+        overrides, overridden_by = override_split(cfg, entry)
+        print(json.dumps({"status": "OK", "installed": results,
+                          "requested": [e.name for e in requested],
+                          "overrides": overrides,
+                          "overridden_by": overridden_by[0] if overridden_by else None}, indent=2))
+        return 0
+
+    asked = {(e.type, e.name) for e in requested}
+    deps = [r for r in results if (r["type"], r["name"]) not in asked]
+    targets = [r for r in results if (r["type"], r["name"]) in asked]
+    if deps:
+        print("Dependencies installed:")
+        for r in deps:
+            print(f"  [{r['type']}] {r['name']} → {r['dest']}")
+    for target in targets:
+        flag = "" if target["verified"] else "  (warning: main file not found)"
+        summary = _summarize_changes(target["changes"])
+        provenance = ""
+        if multi:
+            extra = f", {note}" if note and len(targets) == 1 else ""
+            provenance = f" (from {target['catalog']}{extra})"
+        print(f"Installed [{target['type']}] {target['name']} → {target['dest']} · "
+              f"{summary}{provenance}{flag}")
+        if len(targets) == 1:
+            for line in _change_detail_lines(target["changes"]):
+                print(line)
+    return 0 if all(r["verified"] for r in results) else 1
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    # Printed, never written: the manifest belongs in the skill's *source* repo, and for
+    # a remote catalog that directory is not on this machine at all. Redirecting is one
+    # keystroke and cannot clobber a file the author already has.
+    if getattr(args, "scaffold", False):
+        print(SETUP_TEMPLATE.format(name=args.name,
+                                    summary=f"One-time setup for {args.name}."), end="")
+        return 0
+
+    cfg = load_config()
+    refresh_catalogs(cfg, args.no_pull)
+    entries = resolved_entries(cfg, args)
+    multi = multi_catalog(cfg)
+    receipts = load_receipts()
+
     entry = find_exact(entries, args.name)
     if entry is None:
         cands = fuzzy_candidates(entries, args.name)
@@ -2031,65 +3216,204 @@ def cmd_use(args: argparse.Namespace) -> int:
             print(f'No match for "{args.name}". Try `library search`.')
         return 2
 
-    scope = "project" if args.project else "global"
-    # Dependencies resolve within the resolved entry's OWN catalog, never the merged
-    # list: a `requires` ref that names an entry in another catalog is simply dangling,
-    # which is the error users already understand.
-    order = resolve_deps(cfg.entries_of(entry.catalog), entry)
-    note = override_note(cfg, entry)
+    # The manifest belongs to the *installed* copy, so this reads the disk, not the
+    # catalog. Nothing installed means nothing to report — not an error (§4.5).
+    dest = next((Path(d) for d in sorted(entry_dests(cfg.dirs, entry, receipts))
+                 if Path(d).exists()), None)
+    manifest, problems = (None, []) if dest is None else load_setup(dest)
+    prerequisites = [check_prerequisite(p, cfg.dirs, receipts)
+                     for p in (manifest or {}).get("prerequisites") or []]
+    unmet = [p for p in prerequisites if not p["met"]]
 
-    if args.dry_run:
-        plan = [
-            {"type": e.type, "name": e.name, "catalog": e.catalog,
-             "dest": str(install_dest(e, resolve_target_base(dirs, e, scope, args.dir)))}
-            for e in order
-        ]
-        if args.json:
-            overrides, overridden_by = override_split(cfg, entry)
-            print(json.dumps({"status": "OK", "dry_run": True, "scope": scope,
-                              "overrides": overrides,
-                              "overridden_by": overridden_by[0] if overridden_by else None,
-                              "would_install": plan}, indent=2))
-        else:
-            print("Dry run — nothing installed. Would install:")
-            for p in plan:
-                catalog_col = f"  ({p['catalog']})" if multi else ""
-                print(f"  [{p['type']}] {p['name']}{catalog_col} → {p['dest']}")
-            if note:
-                print(f"  {entry.name} {note}")
-        return 0
+    # Whether the values the manifest declares are already on disk — a different question
+    # from `ready`, which only says the walkthrough *can start*. Read once, not per secret.
+    setup_config = (manifest or {}).get("config") or {}
+    store, verdict = _read_config_store(setup_config)
+    secrets = [check_secret(s, setup_config, store, verdict)
+               for s in (manifest or {}).get("secrets") or [] if isinstance(s, dict)]
+    # Only what is actually checkable counts. A skill whose every secret is `env` has
+    # nothing to look at, and `false` there would be an accusation rather than a fact.
+    checkable = [s for s in secrets if s["present"] is not None]
+    missing = [s for s in checkable if not s["present"] and not s["optional"]]
 
-    try:
-        results = [_install_one(dirs, e, scope, args.dir) for e in order]
-    except LibraryError as ex:
-        if args.json:
-            print(json.dumps({"status": "ERROR", "name": entry.name, "reason": str(ex)}, indent=2))
-        else:
-            print(f"Failed to install {entry.name}: {ex}")
-        return 1
+    payload = {
+        "status": "OK",
+        "name": entry.name,
+        "type": entry.type,
+        "catalog": entry.catalog,
+        "installed": dest is not None,
+        "dest": str(dest) if dest else None,
+        "has_setup": manifest is not None,
+        "manifest": manifest,
+        "problems": problems,
+        "prerequisites": prerequisites,
+        "secrets": secrets,
+        # Three-valued on purpose, and null is not a failure to answer — it is the answer
+        # for a skill with nothing checkable. True means every *required* value that can
+        # be seen is there; it does not promise the values are correct, which only the
+        # manifest's own `verify` command can say.
+        "configured": None if not checkable else not missing,
+        # Ready means the app can start the walkthrough: a manifest that validates and
+        # every prerequisite met. A manifest with problems is never "ready anyway".
+        "ready": manifest is not None and not problems and not unmet,
+    }
 
     if args.json:
-        overrides, overridden_by = override_split(cfg, entry)
-        print(json.dumps({"status": "OK", "installed": results, "overrides": overrides,
-                          "overridden_by": overridden_by[0] if overridden_by else None}, indent=2))
+        print(json.dumps(payload, indent=2))
         return 0
 
-    deps = results[:-1]
-    target = results[-1]
-    if deps:
-        print("Dependencies installed:")
-        for r in deps:
-            print(f"  [{r['type']}] {r['name']} → {r['dest']}")
-    flag = "" if target["verified"] else "  (warning: main file not found)"
-    summary = _summarize_changes(target["changes"])
-    provenance = ""
-    if multi:
-        provenance = f" (from {entry.catalog}{', ' + note if note else ''})"
-    print(f"Installed [{target['type']}] {target['name']} → {target['dest']} · "
-          f"{summary}{provenance}{flag}")
-    for line in _change_detail_lines(target["changes"]):
-        print(line)
-    return 0 if all(r["verified"] for r in results) else 1
+    if dest is None:
+        print(f"[{entry.type}] {entry.name} is not installed — nothing to set up. "
+              f"Install it first: library use {entry.name}")
+        return 0
+    if manifest is None:
+        print(f"[{entry.type}] {entry.name} has no {SETUP_FILE} — no setup needed.")
+        for p in problems:
+            print(f"  problem: {p}")
+        return 0
+
+    print(f"[{entry.type}] {entry.name} — {manifest.get('summary', 'setup available')}")
+    print(f"  manifest: {dest / SETUP_FILE}")
+    if problems:
+        print("  INVALID — the walkthrough is disabled until these are fixed:")
+        for p in problems:
+            print(f"    {p}")
+    if prerequisites:
+        print("  Prerequisites:")
+        for p in prerequisites:
+            mark = "ok  " if p["met"] else "MISS"
+            print(f"    [{mark}] {p['kind']}: {p['value']} — {p['detail']}")
+    if secrets:
+        print("  Values to collect:")
+        for s in secrets:
+            mark = {True: "ok  ", False: "MISS"}.get(s["present"], "  ? ")
+            tail = " (optional)" if s["optional"] else ""
+            print(f"    [{mark}] {s['key']} via {s['delivery']}{tail} — {s['detail']}")
+    print(f"  Ready: {'yes' if payload['ready'] else 'no'}")
+    configured = payload["configured"]
+    if configured is not None:
+        print(f"  Configured: {'yes' if configured else 'no'}")
+    return 0
+
+
+def uninstall_entry(
+    dirs: dict[str, dict[str, str]],
+    entry: Entry,
+    scope: str = "all",
+    custom: "str | None" = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Delete installed copies of *entry* and drop their receipts (design §4.3).
+
+    The one deletion path: `uninstall` and `remove --purge` both come through here, so
+    there is a single answer to "what does deleting an install mean".
+
+    A destination with no receipt is **refused** unless *force*. A directory under
+    `~/.claude/skills/` that this tool didn't write may be something the user authored
+    by hand, and deleting it because a catalog name matched is unrecoverable.
+
+    Only the scope destinations (or *custom*) are considered — never every dest a
+    receipt happens to mention, or `uninstall alpha` would also take out a `--dir`
+    install the user never named.
+    """
+    targets: list[Path] = []
+    if custom:
+        targets.append(install_dest(entry, resolve_install_dir(custom)))
+    else:
+        for sc in (("global", "project") if scope == "all" else (scope,)):
+            try:
+                targets.append(install_dest(entry, resolve_target_base(dirs, entry, sc, None)))
+            except LibraryError:
+                continue  # scope not configured for this section: nothing to delete
+
+    receipts = load_receipts()
+    deleted: list[str] = []
+    refused: list[str] = []
+    touched = False
+    for target in targets:
+        key = str(target)
+        if not target.exists():
+            touched = receipts.pop(key, None) is not None or touched  # prune a stale receipt
+            continue
+        if key not in receipts and not force:
+            refused.append(key)
+            continue
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+        deleted.append(key)
+        touched = receipts.pop(key, None) is not None or touched
+    if touched:
+        save_receipts(receipts)
+    return {"deleted": deleted, "refused": refused}
+
+
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    cfg = load_config()
+    refresh_catalogs(cfg, args.no_pull)
+    entries = resolved_entries(cfg, args)
+    multi = multi_catalog(cfg)
+
+    # One name or many. Every name is resolved *before* anything is deleted, so a typo
+    # in the fifth of five does not remove the first four and leave the request
+    # half-applied — the same guarantee `use` makes for installs.
+    targets: list[Entry] = []
+    for name in args.name:
+        entry = find_exact(entries, name)
+        if entry is None:
+            cands = fuzzy_candidates(entries, name)
+            payload = {
+                "status": "AMBIGUOUS" if cands else "NOT_FOUND",
+                "query": name,
+                "candidates": [{"type": c.type, "name": c.name, "description": c.description,
+                                "catalog": c.catalog} for c in cands],
+            }
+            if args.json:
+                print(json.dumps(payload, indent=2))
+            elif cands:
+                print(f'No exact match for "{name}". Did you mean:')
+                for c in cands:
+                    print(f"  [{c.type}] {c.name}" + (f"  ({c.catalog})" if multi else ""))
+            else:
+                print(f'No match for "{name}". Try `library list`.')
+            return 2
+        targets.append(entry)
+
+    # One result per requested entry, each carrying its own deleted/refused. A batch can
+    # be part-done — some copies deleted, others refused because the tool has no receipt
+    # for them — so the shape has to say which entry landed where. `--force` (never passed
+    # in bulk from the app) applies to every name, by design: a blanket force over a
+    # selection is exactly the escalation the refusal exists to prevent, so that choice
+    # stays per-copy in the caller.
+    results = []
+    for entry in targets:
+        outcome = uninstall_entry(cfg.dirs, entry, args.scope, args.dir, args.force)
+        results.append({"type": entry.type, "name": entry.name,
+                        "deleted": outcome["deleted"], "refused": outcome["refused"]})
+
+    any_refused = any(r["refused"] for r in results)
+
+    if args.json:
+        print(json.dumps({"status": "REFUSED" if any_refused else "OK",
+                          "results": results}, indent=2))
+        return 2 if any_refused else 0
+
+    any_deleted = False
+    for r in results:
+        if r["deleted"]:
+            any_deleted = True
+            print(f"Uninstalled [{r['type']}] {r['name']}:")
+            for d in r["deleted"]:
+                print(f"  removed {d}")
+        elif not r["refused"]:
+            print(f"[{r['type']}] {r['name']} is not installed here — nothing to remove.")
+        for path in r["refused"]:
+            print(f"  refused {path}: no install receipt — this tool didn't install it. "
+                  "Pass --force to delete it anyway.")
+    if any_deleted:
+        print("The catalog entry is untouched; `library use` reinstalls it.")
+    return 2 if any_refused else 0
 
 
 def cmd_sync(args: argparse.Namespace) -> int:
@@ -2120,17 +3444,40 @@ def cmd_sync(args: argparse.Namespace) -> int:
             print("Nothing installed locally. Use `library use <name>` first.")
         return 0
 
+    receipts = load_receipts()
+    heads: dict[str, str | None] = {}  # one ls-remote per repo+branch, not per entry
     synced, failed = [], []
-    for e, scope in installed:
-        # Dependencies come from the item's own catalog, as in `use` (D9).
-        try:
-            results = [_install_one(dirs, dep, scope, None)
-                       for dep in resolve_deps(cfg.entries_of(e.catalog), e)]
-            synced.append({"type": e.type, "name": e.name, "catalog": e.catalog,
-                           "scope": scope, "changes": results[-1]["changes"]})
-        except LibraryError as ex:
-            failed.append({"type": e.type, "name": e.name, "catalog": e.catalog,
-                           "reason": str(ex)})
+    # And one clone per repo+branch, for the same reason. `--force` re-fetches every item,
+    # which on a machine whose entries share a repository was that many clones of it.
+    with clone_cache() as clones:
+        for e, scope in installed:
+            # Read the state before refreshing: afterwards the copy matches its source and
+            # any local edit is gone, so this is the last moment drift is observable (C-D4).
+            dest = install_dest(e, resolve_target_base(dirs, e, scope, None))
+            state = dest_state(dest, receipts.get(str(dest)))
+            # Dependencies come from the item's own catalog, as in `use` (D9).
+            try:
+                results = []
+                for dep in resolve_deps(cfg.entries_of(e.catalog), e):
+                    dep_dest = install_dest(dep, resolve_target_base(dirs, dep, scope, None))
+                    if not args.force and source_unchanged(dep, dep_dest,
+                                                           receipts.get(str(dep_dest)), heads):
+                        results.append({"type": dep.type, "name": dep.name,
+                                        "catalog": dep.catalog,
+                                        "dest": str(dep_dest), "verified": True,
+                                        "changes": {"new_install": False, "added": [],
+                                                    "removed": [], "modified": []},
+                                        "up_to_date": True})
+                    else:
+                        results.append(_install_one(dirs, dep, scope, None,
+                                                    entry_catalog_key(cfg, dep), clones))
+                synced.append({"type": e.type, "name": e.name, "catalog": e.catalog,
+                               "scope": scope, "state": state,
+                               "changes": results[-1]["changes"],
+                               "up_to_date": results[-1].get("up_to_date", False)})
+            except LibraryError as ex:
+                failed.append({"type": e.type, "name": e.name, "catalog": e.catalog,
+                               "reason": str(ex)})
 
     if args.json:
         status = "PARTIAL" if failed else "OK"
@@ -2144,7 +3491,11 @@ def cmd_sync(args: argparse.Namespace) -> int:
         if summary != "no changes":
             changed_count += 1
         origin = f" (from {r['catalog']})" if multi else ""
-        print(f"  refreshed [{r['type']}] {r['name']} ({r['scope']}) · {summary}{origin}")
+        if r["up_to_date"]:
+            print(f"  up to date [{r['type']}] {r['name']} ({r['scope']}){origin}")
+            continue
+        print(f"  refreshed [{r['type']}] {r['name']} ({r['scope']}) · "
+              f"{summary}{origin}{_state_note(r['state'], past=True)}")
         for line in _change_detail_lines(ch):
             print(line)
     for r in failed:
@@ -2267,6 +3618,44 @@ def _load_batch_file(path_str: str) -> list[dict[str, Any]]:
             die(f"batch entry #{i + 1} is not a mapping")
         items.append(it)
     return items
+
+
+def cmd_suggest_source(args: argparse.Namespace) -> int:
+    """Turn a path on this machine into the source URL a teammate could resolve.
+
+    The logic already existed, reachable only as a hint appended to the error that
+    refuses a local-path source. That is the wrong shape for two of the three front
+    doors: a GUI never sees stderr, and an agent should be able to ask the question
+    before proposing an `add` rather than after being refused.
+
+    No catalog is read and nothing is written — this only inspects the given path and
+    its git remote, so it works before any catalog is registered.
+    """
+    path = Path(args.path).expanduser()
+    if not path.exists():
+        die(f"no such path: {args.path}")
+
+    suggestion, reason = _remote_suggestion(path)
+    status = "OK" if suggestion else "NONE"
+
+    if args.json:
+        # Exit 0 either way: "this file is not in a GitHub repo" is an answer, not a
+        # failure, and a caller that got a straight answer should not have to branch on
+        # an exit code to read it.
+        print(json.dumps({
+            "status": status,
+            "path": str(path.resolve()),
+            "suggestion": suggestion,
+            "reason": reason or None,
+        }, indent=2))
+        return 0
+
+    if suggestion:
+        # The URL alone, so it can be piped straight into `add --source "$(...)"`.
+        print(suggestion)
+    else:
+        print(f"No source URL could be derived: {reason}")
+    return 0
 
 
 def cmd_add(args: argparse.Namespace) -> int:
@@ -2473,21 +3862,14 @@ def cmd_remove(args: argparse.Namespace) -> int:
             print_dry_run_tail(result)
         return 0
 
-    # --purge: delete local copies immediately (unrelated to the catalog edit)
+    # --purge: delete local copies immediately (unrelated to the catalog edit). Runs
+    # through the same path as `uninstall` so deletion behaves identically either way.
+    # force=True: the user asked to purge a *catalog* entry, which is the stronger
+    # statement — refusing on a missing receipt here would block a delete they already
+    # confirmed, and `remove` predates receipts.
     deleted: list[str] = []
     if args.purge:
-        for scope in ("project", "global"):
-            try:
-                base = resolve_target_base(dirs, entry, scope, None)
-            except LibraryError:
-                continue
-            target = base / entry.name if entry.type == "skill" else base / f"{entry.name}.md"
-            if target.is_dir():
-                shutil.rmtree(target)
-                deleted.append(str(target))
-            elif target.is_file():
-                target.unlink()
-                deleted.append(str(target))
+        deleted = uninstall_entry(dirs, entry, force=True)["deleted"]
 
     if args.json:
         print(json.dumps({
@@ -2697,7 +4079,11 @@ def cmd_push(args: argparse.Namespace) -> int:
 
     # The local copy exists and is about to be pushed somewhere — say where, and say so
     # now if that destination was inferred rather than known.
-    note = push_source_warning(cfg, entry)
+    #
+    # Reported on stderr *and* as `note` in every --json payload below. A warning that
+    # only reaches a terminal is invisible to the two front doors that cannot read one,
+    # and this is the warning whose cost is an edit landing in someone else's repo.
+    note = push_source_warning(cfg, entry, local_path)
     if note:
         warn(note)
 
@@ -2706,10 +4092,26 @@ def cmd_push(args: argparse.Namespace) -> int:
 
     # Local-path sources: overwrite in place, no PR needed (Risk #6).
     if src.kind == "local":
+        if args.dry_run:
+            # Answer without writing. The old code ran the copy first and checked
+            # --dry-run only in the PR branch below, so a local-source preview
+            # overwrote the source and said OK.
+            dest, would_change = _local_push_plan(src, entry, local_path)
+            if args.json:
+                print(json.dumps({
+                    "status": "DRY_RUN", "would_change": would_change, "name": entry.name,
+                    "catalog": entry.catalog, "dest": str(dest), "note": note or None,
+                }, indent=2))
+            elif would_change:
+                print(f"[dry-run] would copy {entry.name} to local source: {dest}")
+            else:
+                print(f"No changes — local copy of {entry.name} matches source.")
+            return 0
+
         res = _push_local(src, entry, local_path)
         if args.json:
             print(json.dumps({"status": "OK", "name": entry.name,
-                              "catalog": entry.catalog, **res}, indent=2))
+                              "catalog": entry.catalog, "note": note or None, **res}, indent=2))
             return 0
         if not res.get("changed"):
             print(f"No changes — local copy of {entry.name} matches source.")
@@ -2756,9 +4158,19 @@ def cmd_push(args: argparse.Namespace) -> int:
             ["git", "-C", str(repo_dir), "diff", "--cached", "--quiet"]
         )
         if diff_check.returncode == 0:
+            # Under --dry-run this is still a dry run. Reporting OK here made "nothing to
+            # push" indistinguishable from a completed push, so a caller telling a preview
+            # from the real thing by `status` — the only reliable way — got it wrong on the
+            # most ordinary outcome there is. Same defect as the local-source branch above,
+            # on the other early return.
             if args.json:
-                print(json.dumps({"status": "OK", "name": entry.name,
-                                  "catalog": entry.catalog, "changed": False}, indent=2))
+                print(json.dumps(
+                    {"status": "DRY_RUN", "would_change": False, "name": entry.name,
+                     "catalog": entry.catalog, "branch": branch, "note": note or None}
+                    if args.dry_run else
+                    {"status": "OK", "name": entry.name, "catalog": entry.catalog,
+                     "changed": False, "note": note or None},
+                    indent=2))
             else:
                 print(f"No changes — local copy of {entry.name} matches source.")
             return 0
@@ -2774,6 +4186,7 @@ def cmd_push(args: argparse.Namespace) -> int:
                 print(json.dumps({
                     "status": "DRY_RUN", "would_change": True, "name": entry.name,
                     "catalog": entry.catalog, "branch": branch, "diff": diff_proc.stdout,
+                    "note": note or None,
                 }, indent=2))
             else:
                 print(f"[dry-run] would open PR: {branch}\n")
@@ -2790,7 +4203,7 @@ def cmd_push(args: argparse.Namespace) -> int:
 
         if args.json:
             print(json.dumps({"status": "OK", "name": entry.name, "catalog": entry.catalog,
-                              "changed": True, **pr_info}, indent=2))
+                              "changed": True, "note": note or None, **pr_info}, indent=2))
             return 0
 
         if pr_info.get("method") == "gh":
@@ -2804,7 +4217,8 @@ def cmd_push(args: argparse.Namespace) -> int:
     except LibraryError as ex:
         if args.json:
             print(json.dumps({"status": "ERROR", "name": entry.name,
-                              "catalog": entry.catalog, "reason": str(ex)}, indent=2))
+                              "catalog": entry.catalog, "reason": str(ex),
+                              "note": note or None}, indent=2))
         else:
             print(f"Failed to push {entry.name}: {ex}")
         return 1
@@ -2975,6 +4389,35 @@ def catalog_location(cat: Catalog) -> str:
     if cat.is_remote:
         return f"{cat.repo} ({cat.branch}, {cat.yaml_path})"
     return str(cat.yaml_file)
+
+
+def entry_catalog_key(cfg: "Config", entry: "Entry") -> str:
+    """The identity of the catalog *entry* resolved from, or '' if it is unknown.
+
+    Empty rather than a guess: a receipt with no key falls back to the older matchers,
+    which is exactly what should happen when we cannot say for certain.
+    """
+    for cat in cfg.catalogs:
+        if cat.id == entry.catalog:
+            return catalog_key(cat)
+    return ""
+
+
+def catalog_key(cat: Catalog) -> str:
+    """A catalog's **identity**, stable across renaming it (R15.12).
+
+    `id` is a nickname the user picks and can change, so it cannot be what a record
+    *means* when it says where a copy came from: re-registering the same catalog under a
+    new id silently orphans every receipt that named the old one — measured, on a machine
+    whose 35 receipts pointed at a catalog id that no longer existed.
+
+    Where the catalog lives is the thing that makes it that catalog, so that is the key.
+    Deliberately **not** `catalog_location`, which is a display string built for humans and
+    free to be reworded; this one is parsed by nothing and compared by everything.
+    """
+    if cat.is_remote:
+        return f"{cat.repo}#{cat.yaml_path}@{cat.branch}"
+    return str(cat.yaml_file.resolve())
 
 
 def cmd_catalog_list(args: argparse.Namespace) -> int:
@@ -3159,6 +4602,88 @@ def cmd_catalog_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _receipt_belongs_to(rec: dict[str, Any], cid: str, key: str, sources: set) -> bool:
+    """Whether one receipt records a copy that came from this catalog (R15.11, R15.12).
+
+    **The exact key wins whenever it is present**, and nothing else is consulted. A
+    receipt written by a current CLI names the catalog's identity, so matching it is a
+    comparison rather than an inference, and a receipt that names a *different* catalog
+    must not then be caught by a looser rule.
+
+    The two fallbacks apply only to receipts written before that key existed, where the
+    alternative is to strand the files:
+
+    - the recorded **id**, which is right until someone renames the catalog;
+    - the recorded **source**, matched against the sources this catalog currently lists,
+      which survives a rename and is what rescued the machine that found this bug — 35
+      receipts naming an id no longer registered.
+
+    The source fallback is approximate on purpose and its inaccuracy is bounded: it can
+    over-reach only when two catalogs list the identical source URL for an entry, and it
+    stops being consulted for a receipt the moment normal use rewrites it with a key.
+    """
+    recorded = rec.get("catalog_key")
+    if recorded:
+        return recorded == key
+    return rec.get("catalog") == cid or rec.get("source") in sources
+
+
+def purge_catalog_installs(cid: str, cat: "Catalog | None" = None) -> dict[str, list[str]]:
+    """Delete every copy an install receipt attributes to catalog *cid* (R15.11).
+
+    **Receipt-driven, and that is the point rather than an implementation detail.**
+    "Everything installed from this catalog" is a question only receipts can answer, and
+    enumerating the catalog's current entries gets it wrong three ways:
+
+    - an entry installed from *cid* but since removed from its catalog file is still on
+      disk, and the catalog no longer mentions it;
+    - an entry *cid* defines today may have been installed from a different catalog,
+      before precedence changed — the receipt records which one it really was;
+    - and the caller that needs this most has *just unregistered* the catalog, so there
+      are no entries left to enumerate at all.
+
+    A copy with **no receipt** is left alone. Nothing attributes it to any catalog, so it
+    is not this catalog's to delete — the same line `uninstall_entry` draws by refusing a
+    destination it cannot prove it created.
+
+    Returns the paths deleted and the stale receipts cleared (destinations that were
+    already gone). Both are reported rather than one being silent: a caller that asked to
+    delete things is owed an account of what happened, including "nothing was there".
+    """
+    receipts = load_receipts()
+    key = catalog_key(cat) if cat is not None else ""
+    # Only needed for the legacy fallback, and a catalog that cannot be read contributes
+    # none — which is correct: an unreadable catalog cannot vouch for anything.
+    sources: set = set()
+    if cat is not None:
+        # Hydrate explicitly: the caller unregistering a catalog builds it straight from
+        # the raw registry item, which carries no parsed YAML, so without this the source
+        # set is silently empty and the legacy fallback matches nothing.
+        _hydrate_one(cat)
+        sources = {e.source for e in iter_catalog_entries(cat)}
+
+    mine = [dest for dest, rec in receipts.items()
+            if _receipt_belongs_to(rec, cid, key, sources)]
+
+    deleted: list[str] = []
+    cleared: list[str] = []
+    for dest in sorted(mine):
+        target = Path(dest)
+        if target.is_dir():
+            shutil.rmtree(target, ignore_errors=True)
+            deleted.append(dest)
+        elif target.exists():
+            target.unlink()
+            deleted.append(dest)
+        else:
+            cleared.append(dest)
+        receipts.pop(dest, None)
+
+    if mine:
+        save_receipts(receipts)
+    return {"deleted": deleted, "cleared": cleared}
+
+
 def cmd_catalog_remove(args: argparse.Namespace) -> int:
     """Unregister a catalog, leaving its clone unless asked (R15.6)."""
     raw, notes = canonical_raw_config()
@@ -3175,6 +4700,12 @@ def cmd_catalog_remove(args: argparse.Namespace) -> int:
     cat = _catalog_from_raw(removed)
     write_config(raw)  # config first: a failed purge must not leave a stale registration
 
+    # Installs before the clone, so a remote's files are gone before the clone they came
+    # from is. Both run after the config for the same reason it is written first.
+    installs = {"deleted": [], "cleared": []}
+    if getattr(args, "purge_installs", False):
+        installs = purge_catalog_installs(args.id, cat)
+
     purged = None
     if getattr(args, "purge_clone", False) and cat.clone_dir and cat.clone_dir.exists():
         shutil.rmtree(cat.clone_dir, ignore_errors=True)
@@ -3184,12 +4715,18 @@ def cmd_catalog_remove(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps({"status": "OK", "id": args.id, "purged_clone": purged,
                           "clone_kept_at": str(kept) if kept else None,
+                          "purged_installs": installs["deleted"],
+                          "cleared_receipts": installs["cleared"],
                           "migrated": notes}, indent=2))
         return 0
 
     for note in notes:
         print(f"  migrated config: {note}")
     print(f"Unregistered {args.id}.")
+    for dest in installs["deleted"]:
+        print(f"  deleted install: {dest}")
+    if installs["cleared"]:
+        print(f"  cleared {len(installs['cleared'])} stale receipt(s)")
     if purged:
         print(f"  removed clone: {purged}")
     elif kept:
@@ -3514,6 +5051,39 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         #    catalog owns, so it carries an entry but no catalog id.
         warns.extend((None, n, m) for n, m in _override_findings(cfg))
 
+        # ── Installed copies: setup manifests and install health (§4.5) ─
+        #    Each name is checked once, against the copy resolution picks — the same
+        #    rule `sync` follows, so doctor doesn't report the losing copy's dest.
+        receipts = load_receipts()
+        checked: set[str] = set()
+        for e in entries:
+            if e.name in checked:
+                continue
+            checked.add(e.name)
+            for dest, receipt in sorted(entry_dests(cfg.dirs, e, receipts).items()):
+                state = dest_state(Path(dest), receipt)
+                if state == "drifted":
+                    warns.append((e.catalog, e.name,
+                        f"installed copy at {dest} has local modifications; "
+                        "`use`/`sync` will overwrite them (`library push` sends them back)"))
+                elif state == "untracked":
+                    warns.append((e.catalog, e.name,
+                        f"installed copy at {dest} has no install receipt — installed by "
+                        "hand, or before receipts existed; `library use` adopts it"))
+                elif state == "missing":
+                    warns.append((e.catalog, e.name,
+                        f"receipt points at {dest}, which no longer exists"))
+                    continue
+                elif state == "not_installed":
+                    continue
+                manifest, setup_problems = load_setup(Path(dest))
+                for problem in setup_problems:
+                    errors.append((e.catalog, e.name, f"invalid {SETUP_FILE} at {dest}: {problem}"))
+                # Conventions are warnings, never errors: an unusual key order is not a
+                # reason to take a skill's walkthrough offline (§11).
+                for note in lint_setup(manifest):
+                    warns.append((e.catalog, e.name, f"{SETUP_FILE} {note}"))
+
     multi = cfg is not None and multi_catalog(cfg)
 
     if args.json:
@@ -3620,53 +5190,70 @@ def cmd_init(args: argparse.Namespace) -> int:
     if LOCAL_CONFIG_PATH.exists() and not args.force:
         die(f"{LOCAL_CONFIG_PATH} already exists; pass --force to overwrite")
 
+    # Phase 2 below clones over the network and can fail. Remember what was here first,
+    # so a failure leaves the tool exactly as it found it: a half-written config points
+    # at a repo that was never cloned, and every later `init` refuses with "already
+    # exists; pass --force" — a dead end for the caller who just made a typo.
+    had_config = LOCAL_CONFIG_PATH.exists()
+    previous_config = LOCAL_CONFIG_PATH.read_bytes() if had_config else None
+    initialized = False
+
     old = _migrate_old_variables()
     default_yaml = "library.yaml"
     if "LIBRARY_YAML_PATH" in old:
         default_yaml = Path(old["LIBRARY_YAML_PATH"]).name or "library.yaml"
     yaml_path = args.yaml_path or default_yaml
 
-    merged, dropped = _reinit_preserving(
-        {"id": SHARED_ID, "repo": args.repo, "yaml_path": yaml_path,
-         "branch": args.branch, "protected": True},
-        bool(args.autopush),
-    )
-    if merged is None:
-        LOCAL_CONFIG_PATH.write_text(_LOCAL_CONFIG_TEMPLATE.format(
-            repo=args.repo,
-            yaml_path=yaml_path,
-            branch=args.branch,
-            autopush="true" if args.autopush else "false",
-        ))
-    else:
-        write_config(merged)
-    for cid in dropped:
-        warn(f"catalog '{cid}' could not be carried over and is no longer registered; "
-             f"re-add it with `library catalog add --id {cid} …`")
-    kept = [c["id"] for c in (merged or {}).get("catalogs", []) if c["id"] != SHARED_ID]
-
-    cfg = load_config()  # validate what we just wrote
-
-    # Phase 2: perform initial catalog clone. Re-clone on --force, or when an
-    # existing clone points at a different repo than the (new) config.
-    if CATALOG_CLONE_DIR.exists():
-        origin = subprocess.run(
-            ["git", "-C", str(CATALOG_CLONE_DIR), "remote", "get-url", "origin"],
-            capture_output=True, text=True,
-        ).stdout.strip()
-        if args.force or origin != cfg.catalog_repo:
-            shutil.rmtree(CATALOG_CLONE_DIR)
-    if not CATALOG_CLONE_DIR.exists():
-        sys.stderr.write(f"Cloning catalog repo → {CATALOG_CLONE_DIR} ...\n")
-        pull_catalog(cfg._first_remote)  # clones if absent; dies on failure with auth hint
-
-    # Verify the catalog YAML exists inside the clone.
-    cp = catalog_yaml(cfg._first_remote)
-    if not cp.exists():
-        die(
-            f"catalog file not found at {cp}\n"
-            f"  check --yaml-path (got: {cfg.catalog_yaml_path})"
+    try:
+        merged, dropped = _reinit_preserving(
+            {"id": SHARED_ID, "repo": args.repo, "yaml_path": yaml_path,
+             "branch": args.branch, "protected": True},
+            bool(args.autopush),
         )
+        if merged is None:
+            write_machine_file(LOCAL_CONFIG_PATH, _LOCAL_CONFIG_TEMPLATE.format(
+                repo=args.repo,
+                yaml_path=yaml_path,
+                branch=args.branch,
+                autopush="true" if args.autopush else "false",
+            ))
+        else:
+            write_config(merged)
+        for cid in dropped:
+            warn(f"catalog '{cid}' could not be carried over and is no longer registered; "
+                 f"re-add it with `library catalog add --id {cid} …`")
+        kept = [c["id"] for c in (merged or {}).get("catalogs", []) if c["id"] != SHARED_ID]
+
+        cfg = load_config()  # validate what we just wrote
+
+        # Phase 2: perform initial catalog clone. Re-clone on --force, or when an
+        # existing clone points at a different repo than the (new) config.
+        if CATALOG_CLONE_DIR.exists():
+            origin = subprocess.run(
+                ["git", "-C", str(CATALOG_CLONE_DIR), "remote", "get-url", "origin"],
+                capture_output=True, text=True,
+            ).stdout.strip()
+            if args.force or origin != cfg.catalog_repo:
+                shutil.rmtree(CATALOG_CLONE_DIR)
+        if not CATALOG_CLONE_DIR.exists():
+            sys.stderr.write(f"Cloning catalog repo → {CATALOG_CLONE_DIR} ...\n")
+            pull_catalog(cfg._first_remote)  # clones if absent; dies on failure with auth hint
+
+        # Verify the catalog YAML exists inside the clone.
+        cp = catalog_yaml(cfg._first_remote)
+        if not cp.exists():
+            die(
+                f"catalog file not found at {cp}\n"
+                f"  check --yaml-path (got: {cfg.catalog_yaml_path})"
+            )
+
+        initialized = True
+    finally:
+        if not initialized:
+            if previous_config is not None:
+                LOCAL_CONFIG_PATH.write_bytes(previous_config)
+            else:
+                LOCAL_CONFIG_PATH.unlink(missing_ok=True)
 
     if args.json:
         print(json.dumps({
@@ -3756,6 +5343,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_link)
 
     sp = sub.add_parser("list", help="show the catalog with install status")
+    sp.add_argument("--check-remote", dest="check_remote", action="store_true",
+                    help="also check each installed item against its source's current head "
+                         "(one network call per source repo)")
     add_common(sp)
     add_catalog_flag(sp)
     sp.set_defaults(func=cmd_list)
@@ -3766,8 +5356,9 @@ def build_parser() -> argparse.ArgumentParser:
     add_catalog_flag(sp)
     sp.set_defaults(func=cmd_search)
 
-    sp = sub.add_parser("use", help="install or refresh an entry (exact name)")
-    sp.add_argument("name")
+    sp = sub.add_parser("use", help="install or refresh one or more entries (exact names)")
+    sp.add_argument("name", nargs="+", metavar="name",
+                    help="one or more exact entry names; shared dependencies install once")
     grp = sp.add_mutually_exclusive_group()
     grp.add_argument("--global", dest="glob", action="store_true",
                      help="install to the global dir (~/.claude/…) — the default")
@@ -3780,7 +5371,35 @@ def build_parser() -> argparse.ArgumentParser:
     add_catalog_flag(sp)
     sp.set_defaults(func=cmd_use)
 
+    sp = sub.add_parser("setup", help="report an installed skill's setup manifest and prerequisites")
+    sp.add_argument("--scaffold", action="store_true",
+                    help=f"print a canonical {SETUP_FILE} skeleton to stdout and exit")
+    sp.add_argument("name")
+    add_common(sp)
+    add_catalog_flag(sp)
+    sp.set_defaults(func=cmd_setup)
+
+    sp = sub.add_parser("show", help="everything known about one entry (exact name)")
+    sp.add_argument("name")
+    add_common(sp)
+    add_catalog_flag(sp)
+    sp.set_defaults(func=cmd_show)
+
+    sp = sub.add_parser("uninstall", help="delete installed copies of one or more entries (the catalog entry is kept)")
+    sp.add_argument("name", nargs="+", metavar="name",
+                    help="one or more exact entry names to uninstall")
+    sp.add_argument("--scope", choices=["global", "project", "all"], default="all",
+                    help="which installed copies to delete (default: all)")
+    sp.add_argument("--dir", help="delete the copy under a custom directory instead")
+    sp.add_argument("--force", action="store_true",
+                    help="delete a copy this tool has no receipt for (may be hand-written)")
+    add_common(sp)
+    add_catalog_flag(sp)
+    sp.set_defaults(func=cmd_uninstall)
+
     sp = sub.add_parser("sync", help="re-pull every installed item")
+    sp.add_argument("--force", action="store_true",
+                    help="re-fetch everything, even items whose source and local copy are unchanged")
     add_common(sp)
     add_catalog_flag(sp)
     sp.set_defaults(func=cmd_sync)
@@ -3801,6 +5420,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-pull", action="store_true")
     add_catalog_flag(sp)
     sp.set_defaults(func=cmd_add)
+
+    sp = sub.add_parser("suggest-source",
+                        help="the source URL teammates could use for a path on this machine")
+    sp.add_argument("path", help="a file (or a skill directory) inside a git repo")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_suggest_source)
 
     sp = sub.add_parser("remove", help="remove an entry from the catalog (opens a PR)")
     sp.add_argument("name")
@@ -3881,6 +5506,9 @@ def build_parser() -> argparse.ArgumentParser:
     cat_rm.add_argument("id", help="id of the catalog to unregister")
     cat_rm.add_argument("--purge-clone", dest="purge_clone", action="store_true",
                         help="also delete its clone directory")
+    cat_rm.add_argument("--purge-installs", dest="purge_installs", action="store_true",
+                        help="also delete every copy installed from it (receipts decide "
+                             "which; copies the tool did not place are left alone)")
     cat_rm.add_argument("--json", action="store_true", help="machine-readable output")
     cat_rm.set_defaults(func=cmd_catalog_remove)
 

@@ -7,8 +7,16 @@
 __pycache__/
 *.pyc
 
-# per-device config + local catalog clones (never committed)
+# per-device config, install receipts, and local catalog clones (never committed)
 config.local.yaml
+config.local.yaml.lock
+.installs.json
+.installs.json.lock
+
+# ...except the desktop app's test fixtures, which need a stand-in config on every
+# machine: without one, the suite reads every failing fixture command as "tool not
+# configured" and passes only where a developer happens to have a real config.
+!desktop/src-tauri/tests/fixtures/**/config.local.yaml
 .catalog-repo/
 .catalogs/
 

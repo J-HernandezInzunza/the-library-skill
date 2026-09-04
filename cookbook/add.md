@@ -81,15 +81,29 @@ flag.** A `/Users/you/…` path resolves only on this machine:
 
 So when the user points at a local file and the destination is the shared catalog (e.g.
 "add the pr-review skill" referring to a file in a local checkout of the source repo):
-1. Find the repo + remote: `git -C <dir> rev-parse --show-toplevel`, then
-   `git -C <root> remote get-url origin` and `git -C <root> rev-parse --abbrev-ref HEAD`.
-2. Build the browser URL — Bitbucket `https://bitbucket.org/<ws>/<repo>/src/<branch>/<path>`,
-   GitHub `https://github.com/<org>/<repo>/blob/<branch>/<path>` — and **confirm it with
-   the user** before adding.
-3. If you can't derive a remote URL (file isn't in a repo, no origin), **stop and ask**
-   the user for the canonical remote URL — or offer to put the entry in a local catalog
-   instead, where the path is legitimate. Don't reach for `--allow-local` on a shared
-   catalog just to get past the refusal.
+1. Ask the CLI for the URL — **don't assemble it from raw `git` calls**:
+
+   ```bash
+   library suggest-source <path> --json
+   ```
+
+   ```json
+   {"status": "OK", "path": "/Users/you/dev/infra/skills/deploy/SKILL.md",
+    "suggestion": "https://github.com/yourorg/infra/blob/main/skills/deploy/SKILL.md",
+    "reason": null}
+   ```
+
+   It reads no catalog and needs no config, so it works before `init`. A skill *directory*
+   resolves to the `SKILL.md` inside it. It exits `0` either way — `status` is the answer,
+   not the exit code.
+2. **Confirm the URL with the user** before adding. It is derived from the checked-out
+   branch and the `origin` remote, both of which can be wrong for their intent (a feature
+   branch, a fork).
+3. `"status": "NONE"` means no URL could be derived, and `reason` says which problem it is:
+   not in a git repo, no `origin`, an unsupported host, or a directory with no main file.
+   Pass the reason on, then **stop and ask** the user for the canonical remote URL — or
+   offer to put the entry in a local catalog instead, where the path is legitimate. Don't
+   reach for `--allow-local` on a shared catalog just to get past the refusal.
 
 Also make sure the file is actually committed and pushed to that branch on the remote,
 or `use`/`sync` will fail for teammates even with a correct URL.

@@ -1,0 +1,43 @@
+{
+  "status": "PARTIAL",
+  "synced": [
+    {
+      "type": "skill",
+      "name": "atlassian-toolkit",
+      "catalog": "personal",
+      "scope": "global",
+      "state": "installed",
+      "up_to_date": true,
+      "changes": {
+        "new_install": false,
+        "added": [],
+        "removed": [],
+        "modified": []
+      }
+    },
+    {
+      "type": "skill",
+      "name": "grilling",
+      "catalog": "personal",
+      "scope": "global",
+      "state": "drifted",
+      "up_to_date": false,
+      "changes": {
+        "new_install": false,
+        "added": [],
+        "removed": [],
+        "modified": [
+          "SKILL.md"
+        ]
+      }
+    }
+  ],
+  "failed": [
+    {
+      "type": "skill",
+      "name": "bug-triager",
+      "catalog": "shared",
+      "reason": "could not clone https://example.test/gone.git: repository not found"
+    }
+  ]
+}

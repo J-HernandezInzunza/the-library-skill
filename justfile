@@ -6,12 +6,10 @@ lib := justfile_directory() / "library"
 default:
     @just --list
 
-# One-time setup: create the .venv and install PyYAML for the CLI
-bootstrap:
-    python3 -m venv {{justfile_directory()}}/.venv
-    {{justfile_directory()}}/.venv/bin/pip install --quiet --upgrade pip pyyaml
+# One-time setup: create the .venv and install PyYAML for the CLI (idempotent)
+bootstrap *args:
+    @python3 {{justfile_directory()}}/bootstrap.py {{args}}
     -@git -C {{justfile_directory()}} config core.hooksPath .githooks 2>/dev/null && echo "Git hooks enabled (.githooks)"
-    @echo "Bootstrapped: PyYAML installed in .venv"
 
 # --- First-time setup ---------------------------------------------------
 
@@ -33,9 +31,17 @@ link *args:
 list *args:
     @{{lib}} list {{args}}
 
+# Everything about one entry: copies, overrides, deps, source, installs (--json)
+show name *args:
+    @{{lib}} show "{{name}}" {{args}}
+
 # Search every catalog by keyword (--catalog <id>, --json)
 search keyword *args:
     @{{lib}} search "{{keyword}}" {{args}}
+
+# The source URL teammates could use for a file on this machine (--json)
+suggest-source path *args:
+    @{{lib}} suggest-source "{{path}}" {{args}}
 
 # Pull a skill by exact name → ~/.claude/... (global, the default; --catalog <id>)
 use name *args:
@@ -45,9 +51,17 @@ use name *args:
 use-project name *args:
     @{{lib}} use "{{name}}" --project {{args}}
 
+# Delete an installed copy (--scope global|project|all, --dir <path>); catalog entry kept
+uninstall name *args:
+    @{{lib}} uninstall "{{name}}" {{args}}
+
 # Sync all installed items (re-pull from source; --catalog <id> to scope it)
 sync *args:
     @{{lib}} sync {{args}}
+
+# Report an installed skill's setup manifest + prerequisite state (--json)
+setup name *args:
+    @{{lib}} setup "{{name}}" {{args}}
 
 # Validate config, the catalog registry, and every catalog (--deep checks source liveness)
 doctor *args:
@@ -87,7 +101,7 @@ test:
 
 # All fast pre-push checks: Python compiles + doc/CLI drift + tests (no network). Run by the hook.
 check:
-    @{{justfile_directory()}}/.venv/bin/python -m py_compile {{justfile_directory()}}/library.py {{justfile_directory()}}/check_docs.py
+    @{{justfile_directory()}}/.venv/bin/python -m py_compile {{justfile_directory()}}/library.py {{justfile_directory()}}/bootstrap.py {{justfile_directory()}}/check_docs.py
     @{{justfile_directory()}}/.venv/bin/python {{justfile_directory()}}/check_docs.py
     @{{justfile_directory()}}/.venv/bin/python -m unittest discover -s {{justfile_directory()}}/tests -t {{justfile_directory()}}
 
@@ -95,6 +109,38 @@ check:
 install-hooks:
     @git -C {{justfile_directory()}} config core.hooksPath .githooks
     @echo "Git hooks enabled: .githooks (pre-push)"
+
+# --- Desktop app ---------------------------------------------------------
+# The app is a thin client over this same CLI, but it does not need `bootstrap` run first: the CLI
+# exits 3 when the .venv is missing and the app offers to fix it, so setup is a prompt in the app.
+# Building is a one-time cost per clone; after that you launch it like any other app.
+
+# Install the app's own dependencies (npm packages; needs Node >= 20 and Rust)
+app-setup:
+    @cd {{justfile_directory()}}/desktop && npm install
+
+# Build the release app bundle (several minutes the first time — Rust compiles from scratch)
+app-build:
+    @cd {{justfile_directory()}}/desktop && npm run tauri build
+    @echo "Built: {{justfile_directory()}}/desktop/src-tauri/target/release/bundle/macos/The Library.app"
+
+# Build and copy the app into /Applications, replacing any earlier copy
+app-install: app-build
+    @rm -rf "/Applications/The Library.app"
+    @cp -R "{{justfile_directory()}}/desktop/src-tauri/target/release/bundle/macos/The Library.app" /Applications/
+    @echo "Installed: /Applications/The Library.app — launch it from Spotlight or Finder."
+
+# Launch the installed app (same as double-clicking it)
+app:
+    @open -a "The Library"
+
+# Run the app from source with hot reload (for working on the app itself)
+app-dev:
+    @cd {{justfile_directory()}}/desktop && npm run tauri dev
+
+# The app's full check gate: types, Vitest, cargo check, cargo test, frontend build
+app-check:
+    @cd {{justfile_directory()}}/desktop && npm run check
 
 # --- Fuzzy / write ops: fall back to the agent ----------------------------
 # These need judgment (vague names, dependency detection from prose, YAML

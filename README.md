@@ -23,7 +23,7 @@ the catalog looks like, why it's built this way — see [What It Is](#what-it-is
 - **gh** (optional) — GitHub CLI, needed only when `autopush: true` on a **GitHub** catalog (auto-open PRs). Bitbucket catalogs never need a CLI — Bitbucket is fully supported and always uses the compare-URL flow. Install: `brew install gh` or see [gh docs](https://cli.github.com)
 - **git auth for your host(s)** — an SSH key (recommended) or a credential helper / token, for private catalog and source repos. GitHub: SSH key, `GITHUB_TOKEN`, or `gh auth login`. Bitbucket: SSH key or an app password. The tool is **non-interactive** — it never prompts for credentials (see Troubleshooting).
 - **just** (optional) — for justfile shortcuts. Install: `brew install just` or see [just docs](https://github.com/casey/just)
-- **python3** — for the deterministic CLI. PyYAML is installed into a local `.venv` via `just bootstrap` (one-time).
+- **python3** (3.9+) — for the deterministic CLI. PyYAML is installed into a local `.venv` by `python3 bootstrap.py` (or `just bootstrap`) — one-time, idempotent, stdlib-only. Any `library` command exiting `3` means that step hasn't run yet.
 - **Windows: use [WSL](https://learn.microsoft.com/windows/wsl/install)** — the `library` wrapper, the venv bin paths, and `library link` (which creates a symlink) assume a Unix shell, so run everything from inside WSL. Native PowerShell/cmd is not supported; Git Bash mostly works but the venv lands in `.venv/Scripts/` there, so the wrapper misses its bundled Python — WSL avoids that.
 
 ## Installation
@@ -47,13 +47,22 @@ Clone it wherever you keep your repos — it's a normal working clone you update
 
 ### 3. Bootstrap the CLI
 
-One-time per device — create the `.venv` and install PyYAML (no extra tooling needed):
+One-time per device — create the `.venv` and install PyYAML. `bootstrap.py` is stdlib-only
+(so it runs before anything is set up), idempotent (so re-running it is safe), and it
+verifies the CLI afterwards:
 
 ```bash
 # ⌨ from the clone dir:
-python3 -m venv .venv && .venv/bin/pip install pyyaml
-./library --help          # confirm it runs
+python3 bootstrap.py      # or: just bootstrap
+./library --help          # confirm it runs (bootstrap.py already did)
 ```
+
+`--json` reports the resolved paths (`venv_python`, `wrapper`, `config_path`,
+`config_exists`) for scripts and GUIs. A missing prerequisite is named specifically
+rather than generically ("git not found on PATH — install git, then re-run this script").
+
+**Exit code 3 from any `library` command means "not bootstrapped"** — PyYAML is missing.
+Run this step; nothing else is wrong.
 
 ### 4. Link the Skill
 
@@ -143,6 +152,7 @@ If your catalog already has entries. Pull one into your project:
 ```bash
 # ⌨ Or run the CLI. Bare `use` installs globally — ~/.claude/, cwd-independent:
 ./library use deploy                  # → ~/.claude/skills/deploy/
+./library use deploy triage-bug      # → several at once, shared deps installed once
 ./library use deploy --project        # → .claude/skills/deploy/ in the dir you run from
 ./library use deploy --dir <path>     # → an explicit location
 ```
@@ -164,6 +174,19 @@ You built a deploy skill in one of your repos. Register it:
   --description "Deploys the app to staging/prod" \
   --source https://github.com/yourorg/infra-tools/blob/main/skills/deploy/SKILL.md
 ```
+
+The `--source` has to be a URL **other people can resolve**, not the path on your disk. If
+the file is already in a repo with a GitHub/Bitbucket origin, `library suggest-source`
+derives that URL for you:
+
+```bash
+./library suggest-source ~/dev/infra-tools/skills/deploy/SKILL.md
+# https://github.com/yourorg/infra-tools/blob/main/skills/deploy/SKILL.md
+```
+
+Point it at a skill's folder and it resolves to the `SKILL.md` inside — a source has to
+name a file, and pointing `add` at a directory installs the wrong tree. If it can't derive
+one it says why (no repo, no `origin`, an unsupported host) rather than staying silent.
 
 Adding to the **shared** catalog goes through review: the CLI creates a branch
 (`library/add-deploy-<ts>`), pushes it, and prints a PR URL (or auto-opens the PR if
@@ -217,6 +240,11 @@ currently-installed copy *before* overwriting it. Note this is "source vs. insta
 not "since last sync" — local edits to an installed copy show up as modified and get
 overwritten.
 
+Items whose source and local copy are both unchanged are **skipped, not re-cloned** —
+one `git ls-remote` per source repo answers that for every entry from it. They report
+`up to date`. `--force` re-fetches everything regardless. See
+[Install Receipts](#install-receipts) for what "unchanged" is measured against.
+
 ## Commands
 
 Two ways to drive it, same result:
@@ -231,13 +259,18 @@ Two ways to drive it, same result:
 | First-time setup | "set up the library from `<url>` on the `<branch>` branch" | `./library init --repo <url> --branch <branch>` |
 | List the catalog | "what's in the skill library?" | `./library list` |
 | Search | "search the library for a jira skill" | `./library search jira` |
+| Inspect one entry | "where did session-retro come from?" | `./library show session-retro` |
 | Install a skill (global) | "install the deploy skill from the library" | `./library use deploy` |
 | Install into this project | "install deploy just for this project" | `./library use deploy --project` |
 | Add an entry | "add this skill to the library: `<url>`" | `./library add --name … --source … --description …` |
+| Get the source URL for a local file | "what source URL should I use for this skill?" | `./library suggest-source ./skills/deploy/SKILL.md` |
 | Update an entry | "make session-retro also require backend-code-practices" | `./library update session-retro --add-requires skill:backend-code-practices` |
 | Push changes back | "push my deploy changes back to the library" | `./library push deploy` |
+| Uninstall a skill | "uninstall deploy from my machine" | `./library uninstall deploy` |
 | Remove an entry | "remove deploy from the library" | `./library remove deploy` |
 | Sync everything | "sync all my installed library skills" | `./library sync` |
+| What a skill needs to work | "what setup does atlassian-toolkit need?" | `./library setup atlassian-toolkit` |
+| Author a skill's setup manifest | "start a setup.yaml for my-skill" | `./library setup my-skill --scaffold > setup.yaml` |
 | Health check | "check the library catalog for problems" | `./library doctor` |
 | See your catalogs | "what catalogs am I using?" | `./library catalog list` |
 | Start a personal catalog | "give me my own catalog" | `./library catalog init <path>` |
@@ -245,6 +278,8 @@ Two ways to drive it, same result:
 | Update the tool | "update the library tool" | `./library self-update` |
 
 **CLI flags:** `--json` (machine-readable) · `--no-pull` (skip catalog refresh) ·
+`--check-remote` (`list`: mark installs whose source has moved as `stale`) ·
+`--force` (`sync`: re-fetch even unchanged items) ·
 `--dry-run` (preview `add`/`update`/`remove`/`push`, or resolve a `use` destination
 without installing) · `--project`/`--dir` (`use` target; default is global) ·
 `--deep` (`doctor` source-liveness) · `--catalog <id>` (restrict any name-taking command
@@ -267,7 +302,7 @@ to one catalog, bypassing precedence — see [Personal Catalogs](#personal-catal
 The included `justfile` lets you run library commands from your terminal.
 
 ```bash
-just bootstrap             # One-time: create .venv + install PyYAML for the CLI
+just bootstrap             # One-time: create .venv + install PyYAML (runs bootstrap.py)
 
 # First-time setup:
 just init <catalog-url> <branch>   # Create per-device config + clone catalog repo
@@ -278,7 +313,11 @@ just list --catalog mine   # ...or just one catalog's (flags pass straight throu
 just search "keyword"      # Search by keyword
 just use my-skill          # Pull a skill (exact name) → ~/.claude/... (global)
 just use-project my-skill  # Pull into the .claude/ of the dir you run from
-just sync                  # Re-pull all installed items
+just sync                  # Re-pull all installed items (skips what hasn't changed)
+just sync --force          # ...re-fetch everything anyway
+just show my-skill         # One entry in full: copies, overrides, deps, source, installs
+just setup my-skill        # What an installed skill needs to work (never runs it)
+just uninstall my-skill    # Delete the installed copy (the catalog entry is kept)
 just doctor                # Validate config, registry, and every catalog
 just doctor --deep         # ...and check every source is reachable
 just self-update           # Update the tool itself (git pull)
@@ -572,6 +611,48 @@ This file is machine-owned: `library catalog add|init|remove|migrate` rewrite it
 hand-added comments don't survive. Install locations are **not** taken from any catalog —
 they come from the tool, overridable by `default_dirs` here.
 
+### Install Receipts (`.installs.json`, gitignored)
+
+Every install writes a receipt next to `config.local.yaml`, recording what landed where:
+
+```json
+{
+  "dest": "/Users/me/.claude/skills/atlassian-toolkit",
+  "name": "atlassian-toolkit", "type": "skill",
+  "catalog": "shared", "scope": "global",
+  "source": "https://github.com/org/repo/blob/main/atlassian-toolkit/SKILL.md",
+  "commit": "a1b2c3d…", "content_hash": "sha256:…",
+  "installed_at": "2026-08-13T13:35:19Z"
+}
+```
+
+The receipt is what makes provenance answerable: *which catalog did this copy come from,
+what commit is it, has anyone edited it since.* Keyed by destination, because `--dir` and
+the two scopes mean one entry can legitimately live in several places.
+
+**State is derived on every read**, never stored, so it cannot disagree with the disk:
+
+| `state` | Meaning |
+| ------- | ------- |
+| `installed` | present, and identical to what was installed |
+| `drifted` | present, but edited since — `use`/`sync` **will overwrite it** |
+| `untracked` | present with no receipt: hand-installed, or installed before receipts existed |
+| `missing` | a receipt whose files are gone |
+| `stale` | behind its source's current head — **only** with `list --check-remote` |
+| `not_installed` | neither |
+
+Two deliberate choices:
+
+- **A missing receipt is never an error.** Every install that predates receipts, and every
+  hand-copied skill, reads as `untracked` and keeps working. `library use` adopts it.
+- **Drift is reported, never enforced.** `use` and `sync` overwrite exactly as they always
+  have. `use --dry-run --json` and `sync` report the state *before* overwriting, so a
+  caller can warn first — that decision belongs to whoever is driving, not to the CLI.
+
+Receipts are device state, like `config.local.yaml`: gitignored, machine-owned, written
+atomically under a lock, and re-creatable by re-installing. `library uninstall` drops them
+alongside the files; `library doctor` reports drifted, untracked, and orphaned ones.
+
 ### Source Formats
 
 | Format             | Example                                                            |
@@ -618,12 +699,16 @@ auth/setup gotchas, lives in **[docs/troubleshooting.md](docs/troubleshooting.md
         update.md
         use.md
         push.md
+        uninstall.md
         remove.md
         list.md
+        show.md
         sync.md
+        setup.md
         search.md
         doctor.md
         link.md
+    bootstrap.py              # Stdlib-only, idempotent venv + PyYAML setup (`just bootstrap`)
     library.py                # Deterministic CLI — the mechanics for every catalog op
     library                   # Wrapper that selects .venv python, then runs library.py
     check_docs.py             # Doc/CLI drift guard (run by `just check` + the pre-push hook)

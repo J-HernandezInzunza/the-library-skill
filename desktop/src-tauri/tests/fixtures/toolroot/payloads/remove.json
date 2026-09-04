@@ -1,0 +1,18 @@
+{
+  "status": "OK",
+  "removed": {
+    "type": "prompt",
+    "name": "other",
+    "section": "prompts"
+  },
+  "deleted": [],
+  "dependents": [
+    "skill:deploy"
+  ],
+  "mode": "local",
+  "catalog": "personal",
+  "path": "/Users/tester/my-engineering-library/library.yaml",
+  "committed": false,
+  "pushed": false,
+  "branch": null
+}

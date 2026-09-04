@@ -1,0 +1,23 @@
+{
+  "status": "OK",
+  "dry_run": true,
+  "scope": "global",
+  "overrides": [],
+  "overridden_by": null,
+  "would_install": [
+    {
+      "type": "skill",
+      "name": "bug-investigator",
+      "catalog": "personal",
+      "dest": "/Users/dev/.claude/skills/bug-investigator",
+      "state": "drifted"
+    },
+    {
+      "type": "skill",
+      "name": "grilling",
+      "catalog": "personal",
+      "dest": "/Users/dev/.claude/skills/grilling",
+      "state": "untracked"
+    }
+  ]
+}
