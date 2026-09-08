@@ -14,14 +14,28 @@ const report = ref<SyncReport | null>(null);
 const loading = ref(false);
 const error = ref("");
 
-const refreshed = computed(() => report.value?.synced.filter((item) => !item.up_to_date) ?? []);
-const unchanged = computed(() => report.value?.synced.filter((item) => item.up_to_date) ?? []);
+/**
+ * Whether the refresh actually rewrote files.
+ *
+ * Not the same as `!up_to_date`: one commit anywhere in a catalog moves the source head
+ * for every entry in it, so a whole library can be re-fetched with a file or two
+ * genuinely different. Grouping on the fetch buries those in a wall of "no changes".
+ */
+function touchedFiles(item: SyncedItem): boolean {
+  const { new_install, added, removed, modified } = item.changes;
+  return new_install || added.length > 0 || removed.length > 0 || modified.length > 0;
+}
+
+const changed = computed(() => report.value?.synced.filter(touchedFiles) ?? []);
+const unchanged = computed(() => report.value?.synced.filter((item) => !touchedFiles(item)) ?? []);
 /**
  * Items whose local edits the refresh discarded.
  *
  * `state` is read before the refresh, so this is the only place that can be said.
  */
-const overwritten = computed(() => refreshed.value.filter((item) => item.state === "drifted"));
+const overwritten = computed(
+  () => report.value?.synced.filter((item) => item.state === "drifted" && !item.up_to_date) ?? [],
+);
 
 async function run(force: boolean) {
   loading.value = true;
@@ -39,8 +53,14 @@ async function run(force: boolean) {
   }
 }
 
-function describeItem(item: SyncedItem): string {
-  return `${item.scope} · ${summarizeChanges(item.changes)}`;
+/** One line per file the refresh touched, glyph and colour keyed to the kind of change. */
+function fileLines(item: SyncedItem) {
+  const { modified, added, removed } = item.changes;
+  return [
+    ...modified.map((path) => ({ path, glyph: "~", kind: "modified" })),
+    ...added.map((path) => ({ path, glyph: "+", kind: "added" })),
+    ...removed.map((path) => ({ path, glyph: "-", kind: "removed" })),
+  ];
 }
 
 run(false);
@@ -63,8 +83,12 @@ run(false);
 
       <template v-else-if="report">
         <p class="sync__summary fade-in">
-          {{ refreshed.length }} refreshed · {{ unchanged.length }} already up to date
-          <span v-if="report.failed.length"> · {{ report.failed.length }} failed</span>
+          <strong v-if="changed.length" class="sync__count">{{ changed.length }} updated</strong>
+          <strong v-else class="sync__count sync__count--quiet">Nothing changed</strong>
+          <span> · {{ unchanged.length }} already up to date</span>
+          <span v-if="report.failed.length" class="sync__count--failed">
+            · {{ report.failed.length }} failed
+          </span>
         </p>
 
         <p v-if="overwritten.length" class="sync__warning">
@@ -82,35 +106,47 @@ run(false);
           </ul>
         </template>
 
-        <template v-if="refreshed.length">
-          <h3 class="sync__section">Refreshed</h3>
+        <template v-if="changed.length">
+          <h3 class="sync__section sync__section--changed">Updated · {{ changed.length }}</h3>
           <ul class="sync__list fade-in">
             <li
-              v-for="item in refreshed"
+              v-for="item in changed"
               :key="item.name"
-              class="sync__item"
+              class="sync__item sync__item--changed"
               :class="{ 'sync__item--drifted': item.state === 'drifted' }"
             >
-              <span class="sync__name">{{ item.name }}</span>
-              <span class="sync__detail">{{ describeItem(item) }}</span>
+              <div class="sync__head">
+                <span class="sync__name">{{ item.name }}</span>
+                <span class="sync__badge">{{ summarizeChanges(item.changes) }}</span>
+                <span v-if="item.state === 'drifted'" class="sync__badge sync__badge--warn">
+                  local edits replaced
+                </span>
+                <span class="sync__detail">{{ item.scope }}</span>
+              </div>
               <ul class="sync__files">
-                <li v-for="file in item.changes.modified" :key="`~${file}`">~ {{ file }}</li>
-                <li v-for="file in item.changes.added" :key="`+${file}`">+ {{ file }}</li>
-                <li v-for="file in item.changes.removed" :key="`-${file}`">- {{ file }}</li>
+                <li
+                  v-for="line in fileLines(item)"
+                  :key="`${line.kind}:${line.path}`"
+                  :class="`sync__file sync__file--${line.kind}`"
+                >
+                  <span class="sync__glyph">{{ line.glyph }}</span> {{ line.path }}
+                </li>
               </ul>
             </li>
           </ul>
         </template>
 
-        <template v-if="unchanged.length">
-          <h3 class="sync__section">Already up to date</h3>
-          <ul class="sync__list fade-in">
+        <details v-if="unchanged.length" class="sync__unchanged fade-in">
+          <summary class="sync__unchanged-summary">
+            {{ unchanged.length }} entries unchanged
+          </summary>
+          <ul class="sync__list">
             <li v-for="item in unchanged" :key="item.name" class="sync__item sync__item--quiet">
               <span class="sync__name">{{ item.name }}</span>
-              <span class="sync__detail">{{ item.scope }} · nothing to fetch</span>
+              <span class="sync__detail">{{ item.scope }}</span>
             </li>
           </ul>
-        </template>
+        </details>
       </template>
     </PageHeader>
   </section>
@@ -121,6 +157,18 @@ run(false);
   margin: 0.75rem 0 0;
   font-size: 0.85rem;
   opacity: 0.7;
+}
+.sync__count {
+  font-weight: 600;
+  color: #3b82f6;
+  opacity: 1;
+}
+.sync__count--quiet {
+  color: inherit;
+  font-weight: 500;
+}
+.sync__count--failed {
+  color: #dc2626;
 }
 .sync__warning {
   margin: 0.75rem 0 0;
@@ -142,6 +190,10 @@ run(false);
   color: #dc2626;
   opacity: 0.85;
 }
+.sync__section--changed {
+  color: #3b82f6;
+  opacity: 0.9;
+}
 .sync__list {
   list-style: none;
   margin: 0;
@@ -159,15 +211,39 @@ run(false);
 .sync__item--error {
   border-left: 3px solid #dc2626;
 }
+.sync__item--changed {
+  padding: 0.7rem 0.85rem;
+  border-left: 3px solid #3b82f6;
+  background: rgba(59, 130, 246, 0.1);
+}
 .sync__item--drifted {
-  border-left: 3px solid #f59e0b;
+  border-left-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
 }
 .sync__item--quiet {
   opacity: 0.6;
 }
+.sync__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+}
 .sync__name {
   font-weight: 600;
   margin-right: 0.5rem;
+}
+.sync__badge {
+  padding: 0.1rem 0.4rem;
+  border-radius: 5px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #1d4ed8;
+  background: rgba(59, 130, 246, 0.18);
+}
+.sync__badge--warn {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.2);
 }
 .sync__detail {
   opacity: 0.7;
@@ -175,10 +251,61 @@ run(false);
 }
 .sync__files {
   list-style: none;
-  margin: 0.3rem 0 0;
+  margin: 0.4rem 0 0;
   padding: 0;
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 0.75rem;
-  opacity: 0.6;
+}
+.sync__glyph {
+  display: inline-block;
+  width: 0.8rem;
+  font-weight: 700;
+}
+.sync__file--added {
+  color: #15803d;
+}
+.sync__file--modified {
+  color: #b45309;
+}
+.sync__file--removed {
+  color: #dc2626;
+}
+.sync__unchanged {
+  margin-top: 1.5rem;
+}
+.sync__unchanged-summary {
+  cursor: pointer;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.5;
+  margin-bottom: 0.5rem;
+}
+
+/* The accent tints are mixed for a light ground; on dark they need to lift off it rather
+   than sink into it. */
+@media (prefers-color-scheme: dark) {
+  .sync__badge {
+    color: #93c5fd;
+  }
+  .sync__badge--warn {
+    color: #fcd34d;
+  }
+  .sync__warning {
+    color: #fcd34d;
+  }
+  .sync__file--added {
+    color: #4ade80;
+  }
+  .sync__file--modified {
+    color: #fcd34d;
+  }
+  .sync__file--removed {
+    color: #f87171;
+  }
+  .sync__count--failed,
+  .sync__section--error {
+    color: #f87171;
+  }
 }
 </style>

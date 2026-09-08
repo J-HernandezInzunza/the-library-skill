@@ -33,21 +33,36 @@ describe("Sync", () => {
   it("counts a run where nothing needed fetching, and lists no changes", async () => {
     const view = await mountSync(CLEAN);
 
-    expect(view.find(".sync__summary").text()).toContain("0 refreshed · 1 already up to date");
-    // The one entry is listed under "already up to date" and says so per item, rather than
-    // appearing in a Refreshed section that would imply files moved.
-    expect(view.text()).toContain("Already up to date");
-    expect(view.text()).toContain("global · nothing to fetch");
-    expect(view.text()).not.toContain("Refreshed");
+    expect(view.find(".sync__summary").text().replace(/\s+/g, " ")).toContain(
+      "Nothing changed · 1 already up to date",
+    );
+    // The one entry is folded into the collapsed disclosure, not an "Updated" section that
+    // would imply files moved.
+    expect(view.find(".sync__unchanged-summary").text()).toContain("1 entries unchanged");
+    expect(view.find(".sync__item--changed").exists()).toBe(false);
+    expect(view.text()).not.toContain("Updated");
   });
 
-  it("keeps failures, refreshes, and unchanged items in separate sections", async () => {
+  it("groups by what landed on disk, not by whether a fetch happened", async () => {
+    // A commit anywhere in a catalog moves the source head for every entry in it, so a
+    // re-fetched entry with an identical result must not be presented as an update.
+    const view = await mountSync({
+      status: "OK",
+      synced: [{ ...CLEAN.synced[0], name: "atlassian-toolkit", up_to_date: false }],
+      failed: [],
+    });
+
+    expect(view.find(".sync__item--changed").exists()).toBe(false);
+    expect(view.find(".sync__unchanged-summary").text()).toContain("1 entries unchanged");
+  });
+
+  it("keeps failures, updates, and unchanged items in separate sections", async () => {
     const view = await mountSync(PARTIAL);
 
     // Whitespace-normalised: the failed count is a `v-if` span on its own line, so the
     // rendered text carries a source-formatting gap the browser collapses anyway.
     expect(view.find(".sync__summary").text().replace(/\s+/g, " ")).toContain(
-      "1 refreshed · 1 already up to date · 1 failed",
+      "1 updated · 1 already up to date · 1 failed",
     );
     // The reason comes from the CLI and reaches the screen intact — a clone failure names
     // a URL, and a paraphrase of it is not actionable.
@@ -61,6 +76,8 @@ describe("Sync", () => {
     // `state` is read before the refresh, so after it there is nothing left on disk to
     // infer this from. If this sentence is not shown here it can never be shown.
     expect(view.find(".sync__warning").text()).toContain("grilling had local edits");
+    // Also on the row itself, so the fact survives scrolling past the summary.
+    expect(view.find(".sync__badge--warn").text()).toContain("local edits replaced");
   });
 
   it("says nothing about overwritten edits when a clean copy was refreshed", async () => {
