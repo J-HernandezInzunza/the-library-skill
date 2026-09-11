@@ -50,9 +50,10 @@ dependencies it pulls in — before anything touches disk. Install, and the entr
 installed.
 
 **Getting it:** build it once from your own clone (`just app-setup && just app-install`), then
-launch it like any Mac app. Full build steps, and the guided-setup walkthrough that configures a
-credentialed skill without the secret ever entering the agent's context, are in
-**[desktop/README.md](desktop/README.md)**.
+launch it like any Mac app. Building needs **Node ≥ 20** and the **Rust toolchain** (Tauri's
+backend compiles from source) — install and PATH notes, full build steps, and the guided-setup
+walkthrough that configures a credentialed skill without the secret ever entering the agent's
+context, are in **[desktop/README.md](desktop/README.md)**.
 
 ## Prerequisites
 
