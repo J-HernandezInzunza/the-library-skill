@@ -51,10 +51,26 @@ for its destination, derived from the install receipt plus what's on disk:
 | `installed` | present and untouched since the last install | nothing |
 | `drifted` | someone edited the installed copy | **warn before re-running**: `use` overwrites, and those edits are gone |
 | `untracked` | present, but this tool didn't install it | say so — it may be hand-written |
+| `disabled` | switched off with `library disable`, parked in `~/.claude/skills-disabled/` | say the refresh lands in the archive and the skill stays off — offer `library enable <name>` if they wanted it loading again |
 
 `use` never refuses on drift; it reports it. Deciding what to do with a `drifted`
 destination is the caller's job, so surface it rather than installing over it silently.
 Offer [push.md](push.md) if the user wants those edits sent back to the source first.
+
+**A disabled item is refreshed where it sits.** `use` updates its archived copy in
+`~/.claude/skills-disabled/` and leaves it switched off, the same way [sync.md](sync.md)
+does — it never writes a second copy into the loaded directory and never enables the
+skill as a side effect. The item's `dest` is the archive path, `--json` marks it
+`disabled: true`, and the human line reads:
+
+```
+Refreshed [skill] grill-me → ~/.claude/skills-disabled/grill-me · 1 modified  (in the archive — still disabled)
+```
+
+Its dependencies are deliberately **not** installed; they come in with
+`library enable <name>`. If the user expected the skill to start loading again, that is
+`enable`, not another `use` — say so rather than letting a successful-looking refresh
+imply it is back on.
 
 ## Steps
 

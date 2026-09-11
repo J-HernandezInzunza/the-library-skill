@@ -250,10 +250,15 @@ const overriddenCount = computed(
 const filtered = computed(() => searchRows(rows.value, query.value));
 
 const summary = computed(() => {
-  const installed = filtered.value.filter(({ tone }) => tone === "installed").length;
+  // Counted off the CLI's own flag and state rather than the row's tone: `installed` means
+  // the content is on this device, so a disabled copy is still installed and is counted in
+  // both parts.
+  const installed = filtered.value.filter(({ entry }) => entry.installed).length;
+  const disabled = filtered.value.filter(({ entry }) => entry.state === "disabled").length;
   const overridden = filtered.value.filter(({ overriddenBy }) => overriddenBy !== null).length;
 
   const parts = [`${filtered.value.length} of ${rows.value.length} entries`, `${installed} installed`];
+  if (disabled) parts.push(`${disabled} disabled`);
   if (overridden) parts.push(`${overridden} overridden`);
   return parts.join(" · ");
 });
@@ -441,6 +446,7 @@ onMounted(async () => {
           :selected="picked"
           @select="trail = [$event]"
           @toggle="togglePicked($event)"
+          @changed="load()"
         />
       </div>
     </section>

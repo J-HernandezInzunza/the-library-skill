@@ -59,7 +59,10 @@ deleting local copies.
 
 - `--purge` → also immediately delete the installed copy from the **project** scope
   (`.claude/skills|agents|commands/`, anchored to the current project) and the **global**
-  scope (`~/.claude/...`). The JSON payload's `deleted` lists exactly what went.
+  scope (`~/.claude/...`). A copy switched off with `library disable` is deleted out of
+  `~/.claude/skills-disabled/` too, so removing the catalog entry cannot strand content
+  that no other command could then name. The JSON payload's `deleted` lists exactly what
+  went.
 - Without `--purge`, local copies are left in place. To delete a local copy **without**
   touching the catalog, use [uninstall.md](uninstall.md) instead — that's the command for
   "I don't want this on my machine", and it refuses to delete anything this tool has no

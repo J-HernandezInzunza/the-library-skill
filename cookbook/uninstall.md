@@ -30,6 +30,17 @@ Flags:
 Intent → flags, as ever: "get rid of it everywhere" is the default, "just in this
 project" is `--scope project`, "the one in my dotfiles" is `--dir <path>`.
 
+## A disabled skill is uninstalled too
+
+A skill switched off with `library disable` sits in `~/.claude/skills-disabled/<name>/`,
+not in the loaded directory. `uninstall` deletes that copy as well, so nothing is left
+stranded — `deleted` names the archive path rather than the install path, and the entry
+goes back to `not_installed`. If the user wanted it kept, they wanted `disable`, not this.
+
+The install receipt is dropped only when both the destination **and** its archive are
+empty. An `uninstall` that removes nothing from a scope leaves a disabled copy's receipt
+alone: that receipt is what `library enable` reads to put the copy back where it came from.
+
 ## The refusal you will hit
 
 ```json
@@ -37,7 +48,9 @@ project" is `--scope project`, "the one in my dotfiles" is `--dir <path>`.
 ```
 
 `refused` means there is a directory at that path but **no install receipt** for it: this
-tool didn't put it there. It may be something the user wrote by hand, or copied in before
+tool didn't put it there. The same refusal covers a copy parked in
+`~/.claude/skills-disabled/` by hand, and `refused` then names the archive path — the path
+that actually holds something. It may be something the user wrote by hand, or copied in before
 receipts existed, and deleting it is unrecoverable.
 
 Do not pass `--force` on your own initiative. Tell the user what was found, say plainly

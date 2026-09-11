@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { computed } from "vue";
-import { catalogHue, type Row } from "../catalog";
-import type { Catalog } from "../types";
+import { computed, ref } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import { catalogHue, SESSION_TIMING, type Row } from "../catalog";
+import { withActivity } from "../commandActivity";
+import { describeAppError, type Catalog, type ToggleReport } from "../types";
+import StatusBanner from "./StatusBanner.vue";
 
 const props = defineProps<{
   rows: Row[];
@@ -17,7 +20,26 @@ const props = defineProps<{
   selected?: Set<string> | null;
 }>();
 
-const emit = defineEmits<{ select: [name: string]; toggle: [name: string] }>();
+const emit = defineEmits<{
+  select: [name: string];
+  toggle: [name: string];
+  /** A toggle landed; the list's owner refetches, because the CLI owns the new state. */
+  changed: [];
+}>();
+
+/** The entry a toggle is in flight for, so only that one control goes inert. */
+const toggling = ref<string | null>(null);
+
+/** The last toggle failure, named, because the list shows many entries at once. */
+const toggleError = ref<{ name: string; message: string } | null>(null);
+
+/**
+ * The last toggle that landed, so the list can say when it reaches the agent.
+ *
+ * Said here rather than only on the badge because this is the moment it matters: the user
+ * who just switched a skill off is about to go back to a terminal that still has it.
+ */
+const toggleNote = ref<{ name: string; turnedOn: boolean } | null>(null);
 
 /** True while the list is in selection mode at all. */
 const selecting = computed(() => props.selected !== null && props.selected !== undefined);
@@ -44,6 +66,63 @@ function activate(row: Row) {
   else emit("select", row.entry.name);
 }
 
+/** True while the entry's content is on the machine but parked out of the agent's reach. */
+function switchedOff(row: Row): boolean {
+  return row.entry.state === "disabled";
+}
+
+/**
+ * The badge's hover text: the full status, and for a switched-off row when it lands.
+ *
+ * The card has no room for the sentence itself — the badge is already an elided absolute
+ * path capped at 45% of the head — and the two places that do have room are the banner
+ * after a toggle and the detail view.
+ */
+function statusTitle(row: Row): string {
+  if (!switchedOff(row)) return row.status;
+  return `${row.status}\n${SESSION_TIMING}`;
+}
+
+/**
+ * Whether this row gets an on/off control.
+ *
+ * Skills only for now, and only once there is content on the machine to switch: the CLI
+ * refuses anything else. Hidden during selection, where the card is a pick target and a
+ * second, mutating button beside it would be a trap.
+ */
+function switchable(row: Row): boolean {
+  if (selecting.value || row.entry.type !== "skill") return false;
+  return row.entry.state === "installed" || switchedOff(row);
+}
+
+/**
+ * Switch one skill off or on, then ask for a refetch.
+ *
+ * The report is not rendered: the new state comes from re-reading the catalog, never from
+ * assuming the move landed. A result with `moved: false` is the CLI saying the entry was
+ * already in the requested state, which is a success.
+ */
+async function flip(row: Row) {
+  const name = row.entry.name;
+  const turningOn = switchedOff(row);
+  const command = turningOn ? "entry_enable" : "entry_disable";
+
+  toggling.value = name;
+  toggleError.value = null;
+  toggleNote.value = null;
+  try {
+    await withActivity(`${turningOn ? "enabling" : "disabling"} ${name}…`, () =>
+      invoke<ToggleReport>(command, { names: [name] }),
+    );
+    toggleNote.value = { name, turnedOn: turningOn };
+    emit("changed");
+  } catch (e) {
+    toggleError.value = { name, message: describeAppError(e) };
+  } finally {
+    toggling.value = null;
+  }
+}
+
 const hueByCatalog = computed(
   () => new Map(props.catalogs.map((catalog) => [catalog.id, catalogHue(catalog.precedence)])),
 );
@@ -51,6 +130,21 @@ const hueByCatalog = computed(
 
 <template>
   <ul class="entry-list">
+    <!-- Top of the list rather than under the control that was clicked, which is where
+         this app reports every command. A list item because the list is the surface. -->
+    <li v-if="toggleError">
+      <StatusBanner kind="error" :detail="toggleError.message">
+        Could not switch {{ toggleError.name }}.
+      </StatusBanner>
+    </li>
+
+    <li v-if="toggleNote">
+      <StatusBanner kind="success">
+        {{ toggleNote.name }} is switched {{ toggleNote.turnedOn ? "on" : "off" }}.
+        {{ SESSION_TIMING }}
+      </StatusBanner>
+    </li>
+
     <li
       v-for="row in rows"
       :key="`${row.entry.catalog}:${row.entry.name}`"
@@ -61,7 +155,10 @@ const hueByCatalog = computed(
            element without nesting one button in another. -->
       <div
         class="entry-list__card"
-        :class="{ 'entry-list__card--picked': selected?.has(row.entry.name) }"
+        :class="{
+          'entry-list__card--picked': selected?.has(row.entry.name),
+          'entry-list__card--off': switchedOff(row),
+        }"
       >
       <button
         type="button"
@@ -91,10 +188,13 @@ const hueByCatalog = computed(
         </span>
 
         <!-- Whether this copy is on the machine, held apart from the precedence pills so
-             an overridden copy can say both "overridden by X" and "not installed". -->
+             an overridden copy can say both "overridden by X" and "not installed". The
+             full text is also the title, because a disabled badge carries the archive
+             path and that is longer than the card has room for. -->
         <span
           class="entry-list__status"
           :class="`entry-list__status--${row.tone}`"
+          :title="statusTitle(row)"
         >
           {{ row.status }}
         </span>
@@ -106,10 +206,23 @@ const hueByCatalog = computed(
       </p>
       </button>
 
-      <!-- The slot that grows: a pick indicator today, an on/off control later. Rendered
-           only when it has something in it, so no row reserves space for nothing. -->
-      <span v-if="selectable(row)" class="entry-list__controls">
+      <!-- The slot beside the card button: the on/off control and the pick indicator.
+           Rendered only when it has something in it, so no row reserves space for
+           nothing. -->
+      <span v-if="selectable(row) || switchable(row)" class="entry-list__controls">
+        <button
+          v-if="switchable(row)"
+          type="button"
+          class="entry-list__switch"
+          :disabled="toggling === row.entry.name"
+          :aria-label="`${switchedOff(row) ? 'Enable' : 'Disable'} ${row.entry.name}`"
+          @click="flip(row)"
+        >
+          {{ switchedOff(row) ? "Enable" : "Disable" }}
+        </button>
+
         <span
+          v-if="selectable(row)"
           class="entry-list__tick"
           :class="{ 'entry-list__tick--on': selected?.has(row.entry.name) }"
           aria-hidden="true"
@@ -136,6 +249,11 @@ const hueByCatalog = computed(
 .entry-list__card--picked {
   background: rgba(59, 130, 246, 0.14);
 }
+/* Dimmed, because the content is on the machine but nothing is loading it. */
+.entry-list__card--off > .entry-list__item {
+  opacity: 0.65;
+  border-style: dashed;
+}
 .entry-list__card > .entry-list__item {
   flex: 1;
   min-width: 0;
@@ -144,6 +262,26 @@ const hueByCatalog = computed(
   display: flex;
   align-items: center;
   padding: 0 0.9rem 0 0.2rem;
+}
+.entry-list__switch {
+  margin-right: 0.5rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.entry-list__switch:hover:not(:disabled) {
+  border-color: rgba(128, 128, 128, 0.7);
+  background: rgba(128, 128, 128, 0.14);
+}
+.entry-list__switch:disabled {
+  opacity: 0.5;
+  cursor: progress;
 }
 .entry-list__tick {
   /* A square box, because the selection is a multi-pick: a circle would promise a radio. */
@@ -232,6 +370,15 @@ const hueByCatalog = computed(
 .entry-list__status--absent {
   background: rgba(128, 128, 128, 0.18);
   opacity: 0.8;
+}
+.entry-list__status--disabled {
+  /* Violet, so "switched off" reads as neither the green of a loading skill nor the grey
+     of one that was never installed. */
+  background: rgba(139, 92, 246, 0.18);
+  color: #7c3aed;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .entry-list__status--attention {
   background: rgba(245, 158, 11, 0.2);

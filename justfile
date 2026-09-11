@@ -55,6 +55,14 @@ use-project name *args:
 uninstall name *args:
     @{{lib}} uninstall "{{name}}" {{args}}
 
+# Switch installed skills off without uninstalling them (the copy stays on this device)
+disable name *args:
+    @{{lib}} disable "{{name}}" {{args}}
+
+# Switch disabled skills back on (moved back where they were installed; no re-fetch)
+enable name *args:
+    @{{lib}} enable "{{name}}" {{args}}
+
 # Sync all installed items (re-pull from source; --catalog <id> to scope it)
 sync *args:
     @{{lib}} sync {{args}}

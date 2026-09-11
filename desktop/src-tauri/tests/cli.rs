@@ -438,6 +438,62 @@ fn a_batch_uninstall_deletes_what_it_can_and_refuses_the_rest() {
 }
 
 #[test]
+fn disabling_names_where_the_copy_went() {
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let report = cli::disable_entry(&log, &["grilling".into()]).expect("a report");
+
+    assert_eq!(&log.started.lock().unwrap()[0].argv[1..], ["disable", "grilling", "--json"]);
+    assert_eq!(report.status, "OK");
+    assert!(report.results[0].moved);
+    assert_eq!(report.results[0].archived, "/Users/dev/.claude/skills-disabled/grilling");
+}
+
+#[test]
+fn enabling_an_already_enabled_entry_is_a_success_that_moved_nothing() {
+    // R2.3: a no-op is not a failure, and the app must be able to tell the two apart
+    // rather than reporting a move that never happened.
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let report = cli::enable_entry(&log, &["already".into()]).expect("a report");
+
+    assert_eq!(&log.started.lock().unwrap()[0].argv[1..], ["enable", "already", "--json"]);
+    assert!(!report.results[0].moved);
+}
+
+#[test]
+fn a_batch_toggle_is_one_command_with_every_name() {
+    // One call, because the CLI resolves every name before moving anything: N calls
+    // would be N chances to leave the batch half-applied.
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let names = ["grilling".into(), "already".into()];
+    cli::disable_entry(&log, &names).expect("a report");
+
+    assert_eq!(
+        &log.started.lock().unwrap()[0].argv[1..],
+        ["disable", "grilling", "already", "--json"]
+    );
+}
+
+#[test]
+fn a_toggle_refusal_surfaces_its_reasons_rather_than_a_bare_exit_code() {
+    // The pre-flight refusal exits 1 with its reasons on stdout and an empty stderr, so
+    // the strict mapping would hand the user "library exited 1" and nothing else.
+    let _guard = with_fixture_home();
+    let err = cli::disable_entry(&Recorder::default(), &["absent".into()])
+        .expect_err("a refusal is an error the user has to see");
+
+    match err {
+        AppError::Cli { stderr, .. } => assert_eq!(stderr, "absent: not installed"),
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
 fn a_refusal_names_the_path_instead_of_reading_as_a_failed_command() {
     // Exit 2 with REFUSED is a report: nothing was deleted, and the app has to be able
     // to name the path to offer the escalation. Under the strict mapping it would have

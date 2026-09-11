@@ -22,6 +22,7 @@ export function entry(overrides: Partial<Entry> = {}): Entry {
     state: "not_installed",
     receipt: null,
     has_setup: false,
+    locations: [],
     ...overrides,
   };
 }

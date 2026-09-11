@@ -168,6 +168,29 @@ export interface UninstallResult {
   refused: string[];
 }
 
+/**
+ * What `library disable <name>... --json` / `library enable <name>... --json` did.
+ *
+ * One shape for both verbs, mirrored from `src-tauri/src/cli.rs`. A refusal never
+ * arrives as a report: it exits non-zero and reaches the app as an `AppError`.
+ */
+export interface ToggleReport {
+  status: string;
+  results: ToggleResult[];
+}
+
+/** What the toggle did to one requested entry. */
+export interface ToggleResult {
+  type: string;
+  name: string;
+  /** False when the entry was already in the requested state, which is a success. */
+  moved: boolean;
+  /** The destination the agent loads from. */
+  dest: string;
+  /** Where the copy parks while disabled. */
+  archived: string;
+}
+
 /** One installed entry `library sync` looked at. */
 export interface SyncedItem {
   type: string;
@@ -488,6 +511,26 @@ export interface Receipt {
 }
 
 /**
+ * One destination an entry occupies, mirrored from `src-tauri/src/cli.rs`.
+ *
+ * The CLI reports a destination's own state rather than the collapsed one the entry
+ * carries, so "disabled in one scope, loading in another" is expressible. `archive_path`
+ * is where the content sits while that destination is disabled; it is always reported so
+ * the app never derives it, and `archived` says whether anything is actually parked
+ * there.
+ */
+export interface Location {
+  path: string;
+  /** `null` for a destination that resolves from no scope, such as `--dir`. */
+  scope: string | null;
+  /** Typed as `string` for the same reason as `Entry.state`. */
+  state: string;
+  archive_path: string;
+  archived: boolean;
+  receipt: Receipt | null;
+}
+
+/**
  * One record from `library list --json`, mirrored from `src-tauri/src/cli.rs`.
  *
  * `search --json` returns the same record, so there is one type, not two. Extra
@@ -505,13 +548,15 @@ export interface Entry {
   catalog: string;
   overridden_by: string | null;
   /**
-   * `installed` | `drifted` | `untracked` | `missing` | `stale`, derived by the
-   * CLI from receipts. Typed as `string` on purpose: a state added by a future
+   * `installed` | `drifted` | `untracked` | `missing` | `stale` | `disabled`, derived
+   * by the CLI from receipts. Typed as `string` on purpose: a state added by a future
    * CLI must render as unknown rather than break the view.
    */
   state: string;
   receipt: Receipt | null;
   has_setup: boolean;
+  /** Every destination this entry occupies, each with its own state and archive path. */
+  locations: Location[];
 }
 
 /**

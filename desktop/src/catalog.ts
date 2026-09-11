@@ -28,7 +28,7 @@ export interface Row {
   entry: Entry;
   /** Whether this copy is on disk, shown top-right. */
   status: string;
-  tone: "installed" | "absent" | "attention";
+  tone: "installed" | "absent" | "attention" | "disabled";
   /** The catalog whose copy beats this one, or null. A left pill. */
   overriddenBy: string | null;
   /** Catalogs whose copy of this name this row beats. Empty outside the winners view. */
@@ -154,6 +154,17 @@ function toRow(entry: Entry, overrides: string[] = []): Row {
 }
 
 /**
+ * When a toggle actually reaches the agent.
+ *
+ * Claude Code reads its skills once, at session start, so a user who switches a skill off
+ * and looks at the terminal they already have open will find it still loaded and conclude
+ * the toggle is broken. One sentence, shared by every surface that says it, so the two
+ * places cannot drift into two different accounts of the same rule.
+ */
+export const SESSION_TIMING =
+  "Claude Code loads skills when a session starts, so this takes effect in your next session, not one you already have open.";
+
+/**
  * The badge for a copy the tool would install, driven by `state` rather than
  * `installed`.
  *
@@ -179,6 +190,10 @@ export function installStatus(entry: Entry): Pick<Row, "status" | "tone"> {
       return { status: `edited locally${where}`, tone: "attention" };
     case "stale":
       return { status: `update available${where}`, tone: "attention" };
+    case "disabled": {
+      const parked = archivedPath(entry);
+      return { status: `disabled${parked ? ` · ${parked}` : where}`, tone: "disabled" };
+    }
     case "missing":
       return { status: "installed, but gone from disk", tone: "attention" };
     case "not_installed":
@@ -188,6 +203,19 @@ export function installStatus(entry: Entry): Pick<Row, "status" | "tone"> {
       // toned by the one fact the CLI still agrees on.
       return { status: entry.state, tone: entry.installed ? "installed" : "absent" };
   }
+}
+
+/**
+ * Where a disabled copy's content is parked, or null when the CLI reports none.
+ *
+ * Read from the CLI's `locations[]` rather than built here: the archive location is the
+ * CLI's own rule, and a second copy of that rule in the app could name a path the tool
+ * never moved anything to. A disabled entry with no archived location falls back to its
+ * scopes, so an older CLI costs the path, not the badge.
+ */
+function archivedPath(entry: Entry): string | null {
+  const parked = entry.locations.find((location) => location.archived);
+  return parked?.archive_path ?? null;
 }
 
 /** A dependency as the detail view shows it. */

@@ -9,6 +9,7 @@ import {
   installStatus,
   installedCopies,
   isOnDisk,
+  SESSION_TIMING,
 } from "../catalog";
 import { withActivity } from "../commandActivity";
 import { describeAppError, type Catalog, type Entry, type EntryDetail } from "../types";
@@ -145,6 +146,9 @@ const handoff = computed(() =>
  */
 const status = computed(() => (detail.value ? installStatus(detail.value.entry) : null));
 
+/** Content is on the machine but parked out of the agent's reach. */
+const switchedOff = computed(() => detail.value?.entry.state === "disabled");
+
 watch(() => props.name, load, { immediate: true });
 </script>
 
@@ -170,6 +174,11 @@ watch(() => props.name, load, { immediate: true });
 
       <template v-else-if="detail">
         <p class="entry-detail__desc">{{ detail.entry.description }}</p>
+
+        <!-- The page with room for the sentence the card can only fit in a tooltip. -->
+        <p v-if="switchedOff" class="entry-detail__timing">
+          Switched off, so nothing loads it. {{ SESSION_TIMING }}
+        </p>
 
         <h3 class="entry-detail__section">Source</h3>
         <div class="card">
@@ -352,6 +361,13 @@ watch(() => props.name, load, { immediate: true });
   color: inherit;
   opacity: 0.75;
 }
+.entry-detail__status--disabled {
+  /* Matches the list's badge: violet reads as neither the green of a loading skill nor
+     the grey of one that was never installed. Without this the base rule's green would
+     put "disabled" in the colour of a skill that is loading. */
+  background: rgba(139, 92, 246, 0.18);
+  color: #7c3aed;
+}
 .entry-detail__status--attention {
   background: rgba(245, 158, 11, 0.2);
   color: #b45309;
@@ -385,6 +401,15 @@ watch(() => props.name, load, { immediate: true });
   margin: 0;
   line-height: 1.5;
   opacity: 0.85;
+}
+.entry-detail__timing {
+  margin: 0.6rem 0 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  border-left: 3px solid rgba(139, 92, 246, 0.6);
+  background: rgba(139, 92, 246, 0.1);
+  font-size: 0.82rem;
+  line-height: 1.5;
 }
 .entry-detail__section {
   margin: 1.75rem 0 0.5rem;

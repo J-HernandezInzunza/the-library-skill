@@ -19,6 +19,7 @@ import argparse
 import contextlib
 import datetime
 import difflib
+import errno
 import fcntl
 import filecmp
 import hashlib
@@ -61,6 +62,10 @@ RECEIPTS_PATH = SKILL_DIR / ".installs.json"  # install receipts; device state, 
 CATALOG_CLONE_DIR = SKILL_DIR / ".catalog-repo"  # the 'shared' catalog's clone
 CATALOGS_DIR = SKILL_DIR / ".catalogs"           # every other remote catalog's clone
 GLOBAL_SKILLS_DIR = Path("~/.claude/skills").expanduser()
+# Where a disabled item is parked. Deliberately not under SKILL_DIR with the rest of
+# this device's state: receipts regenerate, the user's content does not. See
+# disabled_dir_for(), which derives the same path for any scope.
+GLOBAL_DISABLED_DIR = Path("~/.claude/skills-disabled").expanduser()
 LINK_NAME = "library"  # name the tool is discoverable under in a skills dir
 SHARED_ID = "shared"   # conventional id of the team catalog; keeps CATALOG_CLONE_DIR
 TYPES = ("skills", "agents", "prompts")
@@ -143,6 +148,36 @@ def write_machine_file(path: Path, text: str) -> None:
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
+def move_tree(src: Path, dst: Path) -> None:
+    """Move an installed tree to *dst*, never leaving it at neither path.
+
+    `os.replace` is the whole operation when both ends share a filesystem, which is the
+    expected case — an item and its archive are siblings. Across filesystems the kernel
+    refuses with `EXDEV` and the move becomes copy, verify, delete: the source goes only
+    once the copy's digest matches it, so an interrupted or truncated copy costs a
+    duplicate rather than the content.
+
+    *dst* must not exist. `os.replace` clobbers an empty directory silently, and what an
+    occupied destination means is the caller's decision, not this function's.
+    """
+    if dst.exists():
+        raise LibraryError(f"{dst} already exists; refusing to overwrite it")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.replace(src, dst)
+        return
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+
+    expected = content_hash(src)
+    shutil.copytree(src, dst, symlinks=True)
+    if content_hash(dst) != expected:
+        shutil.rmtree(dst, ignore_errors=True)
+        raise LibraryError(f"copying {src} to {dst} changed its contents; {src} was left alone")
+    shutil.rmtree(src)
+
+
 # --------------------------------------------------------------------------- #
 # Install receipts (per-device; gitignored .installs.json)
 # --------------------------------------------------------------------------- #
@@ -210,7 +245,7 @@ def save_receipts(receipts: dict[str, dict[str, Any]]) -> None:
 
 
 def record_install(entry: "Entry", dest: Path, scope: str, commit: "str | None",
-                   catalog_key: str = "") -> dict[str, Any]:
+                   catalog_key: str = "", receipt_dest: "Path | None" = None) -> dict[str, Any]:
     """Record what was just installed at *dest*, replacing any earlier receipt for it.
 
     Keyed by dest (not name + scope), because `--dir` allows arbitrary destinations and
@@ -219,9 +254,15 @@ def record_install(entry: "Entry", dest: Path, scope: str, commit: "str | None",
 
     Called from `_install_one`, the single choke point every install passes through, so
     `use` and `sync` get receipts without either command knowing they exist.
+
+    *receipt_dest* keys the receipt somewhere other than where the bytes landed, for the
+    one caller that writes outside the install destination: refreshing a disabled entry
+    updates the archived copy, and the receipt must keep naming the active destination
+    `enable` restores it to. The hash still comes from *dest*, so the provenance
+    describes the content that was actually written — state is never stored here.
     """
     receipt = {
-        "dest": str(dest),
+        "dest": str(receipt_dest or dest),
         "name": entry.name,
         "type": entry.type,
         # Both, because they answer different questions: `catalog` is the nickname to
@@ -1591,6 +1632,26 @@ def resolve_install_dir(raw: str) -> Path:
     return (project_cwd() / p).resolve()
 
 
+def disabled_dir_for(base: Path) -> Path:
+    """Where a disabled item parks, given the resolved dir it installs into.
+
+    A sibling of the install dir, suffixed ``-disabled``: ``~/.claude/skills`` parks at
+    ``~/.claude/skills-disabled``. Three properties the toggle leans on:
+
+    - It is outside the scanned tree, so the agent stops loading the item and
+      :func:`installed_scopes`' recursive search cannot rediscover it.
+    - It is derived rather than hardcoded, so a project scope parks beside its own
+      ``.claude/skills`` under the same rule, with nothing new to configure.
+    - It is not under the tool clone. Re-cloning the tool must not take the user's
+      disabled content with it, which is why this is the one piece of device state
+      that lives outside ``SKILL_DIR``.
+
+    Takes an already-resolved dir — :func:`resolve_install_dir`'s output — because a
+    relative path has no meaningful sibling.
+    """
+    return base.parent / f"{base.name}-disabled"
+
+
 def resolve_target_base(
     dirs: dict[str, dict[str, str]],
     entry: Entry,
@@ -1643,10 +1704,42 @@ def installed_scopes(dirs: dict[str, dict[str, str]], entry: Entry) -> list[str]
     return found
 
 
+def archived_scopes(dirs: dict[str, dict[str, str]], entry: Entry) -> list[str]:
+    """Return scopes whose archive holds a disabled copy of *entry*.
+
+    The mirror of :func:`installed_scopes`, searched against
+    :func:`disabled_dir_for` instead of the install dir, and ordered global-first for
+    the same reason.
+
+    Deliberately a second function rather than a widening of `installed_scopes`
+    (design §Decision 4, R4.9): only reporting wants both. `cmd_sync` and `cmd_push`
+    use `installed_scopes` to pick a directory to *operate in*, and an archived copy is
+    not a place to refresh into or push from.
+    """
+    found: list[str] = []
+    for scope, raw in sorted(dirs[entry.section].items(), key=lambda kv: kv[0] != "global"):
+        base = disabled_dir_for(resolve_install_dir(raw))
+        if not base.exists():
+            continue
+        if entry.type == "skill":
+            hit = (base / entry.name).is_dir() or any(
+                p.is_dir() and p.name == entry.name for p in base.rglob(entry.name)
+            )
+        else:
+            hit = (base / f"{entry.name}.md").is_file() or any(
+                p.is_file() and p.name == f"{entry.name}.md" for p in base.rglob(f"{entry.name}.md")
+            )
+        if hit:
+            found.append(scope)
+    return found
+
+
 # Worst-first: what a single badge should say when an entry occupies more than one
 # destination. Drift outranks everything because silently overwriting an edit is the
-# failure that costs work; "not installed" is the floor.
-_STATE_RANK = ("not_installed", "installed", "missing", "untracked", "drifted")
+# failure that costs work; "not installed" is the floor. `disabled` outranks `installed`
+# so a partially-disabled entry never reads as fully active, but stays below the fault
+# states because being disabled is intentional and they are not.
+_STATE_RANK = ("not_installed", "installed", "disabled", "missing", "untracked", "drifted")
 
 
 def dest_state(dest: Path, receipt: "dict[str, Any] | None") -> str:
@@ -1657,10 +1750,18 @@ def dest_state(dest: Path, receipt: "dict[str, Any] | None") -> str:
     - `installed`  — present, contents match the receipt
     - `drifted`    — present, contents differ: someone edited the installed copy
     - `untracked`  — present, no receipt: hand-installed, or installed before receipts
+    - `disabled`   — nothing at its dest, but the copy is parked in the archive
     - `missing`    — a receipt with nothing at its dest
     - `not_installed` — neither
+
+    `disabled` is settled before `missing` because both look identical from the dest
+    alone: a switched-off item would otherwise be reported as a broken install. The
+    archive path derives from *dest*, so nothing has to thread an extra argument
+    through the callers that only know where a thing should be.
     """
     if not dest.exists():
+        if (disabled_dir_for(dest.parent) / dest.name).exists():
+            return "disabled"
         return "missing" if receipt else "not_installed"
     if receipt is None:
         return "untracked"
@@ -1705,9 +1806,15 @@ def entry_has_setup(dirs: dict[str, dict[str, str]], entry: Entry,
     """Does any installed copy of *entry* ship a setup manifest?
 
     Reads the disk rather than the receipt, so an untracked (hand-installed) copy with a
-    manifest still reports one — having no receipt says nothing about the contents.
+    manifest still reports one — having no receipt says nothing about the contents. In
+    the same spirit, a disabled copy's archive counts (R4.8): the manifest is still on
+    disk and enabling moves it back untouched, so answering false would only be true
+    until the user flipped the toggle.
     """
-    return any(has_setup(Path(d)) for d in entry_dests(dirs, entry, receipts))
+    return any(
+        has_setup(dest) or has_setup(disabled_dir_for(dest.parent) / dest.name)
+        for dest in map(Path, entry_dests(dirs, entry, receipts))
+    )
 
 
 def entry_install_state(dirs: dict[str, dict[str, str]], entry: Entry,
@@ -1725,6 +1832,68 @@ def entry_install_state(dirs: dict[str, dict[str, str]], entry: Entry,
         if _STATE_RANK.index(state) > _STATE_RANK.index(worst):
             worst, worst_receipt = state, receipt
     return worst, worst_receipt
+
+
+def entry_locations(dirs: dict[str, dict[str, str]], entry: Entry,
+                    receipts: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every destination *entry* could occupy, uncollapsed (design §Decision 5, R4.10).
+
+    `entry_install_state` answers with one badge for the whole entry, which is what a
+    list row needs and all a caller could ever get before. This is the same set of
+    destinations from `entry_dests` with nothing collapsed: each keeps its own
+    `dest_state`, so "disabled in one scope, loading in another" is expressible rather
+    than ranked away (R4.11).
+
+    Each element carries:
+
+    - `path` / `scope`   — where the active copy belongs. `scope` is None for a
+      destination only a receipt claims, since a `--dir` install resolves from no scope.
+    - `state`            — that destination's own `dest_state`, never `_STATE_RANK`.
+    - `archive_path`     — where a disabled copy parks, reported whether or not anything
+      is there: it is the answer to "where would this go", and `archived` carries
+      whether it went. A key that appears and disappears would make every consumer
+      branch on its presence to say the same thing.
+    - `archived`         — whether that path currently holds a copy.
+    - `receipt`          — that destination's receipt, or None.
+
+    Paths are strings, matching receipts and the rest of the JSON record. Ordered
+    global-first like `installed_scopes`, then remaining scopes by name, then the
+    scopeless receipt destinations by path, so the order is stable across runs.
+    """
+    by_dest: dict[str, str] = {}
+    for scope in dirs[entry.section]:
+        try:
+            base = resolve_target_base(dirs, entry, scope, None)
+        except LibraryError:
+            continue
+        by_dest[str(install_dest(entry, base))] = scope
+
+    locations = []
+    for dest_str, receipt in entry_dests(dirs, entry, receipts).items():
+        dest = Path(dest_str)
+        archive = disabled_dir_for(dest.parent) / dest.name
+        locations.append({
+            "path": dest_str,
+            "scope": by_dest.get(dest_str),
+            "state": dest_state(dest, receipt),
+            "archive_path": str(archive),
+            "archived": archive.exists(),
+            "receipt": receipt,
+        })
+    return sorted(locations, key=lambda loc: (loc["scope"] is None,
+                                              loc["scope"] != "global",
+                                              loc["scope"] or "",
+                                              loc["path"]))
+
+
+def _location_scope(location: dict[str, Any]) -> str:
+    """The scope to record for one :func:`entry_locations` element.
+
+    A destination only a receipt claims (a `--dir` install) resolves from no scope, so
+    the receipt's own scope is the next best answer and 'global' the floor — a refresh
+    must not invent a scope the receipt never had.
+    """
+    return location["scope"] or (location["receipt"] or {}).get("scope") or "global"
 
 
 # --------------------------------------------------------------------------- #
@@ -2758,6 +2927,11 @@ def _state_note(state: str, past: bool = False) -> str:
     return f"  ({note[1 if past else 0]})" if note else ""
 
 
+# Where a disabled item's fetch lands and what it is afterwards. One phrase, so `sync`
+# and `use` cannot teach a user two vocabularies for the same thing (R5.2, R5.4).
+_ARCHIVE_NOTE = "in the archive — still disabled"
+
+
 def _install_one(
     dirs: dict[str, dict[str, str]],
     entry: Entry,
@@ -2773,6 +2947,62 @@ def _install_one(
     record_install(entry, dest, scope, commit, catalog_key)
     return {"type": entry.type, "name": entry.name, "catalog": entry.catalog,
             "dest": str(dest), "verified": ok, "changes": changes}
+
+
+def _refresh_archived(
+    entry: Entry,
+    scope: str,
+    location: dict[str, Any],
+    catalog_key: str = "",
+    clones: "dict[str, Path] | None" = None,
+) -> dict[str, Any]:
+    """Refresh a disabled entry's archived copy in place (R5.1).
+
+    `_install_one`'s twin for content that is switched off: the fetch lands in the
+    archive rather than the destination, so the entry comes away updated and still
+    disabled. Writing to the destination instead would resurrect it, which is the whole
+    reason this exists.
+
+    The receipt keeps naming the active destination (`location["path"]`), because that
+    is where `enable` puts the content back and a receipt is provenance, never state
+    (design §Decision 2). *location* is one element of :func:`entry_locations`, so the
+    archive path is read from the record rather than re-derived here.
+    """
+    archive = Path(location["archive_path"])
+    dest, changes, commit = fetch(entry, archive.parent, clones)
+    main = main_file_for(entry, dest)
+    record_install(entry, dest, scope, commit, catalog_key,
+                   receipt_dest=Path(location["path"]))
+    return {"type": entry.type, "name": entry.name, "catalog": entry.catalog,
+            "dest": str(dest), "verified": main.exists(), "changes": changes}
+
+
+def archived_target(
+    dirs: dict[str, dict[str, str]],
+    entry: Entry,
+    scope: str,
+    custom: str | None,
+    receipts: dict[str, dict[str, Any]],
+) -> "dict[str, Any] | None":
+    """The :func:`entry_locations` element `use` must refresh instead of install into.
+
+    Returns the location for the destination this invocation targets, and only when
+    that destination reads `disabled` — content parked in the archive with nothing
+    active. Installing there instead would put a second copy on disk and switch the
+    entry back on (R5.3, R5.4).
+
+    Matching on the resolved destination rather than "any archived location" is what
+    keeps scopes independent: an entry disabled globally is still a genuine new install
+    under `--project`. The both-present case (active copy *and* archive) reads
+    `installed`, not `disabled`, so it installs as it always did and `doctor` is left to
+    report the inconsistency.
+    """
+    try:
+        dest = install_dest(entry, resolve_target_base(dirs, entry, scope, custom))
+    except LibraryError:
+        return None
+    return next((loc for loc in entry_locations(dirs, entry, receipts)
+                 if loc["path"] == str(dest) and loc["state"] == "disabled"), None)
 
 
 def winning_catalogs(cfg: Config) -> dict[str, str]:
@@ -2799,10 +3029,23 @@ def entry_record(cfg: Config, entry: Entry, winners: dict[str, str],
     `use` would install, so it never claims to be installed. Receipts key on the
     destination, which both copies share, so provenance follows the same rule rather
     than letting the losing copy claim the winner's install.
+
+    `installed`/`scopes` count archived copies too: this is the one place the two
+    scope lookups are unioned (design §Decision 4), because reporting asks "where is
+    the content" while `sync` and `push` ask "where do I operate", and only the first
+    question includes the archive.
+
+    `locations` is the same answer uncollapsed (design §Decision 5): one element per
+    destination, each with its own state and its archive path, so no caller — the
+    desktop app least of all — re-derives `disabled_dir_for` for itself.
     """
     winner = winners.get(entry.name)
     overridden_by = winner if winner and winner != entry.catalog else None
-    scopes = [] if overridden_by else installed_scopes(cfg.dirs, entry)
+    found = ([] if overridden_by
+             else installed_scopes(cfg.dirs, entry) + archived_scopes(cfg.dirs, entry))
+    # Global-first, as `installed_scopes` orders it; dedupe keeps a scope that holds
+    # both an active and an archived copy from being listed twice.
+    scopes = sorted(dict.fromkeys(found), key=lambda scope: scope != "global")
     state, receipt = (("not_installed", None) if overridden_by
                       else entry_install_state(cfg.dirs, entry, receipts))
     # Staleness costs a network round trip, so it is only computed when asked for
@@ -2819,7 +3062,7 @@ def entry_record(cfg: Config, entry: Entry, winners: dict[str, str],
             if head and head != receipt["commit"]:
                 state = "stale"
     return {
-        # The nine keys below are the documented contract (C-D8): never renamed, never
+        # The 13 keys below are the documented contract (C-D8): never renamed, never
         # retyped. New information arrives as new keys instead.
         "type": entry.type, "name": entry.name, "description": entry.description,
         "source": entry.source, "requires": entry.requires,
@@ -2828,6 +3071,10 @@ def entry_record(cfg: Config, entry: Entry, winners: dict[str, str],
         "state": state,
         "receipt": receipt,
         "has_setup": bool(scopes) and entry_has_setup(cfg.dirs, entry, receipts),
+        # The uncollapsed view of the same destinations `state` ranks over. Empty for an
+        # overridden entry, for the same reason `scopes` is: the losing copy is not what
+        # `use` installs, so it reports no install of its own.
+        "locations": [] if overridden_by else entry_locations(cfg.dirs, entry, receipts),
     }
 
 
@@ -2984,6 +3231,11 @@ def cmd_show(args: argparse.Namespace) -> int:
 
     installs = sorted((r for r in receipts.values() if r["name"] == winner.name),
                       key=lambda r: r["dest"])
+    # `installs` is receipts-only, so a copy this tool never recorded — a hand-install,
+    # or a copy parked in the archive by hand — is invisible in it. `locations` is the
+    # disk's answer and carries the archive path with it (R4.2, R4.10); `installs` stays
+    # as it is, for the callers already reading it.
+    locations = winner_record["locations"]
 
     payload = {
         "status": "OK",
@@ -2997,6 +3249,7 @@ def cmd_show(args: argparse.Namespace) -> int:
                         "description": d.description, "direct": direct}
                        for d, direct in dependents],
         "installs": installs,
+        "locations": locations,
         "has_setup": winner_record["has_setup"],
         "source": source_record(winner),
     }
@@ -3048,13 +3301,29 @@ def cmd_show(args: argparse.Namespace) -> int:
             print(f"  {marker} {c['catalog']}{note}")
             print(f"      {c['source']}")
 
-    if installs:
+    # Every destination holding something, from `locations` rather than the receipts:
+    # the first line has to name a path the user can go and look at. For a disabled copy
+    # the receipt's `dest` is the one path that is empty, and a hand-parked copy has no
+    # receipt to print at all.
+    occupied = [loc for loc in locations if loc["state"] != "not_installed"]
+    if occupied:
         print("\nInstalled copies:")
-        for rec in installs:
-            commit = f" @ {rec['commit'][:8]}" if rec.get("commit") else ""
-            state = dest_state(Path(rec["dest"]), rec)
-            print(f"  {rec['dest']}  ({rec['scope']}, from {rec['catalog']}{commit}) · {state}")
-            print(f"      installed {rec['installed_at']}")
+        for loc in occupied:
+            rec = loc["receipt"]
+            disabled = loc["state"] == "disabled"
+            where = loc["archive_path"] if disabled else loc["path"]
+            scope = rec["scope"] if rec else loc["scope"]
+            origin = f", from {rec['catalog']}" if rec else ""
+            commit = f" @ {rec['commit'][:8]}" if rec and rec.get("commit") else ""
+            print(f"  {where}  ({scope}{origin}{commit}) · {loc['state']}")
+            if disabled:
+                print(f"      `library enable {winner.name}` returns it to {loc['path']}")
+            elif loc["archived"]:
+                # Both present: not this command's to resolve, but silence would leave a
+                # second copy on disk that nothing here names.
+                print(f"      a second copy is also archived at {loc['archive_path']}")
+            if rec:
+                print(f"      installed {rec['installed_at']}")
     else:
         print("\nInstalled copies: none recorded by this tool")
     return 0
@@ -3093,31 +3362,51 @@ def cmd_use(args: argparse.Namespace) -> int:
 
     entry = requested[-1]  # the one whose provenance the single-name payload describes
     scope = "project" if args.project else "global"
+    receipts = load_receipts()
     # Dependencies resolve within each resolved entry's OWN catalog, never the merged
     # list: a `requires` ref that names an entry in another catalog is simply dangling,
     # which is the error users already understand.
     #
     # Closures are merged and de-duplicated across the request, so a dependency two
     # selected entries share is installed once rather than once each.
+    #
+    # A disabled entry brings no closure with it. Installing its dependencies into the
+    # active tree is the resurrection R5.1 forbids — by the back door, one level down —
+    # so they are pulled in by `enable`, exactly as `sync` leaves them (design §Decision
+    # 5). The entry itself is still refreshed, in the archive.
+    archived: dict[tuple[str, str], "dict[str, Any] | None"] = {}
     order: list[Entry] = []
     seen: set[tuple[str, str]] = set()
     for target_entry in requested:
-        for e in resolve_deps(cfg.entries_of(target_entry.catalog), target_entry):
+        key = (target_entry.type, target_entry.name)
+        archived[key] = archived_target(dirs, target_entry, scope, args.dir, receipts)
+        chain = ([target_entry] if archived[key]
+                 else resolve_deps(cfg.entries_of(target_entry.catalog), target_entry))
+        for e in chain:
             if (e.type, e.name) not in seen:
                 seen.add((e.type, e.name))
                 order.append(e)
+    # A dependency of an active entry can be disabled on its own account; it is refreshed
+    # where it sits rather than dragged back into the tree by something that needs it.
+    for e in order:
+        archived.setdefault((e.type, e.name),
+                            archived_target(dirs, e, scope, args.dir, receipts))
     note = override_note(cfg, entry)
 
     if args.dry_run:
         # A dry run is the only chance to see the destination before `use` overwrites it,
         # so it reports each dest's current state (C-D4: reported, never enforced). The
         # app warns on `drifted` here; the CLI still overwrites when asked.
-        receipts = load_receipts()
         plan = []
         for e in order:
+            loc = archived[(e.type, e.name)]
             dest = install_dest(e, resolve_target_base(dirs, e, scope, args.dir))
+            # `dest` is where the content would land, so for a disabled entry it is the
+            # archive — predicting the active dir would promise the second copy R5.3
+            # forbids. `state` stays the destination's, which is what `disabled` means.
             plan.append({"type": e.type, "name": e.name, "catalog": e.catalog,
-                         "dest": str(dest),
+                         "dest": loc["archive_path"] if loc else str(dest),
+                         "disabled": loc is not None,
                          "state": dest_state(dest, receipts.get(str(dest)))})
         if args.json:
             overrides, overridden_by = override_split(cfg, entry)
@@ -3130,7 +3419,9 @@ def cmd_use(args: argparse.Namespace) -> int:
             print("Dry run — nothing installed. Would install:")
             for p in plan:
                 catalog_col = f"  ({p['catalog']})" if multi else ""
-                print(f"  [{p['type']}] {p['name']}{catalog_col} → {p['dest']}{_state_note(p['state'])}")
+                tail = (f"  (would refresh {_ARCHIVE_NOTE})" if p["disabled"]
+                        else _state_note(p["state"]))
+                print(f"  [{p['type']}] {p['name']}{catalog_col} → {p['dest']}{tail}")
             if note:
                 print(f"  {entry.name} {note}")
         return 0
@@ -3143,8 +3434,17 @@ def cmd_use(args: argparse.Namespace) -> int:
         with clone_cache() as clones:
             for e in order:
                 failing = e.name
-                results.append(
-                    _install_one(dirs, e, scope, args.dir, entry_catalog_key(cfg, e), clones))
+                loc = archived[(e.type, e.name)]
+                if loc is not None:
+                    # Refreshed where the content sits, never into the destination: one
+                    # copy on disk, still switched off (R5.3, R5.4).
+                    result = _refresh_archived(e, _location_scope(loc), loc,
+                                               entry_catalog_key(cfg, e), clones)
+                else:
+                    result = _install_one(dirs, e, scope, args.dir,
+                                          entry_catalog_key(cfg, e), clones)
+                result["disabled"] = loc is not None
+                results.append(result)
     except LibraryError as ex:
         if args.json:
             print(json.dumps({"status": "ERROR", "name": failing, "reason": str(ex)}, indent=2))
@@ -3166,7 +3466,8 @@ def cmd_use(args: argparse.Namespace) -> int:
     if deps:
         print("Dependencies installed:")
         for r in deps:
-            print(f"  [{r['type']}] {r['name']} → {r['dest']}")
+            tail = f"  ({_ARCHIVE_NOTE})" if r["disabled"] else ""
+            print(f"  [{r['type']}] {r['name']} → {r['dest']}{tail}")
     for target in targets:
         flag = "" if target["verified"] else "  (warning: main file not found)"
         summary = _summarize_changes(target["changes"])
@@ -3174,8 +3475,13 @@ def cmd_use(args: argparse.Namespace) -> int:
         if multi:
             extra = f", {note}" if note and len(targets) == 1 else ""
             provenance = f" (from {target['catalog']}{extra})"
-        print(f"Installed [{target['type']}] {target['name']} → {target['dest']} · "
-              f"{summary}{provenance}{flag}")
+        # "Installed" would be a lie for a copy that stays switched off, and the path is
+        # the archive, so the verb changes with it rather than the note carrying the
+        # whole correction.
+        verb = "Refreshed" if target["disabled"] else "Installed"
+        archive_note = f"  ({_ARCHIVE_NOTE})" if target["disabled"] else ""
+        print(f"{verb} [{target['type']}] {target['name']} → {target['dest']} · "
+              f"{summary}{provenance}{archive_note}{flag}")
         if len(targets) == 1:
             for line in _change_detail_lines(target["changes"]):
                 print(line)
@@ -3310,11 +3616,23 @@ def uninstall_entry(
 
     A destination with no receipt is **refused** unless *force*. A directory under
     `~/.claude/skills/` that this tool didn't write may be something the user authored
-    by hand, and deleting it because a catalog name matched is unrecoverable.
+    by hand, and deleting it because a catalog name matched is unrecoverable. The same
+    refusal covers the archived copy: a hand-parked directory under
+    `~/.claude/skills-disabled/` is no more this tool's to delete than a hand-written
+    install, and the two are the same copy at different moments.
+
+    Each destination's archived copy goes with it (R5.5), so switching a skill off and
+    then uninstalling it leaves nothing behind.
+
+    A receipt is pruned only when the content is absent from **both** the destination
+    and its archive (R5.7, design §Decision 6). An empty destination no longer implies
+    a stale receipt — a disabled entry's destination is empty by design, and dropping
+    its receipt would destroy the provenance `enable` puts the copy back with.
 
     Only the scope destinations (or *custom*) are considered — never every dest a
     receipt happens to mention, or `uninstall alpha` would also take out a `--dir`
-    install the user never named.
+    install the user never named. The archive path derives from each of those
+    destinations, so the same narrowing applies to the archived copies.
     """
     targets: list[Path] = []
     if custom:
@@ -3332,17 +3650,25 @@ def uninstall_entry(
     touched = False
     for target in targets:
         key = str(target)
-        if not target.exists():
-            touched = receipts.pop(key, None) is not None or touched  # prune a stale receipt
+        present = [p for p in (target, disabled_dir_for(target.parent) / target.name)
+                   if p.exists()]
+        if not present:
+            # Nothing at the destination and nothing in its archive: the receipt really
+            # is stale, so prune it.
+            touched = receipts.pop(key, None) is not None or touched
             continue
         if key not in receipts and not force:
-            refused.append(key)
+            # Name the paths that actually hold something — for a hand-parked copy the
+            # destination is empty, and pointing the user at it would name the one path
+            # they cannot act on.
+            refused.extend(str(p) for p in present)
             continue
-        if target.is_dir():
-            shutil.rmtree(target)
-        else:
-            target.unlink()
-        deleted.append(key)
+        for path in present:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            deleted.append(str(path))
         touched = receipts.pop(key, None) is not None or touched
     if touched:
         save_receipts(receipts)
@@ -3416,6 +3742,270 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     return 2 if any_refused else 0
 
 
+def cmd_disable(args: argparse.Namespace) -> int:
+    """Park installed copies in the archive so the agent stops loading them (design §1).
+
+    Disabling is not uninstalling: the content stays on the device and comes back with a
+    move, never a re-fetch. Nothing new is recorded — `.installs.json` keeps naming the
+    destination the copy came from, which is both what `enable` reads to put it back and
+    what keeps `dest_state` able to derive `disabled` from the disk alone.
+
+    v1 is global skills only (requirements §Out of scope), so there is no `--scope`: the
+    one destination this command can mean is the global one.
+    """
+    cfg = load_config()
+    refresh_catalogs(cfg, args.no_pull)
+    entries = resolved_entries(cfg, args)
+    multi = multi_catalog(cfg)
+
+    # Every name is resolved *before* anything moves, so a typo in the fifth of five does
+    # not leave the first four switched off and the request half-applied — the same
+    # guarantee `use` and `uninstall` make.
+    targets: list[Entry] = []
+    for name in args.name:
+        entry = find_exact(entries, name)
+        if entry is None:
+            cands = fuzzy_candidates(entries, name)
+            payload = {
+                "status": "AMBIGUOUS" if cands else "NOT_FOUND",
+                "query": name,
+                "candidates": [{"type": c.type, "name": c.name, "description": c.description,
+                                "catalog": c.catalog} for c in cands],
+            }
+            if args.json:
+                print(json.dumps(payload, indent=2))
+            elif cands:
+                print(f'No exact match for "{name}". Did you mean:')
+                for c in cands:
+                    print(f"  [{c.type}] {c.name}" + (f"  ({c.catalog})" if multi else ""))
+            else:
+                print(f'No match for "{name}". Try `library list`.')
+            return 2
+        targets.append(entry)
+
+    # Plan the whole batch before touching the disk. Every refusal — not installed, not a
+    # skill, already in both places — is known here, so R1.4's "make no change" holds for
+    # a batch and not just for a single name.
+    plan: list[tuple[Entry, Path, Path, bool]] = []
+    problems: list[dict[str, str]] = []
+    for entry in targets:
+        if entry.type != "skill":
+            problems.append({"type": entry.type, "name": entry.name,
+                             "reason": "only skills can be disabled"})
+            continue
+        try:
+            dest = install_dest(entry, resolve_target_base(cfg.dirs, entry, "global", None))
+        except LibraryError as ex:
+            problems.append({"type": entry.type, "name": entry.name, "reason": str(ex)})
+            continue
+        archived = disabled_dir_for(dest.parent) / dest.name
+        if dest.exists() and archived.exists():
+            problems.append({"type": entry.type, "name": entry.name,
+                             "reason": f"a copy sits at both {dest} and {archived}; "
+                                       "remove the one you don't want, then retry"})
+        elif dest.exists():
+            plan.append((entry, dest, archived, True))
+        elif archived.exists():
+            plan.append((entry, dest, archived, False))  # already disabled: R1.3 no-op
+        else:
+            problems.append({"type": entry.type, "name": entry.name,
+                             "reason": "not installed"})
+
+    if problems:
+        if args.json:
+            print(json.dumps({"status": "ERROR", "problems": problems}, indent=2))
+        else:
+            for p in problems:
+                print(f"Cannot disable [{p['type']}] {p['name']}: {p['reason']}")
+        return 1
+
+    # The archive directory is created up front, for every destination the batch touches:
+    # a permission or disk failure here must cost nothing, and it would otherwise surface
+    # partway through the moves (R1.5).
+    for _entry, _dest, archived, _move in plan:
+        try:
+            archived.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as ex:
+            if args.json:
+                print(json.dumps({"status": "ERROR", "reason":
+                                  f"cannot create {archived.parent}: {ex}"}, indent=2))
+            else:
+                print(f"Cannot create the archive directory {archived.parent}: {ex}")
+            return 1
+
+    # One result per requested entry. `move_tree` guarantees each item is at one path or
+    # the other, so a failure mid-batch leaves every remaining skill loadable — but the
+    # report has to say which ones actually moved.
+    results: list[dict[str, Any]] = []
+    for entry, dest, archived, move in plan:
+        if move:
+            try:
+                move_tree(dest, archived)
+            except (LibraryError, OSError) as ex:
+                if args.json:
+                    print(json.dumps({"status": "ERROR", "name": entry.name,
+                                      "reason": str(ex), "results": results}, indent=2))
+                else:
+                    print(f"Failed to disable {entry.name}: {ex}")
+                    print(f"  {dest} was left loadable.")
+                return 1
+        results.append({"type": entry.type, "name": entry.name, "moved": move,
+                        "dest": str(dest), "archived": str(archived)})
+
+    if args.json:
+        print(json.dumps({"status": "OK", "results": results}, indent=2))
+        return 0
+
+    for r in results:
+        if r["moved"]:
+            print(f"Disabled [{r['type']}] {r['name']}:")
+            print(f"  moved {r['dest']} → {r['archived']}")
+        else:
+            print(f"[{r['type']}] {r['name']} is already disabled — nothing to do.")
+    print("The copy stays on this device; Claude Code stops loading it in a new session.")
+    print("Switch it back on with `library enable <name>` — no re-fetch, just a move back.")
+    return 0
+
+
+def cmd_enable(args: argparse.Namespace) -> int:
+    """Move archived copies back to the destination they were installed in (R2.1, R2.2).
+
+    The mirror of `disable`, and deliberately shaped the same way: resolve every name,
+    plan the whole batch, then move — so one bad name moves nothing. The receipt is read
+    to learn where a copy came from and is never written; disabled state stays derived
+    from the disk (design §Decision 2).
+
+    v1 is global skills only (requirements §Out of scope), so there is no `--scope`.
+    """
+    cfg = load_config()
+    refresh_catalogs(cfg, args.no_pull)
+    entries = resolved_entries(cfg, args)
+    multi = multi_catalog(cfg)
+
+    targets: list[Entry] = []
+    for name in args.name:
+        entry = find_exact(entries, name)
+        if entry is None:
+            cands = fuzzy_candidates(entries, name)
+            payload = {
+                "status": "AMBIGUOUS" if cands else "NOT_FOUND",
+                "query": name,
+                "candidates": [{"type": c.type, "name": c.name, "description": c.description,
+                                "catalog": c.catalog} for c in cands],
+            }
+            if args.json:
+                print(json.dumps(payload, indent=2))
+            elif cands:
+                print(f'No exact match for "{name}". Did you mean:')
+                for c in cands:
+                    print(f"  [{c.type}] {c.name}" + (f"  ({c.catalog})" if multi else ""))
+            else:
+                print(f'No match for "{name}". Try `library list`.')
+            return 2
+        targets.append(entry)
+
+    receipts = load_receipts()
+
+    def origin_dest(entry: Entry, derived: Path) -> Path:
+        """The destination the receipt names, so the copy returns where it came from.
+
+        Derivation alone answers this whenever `default_dirs` has not changed since the
+        install, which is the ordinary case. When it has, the receipt is the only record
+        of the directory the copy was actually installed in (R2.2). A copy with no
+        receipt — hand-parked, or installed before receipts existed — falls back to the
+        derived destination rather than becoming unreachable.
+        """
+        for dest_str in sorted(receipts):
+            rec = receipts[dest_str]
+            if (rec.get("name"), rec.get("type"), rec.get("scope")) != (entry.name, entry.type,
+                                                                        "global"):
+                continue
+            dest = Path(dest_str)
+            if (disabled_dir_for(dest.parent) / dest.name).exists():
+                return dest
+        return derived
+
+    # Plan the whole batch before touching the disk, so every refusal — not a skill, not
+    # installed, destination occupied — is known while nothing has moved (R2.4).
+    plan: list[tuple[Entry, Path, Path, bool]] = []
+    problems: list[dict[str, str]] = []
+    for entry in targets:
+        if entry.type != "skill":
+            problems.append({"type": entry.type, "name": entry.name,
+                             "reason": "only skills can be enabled"})
+            continue
+        try:
+            derived = install_dest(entry, resolve_target_base(cfg.dirs, entry, "global", None))
+        except LibraryError as ex:
+            problems.append({"type": entry.type, "name": entry.name, "reason": str(ex)})
+            continue
+        dest = origin_dest(entry, derived)
+        archived = disabled_dir_for(dest.parent) / dest.name
+        if archived.exists() and dest.exists():
+            problems.append({"type": entry.type, "name": entry.name,
+                             "reason": f"a copy already sits at {dest}, so the archived copy "
+                                       f"at {archived} was left alone; remove the one you "
+                                       "don't want, then retry"})
+        elif archived.exists():
+            plan.append((entry, dest, archived, True))
+        elif dest.exists():
+            plan.append((entry, dest, archived, False))  # already enabled: R2.3 no-op
+        else:
+            problems.append({"type": entry.type, "name": entry.name,
+                             "reason": "not installed"})
+
+    if problems:
+        if args.json:
+            print(json.dumps({"status": "ERROR", "problems": problems}, indent=2))
+        else:
+            for p in problems:
+                print(f"Cannot enable [{p['type']}] {p['name']}: {p['reason']}")
+        return 1
+
+    # The skills directory is created up front, for every destination the batch touches:
+    # it may well have been emptied while the skill was off, and a failure here must cost
+    # nothing rather than surface partway through the moves (R2.5).
+    for _entry, dest, _archived, _move in plan:
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as ex:
+            if args.json:
+                print(json.dumps({"status": "ERROR", "reason":
+                                  f"cannot create {dest.parent}: {ex}"}, indent=2))
+            else:
+                print(f"Cannot create the skills directory {dest.parent}: {ex}")
+            return 1
+
+    results: list[dict[str, Any]] = []
+    for entry, dest, archived, move in plan:
+        if move:
+            try:
+                move_tree(archived, dest)
+            except (LibraryError, OSError) as ex:
+                if args.json:
+                    print(json.dumps({"status": "ERROR", "name": entry.name,
+                                      "reason": str(ex), "results": results}, indent=2))
+                else:
+                    print(f"Failed to enable {entry.name}: {ex}")
+                    print(f"  {archived} is still parked and still enable-able.")
+                return 1
+        results.append({"type": entry.type, "name": entry.name, "moved": move,
+                        "dest": str(dest), "archived": str(archived)})
+
+    if args.json:
+        print(json.dumps({"status": "OK", "results": results}, indent=2))
+        return 0
+
+    for r in results:
+        if r["moved"]:
+            print(f"Enabled [{r['type']}] {r['name']}:")
+            print(f"  moved {r['archived']} → {r['dest']}")
+        else:
+            print(f"[{r['type']}] {r['name']} is already enabled — nothing to do.")
+    print("Claude Code loads it again in a new session, not the one you are in.")
+    return 0
+
+
 def cmd_sync(args: argparse.Namespace) -> int:
     cfg = load_config()
     pull_errors = refresh_catalogs(cfg, args.no_pull)
@@ -3424,10 +4014,17 @@ def cmd_sync(args: argparse.Namespace) -> int:
     dirs = cfg.dirs
     multi = multi_catalog(cfg)
 
+    receipts = load_receipts()
+
     # Each name is scanned once, against the copy resolution would pick. An overridden
     # entry is not what `use` installs, so refreshing it too would quietly replace the
     # winner's files with the loser's.
-    installed: list[tuple[Entry, str]] = []
+    #
+    # A disabled entry has no active copy, so `installed_scopes` — the active-tree check,
+    # and deliberately only that (R4.9) — returns nothing for it. Without the second
+    # lookup it drops out of the run silently: never refreshed, never reported. Its
+    # archived location is the place to refresh, in place, so it stays disabled (R5.1).
+    installed: list[tuple[Entry, str, "dict[str, Any] | None"]] = []
     seen: set[str] = set()
     for e in entries:
         if e.name in seen:
@@ -3435,7 +4032,12 @@ def cmd_sync(args: argparse.Namespace) -> int:
         seen.add(e.name)
         scopes = installed_scopes(dirs, e)
         if scopes:
-            installed.append((e, scopes[0]))
+            installed.append((e, scopes[0], None))
+            continue
+        archived = next((loc for loc in entry_locations(dirs, e, receipts) if loc["archived"]),
+                        None)
+        if archived:
+            installed.append((e, _location_scope(archived), archived))
 
     if not installed:
         if args.json:
@@ -3444,13 +4046,37 @@ def cmd_sync(args: argparse.Namespace) -> int:
             print("Nothing installed locally. Use `library use <name>` first.")
         return 0
 
-    receipts = load_receipts()
     heads: dict[str, str | None] = {}  # one ls-remote per repo+branch, not per entry
     synced, failed = [], []
     # And one clone per repo+branch, for the same reason. `--force` re-fetches every item,
     # which on a machine whose entries share a repository was that many clones of it.
     with clone_cache() as clones:
-        for e, scope in installed:
+        for e, scope, archived in installed:
+            if archived is not None:
+                # Refreshed in the archive, never into the destination, and reported as
+                # its own kind of result so "updated" never reads as "switched back on"
+                # (R5.2). Only the entry itself is touched: pulling its dependency chain
+                # into the active tree is the resurrection this branch exists to avoid.
+                arc, dest = Path(archived["archive_path"]), Path(archived["path"])
+                receipt = receipts.get(str(dest))
+                state = dest_state(dest, receipt)  # 'disabled', before and after
+                try:
+                    if not args.force and source_unchanged(e, arc, receipt, heads):
+                        changes: dict[str, Any] = {"new_install": False, "added": [],
+                                                   "removed": [], "modified": []}
+                        up_to_date = True
+                    else:
+                        changes = _refresh_archived(e, scope, archived,
+                                                    entry_catalog_key(cfg, e), clones)["changes"]
+                        up_to_date = False
+                    synced.append({"type": e.type, "name": e.name, "catalog": e.catalog,
+                                   "scope": scope, "state": state,
+                                   "disabled": True, "changes": changes,
+                                   "up_to_date": up_to_date})
+                except LibraryError as ex:
+                    failed.append({"type": e.type, "name": e.name, "catalog": e.catalog,
+                                   "reason": str(ex)})
+                continue
             # Read the state before refreshing: afterwards the copy matches its source and
             # any local edit is gone, so this is the last moment drift is observable (C-D4).
             dest = install_dest(e, resolve_target_base(dirs, e, scope, None))
@@ -3472,7 +4098,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
                         results.append(_install_one(dirs, dep, scope, None,
                                                     entry_catalog_key(cfg, dep), clones))
                 synced.append({"type": e.type, "name": e.name, "catalog": e.catalog,
-                               "scope": scope, "state": state,
+                               "scope": scope, "state": state, "disabled": False,
                                "changes": results[-1]["changes"],
                                "up_to_date": results[-1].get("up_to_date", False)})
             except LibraryError as ex:
@@ -3485,23 +4111,35 @@ def cmd_sync(args: argparse.Namespace) -> int:
         return 0 if not failed else 1
 
     changed_count = 0
+    disabled_count = 0
     for r in synced:
         ch = r["changes"]
         summary = _summarize_changes(ch)
         if summary != "no changes":
             changed_count += 1
         origin = f" (from {r['catalog']})" if multi else ""
+        # A disabled refresh is grouped by the same thing every other line is grouped by
+        # — what changed on disk — so it stays on the "refreshed" / "up to date" line it
+        # belongs to. What it adds is where those changes landed: in the archive, with
+        # the entry still switched off (R5.2).
+        where = f"{r['scope']}, disabled" if r.get("disabled") else r["scope"]
+        if r.get("disabled"):
+            disabled_count += 1
         if r["up_to_date"]:
-            print(f"  up to date [{r['type']}] {r['name']} ({r['scope']}){origin}")
+            print(f"  up to date [{r['type']}] {r['name']} ({where}){origin}")
             continue
-        print(f"  refreshed [{r['type']}] {r['name']} ({r['scope']}) · "
-              f"{summary}{origin}{_state_note(r['state'], past=True)}")
+        note = (f"  (refreshed {_ARCHIVE_NOTE})" if r.get("disabled")
+                else _state_note(r["state"], past=True))
+        print(f"  refreshed [{r['type']}] {r['name']} ({where}) · "
+              f"{summary}{origin}{note}")
         for line in _change_detail_lines(ch):
             print(line)
     for r in failed:
         origin = f" (from {r['catalog']})" if multi else ""
         print(f"  FAILED    [{r['type']}] {r['name']}{origin}: {r['reason']}")
-    print(f"\nSynced {len(synced)} · {changed_count} changed · failed {len(failed)}")
+    disabled_part = f" · {disabled_count} disabled" if disabled_count else ""
+    print(f"\nSynced {len(synced)} · {changed_count} changed{disabled_part} · "
+          f"failed {len(failed)}")
     return 0 if not failed else 1
 
 
@@ -5060,8 +5698,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             if e.name in checked:
                 continue
             checked.add(e.name)
-            for dest, receipt in sorted(entry_dests(cfg.dirs, e, receipts).items()):
-                state = dest_state(Path(dest), receipt)
+            for loc in entry_locations(cfg.dirs, e, receipts):
+                dest, state = loc["path"], loc["state"]
+                # Where the content actually sits. A disabled copy is valid (R4.3), so it
+                # produces no finding — but its manifest is still on disk and still gets
+                # linted, at the archive path the location carries rather than one derived
+                # here a second time (R4.10), matching `entry_has_setup`'s answer that the
+                # manifest exists.
+                content = Path(loc["archive_path"] if state == "disabled" else dest)
                 if state == "drifted":
                     warns.append((e.catalog, e.name,
                         f"installed copy at {dest} has local modifications; "
@@ -5076,13 +5720,53 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     continue
                 elif state == "not_installed":
                     continue
-                manifest, setup_problems = load_setup(Path(dest))
+                # Both an active and an archived copy for one name (R4.4). An error, not a
+                # warning: `disable` and `enable` both refuse outright while it holds, so
+                # the toggle is unusable until a human picks a copy — and only they can.
+                # The wording matches `cmd_disable`'s refusal so the two agree.
+                if state != "disabled" and loc["archived"]:
+                    errors.append((e.catalog, e.name,
+                        f"a copy sits at both {dest} and {loc['archive_path']}; "
+                        "`disable` and `enable` both refuse until one is gone — remove the "
+                        "one you don't want, then retry"))
+                manifest, setup_problems = load_setup(content)
                 for problem in setup_problems:
-                    errors.append((e.catalog, e.name, f"invalid {SETUP_FILE} at {dest}: {problem}"))
+                    errors.append((e.catalog, e.name,
+                                   f"invalid {SETUP_FILE} at {content}: {problem}"))
                 # Conventions are warnings, never errors: an unusual key order is not a
                 # reason to take a skill's walkthrough offline (§11).
                 for note in lint_setup(manifest):
                     warns.append((e.catalog, e.name, f"{SETUP_FILE} {note}"))
+
+        # ── Archive sweep: disabled content no catalog entry accounts for (R5.6) ─
+        #    This check reads the archive directory DIRECTLY, and that is deliberate:
+        #    every other check above walks catalog entries, and this one cannot. A skill
+        #    that was disabled and then removed from the catalog has no entry left to
+        #    iterate, so `find_exact` misses it and `enable`, `uninstall` and `show` all
+        #    answer NOT_FOUND. Reading the disk is the only way it is ever seen again.
+        #    Rewriting this as a walk over `entries` would still compile and still pass
+        #    the rest of the suite while silently losing the one check that reaches
+        #    stranded content — the tests below pin exactly that case.
+        known = {(e.section, e.name) for e in entries}
+        seen_archives: set[tuple[str, str]] = set()
+        for section, scopes in sorted(cfg.dirs.items()):
+            for _scope, raw in sorted(scopes.items()):
+                base = resolve_install_dir(raw)
+                archive = disabled_dir_for(base)
+                if not archive.is_dir() or (section, str(archive)) in seen_archives:
+                    continue
+                seen_archives.add((section, str(archive)))
+                for parked in sorted(archive.iterdir()):
+                    name = parked.stem if parked.is_file() else parked.name
+                    if (section, name) in known:
+                        continue  # the loop above already checked it
+                    # No command can name it, so the fix offered has to be one that
+                    # works: a move back, or a delete. Suggesting `enable`/`uninstall`
+                    # here would send the user at a NOT_FOUND.
+                    warns.append((None, name,
+                        f"disabled content at {parked} has no catalog entry — `enable` and "
+                        f"`uninstall` cannot reach it by name; restore it by hand with "
+                        f"`mv {parked} {base / parked.name}`, or delete it"))
 
     multi = cfg is not None and multi_catalog(cfg)
 
@@ -5396,6 +6080,22 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(sp)
     add_catalog_flag(sp)
     sp.set_defaults(func=cmd_uninstall)
+
+    sp = sub.add_parser("disable", help="switch off installed skills without uninstalling them "
+                                        "(the copy stays on this device)")
+    sp.add_argument("name", nargs="+", metavar="name",
+                    help="one or more exact skill names to disable")
+    add_common(sp)
+    add_catalog_flag(sp)
+    sp.set_defaults(func=cmd_disable)
+
+    sp = sub.add_parser("enable", help="switch a disabled skill back on "
+                                       "(moves it back, no re-fetch)")
+    sp.add_argument("name", nargs="+", metavar="name",
+                    help="one or more exact skill names to enable")
+    add_common(sp)
+    add_catalog_flag(sp)
+    sp.set_defaults(func=cmd_enable)
 
     sp = sub.add_parser("sync", help="re-pull every installed item")
     sp.add_argument("--force", action="store_true",

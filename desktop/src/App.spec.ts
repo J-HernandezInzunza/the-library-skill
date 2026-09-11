@@ -132,6 +132,28 @@ describe("the catalog view's empty states", () => {
 
     expect(app.find(".summary").text()).toContain("1 of 2 entries · 1 installed");
   });
+
+  it("counts a disabled entry as installed and calls it out separately", async () => {
+    const app = await mountApp([
+      entry({ name: "alpha", installed: true, scopes: ["global"], state: "installed" }),
+      entry({ name: "beta", installed: true, scopes: ["global"], state: "disabled" }),
+      entry({ name: "gamma", catalog: "shared", overridden_by: "personal" }),
+    ]);
+
+    // Disabled is not uninstalled: the content is still on the device, so it counts in both
+    // parts rather than dropping out of the installed count as if it had been removed.
+    expect(app.find(".summary").text()).toContain(
+      "3 of 3 entries · 2 installed · 1 disabled · 1 overridden",
+    );
+  });
+
+  it("leaves the disabled part out when nothing is disabled", async () => {
+    const app = await mountApp([
+      entry({ name: "alpha", installed: true, scopes: ["global"], state: "installed" }),
+    ]);
+
+    expect(app.find(".summary").text()).not.toContain("disabled");
+  });
 });
 
 describe("selection in a catalog tab", () => {

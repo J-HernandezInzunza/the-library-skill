@@ -357,6 +357,37 @@ describe("the install badge", () => {
     expect(tone).toBe("installed");
   });
 
+  it("says a disabled copy is off and where its content is parked", () => {
+    // The path is the CLI's, from `locations[]`; the app never builds one of its own.
+    const disabled = badge("disabled", {
+      installed: true,
+      scopes: ["global"],
+      locations: [
+        {
+          path: "/Users/dev/.claude/skills/grilling",
+          scope: "global",
+          state: "disabled",
+          archive_path: "/Users/dev/.claude/skills-disabled/grilling",
+          archived: true,
+          receipt: null,
+        },
+      ],
+    });
+
+    expect(disabled).toEqual([
+      "disabled · /Users/dev/.claude/skills-disabled/grilling",
+      "disabled",
+    ]);
+  });
+
+  it("falls back to the scope when a disabled copy reports no archived location", () => {
+    // A CLI too old to report `locations[]` should cost the path, not the badge.
+    expect(badge("disabled", { installed: true, scopes: ["global"] })).toEqual([
+      "disabled · global",
+      "disabled",
+    ]);
+  });
+
   it("renders a state it has never heard of rather than hiding the row", () => {
     expect(badge("quarantined", { installed: true })).toEqual(["quarantined", "installed"]);
   });
