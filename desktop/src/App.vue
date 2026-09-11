@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, defineAsyncComponent, onMounted, watch } from "vue";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { allRows, catalogRows, isOnDisk, searchRows, winningRows, type Row } from "./catalog";
 import { useCommandActivity, withActivity } from "./commandActivity";
 import { describeAppError, isAppError, type Catalog, type Entry } from "./types";
@@ -134,8 +134,22 @@ const loading = ref(true);
 /** Kept typed rather than stringified: a first-run state is recoverable, not an error. */
 const failure = ref<unknown>(null);
 
+/**
+ * True when the app was opened as a plain web page (`npm run dev`) rather than through Tauri
+ * (`npm run tauri dev`). Every command runs over IPC to the Rust backend, which only exists in
+ * the latter; without it `invoke` has no bridge to call and the catalog can never load. Checked
+ * once up front so a developer sees the one command that fixes it, rather than a spinner that
+ * never resolves or a bare `__TAURI_INTERNALS__` error.
+ */
+const browserOnly = !isTauri();
+
 /** Load the catalog and the registry once; search and tabs work off that payload. */
 async function load() {
+  // Nothing to load without the backend; leaving loading true here is what strands the spinner.
+  if (browserOnly) {
+    loading.value = false;
+    return;
+  }
   loading.value = true;
   failure.value = null;
   try {
@@ -279,8 +293,22 @@ onMounted(async () => {
          that cannot scroll, one scrolling body, and — where the view has one — a second chrome row
          at the bottom. The command bar below is the app's last row, so a view's bottom chrome
          lands directly on it. -->
+    <!-- Opened in a browser instead of through Tauri: the backend isn't there, so this stands in
+         for every view and names the command that starts it, rather than letting the rest of the
+         app render against a catalog that can never load. -->
+    <section v-if="browserOnly" class="view">
+      <div class="view__body column">
+        <StatusBanner kind="warning">
+          <strong>The backend isn't running.</strong>
+          This window is the frontend on its own — the Rust backend it reads the catalog from only
+          runs when you launch through Tauri. Stop this, then start it with
+          <code>npm run tauri dev</code> from the <code>desktop</code> directory.
+        </StatusBanner>
+      </div>
+    </section>
+
     <FirstRun
-        v-if="setupNeeded"
+        v-else-if="setupNeeded"
         :state="setupNeeded.state"
         :path="setupNeeded.path"
         @ready="load()"

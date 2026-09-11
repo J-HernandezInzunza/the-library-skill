@@ -8,7 +8,7 @@ import App from "./App.vue";
 // never render inside a test, however many times it is awaited.
 import "./components/FirstRun.vue";
 import { catalog, entry } from "./testing/factories";
-import { answer, resetTauri } from "./testing/tauri";
+import { answer, commandsCalled, resetTauri, setTauri } from "./testing/tauri";
 import type { Catalog, Entry } from "./types";
 
 afterEach(resetTauri);
@@ -84,6 +84,20 @@ describe("the catalog view's error states", () => {
     // than a boolean: the two states have different next actions.
     expect(app.text()).toContain("Let's set up your library");
     expect(app.text()).toContain("/Users/dev/library");
+  });
+
+  it("names the command to start the backend when opened without Tauri", async () => {
+    // `npm run dev` serves this frontend with no Rust backend behind it. Left alone the app
+    // would `invoke` into a missing bridge and hang on the spinner, so it should short-circuit
+    // to the one instruction that fixes it — and never reach for a command it cannot answer.
+    setTauri(false);
+
+    const app = mount(App);
+    await flushPromises();
+
+    expect(app.text()).toContain("npm run tauri dev");
+    expect(app.find(".status-banner").exists()).toBe(true);
+    expect(commandsCalled()).toEqual([]);
   });
 
   it("empties the list on a failed load rather than showing a stale one", async () => {

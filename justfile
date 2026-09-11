@@ -123,12 +123,30 @@ install-hooks:
 # exits 3 when the .venv is missing and the app offers to fix it, so setup is a prompt in the app.
 # Building is a one-time cost per clone; after that you launch it like any other app.
 
+# `tauri` shells out to `cargo`, so a Rust toolchain that isn't on PATH surfaces as an opaque
+# `cargo metadata ... No such file or directory` several layers down instead of here.
+_app-prereqs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v cargo >/dev/null 2>&1; then
+        echo "✗ Rust's cargo is not on your PATH — the desktop app has a Rust backend (Tauri) that must be compiled." >&2
+        echo "  Install Rust:  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh" >&2
+        echo "  Already installed? Open a new terminal, or run:  source \"\$HOME/.cargo/env\"" >&2
+        exit 1
+    fi
+    node_major="$(node -v 2>/dev/null | sed 's/^v//; s/\..*//')"
+    if [ -z "$node_major" ] || [ "$node_major" -lt 20 ]; then
+        echo "✗ The desktop app needs Node >= 20 (found: $(node -v 2>/dev/null || echo none))." >&2
+        echo "  With nvm:  nvm install 20 && nvm use 20" >&2
+        exit 1
+    fi
+
 # Install the app's own dependencies (npm packages; needs Node >= 20 and Rust)
-app-setup:
+app-setup: _app-prereqs
     @cd {{justfile_directory()}}/desktop && npm install
 
 # Build the release app bundle (several minutes the first time — Rust compiles from scratch)
-app-build:
+app-build: _app-prereqs
     @cd {{justfile_directory()}}/desktop && npm run tauri build
     @echo "Built: {{justfile_directory()}}/desktop/src-tauri/target/release/bundle/macos/The Library.app"
 
@@ -139,7 +157,7 @@ app-install: app-build
     @echo "Installed: /Applications/The Library.app — launch it from Spotlight or Finder."
 
 # Build a distributable .dmg for sharing the app (mounts a disk image during styling, so a Finder window flashes)
-app-dmg:
+app-dmg: _app-prereqs
     @cd {{justfile_directory()}}/desktop && npm run tauri build -- --bundles dmg
     @echo "Built: {{justfile_directory()}}/desktop/src-tauri/target/release/bundle/dmg/"
 
@@ -148,11 +166,11 @@ app:
     @open -a "The Library"
 
 # Run the app from source with hot reload (for working on the app itself)
-app-dev:
+app-dev: _app-prereqs
     @cd {{justfile_directory()}}/desktop && npm run tauri dev
 
 # The app's full check gate: types, Vitest, cargo check, cargo test, frontend build
-app-check:
+app-check: _app-prereqs
     @cd {{justfile_directory()}}/desktop && npm run check
 
 # --- Fuzzy / write ops: fall back to the agent ----------------------------

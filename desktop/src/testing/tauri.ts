@@ -53,6 +53,7 @@ export function answer(command: string, reply: Reply): void {
 export function resetTauri(): void {
   replies.clear();
   calls.length = 0;
+  tauriPresent = true;
 }
 
 /** Deliver a backend event to whatever subscribed via `listen`. */
@@ -67,6 +68,24 @@ export function emitEvent(event: string, payload: unknown): void {
  * spec that mounts a component reaching for a command it did not think about should say
  * which command, not fail later on a missing property of nothing.
  */
+/**
+ * Whether `isTauri()` reports a backend. True by default because a mounted spec stands in for a
+ * real run, where the backend is present — the app gates its whole first load on this, so a
+ * default of `false` would send every test down the browser-only branch instead of loading the
+ * catalog. The one spec that exercises that branch flips it with `setTauri`.
+ */
+let tauriPresent = true;
+
+/** Flip whether `isTauri()` reports a backend, for the spec that drives the browser-only branch. */
+export function setTauri(present: boolean): void {
+  tauriPresent = present;
+}
+
+/** `@tauri-apps/api/core`. */
+export function isTauri(): boolean {
+  return tauriPresent;
+}
+
 export async function invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   calls.push({ command, args });
 
