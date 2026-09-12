@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Uniform entry point for The Library CLI.
-# Prefers the self-contained .venv (has PyYAML); falls back to system python3.
+# Prefers the self-contained .venv (has PyYAML); otherwise finds a system
+# python3 new enough to run library.py.
 set -euo pipefail
 # Capture the caller's working directory BEFORE resolving the tool dir, so the
 # CLI can anchor 'default'-scope installs to where the user actually is, even
@@ -8,6 +9,45 @@ set -euo pipefail
 # and an outer LIBRARY_CWD (if already exported) is respected.
 export LIBRARY_CWD="${LIBRARY_CWD:-$PWD}"
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PY="$DIR/.venv/bin/python"
-[ -x "$PY" ] || PY="$(command -v python3)"
-exec "$PY" "$DIR/library.py" "$@"
+
+# The floor library.py parses under: it uses 3.8+ syntax (the walrus operator),
+# and bootstrap.py builds the venv against 3.9. Keep these two numbers in sync
+# with bootstrap.py's PYTHON_FLOOR and the READMEs.
+PY_MIN_MAJOR=3
+PY_MIN_MINOR=9
+
+# True when $1 runs and reports a version at or above the floor. A too-old
+# python3 first on PATH is the common case (an aging framework build shadowing
+# the system one), so a name alone is never trusted — the interpreter is asked.
+meets_floor() {
+  "$1" -c \
+    "import sys; raise SystemExit(0 if sys.version_info >= ($PY_MIN_MAJOR, $PY_MIN_MINOR) else 1)" \
+    >/dev/null 2>&1
+}
+
+# The bootstrapped venv is authoritative: it exists only because bootstrap.py
+# built it against a floor-meeting interpreter and put PyYAML in it.
+VENV_PY="$DIR/.venv/bin/python"
+if [ -x "$VENV_PY" ]; then
+  exec "$VENV_PY" "$DIR/library.py" "$@"
+fi
+
+# No venv yet (e.g. the desktop setup screen, before bootstrap). Find a system
+# python that can actually parse library.py. Versioned names come first so an
+# old unversioned `python3` at the front of PATH cannot win; the explicit
+# /usr/bin/python3 last is macOS's own, which survives a stripped PATH.
+for cand in \
+  python3.14 python3.13 python3.12 python3.11 python3.10 python3.9 \
+  python3 /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+  resolved="$(command -v "$cand" 2>/dev/null || true)"
+  [ -n "$resolved" ] || continue
+  if meets_floor "$resolved"; then
+    exec "$resolved" "$DIR/library.py" "$@"
+  fi
+done
+
+# Nothing on this machine can run the tool. Say so plainly, with the fix, rather
+# than exec'ing a too-old interpreter and letting it die on a bare SyntaxError.
+echo "The Library needs Python ${PY_MIN_MAJOR}.${PY_MIN_MINOR}+, but none was found." >&2
+echo "Install a newer Python (e.g. 'brew install python@3.12'), then try again." >&2
+exit 3

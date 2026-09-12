@@ -14,6 +14,61 @@
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+/// The oldest Python `library.py` parses under. It uses 3.8+ syntax (the walrus
+/// operator) and `bootstrap.py` builds the venv against 3.9, so 3.9 is the floor.
+/// Kept in sync with `bootstrap.py`'s `PYTHON_FLOOR` and the `library` wrapper.
+const PYTHON_FLOOR: (u32, u32) = (3, 9);
+
+/// A `python3` on this machine new enough to run the tool, or `None` if none is.
+///
+/// `bootstrap.py` is spawned by name — `Command::new("python3")` — which takes
+/// whatever `python3` is first on `PATH`. On a machine where an aging framework
+/// build shadows the system one, that first `python3` is too old to parse
+/// `library.py`, and the tool dies on a bare `SyntaxError` the user cannot act
+/// on. So the interpreter is chosen by *version*, not by name or `PATH` order:
+/// each candidate is asked what it is, and the first at or above the floor wins.
+///
+/// Versioned names lead so an old unversioned `python3` cannot win; the explicit
+/// `/usr/bin/python3` trails as macOS's own, which is present even when `PATH`
+/// has been stripped to the launchd minimum. Returns the string to spawn.
+pub fn python_interpreter() -> Option<String> {
+    const CANDIDATES: &[&str] = &[
+        "python3.14",
+        "python3.13",
+        "python3.12",
+        "python3.11",
+        "python3.10",
+        "python3.9",
+        "python3",
+        "/opt/homebrew/bin/python3",
+        "/usr/local/bin/python3",
+        "/usr/bin/python3",
+    ];
+    CANDIDATES
+        .iter()
+        .find(|cand| meets_python_floor(cand))
+        .map(|cand| cand.to_string())
+}
+
+/// Whether `cand` runs and reports a version at or above the floor.
+///
+/// The interpreter reports its own version rather than us parsing `--version`
+/// output: an exit code is unambiguous where a version string invites a regex.
+fn meets_python_floor(cand: &str) -> bool {
+    let (major, minor) = PYTHON_FLOOR;
+    Command::new(cand)
+        .args([
+            "-c",
+            &format!("import sys; raise SystemExit(0 if sys.version_info >= ({major}, {minor}) else 1)"),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 /// Marks the login shell's `PATH` in output that may also contain profile chatter.
 ///
 /// A `.zshrc` is free to print banners, version notices, or a fortune, so the probe cannot
@@ -135,6 +190,23 @@ fn merge(current: &str, extra: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A path that is not an interpreter must not pass the floor — the guard is what
+    /// stops the resolver from handing `bootstrap.py` something that cannot run it.
+    #[test]
+    fn a_nonexistent_interpreter_does_not_meet_the_floor() {
+        assert!(!meets_python_floor("/definitely/not/a/python/interpreter"));
+    }
+
+    /// Every environment this runs in — CI and dev machines alike — has a Python at or
+    /// above the floor somewhere (macOS ships `/usr/bin/python3`), so the resolver must
+    /// find one. It proves the by-version search reaches past a too-old `python3` at the
+    /// front of `PATH` rather than giving up at the first name.
+    #[test]
+    fn finds_an_interpreter_at_or_above_the_floor() {
+        let found = python_interpreter().expect("a Python 3.9+ should exist on the test host");
+        assert!(meets_python_floor(&found));
+    }
 
     #[test]
     fn appends_missing_dirs_after_the_existing_ones() {

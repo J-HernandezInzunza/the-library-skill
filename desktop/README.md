@@ -18,6 +18,11 @@ clones the repo and runs one command.
 - **Node** ≥ 20 (developed on 22).
 - **Rust** (stable) — Tauri's backend.
   `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+- **Python ≥ 3.9**, present *somewhere* — not necessarily first on `PATH`. `library.py` uses 3.8+
+  syntax, so an older `python3` shadowing a newer one is a real failure mode. The app and the
+  `library` wrapper both pick an interpreter *by version* rather than trusting the first `python3`,
+  so a stale 3.7 on your `PATH` no longer breaks setup as long as a 3.9+ exists (macOS's own
+  `/usr/bin/python3` qualifies). If none does, both say so and name the fix.
 - **The parent tool, bootstrapped.** The app runs `../library`, which needs a `.venv` with PyYAML.
   If it is missing, the app detects it (the CLI exits `3` for exactly this) and offers to run
   `bootstrap.py` for you, so this is a prompt rather than a prerequisite you have to satisfy first.

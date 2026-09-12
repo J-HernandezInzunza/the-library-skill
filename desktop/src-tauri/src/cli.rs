@@ -1380,7 +1380,17 @@ pub fn bootstrap(sink: &dyn CommandSink) -> Result<BootstrapReport, AppError> {
     let home = library_home();
     let script = home.join("bootstrap.py");
 
-    let mut cmd = Command::new("python3");
+    // Choose the interpreter by version, not by name. A bare `python3` takes
+    // whatever is first on PATH, which on some machines is a build too old to run
+    // the tool — `bootstrap.py`'s own preflight would reject it, but only after we
+    // pointed it at the wrong interpreter. Picking a floor-meeting one here means
+    // the venv is built against a Python that can actually parse `library.py`.
+    let python = crate::path::python_interpreter().ok_or_else(|| AppError::Cli {
+        code: -1,
+        stderr: "no Python 3.9+ found — install a newer Python (e.g. 'brew install python@3.12'), then try again".to_string(),
+    })?;
+
+    let mut cmd = Command::new(&python);
     cmd.arg(&script)
         .arg("--json")
         // Explicit, for the same reason LIBRARY_CWD is: the script would otherwise
@@ -1389,7 +1399,7 @@ pub fn bootstrap(sink: &dyn CommandSink) -> Result<BootstrapReport, AppError> {
 
     let output = spawn(sink, cmd, &home).map_err(|e| AppError::Cli {
         code: -1,
-        stderr: format!("could not run python3 {}: {e}", script.display()),
+        stderr: format!("could not run {python} {}: {e}", script.display()),
     })?;
 
     if !output.status.success() {
