@@ -331,7 +331,7 @@ async function reveal(path: string) {
 .add-entry__field select {
   padding: 0.45rem 0.6rem;
   border-radius: 8px;
-  border: 1px solid rgba(128, 128, 128, 0.4);
+  border: 1px solid var(--border-control);
   background: transparent;
   color: inherit;
   font-size: 0.85rem;
@@ -361,11 +361,11 @@ async function reveal(path: string) {
   line-height: 1.45;
 }
 .add-entry__conflict {
-  color: #b91c1c;
-  background: rgba(220, 38, 38, 0.1);
+  color: var(--status-danger-ink);
+  background: var(--status-danger-tint);
 }
 .add-entry__consequence {
-  background: rgba(234, 179, 8, 0.14);
+  background: var(--status-override-tint);
 }
 .add-entry__conflict code,
 .add-entry__consequence code {
@@ -379,7 +379,7 @@ async function reveal(path: string) {
   margin-top: 0.35rem;
   padding: 0.6rem 0.7rem;
   border-radius: 8px;
-  background: rgba(59, 130, 246, 0.1);
+  background: var(--accent-tint);
   font-size: 0.75rem;
   line-height: 1.4;
   opacity: 1;
@@ -434,7 +434,7 @@ async function reveal(path: string) {
 .add-entry__requires {
   margin: 0;
   padding: 0.5rem 0.75rem 0.6rem;
-  border: 1px solid rgba(128, 128, 128, 0.3);
+  border: 1px solid var(--border-control);
   border-radius: 8px;
 }
 .add-entry__requires legend {
@@ -453,7 +453,7 @@ async function reveal(path: string) {
   font-size: 0.85em;
   padding: 0.1rem 0.3rem;
   border-radius: 4px;
-  background: rgba(128, 128, 128, 0.15);
+  background: var(--surface-hover);
 }
 .add-entry__where {
   font-family: ui-monospace, SFMono-Regular, monospace;

@@ -870,8 +870,16 @@ fn settle(result: Result<serde_json::Value, AppError>) -> Result<serde_json::Val
 }
 
 /// The full catalog with install state (R2.1).
-pub fn list(sink: &dyn CommandSink) -> Result<Vec<Entry>, AppError> {
-    parse(run_json(sink, &["list"])?)
+pub fn list(sink: &dyn CommandSink, no_pull: bool) -> Result<Vec<Entry>, AppError> {
+    // `--no-pull` skips a `git pull --ff-only` per remote catalog, which is 0.75s of the
+    // 0.88s this command otherwise costs — a network round trip in front of a read. The
+    // caller decides: the app pulls when it opens and when the user asks, and reads the
+    // clone already on disk the rest of the time.
+    let mut args = vec!["list"];
+    if no_pull {
+        args.push("--no-pull");
+    }
+    parse(run_json(sink, &args)?)
 }
 
 /// Everything known about one name (R2.1).

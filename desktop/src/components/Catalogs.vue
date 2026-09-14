@@ -444,8 +444,8 @@ watch(
 .catalogs__row {
   padding: 0.7rem 0.9rem;
   border-radius: 8px;
-  border-left: 3px solid hsl(var(--catalog-hue), 65%, 52%);
-  background: rgba(128, 128, 128, 0.08);
+  border-left: 3px solid var(--catalog-edge);
+  background: var(--surface-raised);
 }
 .catalogs__row-head {
   display: flex;
@@ -456,8 +456,8 @@ watch(
 .catalogs__chip {
   padding: 0.12rem 0.5rem;
   border-radius: 999px;
-  background: hsl(var(--catalog-hue, 220), 65%, 50%);
-  color: #fff;
+  background: var(--catalog-fill);
+  color: var(--text-on-accent);
   font-size: 0.7rem;
   font-weight: 600;
 }
@@ -492,8 +492,8 @@ watch(
   margin-top: 0.6rem;
   padding: 0.7rem;
   border-radius: 8px;
-  background: rgba(220, 38, 38, 0.08);
-  border-left: 3px solid #dc2626;
+  background: var(--status-danger-tint);
+  border-left: 3px solid var(--status-danger-ink);
 }
 .catalogs__question {
   margin: 0;
@@ -542,10 +542,10 @@ watch(
 }
 .catalogs__entry {
   border-radius: 8px;
-  background: rgba(128, 128, 128, 0.08);
+  background: var(--surface-raised);
 }
 .catalogs__entry--open {
-  background: rgba(128, 128, 128, 0.14);
+  background: var(--surface-hover);
 }
 .catalogs__entry-line {
   display: grid;
@@ -581,7 +581,7 @@ watch(
 }
 /* Pressed state, so an open form's own button reads as the thing that opened it. */
 .catalogs__entry-actions button[aria-pressed="true"] {
-  background: rgba(128, 128, 128, 0.25);
+  background: var(--surface-strong);
 }
 .catalogs__panel {
   padding: 0.2rem 0.85rem 0.85rem;

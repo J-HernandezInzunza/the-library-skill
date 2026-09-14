@@ -181,7 +181,7 @@ async function setUp() {
   font-size: 0.85em;
   padding: 0.1rem 0.3rem;
   border-radius: 4px;
-  background: rgba(128, 128, 128, 0.15);
+  background: var(--surface-hover);
 }
 .first-run__command {
   margin: 0 0 0.75rem;
@@ -189,7 +189,7 @@ async function setUp() {
   border-radius: 8px;
   text-align: left;
   overflow-x: auto;
-  background: rgba(128, 128, 128, 0.12);
+  background: var(--surface-hover);
   font-size: 0.82rem;
   user-select: all;
 }
@@ -220,7 +220,7 @@ async function setUp() {
 .first-run__field input {
   padding: 0.45rem 0.6rem;
   border-radius: 8px;
-  border: 1px solid rgba(128, 128, 128, 0.4);
+  border: 1px solid var(--border-control);
   background: transparent;
   color: inherit;
   font-size: 0.85rem;

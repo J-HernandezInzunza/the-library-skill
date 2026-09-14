@@ -160,7 +160,7 @@ run(false);
 }
 .sync__count {
   font-weight: 600;
-  color: #3b82f6;
+  color: var(--accent-bright);
   opacity: 1;
 }
 .sync__count--quiet {
@@ -168,7 +168,7 @@ run(false);
   font-weight: 500;
 }
 .sync__count--failed {
-  color: #dc2626;
+  color: var(--status-danger-ink);
 }
 .sync__warning {
   margin: 0.75rem 0 0;
@@ -176,8 +176,8 @@ run(false);
   border-radius: 8px;
   font-size: 0.82rem;
   line-height: 1.45;
-  color: #b45309;
-  background: rgba(245, 158, 11, 0.14);
+  color: var(--status-attention-ink);
+  background: var(--status-attention-tint);
 }
 .sync__section {
   margin: 1.5rem 0 0.5rem;
@@ -187,11 +187,11 @@ run(false);
   opacity: 0.5;
 }
 .sync__section--error {
-  color: #dc2626;
+  color: var(--status-danger-ink);
   opacity: 0.85;
 }
 .sync__section--changed {
-  color: #3b82f6;
+  color: var(--accent-bright);
   opacity: 0.9;
 }
 .sync__list {
@@ -205,20 +205,20 @@ run(false);
 .sync__item {
   padding: 0.55rem 0.85rem;
   border-radius: 8px;
-  background: rgba(128, 128, 128, 0.08);
+  background: var(--surface-raised);
   font-size: 0.83rem;
 }
 .sync__item--error {
-  border-left: 3px solid #dc2626;
+  border-left: 3px solid var(--status-danger-ink);
 }
 .sync__item--changed {
   padding: 0.7rem 0.85rem;
-  border-left: 3px solid #3b82f6;
-  background: rgba(59, 130, 246, 0.1);
+  border-left: 3px solid var(--accent-bright);
+  background: var(--accent-tint);
 }
 .sync__item--drifted {
-  border-left-color: #f59e0b;
-  background: rgba(245, 158, 11, 0.12);
+  border-left-color: var(--status-attention-ink);
+  background: var(--status-attention-tint);
 }
 .sync__item--quiet {
   opacity: 0.6;
@@ -238,12 +238,12 @@ run(false);
   border-radius: 5px;
   font-size: 0.72rem;
   font-weight: 600;
-  color: #1d4ed8;
-  background: rgba(59, 130, 246, 0.18);
+  color: var(--accent-ink);
+  background: var(--accent-tint);
 }
 .sync__badge--warn {
-  color: #b45309;
-  background: rgba(245, 158, 11, 0.2);
+  color: var(--status-attention-ink);
+  background: var(--status-attention-tint);
 }
 .sync__detail {
   opacity: 0.7;
@@ -262,13 +262,13 @@ run(false);
   font-weight: 700;
 }
 .sync__file--added {
-  color: #15803d;
+  color: var(--status-ok-ink);
 }
 .sync__file--modified {
-  color: #b45309;
+  color: var(--status-attention-ink);
 }
 .sync__file--removed {
-  color: #dc2626;
+  color: var(--status-danger-ink);
 }
 .sync__unchanged {
   margin-top: 1.5rem;
@@ -282,30 +282,4 @@ run(false);
   margin-bottom: 0.5rem;
 }
 
-/* The accent tints are mixed for a light ground; on dark they need to lift off it rather
-   than sink into it. */
-@media (prefers-color-scheme: dark) {
-  .sync__badge {
-    color: #93c5fd;
-  }
-  .sync__badge--warn {
-    color: #fcd34d;
-  }
-  .sync__warning {
-    color: #fcd34d;
-  }
-  .sync__file--added {
-    color: #4ade80;
-  }
-  .sync__file--modified {
-    color: #fcd34d;
-  }
-  .sync__file--removed {
-    color: #f87171;
-  }
-  .sync__count--failed,
-  .sync__section--error {
-    color: #f87171;
-  }
-}
 </style>

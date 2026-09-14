@@ -305,8 +305,8 @@ watch(() => props.names, () => {
   border-radius: 6px;
   font-size: 0.8rem;
   line-height: 1.45;
-  color: #b45309;
-  background: rgba(245, 158, 11, 0.16);
+  color: var(--status-attention-ink);
+  background: var(--status-attention-tint);
 }
 .bulk__items {
   list-style: none;
@@ -327,7 +327,7 @@ watch(() => props.names, () => {
   font-size: 0.8rem;
 }
 .bulk__item--drifted {
-  background: rgba(245, 158, 11, 0.12);
+  background: var(--status-attention-tint);
 }
 .bulk__item-name {
   flex: 1;
@@ -344,7 +344,7 @@ watch(() => props.names, () => {
   opacity: 0.65;
 }
 .bulk__state--drifted {
-  color: #b45309;
+  color: var(--status-attention-ink);
   opacity: 1;
 }
 .bulk__ack {
@@ -367,8 +367,8 @@ watch(() => props.names, () => {
   margin-top: 0.75rem;
   padding: 0.75rem;
   border-radius: 8px;
-  background: rgba(220, 38, 38, 0.08);
-  border-left: 3px solid #dc2626;
+  background: var(--status-danger-tint);
+  border-left: 3px solid var(--status-danger-ink);
 }
 .bulk__confirm-q {
   margin: 0;

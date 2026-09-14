@@ -179,11 +179,11 @@ async function decline() {
   flex-direction: column;
   gap: 0.5rem;
   padding: 0.85rem 1rem;
-  border: 1px solid rgba(128, 128, 128, 0.4);
+  border: 1px solid var(--border-control);
   border-radius: 0.5rem;
   /* Tinted rather than plain, because this is the one panel in the app the user should not
      mistake for ordinary chrome while it is on screen. */
-  background: rgba(59, 130, 246, 0.08);
+  background: var(--accent-tint);
 }
 
 .secret__title {
@@ -212,7 +212,7 @@ async function decline() {
   padding: 0;
   border: none;
   background: none;
-  color: #2563eb;
+  color: var(--accent-ink);
   font: inherit;
   text-align: left;
   text-decoration: underline;
@@ -229,7 +229,7 @@ async function decline() {
 .secret__field {
   min-width: 0;
   padding: 0.4rem 0.5rem;
-  border: 1px solid rgba(128, 128, 128, 0.4);
+  border: 1px solid var(--border-control);
   border-radius: 0.35rem;
   background: transparent;
   color: inherit;
@@ -244,7 +244,7 @@ async function decline() {
 .secret__submit,
 .secret__decline {
   padding: 0.35rem 0.75rem;
-  border: 1px solid rgba(128, 128, 128, 0.4);
+  border: 1px solid var(--border-control);
   border-radius: 0.35rem;
   background: transparent;
   color: inherit;
@@ -264,7 +264,7 @@ async function decline() {
   gap: 0.35rem;
   margin-top: 0.15rem;
   padding-top: 0.55rem;
-  border-top: 1px solid rgba(128, 128, 128, 0.28);
+  border-top: 1px solid var(--border-hairline);
 }
 .secret__route-line {
   margin: 0;
@@ -280,7 +280,7 @@ async function decline() {
   display: inline-block;
   padding: 0.05rem 0.3rem;
   border-radius: 0.2rem;
-  background: rgba(128, 128, 128, 0.16);
+  background: var(--surface-hover);
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 0.75rem;
   word-break: break-all;

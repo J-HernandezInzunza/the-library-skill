@@ -189,7 +189,7 @@ onMounted(runPreview);
 .push__field input {
   padding: 0.4rem 0.6rem;
   border-radius: 8px;
-  border: 1px solid rgba(128, 128, 128, 0.4);
+  border: 1px solid var(--border-control);
   background: transparent;
   color: inherit;
   font-size: 0.85rem;
@@ -202,8 +202,8 @@ onMounted(runPreview);
 .push__confirm {
   padding: 0.75rem;
   border-radius: 8px;
-  background: rgba(59, 130, 246, 0.08);
-  border-left: 3px solid #3b82f6;
+  background: var(--accent-tint);
+  border-left: 3px solid var(--accent-bright);
 }
 .push__provenance {
   margin: 0 0 0.6rem;
@@ -211,8 +211,8 @@ onMounted(runPreview);
   border-radius: 6px;
   font-size: 0.8rem;
   line-height: 1.45;
-  color: #b45309;
-  background: rgba(245, 158, 11, 0.16);
+  color: var(--status-attention-ink);
+  background: var(--status-attention-tint);
 }
 .push__question {
   margin: 0;
@@ -233,7 +233,7 @@ onMounted(runPreview);
   border-radius: 6px;
   max-height: 18rem;
   overflow: auto;
-  background: rgba(128, 128, 128, 0.12);
+  background: var(--surface-hover);
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 0.72rem;
   line-height: 1.5;

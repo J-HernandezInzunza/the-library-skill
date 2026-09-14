@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   addConsequences,
   allRows,
+  archivedPath,
   catalogHue,
   catalogRows,
   dependencies,
@@ -357,9 +358,38 @@ describe("the install badge", () => {
     expect(tone).toBe("installed");
   });
 
-  it("says a disabled copy is off and where its content is parked", () => {
-    // The path is the CLI's, from `locations[]`; the app never builds one of its own.
-    const disabled = badge("disabled", {
+  it("badges a disabled copy by scope, in the shape every other state uses", () => {
+    // Not the archive path, which was longer than the head row could hold: the badge
+    // wrapped onto its own line and right-aligned against nothing. `archivedPath` puts
+    // the path on the surfaces with room for it.
+    expect(
+      badge("disabled", {
+        installed: true,
+        scopes: ["global"],
+        locations: [
+          {
+            path: "/Users/dev/.claude/skills/grilling",
+            scope: "global",
+            state: "disabled",
+            archive_path: "/Users/dev/.claude/skills-disabled/grilling",
+            archived: true,
+            receipt: null,
+          },
+        ],
+      }),
+    ).toEqual(["disabled · global", "disabled"]);
+  });
+
+  it("renders a state it has never heard of rather than hiding the row", () => {
+    expect(badge("quarantined", { installed: true })).toEqual(["quarantined", "installed"]);
+  });
+});
+
+describe("archivedPath", () => {
+  /** One location, `archived` and its path under the caller's control. */
+  function at(archived: boolean, archive_path: string): Entry {
+    return entry({
+      state: "disabled",
       installed: true,
       scopes: ["global"],
       locations: [
@@ -367,29 +397,29 @@ describe("the install badge", () => {
           path: "/Users/dev/.claude/skills/grilling",
           scope: "global",
           state: "disabled",
-          archive_path: "/Users/dev/.claude/skills-disabled/grilling",
-          archived: true,
+          archive_path,
+          archived,
           receipt: null,
         },
       ],
     });
+  }
 
-    expect(disabled).toEqual([
-      "disabled · /Users/dev/.claude/skills-disabled/grilling",
-      "disabled",
-    ]);
+  it("reports the path the CLI says it parked the content at", () => {
+    // Read from `locations[]`, never rebuilt here: a second copy of the CLI's archive
+    // rule could name a directory the tool has never moved anything to.
+    expect(archivedPath(at(true, "/Users/dev/.claude/skills-disabled/grilling"))).toBe(
+      "/Users/dev/.claude/skills-disabled/grilling",
+    );
   });
 
-  it("falls back to the scope when a disabled copy reports no archived location", () => {
-    // A CLI too old to report `locations[]` should cost the path, not the badge.
-    expect(badge("disabled", { installed: true, scopes: ["global"] })).toEqual([
-      "disabled · global",
-      "disabled",
-    ]);
+  it("reports nothing when the location holds a path but nothing is parked there", () => {
+    // `archive_path` is where a copy *would* go, so `archived` is the fact to read.
+    expect(archivedPath(at(false, "/Users/dev/.claude/skills-disabled/grilling"))).toBeNull();
   });
 
-  it("renders a state it has never heard of rather than hiding the row", () => {
-    expect(badge("quarantined", { installed: true })).toEqual(["quarantined", "installed"]);
+  it("reports nothing when the CLI is too old to send locations", () => {
+    expect(archivedPath(entry({ state: "disabled", installed: true }))).toBeNull();
   });
 });
 

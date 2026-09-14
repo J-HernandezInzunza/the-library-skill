@@ -143,10 +143,10 @@ watch(() => props.name, () => {
 }
 .copies__item {
   border-radius: 8px;
-  background: rgba(128, 128, 128, 0.08);
+  background: var(--surface-raised);
 }
 .copies__item--open {
-  background: rgba(128, 128, 128, 0.14);
+  background: var(--surface-hover);
 }
 .copies__line {
   display: flex;
@@ -182,7 +182,7 @@ watch(() => props.name, () => {
   font-size: 0.75rem;
 }
 .copies__actions button[aria-pressed="true"] {
-  background: rgba(128, 128, 128, 0.25);
+  background: var(--surface-strong);
 }
 .copies__caveat {
   margin: 0;

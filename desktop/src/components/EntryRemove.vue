@@ -173,8 +173,8 @@ onMounted(startPreview);
   margin-top: 0.75rem;
   padding: 0.85rem;
   border-radius: 8px;
-  background: rgba(220, 38, 38, 0.08);
-  border-left: 3px solid #dc2626;
+  background: var(--status-danger-tint);
+  border-left: 3px solid var(--status-danger-ink);
 }
 .remove__question {
   margin: 0;
@@ -188,8 +188,8 @@ onMounted(startPreview);
   border-radius: 6px;
   font-size: 0.8rem;
   line-height: 1.45;
-  color: #b45309;
-  background: rgba(245, 158, 11, 0.16);
+  color: var(--status-attention-ink);
+  background: var(--status-attention-tint);
 }
 .remove__diff {
   margin: 0.6rem 0 0;
@@ -197,7 +197,7 @@ onMounted(startPreview);
   border-radius: 6px;
   max-height: 16rem;
   overflow: auto;
-  background: rgba(128, 128, 128, 0.12);
+  background: var(--surface-hover);
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 0.72rem;
   line-height: 1.5;
@@ -216,7 +216,7 @@ onMounted(startPreview);
   margin-top: 0.5rem;
   padding: 0.5rem 0.7rem;
   border-radius: 6px;
-  background: rgba(220, 38, 38, 0.1);
+  background: var(--status-danger-tint);
   font-size: 0.78rem;
   line-height: 1.45;
 }

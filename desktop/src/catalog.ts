@@ -190,10 +190,11 @@ export function installStatus(entry: Entry): Pick<Row, "status" | "tone"> {
       return { status: `edited locally${where}`, tone: "attention" };
     case "stale":
       return { status: `update available${where}`, tone: "attention" };
-    case "disabled": {
-      const parked = archivedPath(entry);
-      return { status: `disabled${parked ? ` · ${parked}` : where}`, tone: "disabled" };
-    }
+    case "disabled":
+      // Scope, not the archive path: a badge reading `disabled · /Users/…/skills-disabled/x`
+      // was longer than the head row could hold, so it wrapped onto its own line and
+      // right-aligned against nothing. `archivedPath` puts the path where there is room.
+      return { status: `disabled${where}`, tone: "disabled" };
     case "missing":
       return { status: "installed, but gone from disk", tone: "attention" };
     case "not_installed":
@@ -210,10 +211,11 @@ export function installStatus(entry: Entry): Pick<Row, "status" | "tone"> {
  *
  * Read from the CLI's `locations[]` rather than built here: the archive location is the
  * CLI's own rule, and a second copy of that rule in the app could name a path the tool
- * never moved anything to. A disabled entry with no archived location falls back to its
- * scopes, so an older CLI costs the path, not the badge.
+ * never moved anything to. Exported for the surfaces with room to print it — the list
+ * card's tooltip and the detail page — because the badge itself no longer carries it. A
+ * CLI too old to report `locations[]` costs the path, not the badge.
  */
-function archivedPath(entry: Entry): string | null {
+export function archivedPath(entry: Entry): string | null {
   const parked = entry.locations.find((location) => location.archived);
   return parked?.archive_path ?? null;
 }

@@ -56,7 +56,7 @@ fn every_run_is_reported_to_the_command_log() {
     let _guard = with_fixture_home();
     let log = Recorder::default();
 
-    cli::list(&log).expect("fixture list should run");
+    cli::list(&log, false).expect("fixture list should run");
 
     let started = log.started.lock().unwrap();
     let finished = log.finished.lock().unwrap();
@@ -82,9 +82,30 @@ fn a_failing_command_is_logged_with_its_exit_code() {
 }
 
 #[test]
+fn list_passes_no_pull_only_when_asked_to_skip_the_refresh() {
+    // The flag is what keeps a local read off the network: with it, `library list` costs
+    // 0.14s instead of 0.88s, the difference being a `git pull --ff-only` per remote
+    // catalog. The app pulls when it opens and when the user asks, and not otherwise, so
+    // the argv has to follow the caller rather than being fixed either way.
+    let _guard = with_fixture_home();
+
+    let skipped = Recorder::default();
+    cli::list(&skipped, true).expect("fixture list should run");
+    assert_eq!(
+        &skipped.started.lock().unwrap()[0].argv[1..],
+        ["list", "--no-pull", "--json"]
+    );
+
+    let refreshed = Recorder::default();
+    cli::list(&refreshed, false).expect("fixture list should run");
+    assert_eq!(&refreshed.started.lock().unwrap()[0].argv[1..], ["list", "--json"]);
+}
+
+#[test]
 fn list_parses_the_recorded_catalog() {
     let _guard = with_fixture_home();
-    let entries: Vec<Entry> = cli::list(&Recorder::default()).expect("fixture list should parse");
+    let entries: Vec<Entry> =
+        cli::list(&Recorder::default(), false).expect("fixture list should parse");
 
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].name, "atlassian-toolkit");

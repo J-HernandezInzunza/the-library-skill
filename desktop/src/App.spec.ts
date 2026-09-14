@@ -8,7 +8,7 @@ import App from "./App.vue";
 // never render inside a test, however many times it is awaited.
 import "./components/FirstRun.vue";
 import { catalog, entry } from "./testing/factories";
-import { answer, commandsCalled, resetTauri, setTauri } from "./testing/tauri";
+import { answer, calls, commandsCalled, resetTauri, setTauri } from "./testing/tauri";
 import type { Catalog, Entry } from "./types";
 
 afterEach(resetTauri);
@@ -41,6 +41,158 @@ async function mountFailing(error: unknown) {
   for (let i = 0; i < 4; i += 1) await flushPromises();
   return app;
 }
+
+describe("the disabled tab", () => {
+  /** An entry the CLI reports as switched off. */
+  function off(name: string) {
+    return entry({ name, installed: true, state: "disabled", scopes: ["global"] });
+  }
+
+  it("is absent while nothing is switched off, rather than offering an empty list", async () => {
+    const app = await mountApp([entry({ name: "grilling", installed: true, state: "installed" })]);
+
+    expect(app.find(".catalog-tabs__tab--off").exists()).toBe(false);
+    expect(app.find(".catalog-tabs__divider").exists()).toBe(false);
+  });
+
+  it("appears with a count once something is, even with one catalog and no other tabs", async () => {
+    // The tab strip is otherwise hidden for a single catalog, which would leave a
+    // one-catalog setup with nowhere to find what it had switched off.
+    const app = await mountApp([off("herdr"), entry({ name: "grilling", installed: true })]);
+
+    const tab = app.find(".catalog-tabs__tab--off");
+    expect(tab.exists()).toBe(true);
+    expect(tab.text()).toContain("disabled");
+    expect(tab.text()).toContain("1");
+  });
+
+  it("shows only the switched-off entries when picked", async () => {
+    const app = await mountApp([
+      off("herdr"),
+      entry({ name: "grilling", installed: true, state: "installed", scopes: ["global"] }),
+      entry({ name: "absent-one", state: "not_installed" }),
+    ]);
+
+    await app.find(".catalog-tabs__tab--off").trigger("click");
+
+    expect(app.findAll(".entry-list__name").map((name) => name.text())).toEqual(["herdr"]);
+  });
+
+  it("falls back to All when the last switched-off entry is switched back on", async () => {
+    // The one tab you can empty from inside it. Emptying it used to strand the app: the
+    // rows went, the tab button went with them, and what was left was a selection with no
+    // button in the strip and an empty list saying nothing about why.
+    const app = await mountApp([off("herdr"), entry({ name: "grilling", installed: true })]);
+    await app.find(".catalog-tabs__tab--off").trigger("click");
+    expect(app.findAll(".entry-list__name").map((name) => name.text())).toEqual(["herdr"]);
+
+    // The refetch after the toggle: nothing is disabled any more.
+    answer("library_list", [
+      entry({ name: "herdr", installed: true, state: "installed", scopes: ["global"] }),
+      entry({ name: "grilling", installed: true }),
+    ]);
+    app.findComponent({ name: "EntryList" }).vm.$emit("changed");
+    await flushPromises();
+
+    expect(app.find(".catalog-tabs__tab--off").exists()).toBe(false);
+    expect(app.findAll(".entry-list__name").map((name) => name.text())).toEqual([
+      "herdr",
+      "grilling",
+    ]);
+  });
+
+  it("stays put when a load fails, rather than moving the user off the tab it emptied", async () => {
+    // A failure empties `entries`, which would read as "nothing is disabled" and quietly
+    // change the tab under a banner that is about to be retried.
+    const app = await mountApp([off("herdr")]);
+    await app.find(".catalog-tabs__tab--off").trigger("click");
+
+    answer("library_list", () => {
+      throw { kind: "cli", code: 1, stderr: "catalog unreadable" };
+    });
+    app.findComponent({ name: "EntryList" }).vm.$emit("changed");
+    await flushPromises();
+
+    // The list is gone behind the error banner, so the retry comes from Refresh.
+    answer("library_list", [off("herdr")]);
+    await app.findAll("button").find((button) => button.text() === "Refresh")!.trigger("click");
+    await flushPromises();
+
+    expect(app.findAll(".entry-list__name").map((name) => name.text())).toEqual(["herdr"]);
+  });
+
+  it("counts across every catalog, not just the rows the current tab shows", async () => {
+    const app = await mountApp(
+      [off("herdr"), off("grilling")],
+      [catalog({ id: "mine" }), catalog({ id: "shared", precedence: 2 })],
+    );
+
+    // Sitting on one catalog's tab must not change what the disabled tab reports: the
+    // count is a fact about the machine, not about what is on screen.
+    await app.findAll(".catalog-tabs__tab")[1].trigger("click");
+
+    expect(app.find(".catalog-tabs__tab--off").text()).toContain("2");
+  });
+});
+
+describe("when the app refreshes its catalog clones", () => {
+  /** Every `library_list` call so far, as the value of its `noPull` argument. */
+  function listCalls() {
+    return calls.filter((call) => call.command === "library_list").map((call) => call.args.noPull);
+  }
+
+  it("pulls when it opens, because that is the moment freshness was asked for", async () => {
+    await mountApp([entry({ name: "grilling" })]);
+
+    expect(listCalls()).toEqual([false]);
+  });
+
+  it("reads the clone on disk for a refetch a command asked for", async () => {
+    // The change that makes a toggle feel local: a refetch used to run a `git pull
+    // --ff-only` per remote catalog first, 0.75s of the 0.88s the read cost. Nothing
+    // about flipping a skill off wants the network.
+    const app = await mountApp([entry({ name: "grilling" })]);
+
+    app.findComponent({ name: "EntryList" }).vm.$emit("changed");
+    await flushPromises();
+
+    expect(listCalls()).toEqual([false, true]);
+  });
+
+  it("keeps the rows on screen while it re-reads them", async () => {
+    // The flash this replaced: `loading` gated the list itself, so a refetch unmounted all
+    // 42 rows, ran a spinner in their place, and faded the whole list back in — to show
+    // that one row had changed. Only a first load has no list to keep.
+    const app = await mountApp([entry({ name: "grilling" })]);
+    let land = (_: Entry[]) => {};
+    answer("library_list", () => new Promise<Entry[]>((resolve) => (land = resolve)));
+
+    app.findComponent({ name: "EntryList" }).vm.$emit("changed");
+    await flushPromises();
+
+    expect(app.find(".entry-list").exists()).toBe(true);
+    expect(app.find(".busy").exists()).toBe(false);
+    // The counts line is the other half of the judder: it sits above the list, so losing
+    // it for a frame moved every row below it up and then back down.
+    expect(app.find(".summary").exists()).toBe(true);
+    // Marked as being re-read, and inert while it is: the rows on screen are one command
+    // away from being replaced.
+    expect(app.find(".entry-list").classes()).toContain("is-refreshing");
+
+    land([entry({ name: "grilling" })]);
+    await flushPromises();
+    expect(app.find(".entry-list").classes()).not.toContain("is-refreshing");
+  });
+
+  it("pulls again when the user presses Refresh", async () => {
+    const app = await mountApp([entry({ name: "grilling" })]);
+
+    await app.findAll("button").find((button) => button.text() === "Refresh")!.trigger("click");
+    await flushPromises();
+
+    expect(listCalls()).toEqual([false, false]);
+  });
+});
 
 describe("the catalog view's error states", () => {
   it("tells you where the wrapper was expected and what to set", async () => {

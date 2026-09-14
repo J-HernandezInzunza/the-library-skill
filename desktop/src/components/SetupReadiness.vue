@@ -274,7 +274,7 @@ watch(
   align-self: flex-start;
   margin-top: 0.15rem;
   padding: 0.35rem 0.8rem;
-  border: 1px solid rgba(128, 128, 128, 0.4);
+  border: 1px solid var(--border-control);
   border-radius: 0.35rem;
   background: transparent;
   color: inherit;
@@ -332,13 +332,13 @@ watch(
   opacity: 0.6;
 }
 .setup__headline--ready {
-  color: #16a34a;
+  color: var(--status-ok-ink);
 }
 .setup__headline--attention {
-  color: #b45309;
+  color: var(--status-attention-ink);
 }
 .setup__headline--problem {
-  color: #dc2626;
+  color: var(--status-danger-ink);
 }
 .setup__detail,
 .setup__summary {
@@ -350,7 +350,7 @@ watch(
 .setup__summary {
   margin-top: 0.7rem;
   padding-left: 0.7rem;
-  border-left: 3px solid rgba(128, 128, 128, 0.35);
+  border-left: 3px solid var(--border-control);
   opacity: 0.95;
 }
 .setup__section {
@@ -375,7 +375,7 @@ watch(
   font-size: 0.75rem;
   line-height: 1.45;
   overflow-wrap: anywhere;
-  color: #dc2626;
+  color: var(--status-danger-ink);
 }
 .setup__prereqs li {
   display: flex;
@@ -395,12 +395,12 @@ watch(
   opacity: 0.7;
 }
 .setup__prereq--unmet .setup__prereq-detail {
-  color: #b45309;
+  color: var(--status-attention-ink);
 }
 .setup__secret {
   padding: 0.55rem 0.75rem;
   border-radius: 8px;
-  background: rgba(128, 128, 128, 0.08);
+  background: var(--surface-raised);
 }
 .setup__secret-head {
   display: flex;
@@ -423,17 +423,17 @@ watch(
   padding: 0.1rem 0.45rem;
   border-radius: 999px;
   white-space: nowrap;
-  background: rgba(128, 128, 128, 0.18);
+  background: var(--surface-sunken);
   opacity: 0.8;
 }
 .setup__presence--stored {
-  background: rgba(34, 197, 94, 0.18);
-  color: #16a34a;
+  background: var(--status-ok-tint);
+  color: var(--status-ok-ink);
   opacity: 1;
 }
 .setup__presence--missing {
-  background: rgba(245, 158, 11, 0.2);
-  color: #b45309;
+  background: var(--status-attention-tint);
+  color: var(--status-attention-ink);
   font-weight: 600;
   opacity: 1;
 }

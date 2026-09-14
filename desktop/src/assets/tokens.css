@@ -1,0 +1,170 @@
+/*
+ * Every colour the app uses, in one place.
+ *
+ * Imported once from `main.ts`, so it is loaded before any component's styles and is
+ * reachable from all of them: a `<style scoped>` block cannot see another component's
+ * scoped block, but custom properties inherit through the document, so `:root` is the
+ * one place a value can be declared and used everywhere.
+ *
+ * The rule this file exists to enforce: **no component declares a colour literal.** A
+ * spec (`tokens.spec.ts`) fails the build if one does, because the drift this replaces was
+ * not careless — it was 26 files each picking a reasonable value in isolation, arriving at
+ * 17 different alphas of the same grey and two different yellows for one meaning.
+ *
+ * Two things deliberately stay out of here: `--catalog-hue`, which is per-element data
+ * rather than a theme value (each catalog carries its own hue), and pure geometry like the
+ * switch knob's white, which is part of the control's construction and has no meaning to
+ * name. The spec's allowlist names them.
+ *
+ * ## Reading a token name
+ *
+ *   --surface-*   what a thing sits ON
+ *   --text-*      ink with no status meaning
+ *   --border-*    a line, by how much it should assert itself
+ *   --status-*    the app's own vocabulary: what the CLI reports about an entry
+ *   --control-*   chrome the user operates, deliberately outside the status vocabulary
+ *   --accent-*    the app's own voice: progress, primary actions, selection
+ *
+ * ## Light and dark
+ *
+ * Surfaces and borders never need a dark variant, and that is not an accident: they are
+ * all alpha-composited grey-128, which darkens over a light ground and lightens over a
+ * dark one. Only the inks, which are real hues, are declared twice.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* ---- Surfaces ------------------------------------------------------------------
+     A ramp, not a set: each step is the same grey at more alpha, so "deeper" is a
+     position on one scale rather than a different colour. */
+  --surface-page: #f6f6f7;
+  /* For the one thing that still floats over content: the activity bar's label. It needs
+     a surface of its own, since a bare backdrop-filter leaves the text overlapping the
+     view. */
+  --surface-sticky: rgba(246, 246, 247, 0.95);
+  /* Below the card — a walkthrough turn nested inside a turn. */
+  --surface-recessed: rgba(128, 128, 128, 0.05);
+  --surface-raised: rgba(128, 128, 128, 0.08);
+  --surface-hover: rgba(128, 128, 128, 0.14);
+  --surface-sunken: rgba(128, 128, 128, 0.2);
+  --surface-strong: rgba(128, 128, 128, 0.3);
+
+  /* ---- Text ----------------------------------------------------------------------
+     Only two: secondary and tertiary text is `opacity` throughout the app, which is one
+     mechanism that works on both grounds instead of two palettes that can disagree. */
+  --text-primary: #1a1a1a;
+  --text-on-accent: #ffffff;
+
+  /* ---- Borders -------------------------------------------------------------------
+     Three weights, by what the line is for, because that is what the 9 alphas this
+     replaces were actually choosing between. */
+  --border-subtle: rgba(128, 128, 128, 0.15);
+  --border-hairline: rgba(128, 128, 128, 0.25);
+  --border-control: rgba(128, 128, 128, 0.4);
+
+  /* ---- Status --------------------------------------------------------------------
+     Keyed to `Row["tone"]` in catalog.ts, plus danger for failures. Each is a tint (the
+     badge fill), an edge (a border or rule drawn in the same family), and an ink.
+
+     Every ink here is darker than the value it replaced. The old set was tuned by eye
+     against white and then used on a tinted pill over a card, where `installed` green
+     came out at 2.47:1 — below even the 3:1 floor for large text, at a size (0.7rem)
+     where 4.5:1 applies. These are verified against the real composited ground: tint
+     over card over page, in both themes, all at or above 4.9:1. */
+  --status-ok-tint: rgba(34, 197, 94, 0.18);
+  --status-ok-edge: rgba(34, 197, 94, 0.35);
+  --status-ok-ink: #166534;
+
+  --status-absent-tint: rgba(128, 128, 128, 0.18);
+  --status-absent-ink: #3f3f46;
+
+  --status-attention-tint: rgba(245, 158, 11, 0.2);
+  --status-attention-edge: rgba(245, 158, 11, 0.4);
+  --status-attention-ink: #92400e;
+
+  /* Switched off. Violet on purpose: it reads as neither the green of a skill the agent
+     is loading nor the grey of one that was never installed. Shared with the detail
+     page's timing note, which is the same fact in a place with room to explain it. */
+  --status-disabled-tint: rgba(139, 92, 246, 0.18);
+  --status-disabled-edge: rgba(139, 92, 246, 0.6);
+  --status-disabled-ink: #6d28d9;
+
+  /* Precedence, which is a *different* fact from install state — see the note on `Row`
+     in catalog.ts. It currently shares the attention family, so the two read alike on a
+     card that shows both; pointing these three at a desaturated slate is the one-line
+     change that separates them. */
+  --status-override-tint: rgba(234, 179, 8, 0.18);
+  --status-override-edge: rgba(234, 179, 8, 0.6);
+  --status-override-ink: #92400e;
+
+  --status-danger-tint: rgba(220, 38, 38, 0.1);
+  --status-danger-edge: rgba(220, 38, 38, 0.4);
+  --status-danger-ink: #991b1b;
+
+  /* ---- Accent --------------------------------------------------------------------
+     The app talking about itself: work in progress, the primary action, the current
+     selection. Never a report about an entry — that is what --status-* is for. */
+  --accent-tint: rgba(59, 130, 246, 0.14);
+  --accent-edge: rgba(59, 130, 246, 0.4);
+  --accent-ink: #1d4ed8;
+  /* The lighter blue stays for progress chrome and the selection tick: those are shapes
+     on a surface rather than text, so they are read by their fill and need to stay
+     visible on a dark ground, where --accent-ink is close to the background. */
+  --accent-bright: #3b82f6;
+
+  /* ---- Controls ------------------------------------------------------------------
+     The on/off switch, deliberately the only chromaless thing on a card. Every other
+     colour here carries a meaning — green installed, amber attention, violet switched
+     off, red destructive, plus the catalog hues — so a switch in any of them reads as a
+     status rather than a control, and one in green says the same thing as the
+     `installed` badge sitting beside it. Graphite is the one value that cannot be
+     mistaken for a report of state, including under any colour-vision deficiency. */
+  --control-on: #3f3f46;
+  --control-on-knob: #ffffff;
+  --control-off: rgba(128, 128, 128, 0.25);
+  /* The off track composites to rgb(210,210,210) on a light card — 1.29:1 against it, and
+     1.51:1 against its own white knob, which is invisible rather than subtle. No alpha of
+     grey-128 fixes that (even opaque it reaches 3.95:1), so the edge is what makes the off
+     state perceivable at all: 4.52:1. */
+  --control-off-edge: #6b6b72;
+
+  /* ---- Catalog identity ----------------------------------------------------------
+     The hue itself is per-element data (catalogHue() in catalog.ts sets --catalog-hue on
+     the element), but the saturation and lightness applied to it are a theme decision and
+     were drifting: 65%/50%, 65%/52% and one stray 45%/50%. These resolve lazily — the
+     `var(--catalog-hue)` inside is substituted at the point of *use*, so the element's own
+     hue is what lands, not :root's fallback.
+
+     Note the fills are known to be low-contrast for white text at some hues (hue 155
+     measures 1.96:1). Fixing that is a lightness change here plus a hue swap in
+     catalog.ts, and it changes what a catalog looks like to someone who has learned it. */
+  --catalog-fill: hsl(var(--catalog-hue, 220), 65%, 50%);
+  --catalog-edge: hsl(var(--catalog-hue, 220), 65%, 52%);
+  --catalog-wash: hsl(var(--catalog-hue, 220), 65%, 50%, 0.08);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface-page: #1e1e20;
+    --surface-sticky: rgba(30, 30, 32, 0.88);
+    --text-primary: #e6e6e6;
+
+    /* The inks, and only the inks. Light-mode hues on the dark card measured between
+       2.05:1 and 3.31:1 — dark mode was shipping with badge text no one could read.
+       Two components had already worked this out and patched it locally; these are
+       those values, promoted to where every component gets them. */
+    --status-ok-ink: #4ade80;
+    --status-absent-ink: #d4d4d8;
+    --status-attention-ink: #fcd34d;
+    --status-disabled-ink: #c4b5fd;
+    --status-override-ink: #fcd34d;
+    --status-danger-ink: #fca5a5;
+    --accent-ink: #93c5fd;
+
+    /* Inverted, not brightened: on a dark card the filled track has to be the light one
+       for "on" to still read as the stronger of the two states. */
+    --control-on: #d4d4d8;
+    --control-on-knob: #27272a;
+  }
+}

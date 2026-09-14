@@ -59,10 +59,22 @@ describe("EntryDetail session timing", () => {
       ],
     });
 
-    expect(view.find(".entry-detail__timing").text()).toBe(
+    expect(view.find(".entry-detail__timing").text()).toContain(
       "Switched off, so nothing loads it. Claude Code loads skills when a session starts, " +
         "so this takes effect in your next session, not one you already have open.",
     );
+    // The page with room for the path. The list's badge used to carry it, at a width that
+    // pushed the badge onto its own line, and it was elided past reading there anyway.
+    expect(view.find(".entry-detail__parked").text()).toBe(
+      "Parked at /Users/dev/.claude/skills-disabled/herdr",
+    );
+  });
+
+  it("says nothing about a parked path when the CLI reports none", async () => {
+    const view = await mountDetail({ installed: true, state: "disabled", scopes: ["global"] });
+
+    expect(view.find(".entry-detail__timing").exists()).toBe(true);
+    expect(view.find(".entry-detail__parked").exists()).toBe(false);
   });
 
   it("says nothing about sessions for an entry the agent is loading", async () => {

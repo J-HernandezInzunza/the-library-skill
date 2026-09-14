@@ -30,8 +30,8 @@ withDefaults(defineProps<{ label?: string; inline?: boolean }>(), {
   width: 0.85rem;
   height: 0.85rem;
   border-radius: 50%;
-  border: 2px solid rgba(128, 128, 128, 0.3);
-  border-top-color: #3b82f6;
+  border: 2px solid var(--border-control);
+  border-top-color: var(--accent-bright);
   animation: busy-spin 0.7s linear infinite;
 }
 
@@ -44,9 +44,9 @@ withDefaults(defineProps<{ label?: string; inline?: boolean }>(), {
 @media (prefers-reduced-motion: reduce) {
   .busy__spinner {
     animation: none;
-    border-top-color: rgba(128, 128, 128, 0.3);
+    border-top-color: var(--border-control);
     /* Without the spin the ring says nothing, so the dot carries the state instead. */
-    background: #3b82f6;
+    background: var(--accent-bright);
   }
 }
 </style>

@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { catalogHue, SESSION_TIMING, type Row } from "../catalog";
+import { archivedPath, catalogHue, SESSION_TIMING, type Row } from "../catalog";
 import { withActivity } from "../commandActivity";
 import { describeAppError, type Catalog, type ToggleReport } from "../types";
-import StatusBanner from "./StatusBanner.vue";
+import { notify } from "../toasts";
 
 const props = defineProps<{
   rows: Row[];
@@ -27,19 +27,36 @@ const emit = defineEmits<{
   changed: [];
 }>();
 
-/** The entry a toggle is in flight for, so only that one control goes inert. */
-const toggling = ref<string | null>(null);
-
-/** The last toggle failure, named, because the list shows many entries at once. */
-const toggleError = ref<{ name: string; message: string } | null>(null);
+/**
+ * The entries a toggle is in flight for, so only those controls go inert.
+ *
+ * A set rather than one name: the switch on every *other* row stays live while one is
+ * moving, so a second flip can start before the first has come back.
+ */
+const toggling = ref(new Set<string>());
 
 /**
- * The last toggle that landed, so the list can say when it reaches the agent.
+ * Flips the CLI has not confirmed yet, as name → the state the user asked for.
  *
- * Said here rather than only on the badge because this is the moment it matters: the user
- * who just switched a skill off is about to go back to a terminal that still has it.
+ * The switch renders from this before it renders from the catalog, so it moves under the
+ * finger instead of sitting still through a command and the re-read that follows it. This
+ * is intent, not truth — it survives only until fresh rows arrive, and a refusal drops it
+ * so the row snaps back to what is actually on disk.
  */
-const toggleNote = ref<{ name: string; turnedOn: boolean } | null>(null);
+const pending = ref(new Map<string, boolean>());
+
+watch(
+  () => props.rows,
+  () => {
+    // Fresh rows are the authority, so an intent that is no longer in flight has done its
+    // job: it existed only to cover the gap until this arrived. Intents for a toggle still
+    // running are kept — the list also re-renders on every search keystroke, and dropping
+    // one then would snap the switch back while its command is still going.
+    for (const name of [...pending.value.keys()]) {
+      if (!toggling.value.has(name)) pending.value.delete(name);
+    }
+  },
+);
 
 /** True while the list is in selection mode at all. */
 const selecting = computed(() => props.selected !== null && props.selected !== undefined);
@@ -71,16 +88,24 @@ function switchedOff(row: Row): boolean {
   return row.entry.state === "disabled";
 }
 
+/** Where the switch sits: the unconfirmed flip if there is one, otherwise the catalog. */
+function switchedOn(row: Row): boolean {
+  return pending.value.get(row.entry.name) ?? !switchedOff(row);
+}
+
 /**
- * The badge's hover text: the full status, and for a switched-off row when it lands.
+ * A switched-off card's hover text: where the content went, and when the change lands.
  *
- * The card has no room for the sentence itself — the badge is already an elided absolute
- * path capped at 45% of the head — and the two places that do have room are the banner
- * after a toggle and the detail view.
+ * Both are longer than a badge in a wrapping head row can hold, which is why the badge
+ * says only `disabled · <scope>`. It hangs off the card rather than the badge because the
+ * button that opens the entry is stretched over the badge, and the top element owns the
+ * hover. The two surfaces with room for the sentence itself are the banner after a toggle
+ * and the detail view.
  */
 function statusTitle(row: Row): string {
   if (!switchedOff(row)) return row.status;
-  return `${row.status}\n${SESSION_TIMING}`;
+  const parked = archivedPath(row.entry);
+  return `${row.status}\n${parked ? `Parked at ${parked}\n` : ""}${SESSION_TIMING}`;
 }
 
 /**
@@ -88,7 +113,7 @@ function statusTitle(row: Row): string {
  *
  * Skills only for now, and only once there is content on the machine to switch: the CLI
  * refuses anything else. Hidden during selection, where the card is a pick target and a
- * second, mutating button beside it would be a trap.
+ * second, mutating control inside it would be a trap.
  */
 function switchable(row: Row): boolean {
   if (selecting.value || row.entry.type !== "skill") return false;
@@ -107,19 +132,27 @@ async function flip(row: Row) {
   const turningOn = switchedOff(row);
   const command = turningOn ? "entry_enable" : "entry_disable";
 
-  toggling.value = name;
-  toggleError.value = null;
-  toggleNote.value = null;
+  // Before the command, not after: the whole point is that the switch is already where
+  // the user put it while the CLI catches up.
+  pending.value.set(name, turningOn);
+  toggling.value.add(name);
   try {
     await withActivity(`${turningOn ? "enabling" : "disabling"} ${name}…`, () =>
       invoke<ToggleReport>(command, { names: [name] }),
     );
-    toggleNote.value = { name, turnedOn: turningOn };
+    // The moment the timing matters: the user who just switched a skill off is about to
+    // go back to a terminal that still has it loaded.
+    notify({
+      kind: "success",
+      message: `${name} is switched ${turningOn ? "on" : "off"}. ${SESSION_TIMING}`,
+    });
     emit("changed");
   } catch (e) {
-    toggleError.value = { name, message: describeAppError(e) };
+    // Nothing moved, so the switch must not claim it did.
+    pending.value.delete(name);
+    notify({ kind: "error", message: `Could not switch ${name}.`, detail: describeAppError(e) });
   } finally {
-    toggling.value = null;
+    toggling.value.delete(name);
   }
 }
 
@@ -130,29 +163,11 @@ const hueByCatalog = computed(
 
 <template>
   <ul class="entry-list">
-    <!-- Top of the list rather than under the control that was clicked, which is where
-         this app reports every command. A list item because the list is the surface. -->
-    <li v-if="toggleError">
-      <StatusBanner kind="error" :detail="toggleError.message">
-        Could not switch {{ toggleError.name }}.
-      </StatusBanner>
-    </li>
-
-    <li v-if="toggleNote">
-      <StatusBanner kind="success">
-        {{ toggleNote.name }} is switched {{ toggleNote.turnedOn ? "on" : "off" }}.
-        {{ SESSION_TIMING }}
-      </StatusBanner>
-    </li>
-
     <li
       v-for="row in rows"
       :key="`${row.entry.catalog}:${row.entry.name}`"
       class="entry-list__row"
     >
-      <!-- The card is the unit, and the button fills it. Controls sit beside the button
-           rather than inside it, so a future per-entry control can be a real interactive
-           element without nesting one button in another. -->
       <div
         class="entry-list__card"
         :class="{
@@ -160,80 +175,93 @@ const hueByCatalog = computed(
           'entry-list__card--off': switchedOff(row),
         }"
       >
-      <button
-        type="button"
-        class="entry-list__item"
-        :disabled="selecting && !selectable(row)"
-        :aria-pressed="selectable(row) ? selected?.has(row.entry.name) : undefined"
-        @click="activate(row)"
-      >
-      <div class="entry-list__head">
-        <span class="entry-list__name">{{ row.entry.name }}</span>
-        <span class="entry-list__type">{{ row.entry.type }}</span>
+        <div class="entry-list__item">
+          <!-- An empty button stretched over the card, rather than one wrapping its text.
+               The card must stay the same width whether or not the row has an on/off
+               control, which means the control lives *inside* the card — and a button
+               inside a button is invalid markup the browser resolves by swallowing one of
+               the two clicks. This keeps the whole card clickable and leaves the inside
+               free for real interactive elements, which sit above it on the z-axis. -->
+          <button
+            type="button"
+            class="entry-list__open"
+            :disabled="selecting && !selectable(row)"
+            :aria-pressed="selectable(row) ? selected?.has(row.entry.name) : undefined"
+            :aria-label="`${selecting ? 'Select' : 'Open'} ${row.entry.name}`"
+            :title="switchedOff(row) ? statusTitle(row) : undefined"
+            @click="activate(row)"
+          ></button>
 
-        <span
-          v-if="showOrigin"
-          class="entry-list__origin"
-          :style="{ '--catalog-hue': hueByCatalog.get(row.entry.catalog) ?? 220 }"
-        >
-          {{ row.entry.catalog }}
+          <div class="entry-list__head">
+            <span class="entry-list__name">{{ row.entry.name }}</span>
+            <span class="entry-list__type">{{ row.entry.type }}</span>
+
+            <span
+              v-if="showOrigin"
+              class="entry-list__origin"
+              :style="{ '--catalog-hue': hueByCatalog.get(row.entry.catalog) ?? 220 }"
+            >
+              {{ row.entry.catalog }}
+            </span>
+
+            <span v-if="row.overriddenBy" class="entry-list__overridden">
+              overridden by {{ row.overriddenBy }}
+            </span>
+
+            <span v-if="row.overrides.length" class="entry-list__overrides">
+              overrides {{ row.overrides.join(", ") }}
+            </span>
+
+            <!-- The switch and the state it reports, right-aligned as one group so they
+                 wrap together. Right-aligning them separately put the switch mid-row,
+                 because flexbox splits the free space between two auto margins rather
+                 than giving it all to the first. -->
+            <span class="entry-list__aside">
+              <!-- A track and a knob, not a labelled button: the label had to be read to
+                   work out which way the row would move, and it was the only thing on the
+                   card whose width varied with its state. -->
+              <button
+                v-if="switchable(row)"
+                type="button"
+                role="switch"
+                class="entry-list__switch"
+                :aria-checked="switchedOn(row)"
+                :disabled="toggling.has(row.entry.name)"
+                :aria-label="`${row.entry.name} enabled`"
+                :title="`${switchedOn(row) ? 'Disable' : 'Enable'} ${row.entry.name}`"
+                @click="flip(row)"
+              ></button>
+
+              <!-- Whether this copy is on the machine, held apart from the precedence
+                   pills so an overridden copy can say both "overridden by X" and "not
+                   installed". -->
+              <span class="entry-list__status" :class="`entry-list__status--${row.tone}`">
+                {{ row.status }}
+              </span>
+            </span>
+          </div>
+
+          <p class="entry-list__desc">{{ row.entry.description }}</p>
+          <p v-if="row.entry.requires.length" class="entry-list__requires">
+            requires: {{ row.entry.requires.join(", ") }}
+          </p>
+        </div>
+
+        <!-- The pick indicator, outside the card so it cannot be mistaken for part of it.
+             Rendered only in selection mode, so no row reserves space for nothing. -->
+        <span v-if="selectable(row)" class="entry-list__controls">
+          <span
+            class="entry-list__tick"
+            :class="{ 'entry-list__tick--on': selected?.has(row.entry.name) }"
+            aria-hidden="true"
+          >
+            <!-- Drawn, not a glyph, so it cannot pick up a font's baseline: two legs of
+                 different length is a shape CSS gradients cannot express. -->
+            <svg v-if="selected?.has(row.entry.name)" viewBox="0 0 16 16">
+              <path d="M4 8.4l2.7 2.7L12 5.2" />
+            </svg>
+          </span>
         </span>
-
-        <span v-if="row.overriddenBy" class="entry-list__overridden">
-          overridden by {{ row.overriddenBy }}
-        </span>
-
-        <span v-if="row.overrides.length" class="entry-list__overrides">
-          overrides {{ row.overrides.join(", ") }}
-        </span>
-
-        <!-- Whether this copy is on the machine, held apart from the precedence pills so
-             an overridden copy can say both "overridden by X" and "not installed". The
-             full text is also the title, because a disabled badge carries the archive
-             path and that is longer than the card has room for. -->
-        <span
-          class="entry-list__status"
-          :class="`entry-list__status--${row.tone}`"
-          :title="statusTitle(row)"
-        >
-          {{ row.status }}
-        </span>
-      </div>
-
-      <p class="entry-list__desc">{{ row.entry.description }}</p>
-      <p v-if="row.entry.requires.length" class="entry-list__requires">
-        requires: {{ row.entry.requires.join(", ") }}
-      </p>
-      </button>
-
-      <!-- The slot beside the card button: the on/off control and the pick indicator.
-           Rendered only when it has something in it, so no row reserves space for
-           nothing. -->
-      <span v-if="selectable(row) || switchable(row)" class="entry-list__controls">
-        <button
-          v-if="switchable(row)"
-          type="button"
-          class="entry-list__switch"
-          :disabled="toggling === row.entry.name"
-          :aria-label="`${switchedOff(row) ? 'Enable' : 'Disable'} ${row.entry.name}`"
-          @click="flip(row)"
-        >
-          {{ switchedOff(row) ? "Enable" : "Disable" }}
-        </button>
-
-        <span
-          v-if="selectable(row)"
-          class="entry-list__tick"
-          :class="{ 'entry-list__tick--on': selected?.has(row.entry.name) }"
-          aria-hidden="true"
-        >
-          <!-- Drawn, not a glyph, so it cannot pick up a font's baseline: two legs of
-               different length is a shape CSS gradients cannot express. -->
-          <svg v-if="selected?.has(row.entry.name)" viewBox="0 0 16 16">
-            <path d="M4 8.4l2.7 2.7L12 5.2" />
-          </svg>
-        </span>
-      </span>
       </div>
     </li>
   </ul>
@@ -241,18 +269,25 @@ const hueByCatalog = computed(
 
 <style scoped>
 .entry-list__card {
+  position: relative;
   display: flex;
   align-items: stretch;
   border-radius: 10px;
   transition: background 0.12s ease;
 }
 .entry-list__card--picked {
-  background: rgba(59, 130, 246, 0.14);
+  background: var(--accent-tint);
 }
-/* Dimmed, because the content is on the machine but nothing is loading it. */
+/* Dimmed, because the content is on the machine but nothing is loading it. The text is
+   dimmed rather than the card: opacity composites a whole subtree, so fading the card
+   would fade the switch that undoes the state it is reporting, and the one control the
+   row offers would read as unavailable. */
 .entry-list__card--off > .entry-list__item {
-  opacity: 0.65;
   border-style: dashed;
+}
+.entry-list__card--off .entry-list__name,
+.entry-list__card--off .entry-list__desc {
+  opacity: 0.55;
 }
 .entry-list__card > .entry-list__item {
   flex: 1;
@@ -261,26 +296,57 @@ const hueByCatalog = computed(
 .entry-list__controls {
   display: flex;
   align-items: center;
-  padding: 0 0.9rem 0 0.2rem;
+  padding: 0 0.9rem 0 0.7rem;
 }
 .entry-list__switch {
-  margin-right: 0.5rem;
-  padding: 0.25rem 0.6rem;
-  border-radius: 6px;
-  border: 1px solid rgba(128, 128, 128, 0.4);
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  font-size: 0.75rem;
+  /* Above the stretched open button, so pressing the switch does not open the entry. */
+  position: relative;
+  z-index: 2;
+  flex: none;
+  width: 1.9rem;
+  height: 1.05rem;
+  padding: 0;
+  border: 1px solid var(--control-off-edge);
+  border-radius: 999px;
+  background: var(--control-off);
   cursor: pointer;
-  white-space: nowrap;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+.entry-list__switch::after {
+  /* The knob. A pseudo-element because the button has no text to lay out around. */
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0.1rem;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+  /* The knob is the light one in both states, because the off track is light and the on
+     track is dark. Only the on knob is a token: the off knob has to stay white to carry
+     any contrast at all against a track that is nearly the card colour. */
+  background: var(--text-on-accent);
+  transform: translateY(-50%);
+  transition: transform 0.12s ease;
+}
+.entry-list__switch[aria-checked="true"] {
+  background: var(--control-on);
+  border-color: var(--control-on);
+}
+.entry-list__switch[aria-checked="true"]::after {
+  background: var(--control-on-knob);
+}
+.entry-list__switch[aria-checked="true"]::after {
+  transform: translate(0.8rem, -50%);
 }
 .entry-list__switch:hover:not(:disabled) {
-  border-color: rgba(128, 128, 128, 0.7);
-  background: rgba(128, 128, 128, 0.14);
+  border-color: var(--control-on);
 }
 .entry-list__switch:disabled {
-  opacity: 0.5;
+  /* Only lightly faded: the switch has already moved to where the user put it, and the
+     point of moving it early is lost if the new position is hard to read. */
+  opacity: 0.7;
   cursor: progress;
 }
 .entry-list__tick {
@@ -289,12 +355,12 @@ const hueByCatalog = computed(
   width: 1.15rem;
   height: 1.15rem;
   border-radius: 5px;
-  border: 2px solid rgba(128, 128, 128, 0.5);
+  border: 2px solid var(--border-control);
 }
 .entry-list__tick--on {
-  border-color: #3b82f6;
-  background: #3b82f6;
-  color: #fff;
+  border-color: var(--accent-bright);
+  background: var(--accent-bright);
+  color: var(--text-on-accent);
 }
 .entry-list__tick svg {
   width: 100%;
@@ -314,21 +380,42 @@ const hueByCatalog = computed(
   gap: 0.6rem;
 }
 .entry-list__item {
+  position: relative;
   display: block;
   width: 100%;
   padding: 0.85rem 1rem;
   border-radius: 10px;
-  background: rgba(128, 128, 128, 0.08);
-  border: 1px solid rgba(128, 128, 128, 0.15);
-  color: inherit;
-  font: inherit;
-  font-weight: normal;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
   text-align: left;
   cursor: pointer;
 }
 .entry-list__item:hover {
-  border-color: rgba(128, 128, 128, 0.4);
-  background: rgba(128, 128, 128, 0.14);
+  border-color: var(--border-control);
+  background: var(--surface-hover);
+}
+.entry-list__open {
+  /* Stretched over the card and invisible: the card is the hit target, the button is
+     only what makes it one. Above 0 rather than at it, because the description and
+     several pills are dimmed with `opacity`, and an element with opacity below 1 paints
+     where a `z-index: 0` positioned element would — at 0 the overlay would sit under
+     them, and clicking an entry's own description would miss the button that opens it. */
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  background: none;
+  cursor: inherit;
+}
+.entry-list__open:disabled {
+  cursor: default;
+}
+/* The focus ring belongs on the card, not on the invisible button filling it. */
+.entry-list__open:focus-visible {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: 1px;
 }
 .entry-list__head {
   display: flex;
@@ -349,48 +436,50 @@ const hueByCatalog = computed(
   --catalog-hue: 220;
   padding: 0.12rem 0.5rem;
   border-radius: 999px;
-  background: hsl(var(--catalog-hue), 65%, 50%);
-  color: #fff;
+  background: var(--catalog-fill);
+  color: var(--text-on-accent);
   font-size: 0.7rem;
   font-weight: 600;
   letter-spacing: 0.02em;
 }
-.entry-list__status {
+.entry-list__aside {
   /* Pushed to the card's top-right, apart from the precedence pills on the left. */
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.entry-list__status {
   font-size: 0.7rem;
   padding: 0.1rem 0.45rem;
   border-radius: 999px;
   white-space: nowrap;
 }
 .entry-list__status--installed {
-  background: rgba(34, 197, 94, 0.18);
-  color: #16a34a;
+  background: var(--status-ok-tint);
+  color: var(--status-ok-ink);
 }
 .entry-list__status--absent {
-  background: rgba(128, 128, 128, 0.18);
+  background: var(--surface-sunken);
   opacity: 0.8;
 }
 .entry-list__status--disabled {
   /* Violet, so "switched off" reads as neither the green of a loading skill nor the grey
      of one that was never installed. */
-  background: rgba(139, 92, 246, 0.18);
-  color: #7c3aed;
-  max-width: 45%;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  background: var(--status-disabled-tint);
+  color: var(--status-disabled-ink);
 }
 .entry-list__status--attention {
-  background: rgba(245, 158, 11, 0.2);
-  color: #b45309;
+  background: var(--status-attention-tint);
+  color: var(--status-attention-ink);
   font-weight: 600;
 }
 .entry-list__overridden {
   font-size: 0.7rem;
   padding: 0.1rem 0.45rem;
   border-radius: 999px;
-  background: rgba(234, 179, 8, 0.18);
-  color: #b45309;
+  background: var(--status-override-tint);
+  color: var(--status-attention-ink);
 }
 .entry-list__overrides {
   font-size: 0.7rem;

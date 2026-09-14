@@ -94,8 +94,8 @@ function shown(run: LoggedCommand): string {
 .command-log {
   position: relative;
   z-index: 20;
-  border-top: 1px solid rgba(128, 128, 128, 0.25);
-  background: var(--app-bg);
+  border-top: 1px solid var(--border-hairline);
+  background: var(--surface-page);
 }
 .command-log__toggle {
   display: flex;
@@ -141,11 +141,11 @@ function shown(run: LoggedCommand): string {
   overflow-y: auto;
   margin: 0;
   padding: 0.5rem 1rem 0.75rem;
-  border-top: 1px solid rgba(128, 128, 128, 0.25);
+  border-top: 1px solid var(--border-hairline);
   /* Opaque, not the translucent sticky surface: it floats over the view, and a translucent
      one let the transcript render straight through the log — two layers of text on top of
      each other, which is what it looked like in the app. */
-  background: var(--app-bg);
+  background: var(--surface-page);
 }
 .command-log__row {
   display: flex;
@@ -158,14 +158,14 @@ function shown(run: LoggedCommand): string {
   min-width: 1.5rem;
   text-align: right;
   font-variant-numeric: tabular-nums;
-  color: #16a34a;
+  color: var(--status-ok-ink);
 }
 .command-log__status--running {
   color: inherit;
   opacity: 0.5;
 }
 .command-log__status--failed {
-  color: #dc2626;
+  color: var(--status-danger-ink);
   font-weight: 600;
 }
 .command-log__argv {
@@ -182,7 +182,7 @@ function shown(run: LoggedCommand): string {
   flex: none;
   align-self: flex-start;
   padding: 0 0.35rem;
-  border: 1px solid rgba(128, 128, 128, 0.35);
+  border: 1px solid var(--border-control);
   border-radius: 0.25rem;
   background: transparent;
   color: inherit;

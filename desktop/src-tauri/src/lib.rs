@@ -64,8 +64,8 @@ where
 /// subcommand: filtering in the UI is instant, offline, and costs no subprocess
 /// per keystroke.
 #[tauri::command]
-async fn library_list(app: tauri::AppHandle) -> Result<Vec<Entry>, AppError> {
-    off_thread(move || cli::list(&app)).await
+async fn library_list(app: tauri::AppHandle, no_pull: bool) -> Result<Vec<Entry>, AppError> {
+    off_thread(move || cli::list(&app, no_pull)).await
 }
 
 /// Everything known about one name: copies, override chain, requires, installs.

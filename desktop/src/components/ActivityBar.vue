@@ -27,12 +27,12 @@ const { busy, label } = useCommandActivity();
 .activity__track {
   height: 2px;
   overflow: hidden;
-  background: rgba(59, 130, 246, 0.18);
+  background: var(--accent-tint);
 }
 .activity__bar {
   width: 40%;
   height: 100%;
-  background: #3b82f6;
+  background: var(--accent-bright);
   animation: activity-slide 1.1s ease-in-out infinite;
 }
 .activity__label {
@@ -46,7 +46,7 @@ const { busy, label } = useCommandActivity();
   overflow: hidden;
   padding: 0.1rem 0.45rem;
   border-radius: 999px;
-  background: var(--app-bg-sticky);
+  background: var(--surface-sticky);
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 0.68rem;
   white-space: nowrap;
