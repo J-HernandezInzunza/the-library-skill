@@ -49,6 +49,16 @@ Pick a skill and the app previews every file it would write — the skill itself
 dependencies it pulls in — before anything touches disk. Install, and the entry's badge flips to
 installed.
 
+### Switch a skill off without uninstalling it
+
+![Switching a skill off from the catalog list: the row's badge turns violet and a disabled tab appears](images/desktop/disable-preview.gif)
+
+Flip the switch and the skill stops loading without leaving your machine — switching it back on is
+a move, not a re-fetch. A `disabled` tab appears at the end of the strip, so what you have parked
+stays findable instead of vanishing from the list. Claude Code reads its skills when a session
+starts, so the change lands in your next session rather than one you already have open, and the app
+says so rather than letting you find out.
+
 **Getting it:** build it once from your own clone (`just app-setup && just app-install`), then
 launch it like any Mac app. Building needs **Node ≥ 20** and the **Rust toolchain** (Tauri's
 backend compiles from source) — install and PATH notes, full build steps, and the guided-setup
