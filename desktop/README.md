@@ -76,6 +76,28 @@ just app-dev      # the native window, with HMR
 > rather than with a test failure. Either run it from your normal terminal or source
 > `~/.cargo/env` first.
 
+## Colour lives in one file
+
+`src/assets/tokens.css` declares every colour as a custom property on `:root`, imported once from
+`main.ts`. A `<style scoped>` block cannot see another component's styles, but custom properties
+inherit through the document, so `:root` is the one place a value can be set and used everywhere.
+It is also what makes dark mode a block of ten overrides instead of a media query per component.
+
+`src/assets/tokens.spec.ts` is the part that matters: it **fails the suite** if a component
+declares a colour literal, naming the file and the line. A token file on its own does not stop
+drift — nothing prevents the next component hardcoding `#16a34a` because it looked right, which is
+how this app reached 17 different alphas of one grey and two different yellows for one meaning.
+The spec also checks that every `var(--token)` a component asks for actually exists, because a
+typo'd name resolves to nothing and silently drops the property.
+
+A literal is allowed only where a value is *construction* rather than *meaning* — the off switch's
+knob has to be the lightest thing available or the control disappears. The spec's allowlist names
+those, and it is short on purpose.
+
+It is a lint rule in the shape of a test because this project has no linter and no lint step; a
+spec runs in the gate that already exists. If stylelint ever lands here, its
+`declaration-property-value-disallowed-list` does the same job and the spec can go.
+
 ## Where the CLI comes from
 
 `library_home()` in `src-tauri/src/cli.rs` resolves the tool root from:
@@ -98,10 +120,19 @@ other call is anchored at the tool root.
 - **Install and uninstall**, globally or into a project you pick, with a preview of exactly what
   would be written before anything is. Select several entries to install them at once, and the
   project picker remembers your recent install directories.
+- **Switch a skill off and on** without uninstalling it. The content stays on the device and
+  stops loading; a `disabled` tab at the end of the catalog strip lists what is currently off.
+  Claude Code reads its skills when a session starts, so a switch takes effect in your next
+  session rather than one you already have open — the app says so each time.
 - **Sync** every installed entry, and **doctor** for catalog health.
 - **Add, edit, and remove** entries in a local catalog, and **push** a local copy back to its
   source. Writes against a shared remote catalog stay a deliberate act in that repository.
 - **Register and unregister catalogs**, including scaffolding an empty one.
+- **Refresh on demand, not on every read.** Reading the catalog is local and fast. The app pulls
+  your catalog clones when it opens, when you press **Refresh**, and when you **Sync** — the
+  moments you are actually asking for freshness — and the counts line says how long ago that was.
+  The trade is that a shared catalog a teammate changed mid-session shows up after a Refresh, not
+  the instant they push.
 - **See every command it runs, verbatim**, in the command log, with a live activity bar at the
   top of the window reflecting each in-flight backend command. There is no per-action approval
   gate, so showing the exact argv is the safeguard — and it is structural: emission lives in the
@@ -145,6 +176,7 @@ Vue UI ──invoke('library_list')──▶ Tauri command (lib.rs)
 | Path | What lives there |
 | --- | --- |
 | `src/` | Vue views and components, plus their Vitest specs |
+| `src/assets/tokens.css` | Every colour the app uses, and the only place one may be declared |
 | `src-tauri/src/cli.rs` | Wrapper resolution, the one spawn path, and every subcommand call |
 | `src-tauri/src/path.rs` | Widening `PATH` at startup, so a Finder-launched bundle finds `claude` |
 | `src-tauri/src/agent.rs` | Spawning `claude`, parsing its stream, the tool-whitelist hook |
