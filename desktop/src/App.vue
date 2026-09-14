@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, defineAsyncComponent, onMounted, watch } from "vue";
-import { invoke } from "@tauri-apps/api/core";
+import { ref, computed, defineAsyncComponent, onMounted, onUnmounted, watch } from "vue";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { allRows, catalogRows, isOnDisk, searchRows, winningRows, type Row } from "./catalog";
 import { useCommandActivity, withActivity } from "./commandActivity";
+import { tabCatalog, type Tab } from "./tabs";
 import { describeAppError, isAppError, type Catalog, type Entry } from "./types";
 import ActivityBar from "./components/ActivityBar.vue";
 import Busy from "./components/Busy.vue";
@@ -11,6 +12,7 @@ import CatalogTabs from "./components/CatalogTabs.vue";
 import CommandLog from "./components/CommandLog.vue";
 import EntryList from "./components/EntryList.vue";
 import StatusBanner from "./components/StatusBanner.vue";
+import Toasts from "./components/Toasts.vue";
 
 // Shown only on a machine that has never run the tool, so it stays out of the
 // initial bundle everyone else loads.
@@ -38,7 +40,17 @@ const { listening } = useCommandActivity();
 const entries = ref<Entry[]>([]);
 const catalogs = ref<Catalog[]>([]);
 /** The catalog being browsed; `null` browses every catalog's winning entries. */
-const activeCatalog = ref<string | null>(null);
+const tab = ref<Tab>({ kind: "all" });
+
+/**
+ * The catalog being browsed, or null on a tab that is not one catalog.
+ *
+ * Derived rather than stored so there is one source for which tab is showing. Everything
+ * that only makes sense inside a single catalog — the bulk-install controls, the
+ * "nothing here can be installed" note — still reads this and is unchanged by the
+ * disabled tab arriving beside them.
+ */
+const activeCatalog = computed(() => tabCatalog(tab.value));
 const query = ref("");
 /**
  * The entries clicked into, most recent last.
@@ -131,19 +143,68 @@ function afterBulkAction() {
 // True from the start: the app always loads on mount, and defaulting to false shows an
 // empty catalog for a frame before the first command has even been sent.
 const loading = ref(true);
+
+/**
+ * When the catalogs were last pulled, or null before the first one lands.
+ *
+ * Shown because the app no longer refreshes on every read: with the pull moved to start,
+ * Refresh, and Sync, "how old is this?" stops being answerable by assuming it is current,
+ * and an unanswered version of that question is how someone ends up looking at a catalog
+ * a teammate changed an hour ago without knowing it.
+ */
+const lastPulled = ref<Date | null>(null);
+
+/**
+ * Loading with nothing on screen yet, which is the only time a spinner should replace
+ * anything.
+ *
+ * Every other load is a refresh over a list that is already there, and swapping it for a
+ * spinner is what made a toggle look like a page reload — the counts line and the rows
+ * both vanished and came back, and everything below them moved twice.
+ */
+const firstLoad = computed(() => loading.value && !entries.value.length);
 /** Kept typed rather than stringified: a first-run state is recoverable, not an error. */
 const failure = ref<unknown>(null);
 
-/** Load the catalog and the registry once; search and tabs work off that payload. */
-async function load() {
+/**
+ * True when the app was opened as a plain web page (`npm run dev`) rather than through Tauri
+ * (`npm run tauri dev`). Every command runs over IPC to the Rust backend, which only exists in
+ * the latter; without it `invoke` has no bridge to call and the catalog can never load. Checked
+ * once up front so a developer sees the one command that fixes it, rather than a spinner that
+ * never resolves or a bare `__TAURI_INTERNALS__` error.
+ */
+const browserOnly = !isTauri();
+
+/**
+ * Load the catalog and the registry; search and tabs work off that payload.
+ *
+ * `pull` decides whether the CLI refreshes its catalog clones first. Every read used to,
+ * which put a `git pull --ff-only` per remote catalog in front of every command: 0.75s of
+ * the 0.88s a `library list` took, on a machine with a good connection, for an action as
+ * local as flipping a skill off. The pull now happens where the user is asking for
+ * freshness — app start and Sync — and everything else reads the clone that is already
+ * on disk (0.14s).
+ */
+async function load({ pull = false } = {}) {
+  // Nothing to load without the backend; leaving loading true here is what strands the spinner.
+  if (browserOnly) {
+    loading.value = false;
+    return;
+  }
   loading.value = true;
   failure.value = null;
   try {
-    const [loadedEntries, loadedCatalogs] = await withActivity("reading the catalog…", () =>
-      Promise.all([invoke<Entry[]>("library_list"), invoke<Catalog[]>("registry_list")]),
+    const [loadedEntries, loadedCatalogs] = await withActivity(
+      pull ? "refreshing the catalog…" : "reading the catalog…",
+      () =>
+        Promise.all([
+          invoke<Entry[]>("library_list", { noPull: !pull }),
+          invoke<Catalog[]>("registry_list"),
+        ]),
     );
     entries.value = loadedEntries;
     catalogs.value = loadedCatalogs;
+    if (pull) lastPulled.value = new Date();
     // Only on a successful load: a failed one empties the list, and pruning against that
     // would discard the trail every time the CLI hiccups.
     pruneTrail(loadedEntries);
@@ -230,15 +291,51 @@ const selectedCatalog = computed(() => {
  * turned it on for every catalog tab the moment you switched to one, without anyone
  * asking. Mode is only ever entered by pressing the button that says so.
  */
-watch(activeCatalog, () => {
+watch(tab, () => {
   picked.value = null;
 });
 
+
 const rows = computed<Row[]>(() => {
-  const catalogId = activeCatalog.value;
-  if (catalogId !== null) return catalogRows(entries.value, catalogId);
+  // Winners only: a switched-off copy is by definition the one that resolved, and showing
+  // the copies it beats under a tab about install state would be answering the other
+  // question. `disabled` is what the CLI reports, not something derived here.
+  if (tab.value.kind === "disabled") {
+    return winningRows(entries.value).filter((row) => row.entry.state === "disabled");
+  }
+  if (tab.value.kind === "catalog") return catalogRows(entries.value, tab.value.id);
   if (hideOverridden.value) return winningRows(entries.value);
   return allRows(entries.value);
+});
+
+/** Drives the disabled tab, counted across every catalog rather than the rows on screen. */
+const disabledCount = computed(
+  () => entries.value.filter((entry) => entry.state === "disabled").length,
+);
+/**
+ * Leave a tab that has stopped existing.
+ *
+ * The disabled tab is the only one you can empty from inside it: switching the last skill
+ * back on takes the rows away and the tab button with them, which left the app holding a
+ * selection that had no button in the strip and an empty list that said nothing about why.
+ * A catalog tab goes the same way when its catalog is unregistered.
+ *
+ * Guarded on having entries at all, because a failed load empties them too — and reading
+ * that as "nothing is disabled any more" would move the user off the tab they were on
+ * while the banner in front of them is still waiting to be retried.
+ */
+watch([disabledCount, catalogs], () => {
+  if (!entries.value.length) return;
+
+  const current = tab.value;
+  let gone = false;
+  if (current.kind === "disabled") {
+    gone = disabledCount.value === 0;
+  } else if (current.kind === "catalog") {
+    gone = !catalogs.value.some((catalog) => catalog.id === current.id);
+  }
+
+  if (gone) tab.value = { kind: "all" };
 });
 
 /** Only worth offering once something is actually being overridden. */
@@ -250,19 +347,54 @@ const overriddenCount = computed(
 const filtered = computed(() => searchRows(rows.value, query.value));
 
 const summary = computed(() => {
-  const installed = filtered.value.filter(({ tone }) => tone === "installed").length;
+  // Counted off the CLI's own flag and state rather than the row's tone: `installed` means
+  // the content is on this device, so a disabled copy is still installed and is counted in
+  // both parts.
+  const installed = filtered.value.filter(({ entry }) => entry.installed).length;
+  const disabled = filtered.value.filter(({ entry }) => entry.state === "disabled").length;
   const overridden = filtered.value.filter(({ overriddenBy }) => overriddenBy !== null).length;
 
   const parts = [`${filtered.value.length} of ${rows.value.length} entries`, `${installed} installed`];
+  if (disabled) parts.push(`${disabled} disabled`);
   if (overridden) parts.push(`${overridden} overridden`);
   return parts.join(" · ");
 });
+
+/**
+ * Ticks once a minute so the freshness cue ages on screen.
+ *
+ * A timestamp rendered once would be a lie within the minute, and "how old is this?" is
+ * the one question the cue exists to answer.
+ */
+const now = ref(new Date());
+const ticking = setInterval(() => (now.value = new Date()), 60_000);
+onUnmounted(() => clearInterval(ticking));
+
+/** How long ago the catalogs were pulled, or null until the first pull lands. */
+const freshness = computed(() => {
+  if (!lastPulled.value) return null;
+  const minutes = Math.floor((now.value.getTime() - lastPulled.value.getTime()) / 60_000);
+  if (minutes < 1) return "refreshed just now";
+  if (minutes === 1) return "refreshed 1 minute ago";
+  if (minutes < 60) return `refreshed ${minutes} minutes ago`;
+  const hours = Math.floor(minutes / 60);
+  return hours === 1 ? "refreshed 1 hour ago" : `refreshed ${hours} hours ago`;
+});
+
+/** A sync already pulled every clone, so the read back is local and still counts as fresh. */
+async function afterSync() {
+  lastPulled.value = new Date();
+  await load();
+}
 
 onMounted(async () => {
   // The first command must appear in the log like every other one, so it waits for the
   // subscription rather than racing it.
   await listening;
-  await load();
+  // The one read that pulls: opening the app is the moment the user is asking to see
+  // what the catalogs hold now. Every read after this one goes to the clone on disk
+  // until they press Refresh or Sync.
+  await load({ pull: true });
 });
 </script>
 
@@ -274,8 +406,22 @@ onMounted(async () => {
          that cannot scroll, one scrolling body, and — where the view has one — a second chrome row
          at the bottom. The command bar below is the app's last row, so a view's bottom chrome
          lands directly on it. -->
+    <!-- Opened in a browser instead of through Tauri: the backend isn't there, so this stands in
+         for every view and names the command that starts it, rather than letting the rest of the
+         app render against a catalog that can never load. -->
+    <section v-if="browserOnly" class="view">
+      <div class="view__body column">
+        <StatusBanner kind="warning">
+          <strong>The backend isn't running.</strong>
+          This window is the frontend on its own — the Rust backend it reads the catalog from only
+          runs when you launch through Tauri. Stop this, then start it with
+          <code>npm run tauri dev</code> from the <code>desktop</code> directory.
+        </StatusBanner>
+      </div>
+    </section>
+
     <FirstRun
-        v-if="setupNeeded"
+        v-else-if="setupNeeded"
         :state="setupNeeded.state"
         :path="setupNeeded.path"
         @ready="load()"
@@ -289,7 +435,9 @@ onMounted(async () => {
         @close="showDoctor = false"
       />
 
-      <Sync v-else-if="showSync" @close="showSync = false" @synced="load()" />
+      <!-- No pull on the read back: a sync has just refreshed every clone, so the copy on
+           disk is the fresh one and pulling again would be a second round trip for it. -->
+      <Sync v-else-if="showSync" @close="showSync = false" @synced="afterSync()" />
 
       <AddEntry
         v-else-if="addingTo"
@@ -359,7 +507,8 @@ onMounted(async () => {
             type="search"
             placeholder="Search skills, agents, prompts…"
           />
-          <button type="button" class="ghost" @click="load()">Refresh</button>
+          <!-- Explicitly asking for fresh, so this is a pull: the ambient reads are not. -->
+          <button type="button" class="ghost" @click="load({ pull: true })">Refresh</button>
           <button
             type="button"
             class="ghost"
@@ -372,11 +521,23 @@ onMounted(async () => {
       </header>
 
       <div class="view__body column">
-        <CatalogTabs v-if="multiCatalog" v-model="activeCatalog" :catalogs="catalogs" />
+        <!-- Shown for the disabled tab too, so a single-catalog setup still gets somewhere
+             to find what it has switched off. -->
+        <CatalogTabs
+          v-if="multiCatalog || disabledCount"
+          v-model="tab"
+          :catalogs="catalogs"
+          :disabled-count="disabledCount"
+        />
         <CatalogSummary v-if="selectedCatalog" :catalog="selectedCatalog" />
 
-        <p v-if="!loading && !errorMessage" class="summary">
+        <p v-if="!firstLoad && !errorMessage" class="summary">
           {{ summary }}
+          <!-- Said out loud because the app stopped pulling on every read: while it did,
+               "current" was a safe assumption and needed no cue. It is not any more, and
+               an unanswered "how old is this?" is how someone reads a catalog a teammate
+               changed an hour ago without knowing it. -->
+          <span v-if="freshness" class="summary__freshness">{{ freshness }}</span>
           <label v-if="activeCatalog === null && overriddenCount" class="summary__toggle">
             <input v-model="hideOverridden" type="checkbox" />
             Hide overridden
@@ -429,21 +590,30 @@ onMounted(async () => {
           @uninstalled="afterBulkAction()"
         />
 
-        <Busy v-if="loading" label="Reading the catalog…" />
+        <!-- Only the *first* load replaces the list, because only then is there no list to
+             show. A refresh keeps the rows on screen and marks them as being re-read: the
+             list used to unmount on every refetch, so flipping one switch blanked all 42
+             rows, ran a spinner, and faded the whole list back in to show one row changed. -->
+        <Busy v-if="firstLoad" label="Reading the catalog…" />
         <StatusBanner v-else-if="errorMessage" kind="error" :detail="errorMessage" />
         <p v-else-if="!filtered.length" class="state">No matching entries.</p>
         <EntryList
           v-else
-          class="fade-in"
+          :class="{ 'is-refreshing': loading }"
           :rows="filtered"
           :catalogs="catalogs"
           :show-origin="multiCatalog"
           :selected="picked"
           @select="trail = [$event]"
           @toggle="togglePicked($event)"
+          @changed="load()"
         />
       </div>
     </section>
+
+    <!-- Over the view rather than in it: a notice that took part in the layout pushed the
+         list down as it arrived and pulled it back as it went. -->
+    <Toasts />
 
     <!-- The app's last row, under whichever view is on screen: in the flow, so it is the bottom
          of the window by construction and nothing can move it. -->
@@ -453,12 +623,7 @@ onMounted(async () => {
 
 <style>
 :root {
-  color-scheme: light dark;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, sans-serif;
-  --app-bg: #f6f6f7;
-  /* For the one thing that still floats over content: the activity bar's label. It needs a
-     surface of its own, since a bare backdrop-filter leaves the text overlapping the view. */
-  --app-bg-sticky: rgba(246, 246, 247, 0.95);
 }
 /* The window is a fixed frame; only a view's `.view__body` inside it scrolls (D22).
 
@@ -475,17 +640,8 @@ body,
 body {
   margin: 0;
   overflow: hidden;
-  background: var(--app-bg);
-  color: #1a1a1a;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --app-bg: #1e1e20;
-    --app-bg-sticky: rgba(30, 30, 32, 0.88);
-  }
-  body {
-    color: #e6e6e6;
-  }
+  background: var(--surface-page);
+  color: var(--text-primary);
 }
 
 /* Global, not scoped: a parent's scoped styles never reach a child component's inner
@@ -495,8 +651,8 @@ button {
   padding: 0.5rem 0.9rem;
   border-radius: 8px;
   border: 1px solid transparent;
-  background: #3b82f6;
-  color: #fff;
+  background: var(--accent-bright);
+  color: var(--text-on-accent);
   font-weight: 500;
   font-family: inherit;
   font-size: 0.9rem;
@@ -512,18 +668,18 @@ button:active:not(:disabled) {
 button.ghost {
   background: transparent;
   color: inherit;
-  border-color: rgba(128, 128, 128, 0.4);
+  border-color: var(--border-control);
 }
 /* Global for the same reason `.ghost` is, and because it had already drifted: the catalog
    manager styled its Remove red from a component-local rule while the entry page left the
    identical action looking like every other button. One destructive style, one place. */
 button.danger {
   background: transparent;
-  color: #dc2626;
-  border-color: rgba(220, 38, 38, 0.45);
+  color: var(--status-danger-ink);
+  border-color: var(--status-danger-edge);
 }
 button.danger:hover:not(:disabled) {
-  background: rgba(220, 38, 38, 0.1);
+  background: var(--status-danger-tint);
 }
 button:disabled {
   opacity: 0.45;
@@ -537,7 +693,7 @@ button:disabled {
 .card {
   padding: 0.7rem 0.85rem;
   border-radius: 8px;
-  background: rgba(128, 128, 128, 0.08);
+  background: var(--surface-raised);
 }
 
 /* The content column, as padding rather than as a centred box. A view's three parts are three
@@ -576,8 +732,8 @@ button:disabled {
   padding-block: 0.75rem;
   /* Opaque, and a hairline: content is clipped at this edge rather than scrolling under it, and
      the line is what makes the edge read as the frame of the window instead of a cut-off row. */
-  background: var(--app-bg);
-  border-bottom: 1px solid rgba(128, 128, 128, 0.18);
+  background: var(--surface-page);
+  border-bottom: 1px solid var(--border-subtle);
 }
 .view__body {
   grid-row: 2;
@@ -607,6 +763,25 @@ button:disabled {
 .fade-in {
   animation: fade-in 0.22s ease-out;
 }
+/* A refresh over a list that is already on screen. Deliberately not the fade: an entrance
+   animation replayed on every refetch reads as the list being rebuilt, which is exactly
+   the impression to avoid when all that changed is one row.
+
+   The dim is delayed and the recovery is not, so the two refresh speeds get the treatment
+   each deserves: a local read returns in ~0.14s, well inside the delay, so nothing visibly
+   happens at all and the row simply updates; a pull takes ~0.9s and dims, because at that
+   length silence reads as a hang. A symmetric transition would hold the list dim for the
+   delay *after* it finished, which is the flicker this is avoiding. */
+.is-refreshing {
+  opacity: 0.6;
+  transition: opacity 0.12s ease 0.4s;
+  /* The rows are one command away from being replaced, so a click now would act on a row
+     that is already stale. */
+  pointer-events: none;
+}
+.entry-list {
+  transition: opacity 0.12s ease;
+}
 @keyframes fade-in {
   from {
     opacity: 0;
@@ -621,6 +796,9 @@ button:disabled {
   .fade-in {
     animation: none;
   }
+  .is-refreshing {
+    transition: none;
+  }
 }
 </style>
 
@@ -632,6 +810,9 @@ button:disabled {
   height: 100%;
   display: grid;
   grid-template-rows: 1fr auto;
+  /* The containing block for the toast stack, which is absolutely positioned into row 1
+     so it can sit over the view without its width feeding the column's sizing. */
+  position: relative;
 }
 /* A grid of its own so the single view inside it is stretched to the row rather than sized by
    its content, and `min-height: 0` so that row can be shorter than what the view holds — which
@@ -649,7 +830,7 @@ h1 {
   flex: 1;
   padding: 0.5rem 0.75rem;
   border-radius: 8px;
-  border: 1px solid rgba(128, 128, 128, 0.4);
+  border: 1px solid var(--border-control);
   background: transparent;
   color: inherit;
   font-size: 0.95rem;
@@ -684,6 +865,15 @@ h1 {
   padding: 0.2rem 0.5rem;
   font-size: 0.75rem;
 }
+.summary__freshness {
+  /* Reads as a footnote to the counts, not as another count: it is about the data's age,
+     not its contents. Dimmer than the `· ` separated parts beside it for that reason. */
+  opacity: 0.5;
+  font-size: 0.75rem;
+}
+.summary__freshness::before {
+  content: "· ";
+}
 .summary__note {
   flex: 1;
   font-size: 0.75rem;
@@ -697,9 +887,9 @@ h1 {
 }
 .state.error {
   text-align: left;
-  color: #dc2626;
+  color: var(--status-danger-ink);
   white-space: pre-wrap;
-  background: rgba(220, 38, 38, 0.08);
+  background: var(--status-danger-tint);
   padding: 1rem;
   border-radius: 8px;
 }

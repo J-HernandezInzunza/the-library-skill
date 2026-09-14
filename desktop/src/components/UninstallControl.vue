@@ -110,12 +110,12 @@ async function remove(force: boolean) {
 .uninstall__refused {
   padding: 0.75rem;
   border-radius: 8px;
-  background: rgba(220, 38, 38, 0.08);
-  border-left: 3px solid #dc2626;
+  background: var(--status-danger-tint);
+  border-left: 3px solid var(--status-danger-ink);
 }
 .uninstall__refused {
-  background: rgba(245, 158, 11, 0.14);
-  border-left-color: #f59e0b;
+  background: var(--status-attention-tint);
+  border-left-color: var(--status-attention-ink);
 }
 .uninstall__question {
   margin: 0;
@@ -139,8 +139,8 @@ async function remove(force: boolean) {
   border-radius: 6px;
   font-size: 0.8rem;
   line-height: 1.45;
-  color: #b45309;
-  background: rgba(245, 158, 11, 0.16);
+  color: var(--status-attention-ink);
+  background: var(--status-attention-tint);
 }
 .uninstall__note {
   margin: 0.5rem 0 0;

@@ -66,6 +66,41 @@ case "$sub" in
         ;;
     esac
     ;;
+  disable|enable)
+    # Both verbs take one or more names and emit one result each. `moved` is false when
+    # the entry was already in the asked-for state — a no-op is a success. A name the
+    # batch refuses (`absent`) moves nothing at all and exits 1 with its reasons on
+    # *stdout*, which is the case a stderr-only error path would render as blank.
+    names=""
+    for a in "$@"; do
+      case "$a" in
+        --*) break ;;
+        *) names="$names $a" ;;
+      esac
+    done
+    problems=""
+    for name in $names; do
+      case "$name" in
+        absent)
+          p='{"type":"skill","name":"absent","reason":"not installed"}'
+          if [ -n "$problems" ]; then problems="$problems,$p"; else problems="$p"; fi
+          ;;
+      esac
+    done
+    if [ -n "$problems" ]; then
+      echo '{"status":"ERROR","problems":['"$problems"']}'
+      exit 1
+    fi
+    results=""
+    for name in $names; do
+      moved=true
+      # Already in the asked-for state: reported, and nothing on disk changed.
+      case "$name" in already) moved=false ;; esac
+      r='{"type":"skill","name":"'"$name"'","moved":'"$moved"',"dest":"/Users/dev/.claude/skills/'"$name"'","archived":"/Users/dev/.claude/skills-disabled/'"$name"'"}'
+      if [ -n "$results" ]; then results="$results,$r"; else results="$r"; fi
+    done
+    echo '{"status":"OK","results":['"$results"']}'
+    ;;
   uninstall)
     # `uninstall` takes one or more names. Collect the positional ones (everything
     # before the first flag), then emit a result per name so a batch can be part-done:

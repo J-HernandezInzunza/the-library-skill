@@ -16,10 +16,13 @@ use crate::events::{next_command_id, CommandFinished, CommandSink, CommandStarte
 
 /// One record from `list --json` (and, identically, `search --json`).
 ///
-/// The first nine fields are `library.py`'s documented contract: existing keys
+/// The thirteen fields below are `library.py`'s documented contract: existing keys
 /// never change name, type, or meaning, while new keys may appear (C-D8). So this
 /// mirror **ignores unknown fields** rather than failing to deserialize — a strict
 /// parse would break the app on the next CLI release, as it would have on this one.
+///
+/// The mirror is also what the frontend receives: this struct re-serializes only the
+/// fields it declares, so a key the CLI emits and this does not is dropped in transit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     pub r#type: String,
@@ -44,6 +47,10 @@ pub struct Entry {
     pub receipt: Option<Receipt>,
     #[serde(default)]
     pub has_setup: bool,
+    /// Every destination this entry occupies, uncollapsed — `state` above is the
+    /// worst-first collapse of these. Defaulted because the key postdates this struct.
+    #[serde(default)]
+    pub locations: Vec<Location>,
 }
 
 /// What `doctor --json` found. `status` is `OK` or `PROBLEMS`.
@@ -305,6 +312,35 @@ pub struct UninstallResult {
     /// so it will not delete them without `--force`.
     #[serde(default)]
     pub refused: Vec<String>,
+}
+
+/// What `disable <name>... --json` / `enable <name>... --json` did.
+///
+/// One shape for both verbs, because the CLI emits one: `status` is `OK`, with one
+/// `results` entry per requested name. A refusal never reaches this type — it exits 1
+/// with a `problems` body, which `toggle` turns into an error.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToggleReport {
+    pub status: String,
+    #[serde(default)]
+    pub results: Vec<ToggleResult>,
+}
+
+/// What the toggle did to one requested entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToggleResult {
+    pub r#type: String,
+    pub name: String,
+    /// False when the entry was already in the requested state: a no-op is a success,
+    /// not a move (R1.3, R2.3).
+    #[serde(default)]
+    pub moved: bool,
+    /// The destination the agent loads from.
+    #[serde(default)]
+    pub dest: String,
+    /// Where the copy parks while disabled.
+    #[serde(default)]
+    pub archived: String,
 }
 
 /// What every catalog write reports, whatever mode the destination catalog uses.
@@ -674,6 +710,31 @@ pub struct Receipt {
     pub installed_at: String,
 }
 
+/// One destination an entry occupies, with that destination's own state.
+///
+/// `archive_path` is where a disabled copy parks, reported whether or not anything is
+/// there; `archived` says whether it went. Both come from the CLI so no consumer
+/// re-derives the archive location for itself (R4.10) — least of all the frontend.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Location {
+    #[serde(default)]
+    pub path: String,
+    /// `None` for a destination only a receipt claims: a `--dir` install resolves from
+    /// no scope.
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// This destination's own state, never the entry-wide collapse. A `String` for the
+    /// same reason `Entry::state` is one.
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub archive_path: String,
+    #[serde(default)]
+    pub archived: bool,
+    #[serde(default)]
+    pub receipt: Option<Receipt>,
+}
+
 /// Absolute path to the tool repo the app drives.
 ///
 /// Resolved from `LIBRARY_HOME` when set (lets you point the app at a clone
@@ -809,8 +870,16 @@ fn settle(result: Result<serde_json::Value, AppError>) -> Result<serde_json::Val
 }
 
 /// The full catalog with install state (R2.1).
-pub fn list(sink: &dyn CommandSink) -> Result<Vec<Entry>, AppError> {
-    parse(run_json(sink, &["list"])?)
+pub fn list(sink: &dyn CommandSink, no_pull: bool) -> Result<Vec<Entry>, AppError> {
+    // `--no-pull` skips a `git pull --ff-only` per remote catalog, which is 0.75s of the
+    // 0.88s this command otherwise costs — a network round trip in front of a read. The
+    // caller decides: the app pulls when it opens and when the user asks, and reads the
+    // clone already on disk the rest of the time.
+    let mut args = vec!["list"];
+    if no_pull {
+        args.push("--no-pull");
+    }
+    parse(run_json(sink, &args)?)
 }
 
 /// Everything known about one name (R2.1).
@@ -953,6 +1022,68 @@ fn refused_body(stdout: &[u8]) -> Option<serde_json::Value> {
         return None;
     }
     Some(body)
+}
+
+/// Switch an installed skill off so the agent stops loading it, keeping the copy on
+/// disk (R3.2). Idempotent: disabling an already-disabled entry succeeds.
+pub fn disable_entry(sink: &dyn CommandSink, names: &[String]) -> Result<ToggleReport, AppError> {
+    toggle(sink, "disable", names)
+}
+
+/// Move an archived copy back to the destination it was installed in (R3.2).
+/// Idempotent, and refuses rather than overwriting an active copy of the same name.
+pub fn enable_entry(sink: &dyn CommandSink, names: &[String]) -> Result<ToggleReport, AppError> {
+    toggle(sink, "enable", names)
+}
+
+/// The shared body of both verbs: same argv shape, same report, same failure mode.
+///
+/// Goes through `run_report` for the reason `use` does: a pre-flight refusal — not
+/// installed, not a skill, a copy in both places — exits 1 with a complete `problems`
+/// body on *stdout*, so the strict mapping would surface an empty stderr and lose every
+/// reason the user needs. The status is then checked here, because that body is a
+/// refusal and not a report: nothing moved, so it must not return as success.
+fn toggle(sink: &dyn CommandSink, verb: &str, names: &[String]) -> Result<ToggleReport, AppError> {
+    let mut args = vec![verb];
+    args.extend(names.iter().map(String::as_str));
+
+    let body = run_report(sink, &args, &library_home())?;
+    if body.get("status").and_then(|s| s.as_str()) != Some("OK") {
+        return Err(AppError::Cli {
+            code: 1,
+            stderr: refusal(&body),
+        });
+    }
+    parse(body)
+}
+
+/// The human-readable reason out of a refusal body.
+///
+/// A pre-flight refusal reports one `problems` entry per name; a mid-batch failure
+/// reports a single `reason`. The whole body is the fallback, so a shape neither branch
+/// knows still reaches the user instead of becoming a bare exit code.
+fn refusal(body: &serde_json::Value) -> String {
+    let problems: Vec<String> = body
+        .get("problems")
+        .and_then(|p| p.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let name = item.get("name")?.as_str()?;
+                    let reason = item.get("reason")?.as_str()?;
+                    Some(format!("{name}: {reason}"))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if !problems.is_empty() {
+        return problems.join("\n");
+    }
+    body.get("reason")
+        .and_then(|r| r.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| body.to_string())
 }
 
 /// Catalog health (R7.3). `deep` adds the checks that touch the network.
@@ -1257,7 +1388,17 @@ pub fn bootstrap(sink: &dyn CommandSink) -> Result<BootstrapReport, AppError> {
     let home = library_home();
     let script = home.join("bootstrap.py");
 
-    let mut cmd = Command::new("python3");
+    // Choose the interpreter by version, not by name. A bare `python3` takes
+    // whatever is first on PATH, which on some machines is a build too old to run
+    // the tool — `bootstrap.py`'s own preflight would reject it, but only after we
+    // pointed it at the wrong interpreter. Picking a floor-meeting one here means
+    // the venv is built against a Python that can actually parse `library.py`.
+    let python = crate::path::python_interpreter().ok_or_else(|| AppError::Cli {
+        code: -1,
+        stderr: "no Python 3.9+ found — install a newer Python (e.g. 'brew install python@3.12'), then try again".to_string(),
+    })?;
+
+    let mut cmd = Command::new(&python);
     cmd.arg(&script)
         .arg("--json")
         // Explicit, for the same reason LIBRARY_CWD is: the script would otherwise
@@ -1266,7 +1407,7 @@ pub fn bootstrap(sink: &dyn CommandSink) -> Result<BootstrapReport, AppError> {
 
     let output = spawn(sink, cmd, &home).map_err(|e| AppError::Cli {
         code: -1,
-        stderr: format!("could not run python3 {}: {e}", script.display()),
+        stderr: format!("could not run {python} {}: {e}", script.display()),
     })?;
 
     if !output.status.success() {
@@ -1496,6 +1637,90 @@ mod tests {
             serde_json::from_str(&entry_json(r#","invented_next_release":42"#)).expect("parse");
         assert_eq!(entry.name, "a");
         assert!(entry.has_setup == false);
+    }
+
+    #[test]
+    fn locations_survive_the_round_trip_to_the_frontend() {
+        // The frontend reads this struct's *output*, not the CLI's, so a key parsed and
+        // not re-serialized is a key the UI can never show.
+        let locations = r#","locations":[{"path":"/s/alpha","scope":"global",
+            "state":"disabled","archive_path":"/s-disabled/alpha","archived":true,
+            "receipt":{"dest":"/s/alpha","scope":"global"}}]"#;
+        let entry: Entry = serde_json::from_str(&entry_json(locations)).expect("parse");
+        let location = &entry.locations[0];
+        assert_eq!(location.scope.as_deref(), Some("global"));
+        assert_eq!(location.archive_path, "/s-disabled/alpha");
+        assert!(location.archived);
+        assert_eq!(location.receipt.as_ref().expect("receipt").dest, "/s/alpha");
+
+        let out = serde_json::to_value(&entry).expect("serialize");
+        assert_eq!(out["locations"][0]["archive_path"], "/s-disabled/alpha");
+    }
+
+    #[test]
+    fn a_dir_destination_reports_no_scope_rather_than_failing() {
+        let locations = r#","locations":[{"path":"/elsewhere/alpha","scope":null,
+            "state":"installed","archive_path":"/elsewhere-disabled/alpha",
+            "archived":false,"receipt":null}]"#;
+        let entry: Entry = serde_json::from_str(&entry_json(locations)).expect("parse");
+        assert_eq!(entry.locations[0].scope, None);
+    }
+
+    #[test]
+    fn a_location_state_the_app_has_never_heard_of_does_not_break_the_parse() {
+        let locations = r#","locations":[{"path":"/s/alpha","scope":"global",
+            "state":"quarantined","archive_path":"/s-disabled/alpha","archived":false,
+            "receipt":null,"invented_next_release":42}]"#;
+        let entry: Entry = serde_json::from_str(&entry_json(locations)).expect("parse");
+        assert_eq!(entry.locations[0].state, "quarantined");
+    }
+
+    #[test]
+    fn an_entry_from_a_cli_that_predates_locations_still_parses() {
+        let entry: Entry = serde_json::from_str(&entry_json("")).expect("parse");
+        assert!(entry.locations.is_empty());
+    }
+
+    #[test]
+    fn a_toggle_reports_what_moved_and_where() {
+        let body = r#"{"status":"OK","results":[{"type":"skill","name":"alpha",
+            "moved":true,"dest":"/s/alpha","archived":"/s-disabled/alpha"}]}"#;
+        let report: ToggleReport = serde_json::from_str(body).expect("parse");
+        assert_eq!(report.results[0].name, "alpha");
+        assert!(report.results[0].moved);
+        assert_eq!(report.results[0].archived, "/s-disabled/alpha");
+    }
+
+    #[test]
+    fn a_toggle_no_op_is_a_success_that_moved_nothing() {
+        let body = r#"{"status":"OK","results":[{"type":"skill","name":"alpha",
+            "moved":false,"dest":"/s/alpha","archived":"/s-disabled/alpha"}]}"#;
+        let report: ToggleReport = serde_json::from_str(body).expect("parse");
+        assert!(!report.results[0].moved);
+    }
+
+    #[test]
+    fn a_refusal_names_every_entry_it_would_not_toggle() {
+        // Exit 1 carries the reasons on stdout, so they must not be lost to an empty
+        // stderr: this is the whole text the user gets back.
+        let body: serde_json::Value = serde_json::from_str(
+            r#"{"status":"ERROR","problems":[
+                {"type":"skill","name":"alpha","reason":"not installed"},
+                {"type":"agent","name":"beta","reason":"only skills can be disabled"}]}"#,
+        )
+        .expect("parse");
+        assert_eq!(
+            refusal(&body),
+            "alpha: not installed\nbeta: only skills can be disabled"
+        );
+    }
+
+    #[test]
+    fn a_mid_batch_failure_reports_its_reason() {
+        let body: serde_json::Value =
+            serde_json::from_str(r#"{"status":"ERROR","name":"alpha","reason":"disk full"}"#)
+                .expect("parse");
+        assert_eq!(refusal(&body), "disk full");
     }
 
     #[test]

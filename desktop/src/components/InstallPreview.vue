@@ -309,8 +309,8 @@ watch([() => props.name, scope], () => {
   border-radius: 8px;
   font-size: 0.82rem;
   line-height: 1.45;
-  color: #b45309;
-  background: rgba(245, 158, 11, 0.14);
+  color: var(--status-attention-ink);
+  background: var(--status-attention-tint);
 }
 .install-preview__scope {
   margin: 0.75rem 0 0.5rem;
@@ -370,7 +370,7 @@ watch([() => props.name, scope], () => {
   cursor: pointer;
 }
 .install-preview__recent:hover {
-  background: rgba(128, 128, 128, 0.15);
+  background: var(--surface-hover);
   opacity: 1;
 }
 .install-preview__recent--current {
@@ -389,7 +389,7 @@ watch([() => props.name, scope], () => {
   cursor: pointer;
 }
 .install-preview__forget:hover {
-  background: rgba(128, 128, 128, 0.15);
+  background: var(--surface-hover);
   opacity: 1;
 }
 .install-preview__plan {
@@ -403,10 +403,10 @@ watch([() => props.name, scope], () => {
 .install-preview__item {
   padding: 0.5rem 0.85rem;
   border-radius: 8px;
-  background: rgba(128, 128, 128, 0.08);
+  background: var(--surface-raised);
 }
 .install-preview__item--drifted {
-  border-left: 3px solid #f59e0b;
+  border-left: 3px solid var(--status-attention-ink);
 }
 .install-preview__item-head {
   display: flex;
@@ -425,11 +425,11 @@ watch([() => props.name, scope], () => {
   font-size: 0.7rem;
   padding: 0.05rem 0.4rem;
   border-radius: 999px;
-  background: rgba(128, 128, 128, 0.2);
+  background: var(--surface-sunken);
 }
 .install-preview__state--drifted {
-  background: rgba(245, 158, 11, 0.2);
-  color: #b45309;
+  background: var(--status-attention-tint);
+  color: var(--status-attention-ink);
   font-weight: 600;
 }
 .install-preview__dest {
@@ -467,7 +467,7 @@ watch([() => props.name, scope], () => {
 .install-preview__done {
   margin: 0.75rem 0 0.5rem;
   font-size: 0.85rem;
-  color: #16a34a;
+  color: var(--status-ok-ink);
   font-weight: 600;
 }
 </style>

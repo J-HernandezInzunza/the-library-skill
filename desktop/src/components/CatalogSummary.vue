@@ -36,9 +36,9 @@ const writeMode = computed(() => {
 .catalog-summary {
   margin: 0 0 1rem;
   padding: 0.6rem 0.8rem;
-  border-left: 3px solid hsl(var(--catalog-hue), 65%, 52%);
+  border-left: 3px solid var(--catalog-edge);
   border-radius: 0 8px 8px 0;
-  background: hsl(var(--catalog-hue), 45%, 50%, 0.08);
+  background: var(--catalog-wash);
 }
 .catalog-summary__meta {
   display: flex;
@@ -59,6 +59,6 @@ const writeMode = computed(() => {
 .catalog-summary__skipped {
   margin: 0.5rem 0 0;
   font-size: 0.82rem;
-  color: #b45309;
+  color: var(--status-attention-ink);
 }
 </style>

@@ -111,7 +111,7 @@ run();
   opacity: 0.5;
 }
 .doctor__section--error {
-  color: #dc2626;
+  color: var(--status-danger-ink);
   opacity: 0.85;
 }
 .doctor__list {
@@ -125,20 +125,20 @@ run();
 .doctor__item {
   padding: 0.55rem 0.85rem;
   border-radius: 8px;
-  border-left: 3px solid rgba(234, 179, 8, 0.6);
-  background: rgba(128, 128, 128, 0.08);
+  border-left: 3px solid var(--status-override-edge);
+  background: var(--surface-raised);
   font-size: 0.83rem;
   line-height: 1.45;
 }
 .doctor__item--error {
-  border-left-color: #dc2626;
+  border-left-color: var(--status-danger-ink);
 }
 .doctor__subject {
   display: inline-block;
   margin-right: 0.4rem;
   padding: 0.05rem 0.4rem;
   border-radius: 4px;
-  background: rgba(128, 128, 128, 0.2);
+  background: var(--surface-sunken);
   font-weight: 600;
   font-size: 0.75rem;
 }

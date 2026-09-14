@@ -24,8 +24,8 @@ pub mod walkthrough;
 use cli::{
     AddReport, AddRequest, BootstrapReport, Catalog, CatalogRequest, DoctorReport, Entry,
     EntryDetail, InitReport, PushPreview, PushReport, RegistrationReport, RemovePreview,
-    RemoveReport, SourceSuggestion, SyncReport, UninstallReport, UnregisterReport, UpdateReport,
-    UpdateRequest, UsePreview, UseReport,
+    RemoveReport, SourceSuggestion, SyncReport, ToggleReport, UninstallReport, UnregisterReport,
+    UpdateReport, UpdateRequest, UsePreview, UseReport,
 };
 use error::AppError;
 use secrets::Secrets;
@@ -64,8 +64,8 @@ where
 /// subcommand: filtering in the UI is instant, offline, and costs no subprocess
 /// per keystroke.
 #[tauri::command]
-async fn library_list(app: tauri::AppHandle) -> Result<Vec<Entry>, AppError> {
-    off_thread(move || cli::list(&app)).await
+async fn library_list(app: tauri::AppHandle, no_pull: bool) -> Result<Vec<Entry>, AppError> {
+    off_thread(move || cli::list(&app, no_pull)).await
 }
 
 /// Everything known about one name: copies, override chain, requires, installs.
@@ -110,6 +110,27 @@ async fn entry_uninstall(
     force: bool,
 ) -> Result<UninstallReport, AppError> {
     off_thread(move || cli::uninstall(&app, &names, &scope, force)).await
+}
+
+/// Switch installed skills off, keeping their content on the device (R3.2).
+///
+/// The copy stops loading in a *new* Claude Code session, not in one already running.
+#[tauri::command]
+async fn entry_disable(
+    app: tauri::AppHandle,
+    names: Vec<String>,
+) -> Result<ToggleReport, AppError> {
+    off_thread(move || cli::disable_entry(&app, &names)).await
+}
+
+/// Switch disabled skills back on, restoring each to the directory it was installed in
+/// (R3.2). No network fetch: the content never left the device.
+#[tauri::command]
+async fn entry_enable(
+    app: tauri::AppHandle,
+    names: Vec<String>,
+) -> Result<ToggleReport, AppError> {
+    off_thread(move || cli::enable_entry(&app, &names)).await
 }
 
 /// Re-pull every installed entry (R3.3). `force` re-fetches even unchanged ones.
@@ -395,6 +416,8 @@ pub fn run() {
             entry_use_preview,
             entry_use,
             entry_uninstall,
+            entry_disable,
+            entry_enable,
             catalog_sync,
             entry_add,
             entry_update,

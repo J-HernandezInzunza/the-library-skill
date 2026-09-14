@@ -94,6 +94,10 @@ and the output is exactly what it has always been. In `--json`, each finding car
   not partially honored — an unknown `version` or an unrecognized `delivery`/`format`
   value is fatal by design (see [setup.md](setup.md)). This is a bug in the skill, so the
   fix is upstream, not on the user's machine
+- One name with a copy in **both** places — an active one under `~/.claude/skills/` and a
+  disabled one under `~/.claude/skills-disabled/`. `disable` and `enable` both refuse
+  while this holds, so the toggle is unusable until someone deletes the copy they don't
+  want; the message names both paths
 
 **Installed-copy warnings (exit 0):**
 
@@ -103,9 +107,20 @@ and the output is exactly what it has always been. In `--json`, each finding car
 - An installed copy has **no install receipt** — hand-installed, or installed before
   receipts existed. Legitimate; re-running `library use <name>` adopts it
 - A receipt points at a destination that no longer exists (deleted outside the tool)
+- **Disabled content with no catalog entry** — something parked in
+  `~/.claude/skills-disabled/` that no registered catalog names, which happens when a
+  skill is disabled and later removed from the catalog. `enable` and `uninstall` resolve
+  by name, so neither can reach it; the message gives the `mv` that restores it by hand,
+  or the user can delete it
+
+A **disabled** copy is not a finding — being switched off is intentional, not a broken
+install, and `doctor` exits 0 on a tree full of them. Its `setup.yaml` is still validated,
+at the archive path where the manifest now lives.
 
 Each installed name is checked once, against the copy precedence resolves to — the same
-rule `sync` follows.
+rule `sync` follows. The disabled-content sweep is the one check that does *not* start
+from the catalog: it reads the archive directory itself, because content whose entry is
+gone from the catalog cannot be reached any other way.
 
 Relay the report, and keep the two severities distinct — an all-warnings run is a healthy
 run. For errors, point the user at the offending entry *and its catalog*, plus the fix

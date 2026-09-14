@@ -13,6 +13,11 @@ export default defineConfig(async () => ({
     // src-tauri is Rust; cargo owns its tests.
     include: ["src/**/*.spec.ts"],
 
+    // Vitest stubs CSS imports to empty by default, `?raw` included, which would make
+    // the token guard in src/assets/tokens.spec.ts read an empty stylesheet and pass
+    // without checking anything.
+    css: true,
+
     /**
      * There is no Tauri runtime under vitest, so the IPC is replaced at the module
      * boundary rather than mocked per file.

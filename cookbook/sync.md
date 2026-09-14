@@ -35,6 +35,20 @@ Anything unknown falls back to fetching: no receipt, no recorded commit, an unre
 remote, or a locally-modified copy. That is deliberate — "don't know" must never be
 reported as "up to date". In `--json`, each synced item carries `up_to_date`.
 
+**A disabled item is refreshed where it sits.** `sync` updates its archived copy in
+`~/.claude/skills-disabled/` and leaves it switched off — it is never moved back into the
+loaded directory. Its line says so, and the footer counts it:
+
+```
+  refreshed [skill] grill-me (global, disabled) · 1 modified  (refreshed in the archive — still disabled)
+
+Synced 2 · 2 changed · 1 disabled · failed 0
+```
+
+In `--json`, each synced item carries `disabled` (a boolean) and reports
+`state: "disabled"`. Its install receipt keeps naming the **active** destination, because
+that is where `library enable` puts the content back.
+
 If the CLI prints a staleness warning on stderr (`catalog 'shared' is N commit(s) behind
 origin/...`), relay it to the user. With several catalogs the warning names which one.
 
@@ -63,7 +77,8 @@ overwriting it:
 
 - `~` modified · `+` added · `-` removed (relative paths within the item).
 - `new install` means the item wasn't present locally before this sync.
-- The footer reports `Synced N · M changed · failed K`.
+- The footer reports `Synced N · M changed · failed K`, with `· D disabled` when a
+  disabled item was refreshed.
 - `--json` adds a `changes` object (`{new_install, added, removed, modified}`) and a
   `state` to each synced entry; all pre-existing fields are unchanged.
 - `state` is what the installed copy looked like **before** the refresh, from its install

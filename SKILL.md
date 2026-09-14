@@ -46,7 +46,7 @@ Every write returns `mode` and `catalog` in its `--json` payload. Read them befo
 
 The mechanical parts of the workflow — reading the catalog, parsing sources, resolving dependencies, cloning/copying — are handled by a small deterministic CLI (`library.py`, invoked via the `library` wrapper). The agent is only needed for judgment: fuzzy name matching, dependency detection from prose, and conflict narration.
 
-- **CLI-backed (no LLM needed):** `init`, `self-update`, `link`, `list`, `show`, `search`, `use`, `uninstall`, `setup`, `sync`, `doctor`, `catalog`. Invoke them by the wrapper's absolute path (e.g. `<tool-dir>/library use <name>`) **from the user's current working directory — do not `cd` into the tool directory first.** All support `--json` (machine-readable). `--no-pull` (skip the catalog git pull) exists only on the commands that read the catalog — `list`, `show`, `search`, `use`, `uninstall`, `setup`, `sync`, `doctor` — and is an argparse error anywhere else.
+- **CLI-backed (no LLM needed):** `init`, `self-update`, `link`, `list`, `show`, `search`, `use`, `uninstall`, `disable`, `enable`, `setup`, `sync`, `doctor`, `catalog`. Invoke them by the wrapper's absolute path (e.g. `<tool-dir>/library use <name>`) **from the user's current working directory — do not `cd` into the tool directory first.** All support `--json` (machine-readable). `--no-pull` (skip the catalog git pull) exists only on the commands that read the catalog — `list`, `show`, `search`, `use`, `uninstall`, `disable`, `enable`, `setup`, `sync`, `doctor` — and is an argparse error anywhere else.
   - **Install-location contract:** bare `use <name>` installs **globally** (`~/.claude/...`, absolute, CWD-independent) — that is the default. `--project` and a relative `--dir` anchor to the directory you invoke from, so **never `cd` into the tool dir to run these** — that would anchor the install to the tool dir instead of the user's project. `--cwd <dir>` overrides the anchor explicitly. Details in [cookbook/use.md](cookbook/use.md).
   - **Project-local installs are confirmed first:** before running `use <name> --project` (or a relative `--dir`), run it with `--dry-run --json`, tell the user the absolute destination path(s), and get a yes — the anchor CWD is easy to get wrong. Global installs need no confirmation.
 - **Agent-mediated (fallback):** `add`, `update`, `push`, `remove`, and any _fuzzy_ request (vague name, natural-language intent). The CLI signals when it needs the agent by exiting non-zero with `status: "AMBIGUOUS"` or `status: "NOT_FOUND"`.
@@ -57,7 +57,8 @@ The mechanical parts of the workflow — reading the catalog, parsing sources, r
 
 **Install state comes from receipts — read it before you act.** Every install writes a
 receipt (`.installs.json`, next to the config), so `list`/`search`/`show` return a `state`
-per entry alongside the existing `installed` bool: `installed`, `drifted` (the local copy
+per entry alongside the existing `installed` bool: `installed`, `disabled` (on the device
+but moved out of the scanned dir, so the agent isn't loading it), `drifted` (the local copy
 was edited), `untracked` (present, but this tool didn't install it), `missing`, or
 `not_installed`. Two rules follow from it:
 
@@ -71,7 +72,14 @@ was edited), `untracked` (present, but this tool didn't install it), `missing`, 
 call per source repo — pass it only when the user asks whether things are out of date, and
 never by reflex. Deleting an installed copy is `uninstall` (the entry stays in the
 catalog); removing the entry itself is `remove`. Confusing the two is the expensive
-mistake — see [cookbook/uninstall.md](cookbook/uninstall.md).
+mistake — see [cookbook/uninstall.md](cookbook/uninstall.md). When the user wants a skill
+to stop loading but keep the install, that is `disable` — it moves the global copy to
+`~/.claude/skills-disabled/<name>/`, reports the entry as `disabled`, and takes effect in
+the user's next Claude Code session, not the one they are in. `enable` moves it back to
+the directory it was installed in — no re-fetch, and it refuses rather than overwrite if
+another copy of that name appeared while it was off. `use` and `sync` on a disabled skill
+both refresh the archived copy where it sits and leave it switched off, so neither
+silently undoes the toggle and neither leaves a second copy on disk.
 
 **Exit 3 means "not bootstrapped" — run bootstrap, don't debug.** Any `library` command
 exits `3` with `PyYAML not found` when the clone's `.venv` is missing. That code is
@@ -107,6 +115,8 @@ Never say "PR opened" unless `mode == "pr"` **and** `method == "gh"`. Claiming a
 | `/library use <name>`       | Pull from source (install or refresh)                                                 |
 | `/library push <name>`      | Push local changes back to source (PR for GitHub/Bitbucket sources)                   |
 | `/library uninstall <name>` | Delete the installed copy from this machine (the catalog entry is kept)               |
+| `/library disable <name>`   | Switch off an installed skill without uninstalling it (the copy stays on disk) |
+| `/library enable <name>`    | Switch a disabled skill back on (moves it back where it was installed; no re-fetch) |
 | `/library remove <name>`    | Remove from a catalog (same three modes); optionally purge local                       |
 | `/library list`             | Show full catalog with install status                                                 |
 | `/library show <name>`      | Everything about one entry: copies, overrides, deps, dependents, source, installs     |

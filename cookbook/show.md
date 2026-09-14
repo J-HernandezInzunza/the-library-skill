@@ -33,12 +33,19 @@ This is deterministic: the CLI does all of it. Do **not** reconstruct it from `l
 | `copies[]` | every copy of the name, in precedence order, each with `wins`, `overrides`, `overridden_by` |
 | `requires[]` | dependencies resolved **within the winner's own catalog** (that's where `use` resolves them) |
 | `installs[]` | every install receipt for the name: `dest`, `scope`, `catalog`, `commit`, `installed_at` |
+| `locations[]` | every destination the entry occupies, uncollapsed: `path`, `scope`, its own `state`, `archive_path`, `archived`, `receipt` |
 | `has_setup` | the installed copy ships a `setup.yaml` walkthrough |
 | `source` | the parsed source — `kind` plus `org`/`repo`/`branch`/`file_path`, or a local `path` and whether it exists, or `kind: "unknown"` with the parse error |
 
 An entry can appear in `installs[]` more than once: both scopes, or a `--dir` install.
 Each carries its own `catalog`, so "which copy is actually on disk" is answerable even
 when the winner has since changed.
+
+`locations[]` is the disk's answer where `installs[]` is the receipts': a copy this tool
+never recorded — hand-installed, or moved into the archive by hand — appears in the first
+and not the second. For a `disabled` location the content is at `archive_path`, not at
+`path`; `path` is where `library enable` puts it back. Read the archive path from here,
+never derive it.
 
 `source.kind: "unknown"` means the entry's `source` doesn't parse — a real catalog bug.
 Say so plainly and offer [update.md](update.md) to fix it.
@@ -47,5 +54,5 @@ Say so plainly and offer [update.md](update.md) to fix it.
 
 Lead with the answer to what the user asked, not the whole payload. The three that
 usually matter: which catalog's copy would be installed, whether the installed copy is
-`installed`/`drifted`/`untracked`, and what it pulls in. Mention the override only when
+`installed`/`drifted`/`untracked`/`disabled` (and for a disabled one, where its content sits), and what it pulls in. Mention the override only when
 there is one — "one copy, from the only catalog" is noise.

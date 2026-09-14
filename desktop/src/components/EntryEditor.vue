@@ -159,7 +159,7 @@ async function save() {
 .editor__field input {
   padding: 0.45rem 0.6rem;
   border-radius: 8px;
-  border: 1px solid rgba(128, 128, 128, 0.4);
+  border: 1px solid var(--border-control);
   background: transparent;
   color: inherit;
   font-size: 0.85rem;
@@ -170,7 +170,7 @@ async function save() {
 .editor__requires {
   margin: 0;
   padding: 0.5rem 0.75rem 0.6rem;
-  border: 1px solid rgba(128, 128, 128, 0.3);
+  border: 1px solid var(--border-control);
   border-radius: 8px;
 }
 .editor__requires legend {

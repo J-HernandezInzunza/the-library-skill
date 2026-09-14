@@ -25,3 +25,4 @@ config.local.yaml.lock
 # Kept on disk, out of the repo — they describe how a change was built, not how the
 # tool works. Anything durable belongs in docs/ instead.
 specs/
+.specs/

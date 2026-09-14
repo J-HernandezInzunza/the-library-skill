@@ -328,7 +328,7 @@ async function submit() {
 .register__field input[type="text"] {
   padding: 0.45rem 0.6rem;
   border-radius: 8px;
-  border: 1px solid rgba(128, 128, 128, 0.4);
+  border: 1px solid var(--border-control);
   background: transparent;
   color: inherit;
   font-size: 0.85rem;
@@ -361,8 +361,8 @@ async function submit() {
 .register__check--warn {
   padding: 0.5rem 0.6rem;
   border-radius: 6px;
-  color: #b45309;
-  background: rgba(245, 158, 11, 0.12);
+  color: var(--status-attention-ink);
+  background: var(--status-attention-tint);
 }
 .register__conflict {
   margin-top: 0.3rem;
@@ -370,8 +370,8 @@ async function submit() {
   border-radius: 6px;
   font-size: 0.75rem;
   line-height: 1.45;
-  color: #b91c1c;
-  background: rgba(220, 38, 38, 0.1);
+  color: var(--status-danger-ink);
+  background: var(--status-danger-tint);
 }
 .register__actions {
   display: flex;

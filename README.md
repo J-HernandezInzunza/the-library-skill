@@ -50,9 +50,10 @@ dependencies it pulls in — before anything touches disk. Install, and the entr
 installed.
 
 **Getting it:** build it once from your own clone (`just app-setup && just app-install`), then
-launch it like any Mac app. Full build steps, and the guided-setup walkthrough that configures a
-credentialed skill without the secret ever entering the agent's context, are in
-**[desktop/README.md](desktop/README.md)**.
+launch it like any Mac app. Building needs **Node ≥ 20** and the **Rust toolchain** (Tauri's
+backend compiles from source) — install and PATH notes, full build steps, and the guided-setup
+walkthrough that configures a credentialed skill without the secret ever entering the agent's
+context, are in **[desktop/README.md](desktop/README.md)**.
 
 ## Prerequisites
 
@@ -61,7 +62,7 @@ credentialed skill without the secret ever entering the agent's context, are in
 - **gh** (optional) — GitHub CLI, needed only when `autopush: true` on a **GitHub** catalog (auto-open PRs). Bitbucket catalogs never need a CLI — Bitbucket is fully supported and always uses the compare-URL flow. Install: `brew install gh` or see [gh docs](https://cli.github.com)
 - **git auth for your host(s)** — an SSH key (recommended) or a credential helper / token, for private catalog and source repos. GitHub: SSH key, `GITHUB_TOKEN`, or `gh auth login`. Bitbucket: SSH key or an app password. The tool is **non-interactive** — it never prompts for credentials (see Troubleshooting).
 - **just** (optional) — for justfile shortcuts. Install: `brew install just` or see [just docs](https://github.com/casey/just)
-- **python3** (3.9+) — for the deterministic CLI. PyYAML is installed into a local `.venv` by `python3 bootstrap.py` (or `just bootstrap`) — one-time, idempotent, stdlib-only. Any `library` command exiting `3` means that step hasn't run yet.
+- **python3** (3.9+) — for the deterministic CLI. It need not be the *first* `python3` on your `PATH`: the `library` wrapper picks an interpreter by version, so a stale older `python3` shadowing a newer one is tolerated as long as a 3.9+ exists somewhere (macOS's `/usr/bin/python3` counts). PyYAML is installed into a local `.venv` by `python3 bootstrap.py` (or `just bootstrap`) — one-time, idempotent, stdlib-only. Any `library` command exiting `3` means that step hasn't run yet.
 - **Windows: use [WSL](https://learn.microsoft.com/windows/wsl/install)** — the `library` wrapper, the venv bin paths, and `library link` (which creates a symlink) assume a Unix shell, so run everything from inside WSL. Native PowerShell/cmd is not supported; Git Bash mostly works but the venv lands in `.venv/Scripts/` there, so the wrapper misses its bundled Python — WSL avoids that.
 
 ## Installation
@@ -199,6 +200,14 @@ Project installs land relative to where you (or the agent) run from, so the agen
 confirms the resolved destination with you first (`--dry-run` shows it without
 installing).
 
+`use` on a **disabled** skill refreshes the archived copy in place and leaves it
+disabled, exactly as [`sync`](#sync-everything) does — it never installs a second copy
+into the loaded directory, and it does not switch the skill back on. Its line reads
+`Refreshed [skill] <name> → ~/.claude/skills-disabled/<name> … (in the archive — still
+disabled)`, `--json` marks the item `disabled: true`, and `--dry-run` predicts the same.
+The skill's dependencies are not pulled into the loaded directory either; `enable`
+brings them in when you switch it back on.
+
 ### Add a skill to the catalog
 
 You built a deploy skill in one of your repos. Register it:
@@ -278,6 +287,10 @@ currently-installed copy *before* overwriting it. Note this is "source vs. insta
 not "since last sync" — local edits to an installed copy show up as modified and get
 overwritten.
 
+Disabled items are refreshed **in the archive** and stay disabled — sync never moves one
+back into the loaded directory. Their line reads `(global, disabled)` and `--json` marks
+them with `disabled: true`.
+
 Items whose source and local copy are both unchanged are **skipped, not re-cloned** —
 one `git ls-remote` per source repo answers that for every entry from it. They report
 `up to date`. `--force` re-fetches everything regardless. See
@@ -305,6 +318,8 @@ Two ways to drive it, same result:
 | Update an entry | "make session-retro also require backend-code-practices" | `./library update session-retro --add-requires skill:backend-code-practices` |
 | Push changes back | "push my deploy changes back to the library" | `./library push deploy` |
 | Uninstall a skill | "uninstall deploy from my machine" | `./library uninstall deploy` |
+| Switch a skill off, keeping it | "stop loading deploy, but keep it installed" | `./library disable deploy` |
+| Switch it back on | "start loading deploy again" | `./library enable deploy` |
 | Remove an entry | "remove deploy from the library" | `./library remove deploy` |
 | Sync everything | "sync all my installed library skills" | `./library sync` |
 | What a skill needs to work | "what setup does atlassian-toolkit need?" | `./library setup atlassian-toolkit` |
@@ -630,8 +645,8 @@ autopush: false
 Per catalog:
 
 - **`id`** — short name, used by `--catalog <id>` on any command that takes an entry name
-  (`list`, `search`, `use`, `setup`, `show`, `uninstall`, `sync`, `add`, `update`, `remove`,
-  `push`). Must be unique.
+  (`list`, `search`, `use`, `setup`, `show`, `uninstall`, `disable`, `enable`, `sync`, `add`,
+  `update`, `remove`, `push`). Must be unique.
 - **`path`** — *local catalog:* a `library.yaml` on this machine (or a directory holding
   one). Must be absolute or start with `~`. Mutually exclusive with `repo`.
 - **`repo`** / **`yaml_path`** / **`branch`** — *remote catalog:* the clone URL, the catalog
@@ -683,6 +698,7 @@ the two scopes mean one entry can legitimately live in several places.
 | `state` | Meaning |
 | ------- | ------- |
 | `installed` | present, and identical to what was installed |
+| `disabled` | on the device, but parked in `~/.claude/skills-disabled/` by `library disable`, so the agent doesn't load it — `library enable` moves it back |
 | `drifted` | present, but edited since — `use`/`sync` **will overwrite it** |
 | `untracked` | present with no receipt: hand-installed, or installed before receipts existed |
 | `missing` | a receipt whose files are gone |
@@ -700,6 +716,14 @@ Two deliberate choices:
 Receipts are device state, like `config.local.yaml`: gitignored, machine-owned, written
 atomically under a lock, and re-creatable by re-installing. `library uninstall` drops them
 alongside the files; `library doctor` reports drifted, untracked, and orphaned ones.
+
+`uninstall` (and `remove --purge`, which shares the same deletion path) also deletes a
+**disabled** copy out of `~/.claude/skills-disabled/`, so switching a skill off and then
+uninstalling it leaves nothing behind. A receipt is dropped only when the content is gone
+from both the destination and its archive: an empty destination is what being disabled
+looks like, and dropping the receipt would lose the record `enable` puts the copy back
+with. A copy parked in the archive by hand has no receipt, so it is refused exactly like a
+hand-installed one until you pass `--force`.
 
 ### Source Formats
 

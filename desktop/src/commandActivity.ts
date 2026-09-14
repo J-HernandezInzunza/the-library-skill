@@ -138,7 +138,10 @@ export function describeArgv(argv: string[]): string {
   const tool = program.split("/").pop() ?? program;
   const meaningful = args.filter((arg) => !arg.startsWith("--")).slice(0, 2);
 
-  if (tool === "python3") return "bootstrapping";
+  // Recognise the bootstrap by the script it runs, not the interpreter that runs it:
+  // that interpreter is chosen by version, so it can be `python3`, `python3.12`, or an
+  // absolute path — all of which mean the same operation to the user.
+  if (args.some((arg) => arg.endsWith("bootstrap.py"))) return "bootstrapping";
   // The agent's argv is a prompt, not a command line. Naming the operation is the only useful
   // thing to say about it — everything after `claude -p` is prose addressed to a model.
   if (tool === "claude") return "asking the assistant";

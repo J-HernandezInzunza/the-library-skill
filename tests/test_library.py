@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import io
 import json
 import os
@@ -73,7 +74,11 @@ class TempTool:
         self._patch("RECEIPTS_PATH", self.receipts_path)
         self._patch("CATALOG_CLONE_DIR", self.clone_dir)
         self._patch("CATALOGS_DIR", self.tool_dir / ".catalogs")
-        self._patch("GLOBAL_SKILLS_DIR", self.home / ".claude" / "skills")
+        skills = self.home / ".claude" / "skills"
+        self._patch("GLOBAL_SKILLS_DIR", skills)
+        # Derived rather than spelled out, so the sandbox's archive location cannot
+        # disagree with the rule the tests exercise.
+        self._patch("GLOBAL_DISABLED_DIR", library.disabled_dir_for(skills))
         # project_cwd() caches into this global; pre-seeding it keeps relative
         # ('project'-scope) install dirs anchored inside the sandbox.
         self._patch("_PROJECT_CWD", self.project)
@@ -407,6 +412,13 @@ def make_entry(
         source=source or f"./{name}",
         requires=list(requires or []),
     )
+
+
+def disable_on_disk(dest: Path) -> Path:
+    """Park an installed copy in the archive the way `disable` will."""
+    archived = library.disabled_dir_for(dest.parent) / dest.name
+    library.move_tree(dest, archived)
+    return archived
 
 
 def update_args(**kwargs: Any) -> argparse.Namespace:
@@ -1764,6 +1776,29 @@ class TestInstallDirAnchoring(unittest.TestCase):
 # update's entry computation (R18.3)
 # --------------------------------------------------------------------------- #
 
+class TestDisabledDir(unittest.TestCase):
+    """The archive location is pure path arithmetic, so no sandbox is needed."""
+
+    def test_global_scope_parks_beside_the_skills_dir(self) -> None:
+        self.assertEqual(library.disabled_dir_for(Path("/home/dev/.claude/skills")),
+                         Path("/home/dev/.claude/skills-disabled"))
+
+    def test_project_scope_parks_beside_its_own_skills_dir(self) -> None:
+        self.assertEqual(library.disabled_dir_for(Path("/srv/repo/.claude/skills")),
+                         Path("/srv/repo/.claude/skills-disabled"))
+
+    def test_archive_is_outside_the_scanned_tree(self) -> None:
+        base = Path("/home/dev/.claude/skills")
+        archive = library.disabled_dir_for(base)
+        self.assertFalse(archive.is_relative_to(base))
+
+    def test_constant_agrees_with_the_rule(self) -> None:
+        # The constant is spelled out at module top because the rule is defined
+        # hundreds of lines later; this is what keeps the two from drifting.
+        self.assertEqual(library.disabled_dir_for(library.GLOBAL_SKILLS_DIR),
+                         library.GLOBAL_DISABLED_DIR)
+
+
 class TestComputeUpdatedEntry(unittest.TestCase):
     def setUp(self) -> None:
         self.base = make_entry("alpha", description="Old", source="/srv/alpha",
@@ -1943,9 +1978,9 @@ class TestSingleCatalogGoldens(unittest.TestCase):
             # name, type, and meaning (C-D8).
             self.assertEqual(
                 sorted(item),
-                ["catalog", "description", "has_setup", "installed", "name",
-                 "overridden_by", "receipt", "requires", "scopes", "source", "state",
-                 "type"],
+                ["catalog", "description", "has_setup", "installed", "locations",
+                 "name", "overridden_by", "receipt", "requires", "scopes", "source",
+                 "state", "type"],
             )
             self.assertEqual((item["catalog"], item["overridden_by"]), ("shared", None))
         retro = next(i for i in payload if i["name"] == "session-retro")
@@ -1958,9 +1993,9 @@ class TestSingleCatalogGoldens(unittest.TestCase):
         self.assertEqual(code, 0)
         # §4.1: the same record as `list`, not a thinner one.
         self.assertEqual([sorted(i) for i in payload],
-                         [["catalog", "description", "has_setup", "installed", "name",
-                           "overridden_by", "receipt", "requires", "scopes", "source",
-                           "state", "type"]])
+                         [["catalog", "description", "has_setup", "installed",
+                           "locations", "name", "overridden_by", "receipt", "requires",
+                           "scopes", "source", "state", "type"]])
         self.assertEqual((payload[0]["catalog"], payload[0]["overridden_by"]), ("shared", None))
 
     def test_doctor_json_keys(self) -> None:
@@ -2104,6 +2139,17 @@ class TestRemovePurgeScopes(unittest.TestCase):
         self.assertEqual(library.load_receipts(), {})
         self.purge("session-retro")
         self.assertFalse(target.exists())
+
+    def test_purges_a_disabled_copy_out_of_the_archive(self) -> None:
+        # `remove --purge` shares `uninstall_entry`, so it clears the archive too: the
+        # command that deletes the catalog entry must not strand the content it left
+        # behind, which no catalog-driven command could then name (R5.5, R5.6).
+        archive = self.tool.home / ".claude/skills-disabled/session-retro"
+        archive.mkdir(parents=True)
+        (archive / "SKILL.md").write_text("# disabled copy\n")
+        payload = self.purge("session-retro")
+        self.assertEqual(payload["deleted"], [str(archive)])
+        self.assertFalse(archive.exists())
 
     def test_local_copies_survive_without_the_flag(self) -> None:
         targets = [self.install("project", "session-retro"),
@@ -3309,6 +3355,68 @@ class TestReceiptStore(unittest.TestCase):
         rec = library.load_receipts()["/a/one"]
         self.assertEqual(set(rec), set(library.RECEIPT_KEYS))
         self.assertIsNone(rec["commit"])
+
+
+class TestMoveTree(unittest.TestCase):
+    """The archive move. Its contract is that the tree is never at neither path."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "skills" / "a-skill"
+        (self.src / "sub").mkdir(parents=True)
+        (self.src / "SKILL.md").write_text("body\n")
+        (self.src / "sub" / "ref.md").write_text("ref\n")
+        self.digest = library.content_hash(self.src)
+        self.dst = self.tool.root / "skills-disabled" / "a-skill"
+
+    @staticmethod
+    def _cross_device(*_a: Any, **_kw: Any) -> None:
+        raise OSError(errno.EXDEV, "Cross-device link")
+
+    def test_same_filesystem_move_preserves_content(self) -> None:
+        library.move_tree(self.src, self.dst)
+        self.assertFalse(self.src.exists())
+        self.assertEqual(library.content_hash(self.dst), self.digest)
+
+    def test_move_creates_the_archive_parent(self) -> None:
+        self.assertFalse(self.dst.parent.exists())
+        library.move_tree(self.src, self.dst)
+        self.assertTrue(self.dst.is_dir())
+
+    def test_cross_device_falls_back_and_preserves_content(self) -> None:
+        with patch.object(library.os, "replace", self._cross_device):
+            library.move_tree(self.src, self.dst)
+        self.assertFalse(self.src.exists())
+        self.assertEqual(library.content_hash(self.dst), self.digest)
+
+    def test_a_bad_cross_device_copy_leaves_the_source_alone(self) -> None:
+        def truncating(src: Any, dst: Any, **_kw: Any) -> None:
+            Path(dst).mkdir(parents=True)
+            (Path(dst) / "SKILL.md").write_text("body\n")  # the sub/ref.md is dropped
+
+        with patch.object(library.os, "replace", self._cross_device), \
+             patch.object(library.shutil, "copytree", truncating):
+            with self.assertRaises(library.LibraryError):
+                library.move_tree(self.src, self.dst)
+
+        self.assertEqual(library.content_hash(self.src), self.digest)
+        self.assertFalse(self.dst.exists())
+
+    def test_an_occupied_destination_is_refused(self) -> None:
+        self.dst.mkdir(parents=True)
+        with self.assertRaises(library.LibraryError):
+            library.move_tree(self.src, self.dst)
+        self.assertEqual(library.content_hash(self.src), self.digest)
+
+    def test_an_unrelated_oserror_is_not_swallowed(self) -> None:
+        def denied(*_a: Any, **_kw: Any) -> None:
+            raise OSError(errno.EACCES, "Permission denied")
+
+        with patch.object(library.os, "replace", denied):
+            with self.assertRaises(OSError) as caught:
+                library.move_tree(self.src, self.dst)
+        self.assertEqual(caught.exception.errno, errno.EACCES)
 
 
 class TestContentHash(unittest.TestCase):
@@ -4797,6 +4905,42 @@ library:
         self.assertEqual(library.installed_scopes(self.cfg.dirs, self.entries["alpha"]),
                          ["global"])
 
+    def test_a_copy_parked_in_the_archive_reads_as_disabled(self) -> None:
+        self.use("alpha")
+        dest = self.installed_dir("alpha")
+        receipt = library.load_receipts()[str(dest)]
+        disable_on_disk(dest)
+        self.assertEqual(library.dest_state(dest, receipt), "disabled")
+
+    def test_a_deleted_dest_with_no_archived_copy_still_reads_as_missing(self) -> None:
+        # The two look identical from the dest alone; only the archive tells them apart.
+        self.use("alpha")
+        dest = self.installed_dir("alpha")
+        receipt = library.load_receipts()[str(dest)]
+        shutil.rmtree(dest)
+        self.assertEqual(library.dest_state(dest, receipt), "missing")
+
+    def test_an_untouched_install_is_unaffected_by_the_archive_check(self) -> None:
+        self.use("alpha")
+        dest = self.installed_dir("alpha")
+        receipt = library.load_receipts()[str(dest)]
+        self.assertEqual(library.dest_state(dest, receipt), "installed")
+
+    def test_disabling_one_of_two_destinations_reports_disabled(self) -> None:
+        # An entry that is still active somewhere must not read as fully active.
+        self.use("alpha")
+        self.use("alpha", "--project")
+        disable_on_disk(self.installed_dir("alpha"))
+        self.assertEqual(self.state("alpha"), "disabled")
+
+    def test_drift_still_outranks_a_disabled_destination(self) -> None:
+        # Disabling is intentional; drift is not, so drift keeps the badge.
+        self.use("alpha")
+        self.use("alpha", "--project")
+        disable_on_disk(self.installed_dir("alpha"))
+        (self.tool.project / ".claude/skills/alpha/SKILL.md").write_text("# edited\n")
+        self.assertEqual(self.state("alpha"), "drifted")
+
     def test_dest_state_of_a_file_entry(self) -> None:
         dest = self.tool.root / "agents" / "sql-review.md"
         dest.parent.mkdir(parents=True)
@@ -4805,6 +4949,236 @@ library:
         self.assertEqual(library.dest_state(dest, rec), "installed")
         dest.write_text("# edited\n")
         self.assertEqual(library.dest_state(dest, rec), "drifted")
+
+
+class TestDisabledOnTheJsonContract(unittest.TestCase):
+    """`disabled` is one more raw string in the existing record (design §Data Models)."""
+
+    maxDiff = None
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in ("alpha", "beta", "gamma"):
+            (self.src / name).mkdir(parents=True)
+            (self.src / name / "SKILL.md").write_text(f"# {name}\n")
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: alpha
+      description: Stays installed
+      source: {self.src}/alpha/SKILL.md
+    - name: beta
+      description: Gets disabled
+      source: {self.src}/beta/SKILL.md
+    - name: gamma
+      description: Never installed
+      source: {self.src}/gamma/SKILL.md
+  agents: []
+  prompts: []
+""")
+        # alpha installed, beta disabled, gamma untouched — the three states R4.1 allows.
+        for name in ("alpha", "beta"):
+            code, _, err = run_cli("use", name, "--no-pull", "--json")
+            self.assertEqual(code, 0, err)
+        disable_on_disk(self.tool.home / ".claude/skills/beta")
+
+    def test_a_disabled_entry_keeps_the_documented_key_set(self) -> None:
+        # C-D8: a new state is a new value of `state`, never a rename or a retype.
+        # `locations` is the one additive key (design §Decision 5).
+        cfg = library.load_config()
+        entries = {e.name: e for e in cfg.entries()}
+        record = library.entry_record(cfg, entries["beta"], library.winning_catalogs(cfg),
+                                      library.load_receipts())
+        self.assertEqual(record["state"], "disabled")
+        self.assertEqual(
+            sorted(record),
+            ["catalog", "description", "has_setup", "installed", "locations", "name",
+             "overridden_by", "receipt", "requires", "scopes", "source", "state",
+             "type"],
+        )
+
+    def _record(self, name: str) -> dict:
+        cfg = library.load_config()
+        entries = {e.name: e for e in cfg.entries()}
+        return library.entry_record(cfg, entries[name], library.winning_catalogs(cfg),
+                                    library.load_receipts())
+
+    def test_a_disabled_entry_is_still_installed_and_names_its_origin_scope(self) -> None:
+        # R4.6/R4.7: `installed` is a high-water mark — the content is on this device —
+        # so it is never paired with an empty location.
+        record = self._record("beta")
+        self.assertTrue(record["installed"])
+        self.assertEqual(record["scopes"], ["global"])
+
+    def test_a_not_installed_entry_still_reports_no_scopes(self) -> None:
+        record = self._record("gamma")
+        self.assertFalse(record["installed"])
+        self.assertEqual(record["scopes"], [])
+
+    def test_installed_scopes_alone_does_not_see_the_archived_copy(self) -> None:
+        """R4.9: asserting an absence, on purpose.
+
+        `cmd_sync` and `cmd_push` use `installed_scopes` to pick a directory to operate
+        in. If it ever learns about archived copies, sync refreshes and push pushes from
+        a path holding nothing, and no test of the reporting layer would notice. The
+        union belongs in `entry_record` alone; this fails loudly if it moves.
+        """
+        cfg = library.load_config()
+        entries = {e.name: e for e in cfg.entries()}
+        self.assertEqual(library.installed_scopes(cfg.dirs, entries["beta"]), [])
+        self.assertEqual(library.archived_scopes(cfg.dirs, entries["beta"]), ["global"])
+        self.assertEqual(library.archived_scopes(cfg.dirs, entries["alpha"]), [])
+
+    def test_has_setup_follows_the_archived_copy(self) -> None:
+        # R4.8: disabling moves the copy, it does not strip it. Reporting
+        # `installed: true` with `has_setup: false` would be wrong the moment the
+        # entry is enabled again, with nothing on disk having changed.
+        archived = self.tool.home / ".claude/skills-disabled/beta"
+        self.assertFalse(self._record("beta")["has_setup"])
+        (archived / "setup.yaml").write_text("version: 1\n")
+        self.assertTrue(self._record("beta")["has_setup"])
+
+    def test_list_json_reports_exactly_the_three_states(self) -> None:
+        code, out, err = run_cli("list", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertEqual({i["name"]: i["state"] for i in payload},
+                         {"alpha": "installed", "beta": "disabled",
+                          "gamma": "not_installed"})
+
+
+class TestLocationsAreTheUncollapsedView(unittest.TestCase):
+    """`locations[]` says WHERE the content is, per destination (design §Decision 5)."""
+
+    maxDiff = None
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        (self.src / "alpha").mkdir(parents=True)
+        (self.src / "alpha" / "SKILL.md").write_text("# alpha\n")
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: alpha
+      description: First
+      source: {self.src}/alpha/SKILL.md
+  agents: []
+  prompts: []
+""")
+        self.cfg = library.load_config()
+        self.entries = {e.name: e for e in self.cfg.entries()}
+
+    def use(self, *argv: str) -> None:
+        code, _, err = run_cli("use", *argv, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+    def record(self, name: str = "alpha") -> dict:
+        return library.entry_record(self.cfg, self.entries[name],
+                                    library.winning_catalogs(self.cfg),
+                                    library.load_receipts())
+
+    def locations(self, name: str = "alpha") -> list[dict]:
+        return self.record(name)["locations"]
+
+    def global_dest(self) -> Path:
+        return self.tool.home / ".claude/skills/alpha"
+
+    def test_a_disabled_location_carries_the_archive_path_it_parked_in(self) -> None:
+        # R4.10: the receipt names the destination, which is empty exactly when the
+        # entry is disabled. Without this, nothing in the record says where it went.
+        self.use("alpha")
+        archived = disable_on_disk(self.global_dest())
+        loc = next(l for l in self.locations() if l["scope"] == "global")
+        self.assertEqual((loc["state"], loc["archived"], loc["archive_path"]),
+                         ("disabled", True, str(archived)))
+        self.assertEqual(loc["path"], str(self.global_dest()))
+        self.assertEqual(loc["receipt"]["dest"], str(self.global_dest()))
+
+    def test_an_active_location_reports_where_it_would_park_but_has_not(self) -> None:
+        # The path is where the content WOULD go, so it is always answerable;
+        # `archived` is what carries whether anything is there.
+        self.use("alpha")
+        loc = next(l for l in self.locations() if l["scope"] == "global")
+        self.assertEqual((loc["state"], loc["archived"]), ("installed", False))
+        self.assertEqual(loc["archive_path"],
+                         str(self.tool.home / ".claude/skills-disabled/alpha"))
+
+    def test_two_destinations_keep_their_own_states(self) -> None:
+        # R4.11: "disabled in one scope, loading in another" is the case `_STATE_RANK`
+        # cannot express — it collapses to one word and the other scope disappears.
+        self.use("alpha")
+        self.use("alpha", "--project")
+        disable_on_disk(self.global_dest())
+        record = self.record()
+        self.assertEqual([(l["scope"], l["state"]) for l in record["locations"]],
+                         [("global", "disabled"), ("project", "installed")])
+        self.assertEqual([l["archived"] for l in record["locations"]], [True, False])
+        # The collapse is untouched: one badge still reports the worst of them.
+        self.assertEqual(record["state"], "disabled")
+
+    def test_locations_are_ordered_global_first(self) -> None:
+        # Same order as `scopes`, so the two never disagree about which comes first.
+        self.use("alpha", "--project")
+        self.assertEqual([l["scope"] for l in self.locations()], ["global", "project"])
+
+    def test_a_custom_dir_destination_has_no_scope(self) -> None:
+        # `entry_dests` includes destinations only a receipt claims; no scope resolves
+        # to a `--dir` install, so its `scope` is null rather than a guess.
+        custom = self.tool.root / "elsewhere"
+        code, _, err = run_cli("use", "alpha", "--dir", str(custom), "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        locs = self.locations()
+        self.assertEqual([l["scope"] for l in locs], ["global", "project", None])
+        self.assertEqual((locs[-1]["path"], locs[-1]["state"]),
+                         (str(custom / "alpha"), "installed"))
+
+    def test_locations_survives_the_json_round_trip(self) -> None:
+        # Paths are strings like every other path in the record; a Path would not
+        # serialize at all, and the failure would land in the desktop app.
+        self.use("alpha")
+        code, out, err = run_cli("list", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        locs = json.loads(out)[0]["locations"]
+        self.assertTrue(all(isinstance(l["path"], str) and
+                            isinstance(l["archive_path"], str) for l in locs))
+
+    def test_the_documented_keys_are_untouched_by_the_addition(self) -> None:
+        # C-D8: additive means additive — every pre-existing key keeps its name, type
+        # and value, and only `locations` is new.
+        self.use("alpha")
+        disable_on_disk(self.global_dest())
+        record = self.record()
+        receipt = library.load_receipts()[str(self.global_dest())]
+        self.assertEqual(
+            {k: v for k, v in record.items() if k != "locations"},
+            {"type": "skill", "name": "alpha", "description": "First",
+             "source": f"{self.src}/alpha/SKILL.md", "requires": [],
+             "installed": True, "scopes": ["global"],
+             "catalog": "personal", "overridden_by": None,
+             "state": "disabled", "receipt": receipt, "has_setup": False},
+        )
+
+
+class TestLocationsOfAnOverriddenEntry(unittest.TestCase):
+    """A losing copy reports no locations, for the same reason it reports no scopes."""
+
+    def test_an_overridden_copy_claims_no_location(self) -> None:
+        tool = TempTool()
+        self.addCleanup(tool.stop)
+        install_two_catalog_fixture(tool)
+        cfg = library.load_config()
+        winners = library.winning_catalogs(cfg)
+        loser = next(e for e in cfg.entries()
+                     if e.name == "session-retro" and e.catalog == "shared")
+        record = library.entry_record(cfg, loser, winners, library.load_receipts())
+        self.assertEqual(record["overridden_by"], "personal")
+        # It already reports `installed: false`; a location would be the record
+        # disagreeing with itself about whether this copy is anywhere.
+        self.assertEqual((record["scopes"], record["locations"]), ([], []))
 
 
 class TestDriftIsReportedBeforeOverwriting(unittest.TestCase):
@@ -5255,6 +5629,135 @@ library:
         payload = self.doctor()
         self.assertTrue(any("local modifications" in w for w in self.messages(payload, "warnings")))
         self.assertTrue(any("invalid setup.yaml" in e for e in self.messages(payload, "errors")))
+
+
+class TestDoctorAndTheArchive(unittest.TestCase):
+    """doctor's view of disabled content (design §Decision 5, R4.3, R4.4, R5.6)."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in ("alpha", "beta"):
+            (self.src / name).mkdir(parents=True)
+            (self.src / name / "SKILL.md").write_text(f"# {name}\n")
+        self.catalog_text = f"""\
+library:
+  skills:
+    - name: alpha
+      description: First
+      source: {self.src}/alpha/SKILL.md
+    - name: beta
+      description: Second
+      source: {self.src}/beta/SKILL.md
+  agents: []
+  prompts: []
+"""
+        self.catalog = install_local_only_fixture(self.tool, self.catalog_text)
+
+    def install(self, name: str) -> Path:
+        code, _, err = run_cli("use", name, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        return self.tool.home / ".claude/skills" / name
+
+    def disable(self, name: str) -> Path:
+        code, _, err = run_cli("disable", name, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        return self.tool.home / ".claude/skills-disabled" / name
+
+    def doctor(self) -> dict[str, Any]:
+        with stubbed_gh():
+            code, out, err = run_cli("doctor", "--no-pull", "--json")
+        self.assertIn(code, (0, 1), err)
+        return json.loads(out)
+
+    def messages(self, payload: dict[str, Any], key: str) -> list[str]:
+        return [f["message"] for f in payload[key]]
+
+    def test_a_disabled_skill_is_not_a_problem(self) -> None:
+        # R4.3: being switched off is intentional, not a broken install. Without the
+        # `disabled` branch this reads as a receipt pointing at nothing.
+        self.install("alpha")
+        self.disable("alpha")
+
+        payload = self.doctor()
+
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual([m for m in self.messages(payload, "warnings") if "alpha" in m], [])
+        self.assertEqual(self.messages(payload, "errors"), [])
+
+    def test_the_both_present_case_is_an_error_naming_the_fix(self) -> None:
+        # R4.4: `disable` and `enable` both refuse while this holds, so doctor is the
+        # only place a user learns about it before hitting the refusal.
+        dest = self.install("alpha")
+        archived = self.disable("alpha")
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("# a second copy appeared\n")
+
+        payload = self.doctor()
+
+        self.assertEqual(payload["status"], "PROBLEMS")
+        both = [m for m in self.messages(payload, "errors") if "sits at both" in m]
+        self.assertEqual(len(both), 1, payload["errors"])
+        self.assertIn(str(dest), both[0])
+        self.assertIn(str(archived), both[0])
+        self.assertIn("remove the one you don't want", both[0])
+
+    def test_an_orphaned_archive_with_no_catalog_entry_is_found(self) -> None:
+        # R5.6: the entry is gone from the catalog, so `find_exact` cannot see it and no
+        # catalog walk ever reaches the content. Only the sweep of the archive does.
+        self.install("alpha")
+        archived = self.disable("alpha")
+        self.catalog.write_text(self.catalog_text.replace(f"""\
+    - name: alpha
+      description: First
+      source: {self.src}/alpha/SKILL.md
+""", ""))
+
+        payload = self.doctor()
+
+        found = [f for f in payload["warnings"] if "no catalog entry" in f["message"]]
+        self.assertEqual(len(found), 1, payload["warnings"])
+        self.assertEqual(found[0]["entry"], "alpha")
+        self.assertIn(str(archived), found[0]["message"])
+        # Whatever is suggested has to work: `enable`/`uninstall` answer NOT_FOUND here.
+        self.assertIn("mv ", found[0]["message"])
+        self.assertNotIn("`library enable alpha`", found[0]["message"])
+        self.assertEqual(payload["status"], "OK")
+
+    def test_the_sweep_stays_quiet_about_content_a_catalog_entry_owns(self) -> None:
+        self.install("alpha")
+        self.disable("alpha")
+        payload = self.doctor()
+        self.assertEqual([m for m in self.messages(payload, "warnings")
+                          if "no catalog entry" in m], [])
+
+    def test_a_disabled_skills_manifest_is_still_linted(self) -> None:
+        # `entry_has_setup` already reports the manifest exists, so doctor has to lint it
+        # — at the archive path, which is where it now lives.
+        dest = self.install("alpha")
+        (dest / "setup.yaml").write_text(yaml.safe_dump(setup_manifest(version=99)))
+        archived = self.disable("alpha")
+
+        payload = self.doctor()
+
+        broken = [m for m in self.messages(payload, "errors") if "invalid setup.yaml" in m]
+        self.assertEqual(len(broken), 1, payload["errors"])
+        self.assertIn(str(archived), broken[0])
+        self.assertIn("unknown setup version", broken[0])
+
+    def test_an_ordinary_install_is_reported_exactly_as_before(self) -> None:
+        # The archive is empty, so nothing above changes the answer for a normal tree.
+        self.install("alpha")
+        drifted = self.install("beta")
+        (drifted / "SKILL.md").write_text("# edited by hand\n")
+
+        payload = self.doctor()
+
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual([m for m in self.messages(payload, "warnings") if "beta" in m],
+                         [f"installed copy at {drifted} has local modifications; "
+                          "`use`/`sync` will overwrite them (`library push` sends them back)"])
 
 
 class TestSetupCommand(unittest.TestCase):
@@ -5742,6 +6245,60 @@ library:
         self.assertIn("Installed copies: none recorded by this tool", out)
         self.assertIn("[skill] own-dep", out)  # the resolved dependency
 
+    def test_an_ordinary_install_renders_as_it_always_did(self) -> None:
+        # The tail now comes from `locations`, so this pins the unchanged case: an active
+        # copy still reads exactly as it did when it was rendered from the receipts.
+        code, _, err = run_cli("use", "session-retro", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        dest = self.tool.home / ".claude/skills/session-retro"
+        rec = library.load_receipts()[str(dest)]
+
+        code, out, err = run_cli("show", "session-retro", "--no-pull")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn(f"\nInstalled copies:\n"
+                      f"  {dest}  (global, from personal) \u00b7 installed\n"
+                      f"      installed {rec['installed_at']}\n", out)
+
+    def test_a_disabled_copy_names_the_archive_not_the_empty_destination(self) -> None:
+        for cmd in ("use", "disable"):
+            code, _, err = run_cli(cmd, "session-retro", "--no-pull", "--json")
+            self.assertEqual(code, 0, err)
+        dest = self.tool.home / ".claude/skills/session-retro"
+        archive = self.tool.home / ".claude/skills-disabled/session-retro"
+
+        payload = self.show("session-retro")
+        loc = next(l for l in payload["locations"] if l["path"] == str(dest))
+        self.assertEqual((loc["state"], loc["archived"], loc["archive_path"]),
+                         ("disabled", True, str(archive)))
+        # `installs` is untouched by this change: still receipts-only, still keyed on the
+        # destination the copy came from (design §Data Models).
+        self.assertEqual([r["dest"] for r in payload["installs"]], [str(dest)])
+
+        code, out, err = run_cli("show", "session-retro", "--no-pull")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn(f"  {archive}  (global, from personal) \u00b7 disabled", out)
+        self.assertIn(f"`library enable session-retro` returns it to {dest}", out)
+        # The old line named the destination, which is the one path holding nothing.
+        self.assertNotIn(f"  {dest}  (global", out)
+
+    def test_a_hand_parked_copy_with_no_receipt_is_still_reported(self) -> None:
+        # What an `mv` into the archive produces. It has no receipt, so `installs` cannot
+        # see it at all, and before `locations` it was invisible in both outputs.
+        archive = self.tool.home / ".claude/skills-disabled/session-retro"
+        archive.mkdir(parents=True)
+        (archive / "SKILL.md").write_text("# session-retro\n")
+
+        payload = self.show("session-retro")
+        self.assertEqual(payload["installs"], [])
+        loc = next(l for l in payload["locations"] if l["archive_path"] == str(archive))
+        self.assertEqual((loc["state"], loc["archived"], loc["receipt"]),
+                         ("disabled", True, None))
+
+        code, out, err = run_cli("show", "session-retro", "--no-pull")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn(f"  {archive}  (global) \u00b7 disabled", out)
+        self.assertNotIn("Installed copies: none recorded by this tool", out)
+
 
 class TestUninstall(unittest.TestCase):
     """Deleting installed copies without touching the catalog (design §4.3)."""
@@ -5786,9 +6343,22 @@ library:
             return {**payload, **payload["results"][0]}
         return payload
 
+    def disable(self, *argv: str) -> None:
+        code, _, err = run_cli("disable", *argv, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+    def state_of(self, name: str = "alpha") -> str:
+        code, out, err = run_cli("list", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        return next(e for e in json.loads(out) if e["name"] == name)["state"]
+
     @property
     def global_dest(self) -> Path:
         return self.tool.home / ".claude/skills/alpha"
+
+    @property
+    def global_archive(self) -> Path:
+        return self.tool.home / ".claude/skills-disabled/alpha"
 
     @property
     def project_dest(self) -> Path:
@@ -5858,10 +6428,63 @@ library:
         self.assertEqual((payload["deleted"], payload["refused"]), ([], []))
 
     def test_a_stale_receipt_for_a_deleted_copy_is_pruned(self) -> None:
+        # Nothing at the destination and nothing in its archive: the receipt really is
+        # stale (R5.7's other half).
         self.use("alpha")
         shutil.rmtree(self.global_dest)
         self.uninstall("alpha")
         self.assertEqual(library.load_receipts(), {})
+
+    def test_a_disabled_copy_is_removed_from_the_archive_too(self) -> None:
+        # R5.5: switching a skill off and then uninstalling it leaves nothing behind.
+        self.use("alpha")
+        self.disable("alpha")
+        payload = self.uninstall("alpha")
+        self.assertEqual(payload["deleted"], [str(self.global_archive)])
+        self.assertFalse(self.global_dest.exists())
+        self.assertFalse(self.global_archive.exists())
+        self.assertEqual(library.load_receipts(), {})  # a real uninstall drops the receipt
+
+    def test_uninstalling_a_disabled_entry_leaves_nothing_to_re_enable(self) -> None:
+        # R5.7's harm, end to end: dropping the receipt while the archived copy survived
+        # left content on disk with its provenance gone, and `enable` brought it back
+        # `untracked`. After an uninstall there is nothing to enable at all.
+        self.use("alpha")
+        self.disable("alpha")
+        self.uninstall("alpha")
+        code, out, _ = run_cli("enable", "alpha", "--no-pull", "--json")
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(out)["problems"][0]["reason"], "not installed")
+
+    def test_a_disabled_entrys_receipt_survives_an_uninstall_that_removes_nothing(self) -> None:
+        # R5.7: an absent destination no longer implies a stale receipt. The project
+        # scope holds nothing, so the run removes nothing — and the global copy's
+        # receipt, which is what `enable` puts it back with, is not collateral.
+        self.use("alpha")
+        self.disable("alpha")
+        payload = self.uninstall("alpha", "--scope", "project")
+        self.assertEqual((payload["deleted"], payload["refused"]), ([], []))
+        self.assertEqual(list(library.load_receipts()), [str(self.global_dest)])
+        self.assertTrue(self.global_archive.is_dir())
+        self.assertEqual(self.state_of(), "disabled")  # still tracked, not untracked
+
+    def test_an_untracked_archived_copy_is_refused_like_an_untracked_install(self) -> None:
+        # The refusal is about provenance, not location: a copy hand-parked in the
+        # archive is no more this tool's to delete than a hand-written install.
+        self.global_archive.mkdir(parents=True)
+        (self.global_archive / "SKILL.md").write_text("# hand parked\n")
+        payload = self.uninstall("alpha", expect=2)
+        self.assertEqual(payload["status"], "REFUSED")
+        self.assertEqual(payload["refused"], [str(self.global_archive)])
+        self.assertTrue(self.global_archive.is_dir())
+        self.assertEqual(library.load_receipts(), {})
+
+    def test_force_deletes_an_untracked_archived_copy(self) -> None:
+        self.global_archive.mkdir(parents=True)
+        (self.global_archive / "SKILL.md").write_text("# hand parked\n")
+        payload = self.uninstall("alpha", "--force")
+        self.assertEqual(payload["deleted"], [str(self.global_archive)])
+        self.assertFalse(self.global_archive.exists())
 
     def test_an_unknown_name_reports_not_found(self) -> None:
         payload = self.uninstall("nope", expect=2)
@@ -5909,6 +6532,635 @@ library:
         self.assertEqual(code, 2)
         self.assertEqual(json.loads(out)["status"], "NOT_FOUND")
         self.assertTrue(self.global_dest.exists())  # alpha was not touched
+
+
+class TestDisable(unittest.TestCase):
+    """Switching an installed skill off without uninstalling it (design §1)."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in ("alpha", "beta"):
+            (self.src / name / "sub").mkdir(parents=True)
+            (self.src / name / "SKILL.md").write_text(f"# {name}\n")
+            (self.src / name / "sub" / "ref.md").write_text(f"ref for {name}\n")
+        (self.src / "sql-review.md").write_text("# sql-review\n")
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: alpha
+      description: First
+      source: {self.src}/alpha/SKILL.md
+    - name: beta
+      description: Second
+      source: {self.src}/beta/SKILL.md
+  agents:
+    - name: sql-review
+      description: Reviews SQL
+      source: {self.src}/sql-review.md
+  prompts: []
+""")
+
+    def use(self, *argv: str) -> None:
+        code, _, err = run_cli("use", *argv, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+    def disable(self, *argv: str, expect: int = 0) -> dict[str, Any]:
+        code, out, err = run_cli("disable", *argv, "--no-pull", "--json")
+        self.assertEqual(code, expect, err or out)
+        return json.loads(out)
+
+    def dest(self, name: str = "alpha") -> Path:
+        return self.tool.home / ".claude/skills" / name
+
+    def archived(self, name: str = "alpha") -> Path:
+        return self.tool.home / ".claude/skills-disabled" / name
+
+    def state_of(self, name: str = "alpha") -> str:
+        code, out, err = run_cli("list", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        return next(e for e in json.loads(out) if e["name"] == name)["state"]
+
+    def test_the_copy_moves_to_the_archive_and_the_state_says_disabled(self) -> None:
+        self.use("alpha")
+        payload = self.disable("alpha")
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual(payload["results"], [{"type": "skill", "name": "alpha", "moved": True,
+                                               "dest": str(self.dest()),
+                                               "archived": str(self.archived())}])
+        self.assertFalse(self.dest().exists())
+        self.assertTrue(self.archived().is_dir())
+        self.assertEqual(self.state_of(), "disabled")
+
+    def test_the_archived_content_is_byte_identical(self) -> None:
+        # R1.2: re-enabling must need no fetch, which only holds if the bytes came along.
+        self.use("alpha")
+        digest = library.content_hash(self.dest())
+        self.disable("alpha")
+        self.assertEqual(library.content_hash(self.archived()), digest)
+        self.assertEqual((self.archived() / "SKILL.md").read_bytes(), b"# alpha\n")
+        self.assertEqual((self.archived() / "sub/ref.md").read_bytes(), b"ref for alpha\n")
+
+    def test_disabling_runs_no_subprocess_at_all(self) -> None:
+        # The move is the whole operation: no clone, no fetch, no `gh`.
+        self.use("alpha")
+        with patch.object(library.subprocess, "run",
+                          side_effect=AssertionError("disable shelled out")):
+            self.disable("alpha")
+        self.assertTrue(self.archived().is_dir())
+
+    def test_disabling_an_already_disabled_entry_is_a_no_op(self) -> None:
+        # R1.3: idempotent, and the second call leaves the archived copy exactly as it was.
+        self.use("alpha")
+        self.disable("alpha")
+        digest = library.content_hash(self.archived())
+        payload = self.disable("alpha")
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual(payload["results"][0]["moved"], False)
+        self.assertEqual(library.content_hash(self.archived()), digest)
+        self.assertEqual(self.state_of(), "disabled")
+
+    def test_a_not_installed_entry_errors_and_changes_nothing(self) -> None:
+        payload = self.disable("alpha", expect=1)
+        self.assertEqual(payload["status"], "ERROR")
+        self.assertEqual(payload["problems"][0]["reason"], "not installed")
+        self.assertFalse(self.archived().parent.exists())
+        self.assertEqual(self.state_of(), "not_installed")
+
+    def test_one_not_installed_name_stops_the_whole_batch(self) -> None:
+        # R1.4's "make no change" has to survive a batch, or a typo disables half of it.
+        self.use("alpha")
+        payload = self.disable("alpha", "beta", expect=1)
+        self.assertEqual([p["name"] for p in payload["problems"]], ["beta"])
+        self.assertTrue(self.dest().is_dir())
+        self.assertFalse(self.archived().parent.exists())
+
+    def test_several_names_disable_in_one_command(self) -> None:
+        self.use("alpha")
+        self.use("beta")
+        payload = self.disable("alpha", "beta")
+        self.assertEqual([r["name"] for r in payload["results"]], ["alpha", "beta"])
+        self.assertTrue(self.archived("alpha").is_dir())
+        self.assertTrue(self.archived("beta").is_dir())
+
+    def test_an_unknown_name_reports_not_found(self) -> None:
+        self.assertEqual(self.disable("nope", expect=2)["status"], "NOT_FOUND")
+
+    def test_a_copy_in_both_places_is_refused(self) -> None:
+        self.use("alpha")
+        shutil.copytree(self.dest(), self.archived())
+        payload = self.disable("alpha", expect=1)
+        self.assertIn("both", payload["problems"][0]["reason"])
+        self.assertTrue(self.dest().is_dir())  # neither copy is touched
+        self.assertTrue(self.archived().is_dir())
+
+    def test_an_agent_is_refused_until_the_toggle_covers_it(self) -> None:
+        self.use("sql-review")
+        payload = self.disable("sql-review", expect=1)
+        self.assertEqual(payload["problems"][0]["reason"], "only skills can be disabled")
+        self.assertTrue((self.tool.home / ".claude/agents/sql-review.md").is_file())
+
+    def test_the_receipt_file_is_left_alone(self) -> None:
+        # Disabled state is derived from disk (design §Decision 2). A receipt rewritten
+        # here is the stored flag that decision exists to avoid.
+        self.use("alpha")
+        before = library.RECEIPTS_PATH.read_text()
+        self.disable("alpha")
+        self.assertEqual(library.RECEIPTS_PATH.read_text(), before)
+        self.assertEqual(list(library.load_receipts()), [str(self.dest())])
+
+    def test_the_human_output_names_both_paths_and_the_session_caveat(self) -> None:
+        self.use("alpha")
+        code, out, _ = run_cli("disable", "alpha", "--no-pull")
+        self.assertEqual(code, 0)
+        self.assertIn(f"moved {self.dest()} → {self.archived()}", out)
+        self.assertIn("new session", out)
+
+
+class TestEnable(unittest.TestCase):
+    """Switching a disabled skill back on — the mirror of `disable` (R2.1–R2.5)."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in ("alpha", "beta"):
+            (self.src / name / "sub").mkdir(parents=True)
+            (self.src / name / "SKILL.md").write_text(f"# {name}\n")
+            (self.src / name / "sub" / "ref.md").write_text(f"ref for {name}\n")
+        (self.src / "sql-review.md").write_text("# sql-review\n")
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: alpha
+      description: First
+      source: {self.src}/alpha/SKILL.md
+    - name: beta
+      description: Second
+      source: {self.src}/beta/SKILL.md
+  agents:
+    - name: sql-review
+      description: Reviews SQL
+      source: {self.src}/sql-review.md
+  prompts: []
+""")
+
+    def use(self, *argv: str) -> None:
+        code, _, err = run_cli("use", *argv, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+    def disable(self, *argv: str) -> None:
+        code, _, err = run_cli("disable", *argv, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+    def enable(self, *argv: str, expect: int = 0) -> dict[str, Any]:
+        code, out, err = run_cli("enable", *argv, "--no-pull", "--json")
+        self.assertEqual(code, expect, err or out)
+        return json.loads(out)
+
+    def dest(self, name: str = "alpha") -> Path:
+        return self.tool.home / ".claude/skills" / name
+
+    def archived(self, name: str = "alpha") -> Path:
+        return self.tool.home / ".claude/skills-disabled" / name
+
+    def state_of(self, name: str = "alpha") -> str:
+        code, out, err = run_cli("list", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        return next(e for e in json.loads(out) if e["name"] == name)["state"]
+
+    def test_the_copy_moves_back_and_the_state_says_installed(self) -> None:
+        self.use("alpha")
+        self.disable("alpha")
+        payload = self.enable("alpha")
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual(payload["results"], [{"type": "skill", "name": "alpha", "moved": True,
+                                               "dest": str(self.dest()),
+                                               "archived": str(self.archived())}])
+        self.assertTrue(self.dest().is_dir())
+        self.assertFalse(self.archived().exists())
+        self.assertEqual(self.state_of(), "installed")
+
+    def test_the_round_trip_leaves_the_content_byte_identical(self) -> None:
+        # R2.1/R2.2: the copy comes back to the dir it was installed in, unchanged — and
+        # `installed` (not `drifted`, not `untracked`) is what proves the receipt still
+        # matches what came back.
+        self.use("alpha")
+        digest = library.content_hash(self.dest())
+        self.disable("alpha")
+        self.enable("alpha")
+        self.assertEqual(library.content_hash(self.dest()), digest)
+        self.assertEqual((self.dest() / "SKILL.md").read_bytes(), b"# alpha\n")
+        self.assertEqual((self.dest() / "sub/ref.md").read_bytes(), b"ref for alpha\n")
+        self.assertEqual(self.state_of(), "installed")
+
+    def test_enabling_runs_no_subprocess_at_all(self) -> None:
+        # R2.1: coming back is a move, never a re-fetch.
+        self.use("alpha")
+        self.disable("alpha")
+        with patch.object(library.subprocess, "run",
+                          side_effect=AssertionError("enable shelled out")):
+            self.enable("alpha")
+        self.assertTrue(self.dest().is_dir())
+
+    def test_enabling_an_already_enabled_entry_is_a_no_op(self) -> None:
+        # R2.3: idempotent, and the installed copy is left exactly as it was.
+        self.use("alpha")
+        digest = library.content_hash(self.dest())
+        payload = self.enable("alpha")
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual(payload["results"][0]["moved"], False)
+        self.assertEqual(library.content_hash(self.dest()), digest)
+        self.assertEqual(self.state_of(), "installed")
+
+    def test_an_occupied_destination_is_refused_and_neither_copy_moves(self) -> None:
+        # R2.4: a skill of the same name reappeared while this one was off.
+        self.use("alpha")
+        self.disable("alpha")
+        self.dest().mkdir(parents=True)
+        (self.dest() / "SKILL.md").write_text("# someone else's alpha\n")
+        archived_digest = library.content_hash(self.archived())
+        payload = self.enable("alpha", expect=1)
+        self.assertEqual(payload["status"], "ERROR")
+        reason = payload["problems"][0]["reason"]
+        self.assertIn(str(self.dest()), reason)
+        self.assertIn(str(self.archived()), reason)
+        self.assertEqual((self.dest() / "SKILL.md").read_text(), "# someone else's alpha\n")
+        self.assertEqual(library.content_hash(self.archived()), archived_digest)
+
+    def test_a_not_installed_entry_errors_and_changes_nothing(self) -> None:
+        payload = self.enable("alpha", expect=1)
+        self.assertEqual(payload["status"], "ERROR")
+        self.assertEqual(payload["problems"][0]["reason"], "not installed")
+        self.assertFalse(self.dest().exists())
+        self.assertEqual(self.state_of(), "not_installed")
+
+    def test_one_bad_name_stops_the_whole_batch(self) -> None:
+        self.use("alpha")
+        self.disable("alpha")
+        payload = self.enable("alpha", "beta", expect=1)
+        self.assertEqual([p["name"] for p in payload["problems"]], ["beta"])
+        self.assertTrue(self.archived().is_dir())  # alpha stayed parked
+        self.assertFalse(self.dest().exists())
+
+    def test_several_names_enable_in_one_command(self) -> None:
+        self.use("alpha")
+        self.use("beta")
+        self.disable("alpha", "beta")
+        payload = self.enable("alpha", "beta")
+        self.assertEqual([r["name"] for r in payload["results"]], ["alpha", "beta"])
+        self.assertTrue(self.dest("alpha").is_dir())
+        self.assertTrue(self.dest("beta").is_dir())
+        self.assertFalse(self.archived("alpha").exists())
+        self.assertFalse(self.archived("beta").exists())
+
+    def test_an_unknown_name_reports_not_found(self) -> None:
+        self.assertEqual(self.enable("nope", expect=2)["status"], "NOT_FOUND")
+
+    def test_an_agent_is_refused_until_the_toggle_covers_it(self) -> None:
+        self.use("sql-review")
+        payload = self.enable("sql-review", expect=1)
+        self.assertEqual(payload["problems"][0]["reason"], "only skills can be enabled")
+        self.assertTrue((self.tool.home / ".claude/agents/sql-review.md").is_file())
+
+    def test_the_receipt_file_is_left_alone(self) -> None:
+        # Design §Decision 2: the receipt is read to learn the origin, never written.
+        self.use("alpha")
+        self.disable("alpha")
+        before = library.RECEIPTS_PATH.read_text()
+        self.enable("alpha")
+        self.assertEqual(library.RECEIPTS_PATH.read_text(), before)
+        self.assertEqual(list(library.load_receipts()), [str(self.dest())])
+
+    def test_a_failed_move_leaves_the_archived_copy_parked(self) -> None:
+        # R2.5: partway failure is recoverable and reported, with the copy still enable-able.
+        self.use("alpha")
+        self.disable("alpha")
+        digest = library.content_hash(self.archived())
+        with patch.object(library, "move_tree",
+                          side_effect=library.LibraryError("disk fell over")):
+            payload = self.enable("alpha", expect=1)
+        self.assertEqual(payload["status"], "ERROR")
+        self.assertEqual(payload["name"], "alpha")
+        self.assertEqual(payload["results"], [])
+        self.assertIn("disk fell over", payload["reason"])
+        self.assertEqual(library.content_hash(self.archived()), digest)
+        self.assertEqual(self.state_of(), "disabled")
+
+    def test_the_human_output_names_both_paths_and_the_session_caveat(self) -> None:
+        self.use("alpha")
+        self.disable("alpha")
+        code, out, _ = run_cli("enable", "alpha", "--no-pull")
+        self.assertEqual(code, 0)
+        self.assertIn(f"moved {self.archived()} → {self.dest()}", out)
+        self.assertIn("new session", out)
+
+    def test_disable_tells_the_user_how_to_switch_it_back_on(self) -> None:
+        self.use("alpha")
+        code, out, _ = run_cli("disable", "alpha", "--no-pull")
+        self.assertEqual(code, 0)
+        self.assertIn("library enable", out)
+
+
+class TestSyncKeepsDisabledEntriesDisabled(unittest.TestCase):
+    """`sync` refreshes a switched-off entry in place, and says so (R5.1, R5.2)."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in ("alpha", "beta"):
+            (self.src / name).mkdir(parents=True)
+            (self.src / name / "SKILL.md").write_text(f"# {name} v1\n")
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: alpha
+      description: Stays active
+      source: {self.src}/alpha/SKILL.md
+    - name: beta
+      description: Gets disabled
+      source: {self.src}/beta/SKILL.md
+  agents: []
+  prompts: []
+""")
+
+    def use(self, *names: str) -> None:
+        for name in names:
+            code, _, err = run_cli("use", name, "--no-pull", "--json")
+            self.assertEqual(code, 0, err)
+
+    def disable(self, name: str) -> None:
+        code, _, err = run_cli("disable", name, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+    def dest(self, name: str) -> Path:
+        return self.tool.home / ".claude/skills" / name
+
+    def archived(self, name: str) -> Path:
+        return self.tool.home / ".claude/skills-disabled" / name
+
+    def edit_source(self, name: str) -> None:
+        (self.src / name / "SKILL.md").write_text(f"# {name} v2\n")
+
+    def sync_json(self) -> dict[str, Any]:
+        code, out, err = run_cli("sync", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        return json.loads(out)
+
+    def state_of(self, name: str) -> str:
+        code, out, err = run_cli("list", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        return next(e for e in json.loads(out) if e["name"] == name)["state"]
+
+    def test_the_archived_copy_is_updated_from_source(self) -> None:
+        # R5.1: in place. Before this, `installed_scopes` found nothing for a disabled
+        # entry and it dropped out of the run entirely — never refreshed, never mentioned.
+        self.use("beta")
+        self.disable("beta")
+        self.edit_source("beta")
+        self.sync_json()
+        self.assertEqual((self.archived("beta") / "SKILL.md").read_text(), "# beta v2\n")
+
+    def test_the_entry_is_still_disabled_afterwards(self) -> None:
+        self.use("beta")
+        self.disable("beta")
+        self.edit_source("beta")
+        self.sync_json()
+        self.assertEqual(self.state_of("beta"), "disabled")
+
+    def test_nothing_is_resurrected_into_the_active_directory(self) -> None:
+        # The failure R5.1 exists to prevent: refreshing into the destination would put
+        # the skill back where the agent loads it, undoing the toggle.
+        self.use("beta")
+        self.disable("beta")
+        self.edit_source("beta")
+        self.sync_json()
+        self.assertFalse(self.dest("beta").exists())
+        self.assertNotIn("beta", [p.name for p in (self.tool.home / ".claude/skills").iterdir()])
+
+    def test_the_receipt_still_names_the_active_destination(self) -> None:
+        # Provenance follows the bytes; the key stays where `enable` puts them back.
+        self.use("beta")
+        self.disable("beta")
+        self.edit_source("beta")
+        self.sync_json()
+        receipts = library.load_receipts()
+        self.assertEqual(sorted(receipts), [str(self.dest("beta"))])
+        self.assertEqual(receipts[str(self.dest("beta"))]["content_hash"],
+                         library.content_hash(self.archived("beta")))
+
+    def test_enabling_after_a_sync_returns_the_refreshed_copy_clean(self) -> None:
+        # The point of keeping the receipt accurate: what comes back reads `installed`,
+        # not `drifted`.
+        self.use("beta")
+        self.disable("beta")
+        self.edit_source("beta")
+        self.sync_json()
+        code, _, err = run_cli("enable", "beta", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual((self.dest("beta") / "SKILL.md").read_text(), "# beta v2\n")
+        self.assertEqual(self.state_of("beta"), "installed")
+
+    def test_the_json_distinguishes_a_disabled_refresh_from_an_active_one(self) -> None:
+        # R5.2, both entries in one run.
+        self.use("alpha", "beta")
+        self.disable("beta")
+        self.edit_source("alpha")
+        self.edit_source("beta")
+        payload = self.sync_json()
+        by_name = {r["name"]: r for r in payload["synced"]}
+        self.assertEqual(sorted(by_name), ["alpha", "beta"])
+        self.assertEqual((by_name["alpha"]["disabled"], by_name["alpha"]["state"]),
+                         (False, "installed"))
+        self.assertEqual((by_name["beta"]["disabled"], by_name["beta"]["state"]),
+                         (True, "disabled"))
+        self.assertEqual(by_name["beta"]["changes"]["modified"], ["SKILL.md"])
+        self.assertEqual((self.dest("alpha") / "SKILL.md").read_text(), "# alpha v2\n")
+        self.assertEqual((self.archived("beta") / "SKILL.md").read_text(), "# beta v2\n")
+
+    def test_the_human_output_distinguishes_the_two(self) -> None:
+        self.use("alpha", "beta")
+        self.disable("beta")
+        self.edit_source("alpha")
+        self.edit_source("beta")
+        code, out, err = run_cli("sync", "--no-pull")
+        self.assertEqual(code, 0, err)
+        self.assertIn("refreshed [skill] alpha (global) · 1 modified", out)
+        self.assertIn("refreshed [skill] beta (global, disabled) · 1 modified", out)
+        self.assertIn("still disabled", out)
+        self.assertIn("2 changed · 1 disabled · failed 0", out)
+
+    def test_an_unchanged_disabled_entry_reports_up_to_date_not_silence(self) -> None:
+        self.use("beta")
+        self.disable("beta")
+        payload = self.sync_json()
+        self.assertEqual([(r["name"], r["up_to_date"], r["disabled"])
+                          for r in payload["synced"]], [("beta", True, True)])
+        code, out, err = run_cli("sync", "--no-pull")
+        self.assertEqual(code, 0, err)
+        self.assertIn("up to date [skill] beta (global, disabled)", out)
+        self.assertNotIn("1 disabled", out.rsplit("\n\n", 1)[0])
+
+    def test_a_run_with_nothing_disabled_says_nothing_about_disabled(self) -> None:
+        self.use("alpha")
+        code, out, err = run_cli("sync", "--no-pull")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("disabled", out)
+
+
+class TestUseOnADisabledEntry(unittest.TestCase):
+    """`use` refreshes a switched-off entry in place rather than cloning it (R5.3, R5.4).
+
+    Before this, `use` installed a fresh copy into the active directory and left the
+    archived one behind. Two copies on disk, and the archived one invisible: `dest_state`
+    answers `installed` the moment the destination exists, so `list`, `show` and `doctor`
+    all stopped seeing it.
+    """
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in ("alpha", "beta", "beta-dep"):
+            (self.src / name).mkdir(parents=True)
+            (self.src / name / "SKILL.md").write_text(f"# {name} v1\n")
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: alpha
+      description: Stays active
+      source: {self.src}/alpha/SKILL.md
+    - name: beta
+      description: Gets disabled
+      source: {self.src}/beta/SKILL.md
+      requires: ["skill:beta-dep"]
+    - name: beta-dep
+      description: Required by beta
+      source: {self.src}/beta-dep/SKILL.md
+  agents: []
+  prompts: []
+""")
+
+    def use(self, *argv: str, expect: int = 0) -> dict[str, Any]:
+        code, out, err = run_cli("use", *argv, "--no-pull", "--json")
+        self.assertEqual(code, expect, err or out)
+        return json.loads(out) if out else {}
+
+    def disable(self, name: str) -> None:
+        code, _, err = run_cli("disable", name, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+    def dest(self, name: str) -> Path:
+        return self.tool.home / ".claude/skills" / name
+
+    def archived(self, name: str) -> Path:
+        return self.tool.home / ".claude/skills-disabled" / name
+
+    def state_of(self, name: str) -> str:
+        code, out, err = run_cli("list", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        return next(e for e in json.loads(out) if e["name"] == name)["state"]
+
+    def disabled_beta(self) -> None:
+        """beta installed, disabled, and its source moved on since."""
+        self.use("beta")
+        self.disable("beta")
+        (self.src / "beta" / "SKILL.md").write_text("# beta v2\n")
+
+    def test_exactly_one_copy_survives_and_it_is_the_archived_one(self) -> None:
+        # R5.3, the whole point: never a second copy.
+        self.disabled_beta()
+        self.use("beta")
+        self.assertTrue(self.archived("beta").is_dir())
+        self.assertFalse(self.dest("beta").exists())
+
+    def test_the_active_directory_is_still_empty_afterwards(self) -> None:
+        self.disabled_beta()
+        self.use("beta")
+        self.assertNotIn("beta", [p.name for p in (self.tool.home / ".claude/skills").iterdir()])
+
+    def test_the_archived_copy_is_refreshed_from_source(self) -> None:
+        # R5.4: refresh, not refuse — `use` still does its job, just in the archive.
+        self.disabled_beta()
+        self.use("beta")
+        self.assertEqual((self.archived("beta") / "SKILL.md").read_text(), "# beta v2\n")
+
+    def test_the_entry_still_reports_disabled(self) -> None:
+        self.disabled_beta()
+        self.use("beta")
+        self.assertEqual(self.state_of("beta"), "disabled")
+
+    def test_the_receipt_still_names_the_active_destination(self) -> None:
+        # Where `enable` puts the content back, and what keeps it coming back clean.
+        self.disabled_beta()
+        self.use("beta")
+        receipts = library.load_receipts()
+        self.assertIn(str(self.dest("beta")), receipts)
+        self.assertEqual(receipts[str(self.dest("beta"))]["content_hash"],
+                         library.content_hash(self.archived("beta")))
+
+    def test_the_dependencies_of_a_disabled_entry_stay_out_of_the_active_tree(self) -> None:
+        # Resurrection one level down: installing beta-dep because beta was asked for
+        # would put content back where the agent loads it. `enable` pulls deps in.
+        self.disabled_beta()
+        code, _, err = run_cli("uninstall", "beta-dep", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)  # the dep came in with beta's first install
+        self.use("beta")
+        self.assertFalse(self.dest("beta-dep").exists())
+        self.assertFalse(self.archived("beta-dep").exists())
+
+    def test_the_json_marks_the_refresh_and_names_the_archive(self) -> None:
+        self.disabled_beta()
+        payload = self.use("beta")
+        record = next(r for r in payload["installed"] if r["name"] == "beta")
+        self.assertTrue(record["disabled"])
+        self.assertEqual(record["dest"], str(self.archived("beta")))
+        self.assertEqual(record["changes"]["modified"], ["SKILL.md"])
+
+    def test_a_mixed_run_installs_one_and_refreshes_the_other(self) -> None:
+        self.disabled_beta()
+        payload = self.use("alpha", "beta")
+        by_name = {r["name"]: r for r in payload["installed"]}
+        self.assertEqual(sorted(by_name), ["alpha", "beta"])
+        self.assertFalse(by_name["alpha"]["disabled"])
+        self.assertTrue(by_name["beta"]["disabled"])
+        self.assertTrue(self.dest("alpha").is_dir())
+        self.assertFalse(self.dest("beta").exists())
+        self.assertEqual((self.archived("beta") / "SKILL.md").read_text(), "# beta v2\n")
+
+    def test_the_human_output_distinguishes_the_two(self) -> None:
+        self.disabled_beta()
+        code, out, err = run_cli("use", "alpha", "beta", "--no-pull")
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"Installed [skill] alpha → {self.dest('alpha')}", out)
+        self.assertIn(f"Refreshed [skill] beta → {self.archived('beta')}", out)
+        # The same phrase `sync` uses, so one command doesn't teach a second vocabulary.
+        self.assertIn("(in the archive — still disabled)", out)
+
+    def test_the_dry_run_predicts_the_archive_not_the_active_dir(self) -> None:
+        self.disabled_beta()
+        plan = self.use("beta", "--dry-run")["would_install"]
+        self.assertEqual([(p["name"], p["dest"], p["state"], p["disabled"]) for p in plan],
+                         [("beta", str(self.archived("beta")), "disabled", True)])
+        self.assertFalse(self.dest("beta").exists())
+
+    def test_the_dry_run_says_so_in_the_human_output(self) -> None:
+        self.disabled_beta()
+        code, out, err = run_cli("use", "beta", "--dry-run", "--no-pull")
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"[skill] beta → {self.archived('beta')}", out)
+        self.assertIn("(would refresh in the archive — still disabled)", out)
+
+    def test_an_active_entry_is_untouched_by_any_of_this(self) -> None:
+        # The regression guard: the ordinary path still installs into the active dir and
+        # reports itself as such.
+        payload = self.use("alpha")
+        record = next(r for r in payload["installed"] if r["name"] == "alpha")
+        self.assertFalse(record["disabled"])
+        self.assertEqual(record["dest"], str(self.dest("alpha")))
+        self.assertFalse(self.archived("alpha").exists())
 
 
 class TestWriteTarget(unittest.TestCase):

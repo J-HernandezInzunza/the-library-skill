@@ -58,7 +58,7 @@ defineEmits<{ close: []; installed: []; walkthrough: [] }>();
 .entry-install__name {
   padding: 0.1rem 0.45rem;
   border-radius: 999px;
-  background: rgba(128, 128, 128, 0.14);
+  background: var(--surface-hover);
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 0.8rem;
 }

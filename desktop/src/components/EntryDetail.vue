@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import {
+  archivedPath,
   catalogHue,
   dependencies,
   dependents,
@@ -9,6 +10,7 @@ import {
   installStatus,
   installedCopies,
   isOnDisk,
+  SESSION_TIMING,
 } from "../catalog";
 import { withActivity } from "../commandActivity";
 import { describeAppError, type Catalog, type Entry, type EntryDetail } from "../types";
@@ -145,6 +147,18 @@ const handoff = computed(() =>
  */
 const status = computed(() => (detail.value ? installStatus(detail.value.entry) : null));
 
+/** Content is on the machine but parked out of the agent's reach. */
+const switchedOff = computed(() => detail.value?.entry.state === "disabled");
+
+/**
+ * Where a switched-off copy's content is parked.
+ *
+ * This page is where the path lives now: the list's badge used to carry it, at a width
+ * that pushed the badge onto its own line, and an elided absolute path could not be read
+ * there anyway.
+ */
+const parked = computed(() => (detail.value ? archivedPath(detail.value.entry) : null));
+
 watch(() => props.name, load, { immediate: true });
 </script>
 
@@ -170,6 +184,12 @@ watch(() => props.name, load, { immediate: true });
 
       <template v-else-if="detail">
         <p class="entry-detail__desc">{{ detail.entry.description }}</p>
+
+        <!-- The page with room for the sentence the card can only fit in a tooltip. -->
+        <p v-if="switchedOff" class="entry-detail__timing">
+          Switched off, so nothing loads it. {{ SESSION_TIMING }}
+          <span v-if="parked" class="entry-detail__parked">Parked at {{ parked }}</span>
+        </p>
 
         <h3 class="entry-detail__section">Source</h3>
         <div class="card">
@@ -344,20 +364,27 @@ watch(() => props.name, load, { immediate: true });
   font-size: 0.7rem;
   padding: 0.1rem 0.45rem;
   border-radius: 999px;
-  background: rgba(34, 197, 94, 0.18);
-  color: #16a34a;
+  background: var(--status-ok-tint);
+  color: var(--status-ok-ink);
 }
 .entry-detail__status--absent {
-  background: rgba(128, 128, 128, 0.2);
+  background: var(--surface-sunken);
   color: inherit;
   opacity: 0.75;
 }
+.entry-detail__status--disabled {
+  /* Matches the list's badge: violet reads as neither the green of a loading skill nor
+     the grey of one that was never installed. Without this the base rule's green would
+     put "disabled" in the colour of a skill that is loading. */
+  background: var(--status-disabled-tint);
+  color: var(--status-disabled-ink);
+}
 .entry-detail__status--attention {
-  background: rgba(245, 158, 11, 0.2);
-  color: #b45309;
+  background: var(--status-attention-tint);
+  color: var(--status-attention-ink);
 }
 .entry-detail__status--overridden {
-  background: rgba(128, 128, 128, 0.2);
+  background: var(--surface-sunken);
   color: inherit;
   opacity: 0.75;
 }
@@ -365,8 +392,8 @@ watch(() => props.name, load, { immediate: true });
   font-size: 0.7rem;
   padding: 0.1rem 0.45rem;
   border-radius: 999px;
-  background: rgba(59, 130, 246, 0.18);
-  color: #2563eb;
+  background: var(--accent-tint);
+  color: var(--accent-ink);
 }
 .entry-detail__handoff {
   display: flex;
@@ -385,6 +412,25 @@ watch(() => props.name, load, { immediate: true });
   margin: 0;
   line-height: 1.5;
   opacity: 0.85;
+}
+.entry-detail__timing {
+  margin: 0.6rem 0 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  border-left: 3px solid var(--status-disabled-edge);
+  background: var(--status-disabled-tint);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+.entry-detail__parked {
+  /* Its own line inside the note, because an absolute path wrapped mid-sentence reads as
+     part of the sentence. */
+  display: block;
+  margin-top: 0.4rem;
+  font-size: 0.78rem;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  overflow-wrap: anywhere;
+  opacity: 0.7;
 }
 .entry-detail__section {
   margin: 1.75rem 0 0.5rem;
@@ -417,8 +463,8 @@ watch(() => props.name, load, { immediate: true });
 .entry-detail__copy {
   padding: 0.65rem 0.85rem;
   border-radius: 8px;
-  border-left: 3px solid hsl(var(--catalog-hue), 65%, 52%);
-  background: rgba(128, 128, 128, 0.08);
+  border-left: 3px solid var(--catalog-edge);
+  background: var(--surface-raised);
   opacity: 0.7;
 }
 .entry-detail__copy--wins {
@@ -434,18 +480,18 @@ watch(() => props.name, load, { immediate: true });
 .entry-detail__origin-chip {
   padding: 0.12rem 0.5rem;
   border-radius: 999px;
-  background: hsl(var(--catalog-hue, 220), 65%, 50%);
-  color: #fff;
+  background: var(--catalog-fill);
+  color: var(--text-on-accent);
   font-size: 0.7rem;
   font-weight: 600;
 }
 .entry-detail__origin-chip--muted {
-  background: rgba(128, 128, 128, 0.35);
+  background: var(--surface-strong);
   color: inherit;
 }
 .entry-detail__wins {
   font-size: 0.72rem;
-  color: #16a34a;
+  color: var(--status-ok-ink);
   font-weight: 600;
 }
 .entry-detail__loses,
@@ -456,7 +502,7 @@ watch(() => props.name, load, { immediate: true });
 }
 .entry-detail__requires li {
   border-radius: 8px;
-  background: rgba(128, 128, 128, 0.08);
+  background: var(--surface-raised);
   font-size: 0.85rem;
 }
 .entry-detail__dep {
@@ -472,7 +518,7 @@ watch(() => props.name, load, { immediate: true });
   cursor: pointer;
 }
 .entry-detail__dep:hover {
-  background: rgba(128, 128, 128, 0.12);
+  background: var(--surface-hover);
 }
 .entry-detail__dep-head {
   display: flex;
@@ -484,11 +530,11 @@ watch(() => props.name, load, { immediate: true });
   font-size: 0.7rem;
   padding: 0.05rem 0.4rem;
   border-radius: 999px;
-  background: rgba(34, 197, 94, 0.18);
-  color: #16a34a;
+  background: var(--status-ok-tint);
+  color: var(--status-ok-ink);
 }
 .entry-detail__dep-state--missing {
-  background: rgba(128, 128, 128, 0.2);
+  background: var(--surface-sunken);
   color: inherit;
   opacity: 0.7;
 }
@@ -504,17 +550,17 @@ watch(() => props.name, load, { immediate: true });
   opacity: 0.5;
 }
 .entry-detail__section--broken {
-  color: #dc2626;
+  color: var(--status-danger-ink);
   opacity: 0.85;
 }
 .entry-detail__broken {
   padding: 0.5rem 0.85rem;
-  border-left: 3px solid #dc2626;
+  border-left: 3px solid var(--status-danger-ink);
 }
 .entry-detail__broken-why {
   margin-left: 0.5rem;
   font-size: 0.75rem;
-  color: #dc2626;
+  color: var(--status-danger-ink);
 }
 .entry-detail__req-desc {
   margin: 0.25rem 0 0;

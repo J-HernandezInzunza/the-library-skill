@@ -278,7 +278,7 @@ onUnmounted(() => {
 .walkthrough__start,
 .walkthrough__send {
   padding: 0.4rem 0.9rem;
-  border: 1px solid rgba(128, 128, 128, 0.4);
+  border: 1px solid var(--border-control);
   border-radius: 0.35rem;
   background: transparent;
   color: inherit;
@@ -325,7 +325,7 @@ onUnmounted(() => {
      assistant contradicting itself. */
   margin-left: 1rem;
   padding-left: 0.75rem;
-  border-left: 2px solid rgba(128, 128, 128, 0.25);
+  border-left: 2px solid var(--border-hairline);
   opacity: 0.8;
 }
 
@@ -348,9 +348,9 @@ onUnmounted(() => {
 /* One tool call and its result, boxed. */
 .turn--tool {
   padding: 0.45rem 0.6rem;
-  border: 1px solid rgba(128, 128, 128, 0.28);
+  border: 1px solid var(--border-hairline);
   border-radius: 0.4rem;
-  background: rgba(128, 128, 128, 0.05);
+  background: var(--surface-recessed);
 }
 
 .turn__said {
@@ -358,13 +358,13 @@ onUnmounted(() => {
   max-width: 80%;
   padding: 0.4rem 0.7rem;
   border-radius: 0.6rem;
-  background: rgba(128, 128, 128, 0.14);
+  background: var(--surface-hover);
 }
 
 .turn__notice {
   padding: 0.4rem 0.6rem;
   border-radius: 0.35rem;
-  background: rgba(234, 179, 8, 0.12);
+  background: var(--status-override-tint);
   font-size: 0.85rem;
 }
 
@@ -398,7 +398,7 @@ onUnmounted(() => {
   padding: 0.4rem 0.55rem;
   max-height: 14rem;
   border-radius: 0.35rem;
-  background: rgba(128, 128, 128, 0.1);
+  background: var(--surface-raised);
   font-size: 0.78rem;
   line-height: 1.5;
   overflow: auto;
@@ -408,7 +408,7 @@ onUnmounted(() => {
 }
 
 .turn__result--failed {
-  background: rgba(220, 38, 38, 0.1);
+  background: var(--status-danger-tint);
 }
 
 .walkthrough__thinking {
@@ -427,7 +427,7 @@ onUnmounted(() => {
  * The border is the frame between it and the transcript above, full-bleed because the row is.
  */
 .walkthrough__reply {
-  border-top: 1px solid rgba(128, 128, 128, 0.25);
+  border-top: 1px solid var(--border-hairline);
 }
 
 .walkthrough__composer {
@@ -444,7 +444,7 @@ onUnmounted(() => {
   flex: 5;
   min-width: 0;
   padding: 0.4rem 0.55rem;
-  border: 1px solid rgba(128, 128, 128, 0.4);
+  border: 1px solid var(--border-control);
   border-radius: 0.35rem;
   background: transparent;
   color: inherit;

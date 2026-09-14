@@ -45,28 +45,18 @@ defineProps<{
   line-height: 1.45;
 }
 .status-banner--success {
-  border-color: rgba(34, 197, 94, 0.35);
-  background: rgba(34, 197, 94, 0.1);
+  border-color: var(--status-ok-edge);
+  background: var(--status-ok-tint);
 }
 .status-banner--warning {
-  border-color: rgba(245, 158, 11, 0.4);
-  background: rgba(245, 158, 11, 0.14);
-  color: #b45309;
-}
-@media (prefers-color-scheme: dark) {
-  .status-banner--warning {
-    color: #fcd34d;
-  }
+  border-color: var(--status-attention-edge);
+  background: var(--status-attention-tint);
+  color: var(--status-attention-ink);
 }
 .status-banner--error {
-  border-color: rgba(220, 38, 38, 0.3);
-  background: rgba(220, 38, 38, 0.08);
-  color: #b91c1c;
-}
-@media (prefers-color-scheme: dark) {
-  .status-banner--error {
-    color: #fca5a5;
-  }
+  border-color: var(--status-danger-edge);
+  background: var(--status-danger-tint);
+  color: var(--status-danger-ink);
 }
 .status-banner__detail {
   margin: 0;

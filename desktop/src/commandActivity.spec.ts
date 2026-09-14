@@ -44,6 +44,15 @@ describe("describeArgv", () => {
   it("says what bootstrapping is, since `python3 bootstrap.py` explains nothing", () => {
     expect(describeArgv(["python3", "/Users/dev/tool/bootstrap.py", "--json"])).toBe("bootstrapping");
   });
+
+  it("names bootstrapping by its script, whatever interpreter was chosen by version", () => {
+    // The backend picks the interpreter by version, so it may be a specific minor or an
+    // absolute path — none of which change what the operation is.
+    expect(describeArgv(["python3.12", "/Users/dev/tool/bootstrap.py", "--json"])).toBe("bootstrapping");
+    expect(describeArgv(["/usr/bin/python3", "/Users/dev/tool/bootstrap.py", "--json"])).toBe(
+      "bootstrapping",
+    );
+  });
 });
 
 describe("activityLabel", () => {
