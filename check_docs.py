@@ -2,7 +2,7 @@
 """Guard against doc/CLI drift.
 
 The CLI's subcommands (defined in `build_parser`) are the source of truth. This
-checks that SKILL.md and README.md document exactly that set — no command missing
+checks that SKILL.md and docs/commands.md document exactly that set — no command missing
 from a doc, no doc referencing a command that doesn't exist. It only inspects
 command references inside backtick/code spans, so prose like "the library catalog"
 isn't mistaken for a command.
@@ -19,7 +19,9 @@ from pathlib import Path
 import library  # noqa: E402  (sets git env + needs PyYAML; run via .venv)
 
 HERE = Path(__file__).resolve().parent
-DOCS = ["SKILL.md", "README.md"]
+# README.md is a landing page and deliberately does NOT list every command; the command
+# reference of record is docs/commands.md.
+DOCS = ["SKILL.md", "docs/commands.md"]
 
 # Agent-only commands: real `/library <cmd>` entry points that are NOT CLI subcommands
 # (the agent fulfills them by following a cookbook, e.g. `install` runs cookbook/install.md).

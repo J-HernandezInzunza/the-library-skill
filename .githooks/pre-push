@@ -24,7 +24,7 @@ if [ "$rc" -eq 3 ]; then
   echo "pre-push: PyYAML not available (run 'just bootstrap'); skipping doc-drift check." >&2
   exit 0
 elif [ "$rc" -ne 0 ]; then
-  echo "pre-push: doc/CLI drift — update SKILL.md/README.md (run ./check_docs.py)." >&2
+  echo "pre-push: doc/CLI drift — update SKILL.md/docs/commands.md (run ./check_docs.py)." >&2
   exit "$rc"
 fi
 
