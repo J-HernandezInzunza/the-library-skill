@@ -151,8 +151,8 @@ are forgotten, and the agent's config files are deleted.
 
 What a walkthrough can do for a skill is declared by that skill, in its own `setup.yaml` — the
 values it needs, the one file they go in, and the commands that may run. A skill without one gets
-the readiness panel and no walkthrough offer. The schema is
-[`specs/skill-setup-schema.md`](specs/skill-setup-schema.md).
+the readiness panel and no walkthrough offer. Its keys, and how the CLI validates them, are
+summarised in [`../cookbook/setup.md`](../cookbook/setup.md).
 
 ## Distributing a prebuilt app
 

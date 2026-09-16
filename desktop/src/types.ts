@@ -391,6 +391,19 @@ export interface SourceSuggestion {
   path: string;
   suggestion: string | null;
   reason: string | null;
+  install_dir: InstallDirHit | null;
+}
+
+/**
+ * The install directory a chosen source turns out to be sitting inside.
+ *
+ * Null unless the path is in one. `scope` carries the severity: `global` collides on
+ * every install, `project` only when the entry is installed into that same project.
+ */
+export interface InstallDirHit {
+  section: string;
+  scope: string;
+  path: string;
 }
 
 /** The fields the add form collects, sent as one value rather than seven arguments. */

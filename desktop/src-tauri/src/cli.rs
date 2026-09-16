@@ -550,6 +550,21 @@ pub struct SourceSuggestion {
     pub suggestion: Option<String>,
     #[serde(default)]
     pub reason: Option<String>,
+    #[serde(default)]
+    pub install_dir: Option<InstallDirHit>,
+}
+
+/// The install directory a candidate source turns out to be sitting inside.
+///
+/// Present only when the path is in one, which is the case the add form has to say
+/// something about: an entry sourced from where installs land overwrites its own source.
+/// `scope` carries the severity — `global` always collides, `project` only when the entry
+/// is installed into that same project — and it is the CLI's call, not the app's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InstallDirHit {
+    pub section: String,
+    pub scope: String,
+    pub path: String,
 }
 
 /// The fields the add form collects, as one value rather than seven arguments.

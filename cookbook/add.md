@@ -76,6 +76,23 @@ flag.** A `/Users/you/…` path resolves only on this machine:
   Never suggest `--allow-local` here; there is nothing to override, and offering it implies
   the user is doing something irregular when they aren't.
 
+**One local path is refused for *every* destination: one inside an install dir.** A source
+under `~/.claude/skills/` (or `agents/`, `commands/`) is the directory installs write to, so
+the entry consumes its own source on the first `use` or `sync`. This is a different question
+from the one above — not "can teammates resolve it?" but "does installing it destroy it?" —
+and **`--allow-local` does not waive it.** Don't reach for that flag when you see this
+refusal; it isn't the override for it.
+
+This is the common case when a user has been prototyping a skill in place, which is normal
+and not something to scold them for. Offer the move: put the content in a repository they
+own (or a folder they version control), then add the entry pointing there, then install it
+so the working copy under `~/.claude` comes back. `install_dir` in `suggest-source` reports
+this before the add is proposed, so you can raise it rather than hitting the refusal.
+
+A source in a *project's* `.claude/skills/` is only warned about: content committed to a
+repo's own `.claude/` is version controlled and legitimate to share, and it collides only if
+the entry is installed back into that same project.
+
 `doctor` warns about any local source it finds sitting in a remote catalog, so a
 `--allow-local` override does not stay invisible.
 
@@ -90,12 +107,24 @@ So when the user points at a local file and the destination is the shared catalo
    ```json
    {"status": "OK", "path": "/Users/you/dev/infra/skills/deploy/SKILL.md",
     "suggestion": "https://github.com/yourorg/infra/blob/main/skills/deploy/SKILL.md",
-    "reason": null}
+    "reason": null,
+    "install_dir": null}
    ```
 
    It reads no catalog and needs no config, so it works before `init`. A skill *directory*
    resolves to the `SKILL.md` inside it. It exits `0` either way — `status` is the answer,
    not the exit code.
+
+   `install_dir` is non-null when the path sits in a directory this device installs to, and
+   is the separate refusal described above. `scope` carries the severity — `global` is
+   refused, `project` is warned about:
+
+   ```json
+   {"status": "NONE", "path": "/Users/you/.claude/skills/deploy/SKILL.md",
+    "suggestion": null, "reason": "not inside a git repository",
+    "install_dir": {"section": "skills", "scope": "global",
+                    "path": "/Users/you/.claude/skills"}}
+   ```
 2. **Confirm the URL with the user** before adding. It is derived from the checked-out
    branch and the `origin` remote, both of which can be wrong for their intent (a feature
    branch, a fork).

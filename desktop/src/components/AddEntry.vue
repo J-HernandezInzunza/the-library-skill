@@ -10,6 +10,7 @@ import {
   type AddReport,
   type Catalog,
   type Entry,
+  type InstallDirHit,
   type SourceSuggestion,
 } from "../types";
 import { RAW_TEXT } from "../rawText";
@@ -42,6 +43,14 @@ const source = ref("");
 const requires = ref<string[]>([]);
 const submitting = ref(false);
 const suggestion = ref<SourceSuggestion | null>(null);
+/**
+ * The install directory the chosen source sits in, when it does.
+ *
+ * Held apart from `suggestion` even though one lookup answers both: the URL offer is
+ * dismissible and this is not. "Keep the path" declines a suggestion, it does not make
+ * a source that erases itself acceptable.
+ */
+const installDir = ref<InstallDirHit | null>(null);
 const failure = ref("");
 const report = ref<AddReport | null>(null);
 
@@ -99,21 +108,58 @@ async function pickSource() {
  */
 async function suggestFor(path: string) {
   suggestion.value = null;
+  installDir.value = null;
   try {
-    suggestion.value = await withActivity("looking up the source URL…", () =>
+    const answer = await withActivity("looking up the source URL…", () =>
       invoke<SourceSuggestion>("source_suggestion", { path }),
     );
+    suggestion.value = answer;
+    installDir.value = answer.install_dir;
   } catch {
     // A suggestion is an optional convenience, so a failure here must not look like a
-    // failure of the form. The typed path stays exactly as the user left it.
+    // failure of the form. The typed path stays exactly as the user left it. The
+    // install-dir warning rides the same call and is lost with it, which is survivable
+    // only because the same refusal exists behind the submit.
     suggestion.value = null;
+    installDir.value = null;
   }
+}
+
+/**
+ * Re-run the lookup for a source the user typed instead of picking.
+ *
+ * `pickSource` covers the file picker, and typing the path by hand is exactly how
+ * content already sitting in `.claude` gets named. Only paths are sent: a URL has no
+ * local answer, and asking anyway would put a failing command in the log for every
+ * pasted link. The leading-`/`-or-`~` test is the same one that sorts paths from URLs
+ * on the other side, not a second opinion about what the source is.
+ */
+async function recheckTypedSource() {
+  const typed = source.value.trim();
+  const isPath = typed.startsWith("/") || typed.startsWith("~");
+  if (!isPath) {
+    suggestion.value = null;
+    installDir.value = null;
+    return;
+  }
+  await suggestFor(typed);
 }
 
 function applySuggestion() {
   if (suggestion.value?.suggestion) source.value = suggestion.value.suggestion;
   suggestion.value = null;
+  // The source is a URL now, which installs through a clone and cannot land on itself.
+  installDir.value = null;
 }
+
+/**
+ * Whether this source would be destroyed by installing the entry that names it.
+ *
+ * A global install dir is fixed, so every install of the entry overwrites the source.
+ * A project dir only collides when the entry is installed into that same project, which
+ * is a caution rather than a refusal — the verdict is the backend's, read off `scope`.
+ */
+const sourceBlocked = computed(() => installDir.value?.scope === "global");
 
 /**
  * What this name would do to the copies that already exist (R4.3).
@@ -130,7 +176,7 @@ const filled = computed(
   () => !!name.value.trim() && !!description.value.trim() && !!source.value.trim(),
 );
 const canSubmit = computed(
-  () => filled.value && !consequences.value.blocked && !submitting.value,
+  () => filled.value && !consequences.value.blocked && !sourceBlocked.value && !submitting.value,
 );
 
 /**
@@ -146,6 +192,7 @@ function resetForm() {
   source.value = "";
   requires.value = [];
   suggestion.value = null;
+  installDir.value = null;
 }
 
 async function submit() {
@@ -288,10 +335,24 @@ async function reveal(path: string) {
               type="text"
               placeholder="https://github.com/your-team/repo/blob/main/bug-investigator/SKILL.md"
               v-bind="RAW_TEXT"
+              @change="recheckTypedSource"
             />
             <button type="button" class="ghost" @click="pickSource">Choose file…</button>
           </span>
           <span class="add-entry__hint">{{ sourceHint }}</span>
+
+          <span v-if="sourceBlocked && installDir" class="add-entry__conflict">
+            <code>{{ installDir.path }}</code> is where the app installs
+            {{ installDir.section }}. An entry sourced from there is overwritten by its own
+            install, which erases the copy you just picked. Keep the content somewhere you
+            version control and point the source at it there. Installing is what puts a copy
+            under <code>.claude</code>, not the other way round.
+          </span>
+          <span v-else-if="installDir" class="add-entry__consequence">
+            <code>{{ installDir.path }}</code> is where the app installs
+            {{ installDir.section }} for that project. Installing this entry back into that
+            same project would overwrite its own source. Installing it anywhere else is fine.
+          </span>
 
           <span v-if="suggestion?.suggestion" class="add-entry__suggestion">
             <span>This file is in a git repo. Teammates would need this URL instead:</span>

@@ -1353,8 +1353,10 @@ class TestSuggestSourceCommand(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("no such path", err)
 
-    def test_it_needs_no_catalog_and_reads_no_config(self) -> None:
+    def test_it_needs_no_catalog_and_survives_an_absent_config(self) -> None:
         # Deliberate: the question is answerable before `library init` has ever run.
+        # The install dirs it reports against fall back to the built-ins rather than
+        # making a missing config fatal.
         loose = Path(self.tmp) / "loose.md"
         loose.write_text("x\n")
         with patch.object(library, "LOCAL_CONFIG_PATH", Path(self.tmp) / "absent.yaml"):
@@ -1362,6 +1364,46 @@ class TestSuggestSourceCommand(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out)["status"], "NONE")
+
+    def test_install_dir_is_null_for_a_path_that_is_not_in_one(self) -> None:
+        loose = Path(self.tmp) / "loose.md"
+        loose.write_text("x\n")
+        with patch.object(library, "LOCAL_CONFIG_PATH", Path(self.tmp) / "absent.yaml"):
+            code, out, _ = run_cli("suggest-source", str(loose), "--json")
+
+        self.assertEqual(code, 0)
+        self.assertIsNone(json.loads(out)["install_dir"])
+
+    def test_a_path_in_the_skills_dir_reports_the_dir_and_still_exits_zero(self) -> None:
+        # The GUI reads this field to warn before the form is submitted, so a hazard
+        # has to arrive as data on a successful call, not as an error.
+        with TempTool() as tool:
+            proto = tool.home / ".claude" / "skills" / "grilling"
+            proto.mkdir(parents=True)
+            (proto / "SKILL.md").write_text("# Grilling\n")
+
+            code, out, err = run_cli("suggest-source", str(proto / "SKILL.md"), "--json")
+            body = json.loads(out)
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(body["install_dir"], {
+            "section": "skills", "scope": "global",
+            "path": str(tool.home / ".claude" / "skills"),
+        })
+
+    def test_the_human_warning_goes_to_stderr_so_stdout_stays_pipeable(self) -> None:
+        # stdout is piped into `add --source "$(...)"`; a warning line in it would be
+        # written into the catalog as the source.
+        with TempTool() as tool:
+            repo = TempGitRepo(str(tool.home / ".claude" / "skills"), name="grilling")
+            repo.git("remote", "set-url", "origin", "git@github.com:acme/tools.git")
+            repo.commit("SKILL.md", "# Grilling\n")
+
+            code, out, err = run_cli("suggest-source", str(repo.work / "SKILL.md"))
+
+        self.assertEqual(code, 0)
+        self.assertNotIn("overwrite", out)
+        self.assertIn("overwrite its own source", err)
 
 
 # --------------------------------------------------------------------------- #
@@ -1718,6 +1760,111 @@ class TestEffectiveDirs(unittest.TestCase):
         self.assertEqual(library.installed_scopes(cfg.dirs, entry), ["global", "project"])
 
 
+class TestHoldsCopy(unittest.TestCase):
+    """The install-dir scan, and the subtrees it must not count.
+
+    `~/.claude/skills/` is not this tool's alone. Claude Code downloads the skills on a
+    claude.ai account into `synced/` and retires them into `.trash/`, so the recursive
+    search found directories no catalog installed, that carry no receipt, and that load
+    under a different name (`anthropic-skills:<name>`) — reporting an entry as installed
+    on the strength of somebody else's copy.
+    """
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.skills = self.tool.home / ".claude" / "skills"
+        self.skills.mkdir(parents=True)
+        self.entry = make_entry("alpha")
+
+    def bucket(self, name: str = "synced") -> Path:
+        """A foreign sync bucket holding a skill called `alpha`, as Claude Code lays it out."""
+        held = self.skills / name / "org-uuid_user-uuid" / "alpha"
+        held.mkdir(parents=True)
+        (held / "SKILL.md").write_text("# alpha, from somebody else\n")
+        return held
+
+    def test_a_copy_in_the_synced_bucket_is_not_ours(self) -> None:
+        self.bucket()
+
+        self.assertFalse(library.holds_copy(self.skills, self.entry))
+
+    def test_the_reserved_name_is_matched_whatever_its_capitalization(self) -> None:
+        # Claude Code reserves the name in any capitalization, so a case-sensitive
+        # comparison would leave the hole open on a case-sensitive filesystem.
+        self.bucket("Synced")
+
+        self.assertFalse(library.holds_copy(self.skills, self.entry))
+
+    def test_a_copy_in_a_dot_directory_is_not_ours(self) -> None:
+        # `.trash` is where Claude Code parks synced skills when sync is switched off;
+        # the same rule covers `.git` and the sync client's own `.staging`.
+        for parked in (".trash", ".staging", ".git"):
+            with self.subTest(parked=parked):
+                self.bucket(parked)
+                self.assertFalse(library.holds_copy(self.skills, self.entry))
+
+    def test_a_real_top_level_install_is_still_found(self) -> None:
+        self.bucket()  # noise that must not change the answer
+        (self.skills / "alpha").mkdir()
+
+        self.assertTrue(library.holds_copy(self.skills, self.entry))
+
+    def test_a_nested_install_is_still_found(self) -> None:
+        # The reason the search recurses at all: `use --dir` can land a copy in a
+        # subdirectory, and that copy is genuinely ours.
+        (self.skills / "team" / "alpha").mkdir(parents=True)
+
+        self.assertTrue(library.holds_copy(self.skills, self.entry))
+
+    def test_a_prompt_file_follows_the_same_rules(self) -> None:
+        commands = self.tool.home / ".claude" / "commands"
+        (commands / "synced" / "bucket").mkdir(parents=True)
+        (commands / "synced" / "bucket" / "triage.md").write_text("# triage\n")
+        entry = library.Entry(type="prompt", name="triage", description="", source="")
+
+        self.assertFalse(library.holds_copy(commands, entry))
+
+        (commands / "triage.md").write_text("# triage\n")
+        self.assertTrue(library.holds_copy(commands, entry))
+
+    def test_a_directory_matching_the_name_is_not_a_prompt(self) -> None:
+        # The type decides what counts: a prompt is a file, and a directory called
+        # `triage.md` is not one.
+        commands = self.tool.home / ".claude" / "commands"
+        (commands / "triage.md").mkdir(parents=True)
+        entry = library.Entry(type="prompt", name="triage", description="", source="")
+
+        self.assertFalse(library.holds_copy(commands, entry))
+
+    def test_installed_scopes_does_not_count_a_foreign_copy(self) -> None:
+        self.bucket()
+
+        self.assertEqual(library.installed_scopes(library.effective_dirs(None), self.entry), [])
+
+    def test_archived_scopes_prunes_the_same_subtrees(self) -> None:
+        # The archive is a sibling dir, so nothing syncs into it today — but the two
+        # functions answer the same question about two directories, and a rule that
+        # held in only one of them is the drift this shares a helper to avoid.
+        archive = library.disabled_dir_for(self.skills)
+        parked = archive / "synced" / "org-uuid_user-uuid" / "alpha"
+        parked.mkdir(parents=True)
+
+        self.assertEqual(library.archived_scopes(library.effective_dirs(None), self.entry), [])
+
+        (archive / "alpha").mkdir(parents=True)
+        self.assertEqual(library.archived_scopes(library.effective_dirs(None), self.entry), ["global"])
+
+    def test_a_symlinked_tree_is_not_descended(self) -> None:
+        # The tool's own clone is commonly symlinked into the skills dir; walking it
+        # would scan the whole repository looking for a skill name.
+        outside = self.tool.root / "elsewhere" / "alpha"
+        outside.mkdir(parents=True)
+        (self.skills / "link").symlink_to(outside.parent)
+
+        self.assertFalse(library.holds_copy(self.skills, self.entry))
+
+
 class TestInstallDirAnchoring(unittest.TestCase):
     def setUp(self) -> None:
         self.tool = TempTool()
@@ -1775,6 +1922,135 @@ class TestInstallDirAnchoring(unittest.TestCase):
 # --------------------------------------------------------------------------- #
 # update's entry computation (R18.3)
 # --------------------------------------------------------------------------- #
+
+class TestInstallDirMatch(unittest.TestCase):
+    """`install_dir_match` — is this candidate source sitting where installs land?"""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.skills = self.tool.home / ".claude" / "skills"
+
+    def test_a_file_under_the_global_skills_dir_is_a_global_hit(self) -> None:
+        hit = library.install_dir_match(self.skills / "grilling" / "SKILL.md")
+
+        self.assertEqual(hit, {"section": "skills", "scope": "global",
+                               "path": str(self.skills)})
+
+    def test_the_dir_itself_counts_as_inside_it(self) -> None:
+        self.assertIsNotNone(library.install_dir_match(self.skills))
+
+    def test_a_project_dir_is_reported_as_project_scope(self) -> None:
+        # The distinction callers act on: a global hit always collides, a project hit
+        # only collides when the entry is installed into that same project.
+        hit = library.install_dir_match(
+            self.tool.project / ".claude" / "skills" / "grilling" / "SKILL.md")
+
+        self.assertEqual(hit["scope"], "project")
+
+    def test_agents_and_prompts_have_their_own_dirs(self) -> None:
+        agents = library.install_dir_match(self.tool.home / ".claude/agents/triage.md")
+        prompts = library.install_dir_match(self.tool.home / ".claude/commands/pr.md")
+
+        self.assertEqual(agents["section"], "agents")
+        self.assertEqual(prompts["section"], "prompts")
+
+    def test_a_path_outside_every_install_dir_is_no_hit(self) -> None:
+        self.assertIsNone(library.install_dir_match(self.tool.root / "repo" / "SKILL.md"))
+        self.assertIsNone(library.install_dir_match(None))
+
+    def test_a_sibling_with_the_same_prefix_is_not_inside(self) -> None:
+        # `~/.claude/skills-disabled` starts with the skills dir as a string but is not
+        # under it, which a prefix comparison would get wrong.
+        self.assertIsNone(library.install_dir_match(
+            self.tool.home / ".claude" / "skills-disabled" / "parked" / "SKILL.md"))
+
+    def test_a_configured_override_moves_the_dir_it_checks(self) -> None:
+        # The dirs are the device's, not a hardcoded ~/.claude — so a config that
+        # relocates them relocates the hazard with them.
+        elsewhere = self.tool.root / "agentics"
+        library.LOCAL_CONFIG_PATH.write_text(yaml.safe_dump(
+            {"catalogs": [], "default_dirs": {"skills": [{"global": str(elsewhere)}]}}))
+
+        self.assertIsNone(library.install_dir_match(self.skills / "a" / "SKILL.md"))
+        self.assertEqual(library.install_dir_match(elsewhere / "a" / "SKILL.md")["path"],
+                         str(elsewhere))
+
+    def test_it_falls_back_to_the_builtins_with_no_config_at_all(self) -> None:
+        self.assertFalse(library.LOCAL_CONFIG_PATH.exists())
+        self.assertIsNotNone(library.install_dir_match(self.skills / "a" / "SKILL.md"))
+
+
+class TestInstallWouldNotEatItsSource(unittest.TestCase):
+    """The backstop: a local source at the install destination destroyed itself.
+
+    `_copy_dir` clears the destination before writing it, so the rmtree deleted the
+    only copy and the copytree then failed on the now-missing source. The entry that
+    reaches this state is the one prototyped in `~/.claude/skills/` and registered
+    before `add` started refusing it.
+    """
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.skills = self.tool.home / ".claude" / "skills"
+        self.proto = self.skills / "grilling"
+        (self.proto / "references").mkdir(parents=True)
+        (self.proto / "SKILL.md").write_text("# Grilling\n")
+        (self.proto / "references" / "notes.md").write_text("notes\n")
+        self.entry = library.Entry(type="skill", name="grilling", description="d",
+                                   source=str(self.proto / "SKILL.md"), requires=[])
+
+    def test_installing_over_its_own_source_is_refused_with_the_content_intact(self) -> None:
+        src = library.parse_source(self.entry.source)
+
+        with self.assertRaises(library.LibraryError) as caught:
+            library.fetch_local(src, self.entry, self.skills)
+
+        self.assertIn("the source is the destination", str(caught.exception))
+        self.assertEqual(sorted(p.name for p in self.proto.iterdir()),
+                         ["SKILL.md", "references"])
+
+    def test_a_source_nested_under_the_destination_is_refused_too(self) -> None:
+        # dest is `<skills>/grilling`; clearing it would take the source with it.
+        nested = self.proto / "draft"
+        nested.mkdir()
+        (nested / "SKILL.md").write_text("# draft\n")
+        entry = library.Entry(type="skill", name="grilling", description="d",
+                              source=str(nested / "SKILL.md"), requires=[])
+
+        with self.assertRaises(library.LibraryError):
+            library.fetch_local(library.parse_source(entry.source), entry, self.skills)
+
+        self.assertTrue((nested / "SKILL.md").is_file())
+
+    def test_a_file_entry_pointed_at_its_own_destination_is_refused(self) -> None:
+        commands = self.tool.home / ".claude" / "commands"
+        commands.mkdir(parents=True)
+        (commands / "triage.md").write_text("# Triage\n")
+        entry = library.Entry(type="prompt", name="triage", description="d",
+                              source=str(commands / "triage.md"), requires=[])
+
+        with self.assertRaises(library.LibraryError):
+            library.fetch_local(library.parse_source(entry.source), entry, commands)
+
+        self.assertEqual((commands / "triage.md").read_text(), "# Triage\n")
+
+    def test_a_source_outside_the_install_dir_still_installs(self) -> None:
+        repo = self.tool.root / "repo" / "grilling"
+        repo.mkdir(parents=True)
+        (repo / "SKILL.md").write_text("# Grilling\n")
+        entry = library.Entry(type="skill", name="grilling", description="d",
+                              source=str(repo / "SKILL.md"), requires=[])
+        shutil.rmtree(self.proto)
+
+        dest, _, commit = library.fetch_local(
+            library.parse_source(entry.source), entry, self.skills)
+
+        self.assertEqual(dest, self.proto)
+        self.assertTrue((dest / "SKILL.md").is_file())
+        self.assertIsNone(commit)
+
 
 class TestDisabledDir(unittest.TestCase):
     """The archive location is pure path arithmetic, so no sandbox is needed."""
@@ -8617,6 +8893,95 @@ class TestCatalogInit(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out)["installed"][0]["dest"],
                          str(self.tool.home / ".claude" / "skills" / "handmade"))
+
+
+class TestSourceInsideAnInstallDir(unittest.TestCase):
+    """Registering content that was prototyped in place under `~/.claude`.
+
+    The catalog syncs content *into* the install dirs, so a source that already lives
+    in one is an entry that consumes itself. `add` refuses it at the point the mistake
+    is made rather than leaving `use` to hit the backstop later.
+    """
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        install_golden_fixture(self.tool, GOLDEN_CATALOG)
+        code, _, err = run_cli(
+            "catalog", "init", str(self.tool.home / "dev" / "agentics" / "library.yaml"),
+            "--json")
+        self.assertEqual(code, 0, err)
+        self.proto = self.tool.home / ".claude" / "skills" / "grilling"
+        self.proto.mkdir(parents=True)
+        (self.proto / "SKILL.md").write_text("# Grilling\n")
+
+    def add(self, source: Path, *extra: str) -> tuple[int, str, str]:
+        return run_cli("add", "--name", "grilling", "--description", "Grill things",
+                       "--source", str(source), "--catalog", "personal",
+                       "--no-pull", "--json", *extra)
+
+    def test_a_source_in_the_global_skills_dir_is_refused(self) -> None:
+        code, _, err = self.add(self.proto / "SKILL.md")
+
+        self.assertEqual(code, 1)
+        self.assertIn("which is where skills install", err)
+        self.assertIn("overwrites its own source", err)
+
+    def test_the_refusal_names_the_fix_rather_than_just_the_rule(self) -> None:
+        _, _, err = self.add(self.proto / "SKILL.md")
+
+        self.assertIn("repository you own", err)
+
+    def test_nothing_is_written_to_the_catalog(self) -> None:
+        self.add(self.proto / "SKILL.md")
+
+        parsed = yaml.safe_load((self.tool.home / "dev/agentics/library.yaml").read_text())
+        self.assertEqual(parsed["library"]["skills"], [])
+
+    def test_allow_local_does_not_waive_it(self) -> None:
+        # --allow-local waives "teammates can't resolve this path", a judgement about
+        # other people. This one is about the entry destroying itself, which no flag
+        # makes desirable.
+        code, _, err = self.add(self.proto / "SKILL.md", "--allow-local")
+
+        self.assertEqual(code, 1)
+        self.assertIn("overwrites its own source", err)
+
+    def test_a_project_dir_source_is_a_warning_not_a_refusal(self) -> None:
+        # Content committed to a repo's own .claude/skills/ is version controlled and
+        # legitimate to share; it only collides when installed back into that project.
+        committed = self.tool.project / ".claude" / "skills" / "grilling"
+        committed.mkdir(parents=True)
+        (committed / "SKILL.md").write_text("# Grilling\n")
+
+        code, _, err = self.add(committed / "SKILL.md")
+
+        self.assertEqual(code, 0, err)
+        self.assertIn("installing this entry into that project", err)
+
+    def test_a_source_outside_every_install_dir_is_untouched(self) -> None:
+        repo = self.tool.root / "repo" / "grilling"
+        repo.mkdir(parents=True)
+        (repo / "SKILL.md").write_text("# Grilling\n")
+
+        code, _, err = self.add(repo / "SKILL.md")
+
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("overwrite", err)
+
+    def test_update_set_source_is_refused_on_the_same_rule(self) -> None:
+        repo = self.tool.root / "repo" / "grilling"
+        repo.mkdir(parents=True)
+        (repo / "SKILL.md").write_text("# Grilling\n")
+        code, _, err = self.add(repo / "SKILL.md")
+        self.assertEqual(code, 0, err)
+
+        code, _, err = run_cli("update", "grilling", "--catalog", "personal",
+                               "--set-source", str(self.proto / "SKILL.md"),
+                               "--no-pull", "--json")
+
+        self.assertEqual(code, 1)
+        self.assertIn("overwrites its own source", err)
 
 
 class TestPushUnderOverriding(unittest.TestCase):

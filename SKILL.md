@@ -177,6 +177,16 @@ it from the file's own git remote and says why when it can't. Never assemble tha
 `git` calls yourself — see [cookbook/add.md](cookbook/add.md). `doctor` warns about local
 sources it finds in a remote catalog.
 
+**A local path inside an install dir is refused everywhere, local catalogs included.** A
+source under `~/.claude/skills/` (or `agents/`, `commands/`) is where installs *land*, so
+the entry overwrites its own source the first time it is installed or synced and there is
+nothing left to install from. `--allow-local` does not waive this and must not be offered
+for it: that flag answers "can teammates resolve this path?", a different question. When a
+user points at something they prototyped in place, the fix is to move the content into a
+repository they own and source it from there — installing is what puts a copy under
+`~/.claude`, not the other way round. `library suggest-source <path> --json` reports the dir
+in `install_dir` before you propose the add.
+
 ## Typed Dependencies
 
 `requires` uses typed references to avoid ambiguity: `skill:name`, `agent:name`, `prompt:name`.

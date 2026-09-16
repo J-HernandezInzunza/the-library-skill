@@ -1652,6 +1652,53 @@ def disabled_dir_for(base: Path) -> Path:
     return base.parent / f"{base.name}-disabled"
 
 
+def configured_install_dirs() -> dict[str, dict[str, str]]:
+    """The install dirs in force on this device, read without hydrating any catalog.
+
+    `suggest-source` answers a question about a path and has to keep working before
+    `library init` has ever run, so it cannot go through :func:`load_config`, which dies
+    without a config file. Only ``default_dirs`` is read; a missing or malformed file
+    leaves the built-ins.
+    """
+    data: Any = None
+    if LOCAL_CONFIG_PATH.exists():
+        try:
+            data = yaml.safe_load(LOCAL_CONFIG_PATH.read_text())
+        except (OSError, yaml.YAMLError):
+            data = None
+    return effective_dirs(default_dirs(data if isinstance(data, dict) else {}))
+
+
+def install_dir_match(
+    path: "Path | None",
+    dirs: "dict[str, dict[str, str]] | None" = None,
+) -> "dict[str, str] | None":
+    """The configured install dir *path* sits inside, or None.
+
+    A source that lives where installs land is the one local path that destroys itself:
+    :func:`fetch_local` copies the source over the destination, and when they are the
+    same place there is nothing left to copy from.
+
+    The two scopes are different problems. A ``global`` dir is fixed, so every install
+    of the entry collides and callers refuse outright. A ``project`` dir only collides
+    when the entry is installed into that same project, so callers warn instead —
+    content committed to a repo's own ``.claude/skills/`` is a legitimate source.
+    Global is checked first so a dir that is somehow both names the one that always bites.
+    """
+    if path is None:
+        return None
+    resolved = path.expanduser().resolve()
+    for section, scopes in (dirs if dirs is not None else configured_install_dirs()).items():
+        for scope, raw in sorted(scopes.items(), key=lambda kv: kv[0] != "global"):
+            try:
+                base = resolve_install_dir(raw).resolve()
+            except OSError:
+                continue
+            if resolved == base or base in resolved.parents:
+                return {"section": section, "scope": scope, "path": str(base)}
+    return None
+
+
 def resolve_target_base(
     dirs: dict[str, dict[str, str]],
     entry: Entry,
@@ -1680,6 +1727,51 @@ def resolve_target_base(
     return resolve_install_dir(raw)
 
 
+# Directory names inside an install dir that belong to another tool, pruned from the
+# recursive search below. Claude Code downloads the skills attached to a claude.ai
+# account into `synced/` — a name it reserves at any capitalization, and skips a skill
+# you author under — and retires them into `.trash/` when that sync is switched off.
+# The leading-dot rule covers `.trash` along with `.git`, the sync client's own
+# `.staging`, and bookkeeping generally.
+#
+# Content in any of them was put there by something other than this tool, so counting it
+# reported an entry as installed that no catalog had ever installed and no receipt
+# covered — and a synced skill loads under `anthropic-skills:<name>`, so it is not even
+# the same name the catalog is talking about.
+RESERVED_INSTALL_SUBTREES = {"synced"}
+
+
+def _is_foreign_subtree(name: str) -> bool:
+    """Whether a directory inside an install dir is something other than our install."""
+    return name.startswith(".") or name.lower() in RESERVED_INSTALL_SUBTREES
+
+
+def holds_copy(base: Path, entry: Entry) -> bool:
+    """Whether *base* holds a copy of *entry*, at its top level or nested under it.
+
+    A skill is a directory named for the entry; everything else is `<name>.md`. The
+    nested case is what a `--dir` install into a subdirectory leaves behind, which is
+    why this recurses at all rather than only checking the top level.
+
+    Subtrees another tool owns are pruned (:data:`RESERVED_INSTALL_SUBTREES`), including
+    at the top level. An entry that shares one of those names is therefore never
+    reported as installed, which is the right answer rather than a gap: Claude Code
+    does not load a skill called `synced` either.
+
+    Symlinks are not followed, matching what the `rglob` this replaced did — the tool's
+    own clone is commonly symlinked into the skills dir, and descending it would walk
+    the whole repository.
+    """
+    want_dir = entry.type == "skill"
+    target = entry.name if want_dir else f"{entry.name}.md"
+
+    for _, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if not _is_foreign_subtree(d)]
+        if target in (dirnames if want_dir else filenames):
+            return True
+    return False
+
+
 def installed_scopes(dirs: dict[str, dict[str, str]], entry: Entry) -> list[str]:
     """Return scopes ('project'/'global') where the item appears installed.
 
@@ -1691,15 +1783,7 @@ def installed_scopes(dirs: dict[str, dict[str, str]], entry: Entry) -> list[str]
         base = resolve_install_dir(raw)
         if not base.exists():
             continue
-        if entry.type == "skill":
-            hit = (base / entry.name).is_dir() or any(
-                p.is_dir() and p.name == entry.name for p in base.rglob(entry.name)
-            )
-        else:
-            hit = (base / f"{entry.name}.md").is_file() or any(
-                p.is_file() and p.name == f"{entry.name}.md" for p in base.rglob(f"{entry.name}.md")
-            )
-        if hit:
+        if holds_copy(base, entry):
             found.append(scope)
     return found
 
@@ -1721,15 +1805,7 @@ def archived_scopes(dirs: dict[str, dict[str, str]], entry: Entry) -> list[str]:
         base = disabled_dir_for(resolve_install_dir(raw))
         if not base.exists():
             continue
-        if entry.type == "skill":
-            hit = (base / entry.name).is_dir() or any(
-                p.is_dir() and p.name == entry.name for p in base.rglob(entry.name)
-            )
-        else:
-            hit = (base / f"{entry.name}.md").is_file() or any(
-                p.is_file() and p.name == f"{entry.name}.md" for p in base.rglob(f"{entry.name}.md")
-            )
-        if hit:
+        if holds_copy(base, entry):
             found.append(scope)
     return found
 
@@ -2103,15 +2179,47 @@ def install_dest(entry: Entry, target_base: Path) -> Path:
     return target_base / f"{entry.name}.md"
 
 
+def _refuse_self_consuming_copy(origin: Path, dest: Path) -> None:
+    """Refuse a copy whose source and destination overlap.
+
+    :func:`_copy_dir` clears the destination before writing it, so a source at or inside
+    the destination is deleted and the copy then fails with the content already gone —
+    the install eats the only copy of what it was installing. The reverse nesting is no
+    better: copying a tree into its own subdirectory.
+
+    `add` refuses this up front, but only for entries added after it started doing so,
+    and only against the install dirs configured at the time. This is the backstop for
+    the rest, which is why it lives at the moment of the write rather than beside the
+    validation.
+    """
+    origin_real, dest_real = origin.resolve(), dest.resolve()
+    overlaps = (
+        origin_real == dest_real
+        or origin_real in dest_real.parents
+        or dest_real in origin_real.parents
+    )
+    if not overlaps:
+        return
+    raise LibraryError(
+        f"refusing to install {dest_real} from {origin_real}: the source is the "
+        "destination.\n"
+        "  Installing would delete the only copy. Move the content out of the install\n"
+        "  directory and point the entry's source at its new home."
+    )
+
+
 def fetch_local(src: Source, entry: Entry, target_base: Path) -> tuple[Path, dict[str, Any], "str | None"]:
     """Install from a path on this machine. No commit to record — hence the None (§3)."""
     ref = src.path
     if ref is None or not ref.exists():
         raise LibraryError(f"local source not found: {src.path}")
     dest = install_dest(entry, target_base)
+    # A skill installs the folder holding its main file; everything else is the file.
+    origin = ref.parent if entry.type == "skill" else ref
+    _refuse_self_consuming_copy(origin, dest)
     if entry.type == "skill":
-        return dest, _copy_dir(ref.parent, dest), None
-    return dest, _copy_file(ref, dest), None
+        return dest, _copy_dir(origin, dest), None
+    return dest, _copy_file(origin, dest), None
 
 
 @contextlib.contextmanager
@@ -4194,6 +4302,49 @@ def _refuse_local_source(path: "Path | None", dest: Catalog, multi: bool) -> "No
     die(msg)
 
 
+def _check_source_placement(src: Source) -> None:
+    """Refuse or warn a local source that lives where this device installs to.
+
+    Shared by `add` and `update --set-source` so the two can't drift apart, the same
+    reason :func:`_refuse_local_source` is shared.
+
+    Not overridable, unlike the local-path refusal beside it. That one is a judgement
+    about whether *other people* can resolve the path, which a personal catalog can
+    reasonably waive; this one is about the entry consuming its own source on the next
+    install, and no catalog makes that the intent.
+    """
+    if src.kind != "local":
+        return
+    hit = install_dir_match(src.path)
+    if hit is None:
+        return
+    if hit["scope"] == "global":
+        _refuse_install_dir_source(src.path, hit)
+    else:
+        warn(
+            f"{src.path} is inside {hit['path']}, where a --project install of "
+            f"{hit['section']} lands; installing this entry into that project would "
+            "overwrite its own source (installing anywhere else is fine)"
+        )
+
+
+def _refuse_install_dir_source(path: "Path | None", hit: dict[str, str]) -> "NoReturn":  # type: ignore[name-defined]
+    """Die on a source that lives in the dir its own installs land in."""
+    msg = (
+        f"{path} is inside {hit['path']}, which is where {hit['section']} install.\n"
+        "  An entry sourced from there overwrites its own source the first time it is\n"
+        "  installed or synced, leaving nothing to install from.\n"
+        "  Keep the content in a repository you own and point the source at it there —\n"
+        "  installing is what puts a copy under ~/.claude, not the other way round."
+    )
+    hint = _suggest_remote_for_local(path)
+    if hint:
+        # Rare but real: some people version-control ~/.claude itself. A URL source
+        # resolves through a clone, so it is the one form of this that doesn't self-destruct.
+        msg += f"\n  This file is in a git repo — use its URL instead:\n    {hint}"
+    die(msg)
+
+
 def _prepare_entry(
     name: str,
     description: str,
@@ -4231,6 +4382,8 @@ def _prepare_entry(
     if src.kind == "local" and dest.is_remote and not allow_local:
         _refuse_local_source(src.path, dest, multi)
 
+    _check_source_placement(src)
+
     requires = _parse_requires_refs(requires_raw)
 
     return Entry(type=typ, name=name, description=description, source=source, requires=requires)
@@ -4266,8 +4419,12 @@ def cmd_suggest_source(args: argparse.Namespace) -> int:
     doors: a GUI never sees stderr, and an agent should be able to ask the question
     before proposing an `add` rather than after being refused.
 
-    No catalog is read and nothing is written — this only inspects the given path and
-    its git remote, so it works before any catalog is registered.
+    No catalog is read and nothing is written — this inspects the given path, its git
+    remote, and the device's configured install dirs, so it works before any catalog is
+    registered. `install_dir` answers the second question a caller has about a candidate
+    source: not "can teammates resolve this?" but "would installing it eat it?" (see
+    :func:`install_dir_match`). Both belong here because both are "is this path a usable
+    source?", and a GUI that had to ask twice would ask once and skip the other.
     """
     path = Path(args.path).expanduser()
     if not path.exists():
@@ -4275,6 +4432,7 @@ def cmd_suggest_source(args: argparse.Namespace) -> int:
 
     suggestion, reason = _remote_suggestion(path)
     status = "OK" if suggestion else "NONE"
+    install_dir = install_dir_match(path)
 
     if args.json:
         # Exit 0 either way: "this file is not in a GitHub repo" is an answer, not a
@@ -4285,8 +4443,15 @@ def cmd_suggest_source(args: argparse.Namespace) -> int:
             "path": str(path.resolve()),
             "suggestion": suggestion,
             "reason": reason or None,
+            "install_dir": install_dir,
         }, indent=2))
         return 0
+
+    # stderr, not stdout: the human output is the bare URL so it can be piped straight
+    # into `add --source "$(...)"`, and a warning line in it would end up in the catalog.
+    if install_dir:
+        warn(f"{path} is inside {install_dir['path']}, where {install_dir['section']} "
+             "install — an entry sourced from there would overwrite its own source")
 
     if suggestion:
         # The URL alone, so it can be piped straight into `add --source "$(...)"`.
@@ -4606,6 +4771,7 @@ def cmd_update(args: argparse.Namespace) -> int:
         src = parse_source(args.set_source)
         if src.kind == "local" and cat.is_remote and not args.allow_local:
             _refuse_local_source(src.path, cat, multi_catalog(cfg))
+        _check_source_placement(src)
 
     def edit(text: str) -> "str | None":
         # Determinism (R6.12): compute the edit against the SAME bytes we're about
