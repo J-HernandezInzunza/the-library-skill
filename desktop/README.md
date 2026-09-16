@@ -17,19 +17,61 @@ clones the repo and runs one command.
 
 ## Prerequisites
 
-- **Node** ≥ 20 (developed on 22).
-- **Rust** (stable) — Tauri's backend.
-  `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+Four things have to be on the machine before you can build. `just` is one of them, and it is
+the one that checks the other three:
+
+```bash
+just app-prereqs
+```
+
+```
+  ✓ Rust      1.90.0
+  ✓ Node      v22.19.0
+  ✓ Python    3.13.1 (/opt/homebrew/bin/python3)
+```
+
+It runs automatically before every `app-*` recipe too, so a missing toolchain fails there,
+naming the fix, rather than several layers down inside `cargo`.
+
+- **just** — the command runner the `app-*` recipes live in. `just --version`; install with
+  `brew install just`. Building through `npm run tauri build` directly does work, but it
+  skips the prerequisite check, which is the thing that turns a missing toolchain into a
+  sentence instead of a `cargo metadata` stack trace.
+- **Node** ≥ 20 (developed on 22) — `node -v`.
+- **Rust** (stable) — Tauri's backend, compiled from source. `cargo --version`; install with:
+
+  ```bash
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  source "$HOME/.cargo/env"     # ← don't skip this
+  ```
+
+  **The second line is not optional.** The installer writes `~/.cargo/env` and adds it to your
+  shell profile, but a profile is only read when a shell starts — so the terminal you ran the
+  installer in still has no `cargo` on its `PATH`. Source it, or open a new terminal. Skipping
+  this is the most common way a correctly installed Rust still reads as missing, and
+  `just app-prereqs` says so when it happens rather than letting `cargo` fail later.
 - **Python ≥ 3.9**, present *somewhere* — not necessarily first on `PATH`. `library.py` uses 3.8+
   syntax, so an older `python3` shadowing a newer one is a real failure mode. The app and the
   `library` wrapper both pick an interpreter *by version* rather than trusting the first `python3`,
   so a stale 3.7 on your `PATH` no longer breaks setup as long as a 3.9+ exists (macOS's own
   `/usr/bin/python3` qualifies). If none does, both say so and name the fix.
+
+  **Don't check this one with `python3 --version`** — it answers a question the tool never asks.
+  A 3.7 first on `PATH` reads as a failure when the build is fine, and a passing 3.13 tells you
+  nothing about which interpreter got picked. Ask the wrapper what it resolved:
+
+  ```bash
+  ./library --python-path     # prints the interpreter, or exits 3 with the fix
+  ```
+
+The next three the app resolves for you. They are prompts on first launch, not things to
+satisfy beforehand:
+
 - **The parent tool, bootstrapped.** The app runs `../library`, which needs a `.venv` with PyYAML.
   If it is missing, the app detects it (the CLI exits `3` for exactly this) and offers to run
-  `bootstrap.py` for you, so this is a prompt rather than a prerequisite you have to satisfy first.
+  `bootstrap.py` for you.
 - **A registered catalog.** Without `config.local.yaml` the app shows a first-run screen that
-  clones and registers one. Also a prompt, not a prerequisite.
+  clones and registers one.
 - **`claude`, installed and authenticated** — only for guided setup walkthroughs. Everything else
   works without it, and the app says so next to the disabled control rather than failing.
 

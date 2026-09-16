@@ -71,7 +71,8 @@ local copy) · `uninstall --scope {global|project|all}`/`--dir`/`--force` · `up
 ## Justfile Shortcuts
 
 The included `justfile` runs library commands from your terminal without the `./library`
-prefix. Install it with `brew install just`.
+prefix. Install it with `brew install just`. It is optional for the CLI and **required for the
+desktop app**, whose `app-*` recipes live in the same file.
 
 **The rule:** every CLI command has a same-named `just` recipe, and flags pass straight
 through.

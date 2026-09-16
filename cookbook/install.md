@@ -12,9 +12,15 @@ to by per-device config.
 
 ```bash
 git --version       # required
-python3 --version   # required — runs the CLI
+python3 --version   # 3.9+ required — weaker check than it looks, see below
 gh --version        # optional — needed only for autopush (auto-open PRs)
+just --version      # optional for the CLI; required for the desktop app
 ```
+
+`python3 --version` reports whichever `python3` is first on `PATH`, which is not necessarily
+the interpreter the tool runs — the `library` wrapper picks *by version*. Do not report an
+older `python3` here as a blocker: it only matters if no 3.9+ exists anywhere on the machine.
+After the clone exists, `./library --python-path` is the authoritative check.
 
 Verify that `~/.claude/skills/` exists or can be created.
 

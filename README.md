@@ -55,10 +55,13 @@ just app-setup      # npm install
 just app-install    # build, then copy into /Applications
 ```
 
-Building needs **Node ≥ 20** and the **Rust toolchain** (Tauri's backend compiles from
-source), so the first build takes several minutes. The app prompts you through the rest —
-bootstrapping the CLI and registering your catalog are both first-run screens, not
-prerequisites you satisfy beforehand.
+Building needs **just**, **Node ≥ 20**, and the **Rust toolchain** (Tauri's backend compiles
+from source), so the first build takes several minutes. `just app-prereqs` checks Node, Rust,
+and Python in one go and names the fix for whichever is missing. If you install Rust as part
+of this, run `source "$HOME/.cargo/env"` or open a new terminal before building — the
+installer cannot put `cargo` on the `PATH` of a shell that is already running. The app prompts
+you through the rest — bootstrapping the CLI and registering your catalog are both first-run
+screens, not prerequisites you satisfy beforehand.
 
 **→ Full setup, what it does, and the guided-setup walkthrough that configures a
 credentialed skill without the secret ever entering the agent's context:

@@ -27,27 +27,42 @@ meets_floor() {
 
 # The bootstrapped venv is authoritative: it exists only because bootstrap.py
 # built it against a floor-meeting interpreter and put PyYAML in it.
+PY=""
 VENV_PY="$DIR/.venv/bin/python"
 if [ -x "$VENV_PY" ]; then
-  exec "$VENV_PY" "$DIR/library.py" "$@"
+  PY="$VENV_PY"
+else
+  # No venv yet (e.g. the desktop setup screen, before bootstrap). Find a system
+  # python that can actually parse library.py. Versioned names come first so an
+  # old unversioned `python3` at the front of PATH cannot win; the explicit
+  # /usr/bin/python3 last is macOS's own, which survives a stripped PATH.
+  for cand in \
+    python3.14 python3.13 python3.12 python3.11 python3.10 python3.9 \
+    python3 /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+    resolved="$(command -v "$cand" 2>/dev/null || true)"
+    [ -n "$resolved" ] || continue
+    if meets_floor "$resolved"; then
+      PY="$resolved"
+      break
+    fi
+  done
 fi
-
-# No venv yet (e.g. the desktop setup screen, before bootstrap). Find a system
-# python that can actually parse library.py. Versioned names come first so an
-# old unversioned `python3` at the front of PATH cannot win; the explicit
-# /usr/bin/python3 last is macOS's own, which survives a stripped PATH.
-for cand in \
-  python3.14 python3.13 python3.12 python3.11 python3.10 python3.9 \
-  python3 /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
-  resolved="$(command -v "$cand" 2>/dev/null || true)"
-  [ -n "$resolved" ] || continue
-  if meets_floor "$resolved"; then
-    exec "$resolved" "$DIR/library.py" "$@"
-  fi
-done
 
 # Nothing on this machine can run the tool. Say so plainly, with the fix, rather
 # than exec'ing a too-old interpreter and letting it die on a bare SyntaxError.
-echo "The Library needs Python ${PY_MIN_MAJOR}.${PY_MIN_MINOR}+, but none was found." >&2
-echo "Install a newer Python (e.g. 'brew install python@3.12'), then try again." >&2
-exit 3
+if [ -z "$PY" ]; then
+  echo "The Library needs Python ${PY_MIN_MAJOR}.${PY_MIN_MINOR}+, but none was found." >&2
+  echo "Install a newer Python (e.g. 'brew install python@3.12'), then try again." >&2
+  exit 3
+fi
+
+# Answer "is the Python prerequisite met, and by which interpreter?" without starting
+# the CLI proper. A normal invocation cannot tell the two failures apart: library.py
+# also exits 3, for missing PyYAML, which is a *different* problem with a different fix.
+# `just app-prereqs` uses this to check Python alone.
+if [ "${1:-}" = "--python-path" ]; then
+  echo "$PY"
+  exit 0
+fi
+
+exec "$PY" "$DIR/library.py" "$@"
