@@ -286,7 +286,6 @@ async function submit() {
           <button type="submit" :disabled="!canSubmit">
             {{ mode === "create" ? "Create and register" : "Register" }}
           </button>
-          <button type="button" class="ghost" @click="emit('close')">Done</button>
         </div>
         <Busy v-if="submitting" inline label="Checking the catalog is usable…" />
       </form>

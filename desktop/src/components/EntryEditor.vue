@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { entryEdits, requirableRefs } from "../catalog";
+import { entryEdits, requirableRefs, type EntryDraft } from "../catalog";
 import { withActivity } from "../commandActivity";
 import { describeAppError, type Entry, type UpdateReport } from "../types";
 import { RAW_TEXT } from "../rawText";
@@ -23,6 +23,19 @@ const saving = ref(false);
 const failure = ref("");
 const report = ref<UpdateReport | null>(null);
 
+function draftOf(entry: Entry): EntryDraft {
+  return { description: entry.description, source: entry.source, requires: [...entry.requires] };
+}
+
+/**
+ * What the catalog holds, as far as this panel knows.
+ *
+ * Not `props.entry` directly: the row reloads and hands back a fresh entry after a save,
+ * but until that lands the prop still describes the pre-save state, and every "is there
+ * anything unsaved" question answers yes about work already written.
+ */
+const saved = ref<EntryDraft>(draftOf(props.entry));
+
 /**
  * Refill from the copy whenever it changes.
  *
@@ -36,6 +49,7 @@ watch(
     description.value = props.entry.description;
     source.value = props.entry.source;
     requires.value = [...props.entry.requires];
+    saved.value = draftOf(props.entry);
     failure.value = "";
     report.value = null;
   },
@@ -54,12 +68,19 @@ const available = computed(() =>
  * control that refuses without explaining reads as a broken one.
  */
 const edits = computed(() =>
-  entryEdits(props.entry, {
+  entryEdits(saved.value, {
     description: description.value,
     source: source.value,
     requires: requires.value,
   }),
 );
+
+/**
+ * "Cancel" only while leaving would throw typing away. Before anything is touched, and
+ * after a save (the panel stays open under its success banner), there is nothing to
+ * abandon and the button is only dismissing the panel.
+ */
+const dismissLabel = computed(() => (edits.value ? "Cancel" : "Done"));
 
 const emptyField = computed(() => !description.value.trim() || !source.value.trim());
 const blockedBecause = computed(() => {
@@ -81,6 +102,12 @@ async function save() {
         request: { name: props.entry.name, catalog: props.entry.catalog, ...changed },
       }),
     );
+    // The write landed, so this is the catalog's content now — see `saved`.
+    saved.value = {
+      description: description.value.trim(),
+      source: source.value.trim(),
+      requires: [...requires.value],
+    };
     emit("saved");
   } catch (e) {
     failure.value = describeAppError(e);
@@ -132,7 +159,9 @@ async function save() {
       <p v-if="blockedBecause" class="editor__blocked">{{ blockedBecause }}</p>
       <div class="editor__actions">
         <button type="submit" :disabled="!edits || emptyField || saving">Save changes</button>
-        <button type="button" class="ghost" @click="emit('close')">Done</button>
+        <button type="button" class="ghost" :disabled="saving" @click="emit('close')">
+          {{ dismissLabel }}
+        </button>
       </div>
       <Busy v-if="saving" inline label="Writing the catalog…" />
     </form>
