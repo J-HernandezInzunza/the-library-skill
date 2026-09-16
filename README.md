@@ -97,7 +97,7 @@ Then either ask your agent (`/library use the deploy skill`) or run it yourself
 ## Documentation
 
 | Doc | What's in it |
-|---|---|
+| --- | --- |
 | **[desktop/README.md](desktop/README.md)** | The desktop app: prerequisites, install, what it does, guided setup walkthroughs |
 | **[docs/install.md](docs/install.md)** | CLI + agent setup, start to finish |
 | **[docs/workflows.md](docs/workflows.md)** | The full loop, worked: build → catalog → distribute → use |

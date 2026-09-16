@@ -50,7 +50,9 @@ const refused = computed(() =>
 );
 /** Dependencies the install brought in beyond the entries that were asked for. */
 const extraInstalled = computed(() =>
-  report.value ? report.value.installed.length - report.value.requested.length : 0,
+  report.value
+    ? report.value.installed.length - report.value.requested.length
+    : 0,
 );
 
 /** Entries whose copies were actually removed. */
@@ -64,13 +66,20 @@ const removed = computed(() =>
  * The drift gate is per-plan (T3.1): installing ten entries as ten calls would mean ten
  * acknowledgements, or — far more likely — none at all.
  */
-const plan = computed(() => (preview.value ? installPlan(preview.value, props.names) : null));
+const plan = computed(() =>
+  preview.value ? installPlan(preview.value, props.names) : null,
+);
 
 /** Dependencies dragged in by the selection, which the user did not tick. */
-const extras = computed(() => plan.value?.items.filter((item) => !item.target) ?? []);
+const extras = computed(
+  () => plan.value?.items.filter((item) => !item.target) ?? [],
+);
 
 const canInstall = computed(
-  () => !!plan.value && !running.value && (!plan.value.blocked || acknowledged.value),
+  () =>
+    !!plan.value &&
+    !running.value &&
+    (!plan.value.blocked || acknowledged.value),
 );
 
 /** Switch the panel to its uninstall confirmation, clearing any install plan. */
@@ -91,8 +100,9 @@ async function runPreview() {
   confirming.value = false;
   uninstallReport.value = null;
   try {
-    preview.value = await withActivity(`planning ${props.names.length} installs…`, () =>
-      invoke<UsePreview>("entry_use_preview", { names: props.names }),
+    preview.value = await withActivity(
+      `planning ${props.names.length} installs…`,
+      () => invoke<UsePreview>("entry_use_preview", { names: props.names }),
     );
   } catch (e) {
     failure.value = describeAppError(e);
@@ -105,8 +115,9 @@ async function install() {
   running.value = true;
   failure.value = "";
   try {
-    report.value = await withActivity(`installing ${props.names.length} entries…`, () =>
-      invoke<UseReport>("entry_use", { names: props.names }),
+    report.value = await withActivity(
+      `installing ${props.names.length} entries…`,
+      () => invoke<UseReport>("entry_use", { names: props.names }),
     );
     preview.value = null;
     emit("installed");
@@ -143,11 +154,14 @@ async function uninstall() {
 
 // A changed selection describes a different action, so a plan or confirmation built from
 // the previous one is not stale so much as about something else.
-watch(() => props.names, () => {
-  preview.value = null;
-  acknowledged.value = false;
-  confirming.value = false;
-});
+watch(
+  () => props.names,
+  () => {
+    preview.value = null;
+    acknowledged.value = false;
+    confirming.value = false;
+  },
+);
 </script>
 
 <template>
@@ -156,14 +170,18 @@ watch(() => props.names, () => {
     <StatusBanner v-else-if="report" kind="success">
       <p class="bulk__done">
         Installed {{ report.requested.length }}
-        {{ report.requested.length === 1 ? "entry" : "entries" }} from {{ catalogId }}<template
-          v-if="extraInstalled"
-        >, with {{ extraInstalled }}
+        {{ report.requested.length === 1 ? "entry" : "entries" }} from
+        {{ catalogId
+        }}<template v-if="extraInstalled"
+          >, with {{ extraInstalled }}
           {{ extraInstalled === 1 ? "dependency" : "dependencies" }}</template
         >.
       </p>
     </StatusBanner>
-    <StatusBanner v-else-if="uninstallReport" :kind="refused.length ? 'warning' : 'success'">
+    <StatusBanner
+      v-else-if="uninstallReport"
+      :kind="refused.length ? 'warning' : 'success'"
+    >
       <p class="bulk__done">
         <template v-if="removed.length">
           Removed {{ removed.length }}
@@ -174,8 +192,8 @@ watch(() => props.names, () => {
         </template>
         <template v-if="refused.length">
           {{ refused.length }}
-          {{ refused.length === 1 ? "entry was" : "entries were" }} left in place because
-          the tool has no record of installing
+          {{ refused.length === 1 ? "entry was" : "entries were" }} left in
+          place because the tool has no record of installing
           {{ refused.length === 1 ? "it" : "them" }}:
           {{ refused.map((r) => r.name).join(", ") }}. Open
           {{ refused.length === 1 ? "it" : "each" }} to remove
@@ -192,8 +210,9 @@ watch(() => props.names, () => {
         <template v-else>
           <!-- The space says what the mode is for. It previously pointed at a button, and
                pointed the wrong way. -->
-          Act on several at once: install a selection as one plan with shared dependencies
-          fetched once, or remove them together. Tick the entries you want.
+          Act on several at once: install a selection as one plan with shared
+          dependencies fetched once, or remove them together. Select the entries
+          you want.
         </template>
       </span>
       <button
@@ -205,7 +224,12 @@ watch(() => props.names, () => {
       >
         Uninstall
       </button>
-      <button v-if="names.length" type="button" :disabled="running" @click="runPreview()">
+      <button
+        v-if="names.length"
+        type="button"
+        :disabled="running"
+        @click="runPreview()"
+      >
         {{ preview ? "Re-check" : "Preview install" }}
       </button>
     </div>
@@ -216,15 +240,25 @@ watch(() => props.names, () => {
         {{ names.length === 1 ? "entry" : "entries" }}?
       </p>
       <p class="bulk__confirm-note">
-        Entries that are not installed are skipped, and a copy the tool has no receipt for
-        is refused rather than force-deleted. The catalog entries are untouched —
-        installing again brings the files back.
+        Entries that are not installed are skipped, and a copy the tool has no
+        receipt for is refused rather than force-deleted. The catalog entries
+        are untouched — installing again brings the files back.
       </p>
       <div class="bulk__confirm-actions">
-        <button type="button" class="ghost" :disabled="running" @click="confirming = false">
+        <button
+          type="button"
+          class="ghost"
+          :disabled="running"
+          @click="confirming = false"
+        >
           Cancel
         </button>
-        <button type="button" class="danger" :disabled="running" @click="uninstall()">
+        <button
+          type="button"
+          class="danger"
+          :disabled="running"
+          @click="uninstall()"
+        >
           Remove {{ names.length }}
         </button>
       </div>
@@ -236,15 +270,16 @@ watch(() => props.names, () => {
     <div v-if="plan" class="bulk__plan fade-in">
       <p class="bulk__scope">
         {{ preview?.scope }} · nothing has been written ·
-        {{ plan.items.length }} {{ plan.items.length === 1 ? "destination" : "destinations" }}
+        {{ plan.items.length }}
+        {{ plan.items.length === 1 ? "destination" : "destinations" }}
         <template v-if="extras.length">
           ({{ extras.length }} pulled in as dependencies)
         </template>
       </p>
 
       <p v-if="plan.blocked" class="bulk__warning">
-        {{ plan.drifted.length }} of these have local edits the tool did not make.
-        Installing replaces them, and they cannot be recovered afterwards.
+        {{ plan.drifted.length }} of these have local edits the tool did not
+        make. Installing replaces them, and they cannot be recovered afterwards.
       </p>
 
       <ul class="bulk__items">
@@ -256,7 +291,10 @@ watch(() => props.names, () => {
         >
           <span class="bulk__item-name">{{ item.install.name }}</span>
           <span v-if="!item.target" class="bulk__role">dependency</span>
-          <span class="bulk__state" :class="{ 'bulk__state--drifted': item.drifted }">
+          <span
+            class="bulk__state"
+            :class="{ 'bulk__state--drifted': item.drifted }"
+          >
             {{ describeDestState(item.install.state) }}
           </span>
         </li>
@@ -265,7 +303,8 @@ watch(() => props.names, () => {
       <label v-if="plan.blocked" class="bulk__ack">
         <input v-model="acknowledged" type="checkbox" />
         Overwrite {{ plan.drifted.length }} locally edited
-        {{ plan.drifted.length === 1 ? "copy" : "copies" }}, discarding those edits.
+        {{ plan.drifted.length === 1 ? "copy" : "copies" }}, discarding those
+        edits.
       </label>
 
       <button type="button" :disabled="!canInstall" @click="install()">
