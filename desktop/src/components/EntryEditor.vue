@@ -42,8 +42,10 @@ watch(
   { immediate: true },
 );
 
-/** Only this catalog's entries: a ref into another catalog dangles (D9). */
-const available = computed(() => requirableRefs(props.entries, props.entry.catalog));
+/** Only this catalog's entries, minus this one: a ref into another catalog dangles (D9). */
+const available = computed(() =>
+  requirableRefs(props.entries, props.entry.catalog, `${props.entry.type}:${props.entry.name}`),
+);
 
 /**
  * What would be sent, or null when nothing was touched.

@@ -359,11 +359,16 @@ export function describeCatalog(catalog: Catalog): CatalogDescription {
  * Dependencies resolve within one catalog, so a ref naming another catalog's entry
  * dangles — the CLI warns about it on stderr, which no GUI can see. Offering only this
  * catalog's own entries means the form cannot build that entry in the first place.
+ *
+ * `self` is the ref of the entry the form is about, dropped because nothing requires
+ * itself: the entry being edited is in the catalog it is picking from, and so is one just
+ * added, since the picker reads the reloaded catalog.
  */
-export function requirableRefs(entries: Entry[], catalogId: string): string[] {
+export function requirableRefs(entries: Entry[], catalogId: string, self: string): string[] {
   return entries
     .filter((entry) => entry.catalog === catalogId)
     .map((entry) => `${entry.type}:${entry.name}`)
+    .filter((ref) => ref !== self)
     .sort();
 }
 

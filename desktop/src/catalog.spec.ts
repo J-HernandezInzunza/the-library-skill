@@ -560,13 +560,34 @@ describe("requirableRefs", () => {
       entry({ type: "skill", name: "elsewhere", catalog: "shared" }),
     ];
 
-    expect(requirableRefs(entries, "personal")).toEqual(["agent:reviewer", "skill:bug-triager"]);
+    expect(requirableRefs(entries, "personal", "")).toEqual([
+      "agent:reviewer",
+      "skill:bug-triager",
+    ]);
   });
 
   it("keeps an overridden copy, because it is still this catalog's entry to depend on", () => {
     const entries = [entry({ name: "grilling", catalog: "shared", overridden_by: "personal" })];
 
-    expect(requirableRefs(entries, "shared")).toEqual(["skill:grilling"]);
+    expect(requirableRefs(entries, "shared", "")).toEqual(["skill:grilling"]);
+  });
+
+  it("drops the entry the form is about, because nothing requires itself", () => {
+    const entries = [
+      entry({ type: "skill", name: "grilling", catalog: "personal" }),
+      entry({ type: "skill", name: "bug-triager", catalog: "personal" }),
+    ];
+
+    expect(requirableRefs(entries, "personal", "skill:grilling")).toEqual(["skill:bug-triager"]);
+  });
+
+  it("drops only the matching type, since a ref is type and name together", () => {
+    const entries = [
+      entry({ type: "skill", name: "grilling", catalog: "personal" }),
+      entry({ type: "agent", name: "grilling", catalog: "personal" }),
+    ];
+
+    expect(requirableRefs(entries, "personal", "skill:grilling")).toEqual(["agent:grilling"]);
   });
 });
 

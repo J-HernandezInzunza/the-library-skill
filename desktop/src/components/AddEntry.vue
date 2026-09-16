@@ -45,8 +45,22 @@ const suggestion = ref<SourceSuggestion | null>(null);
 const failure = ref("");
 const report = ref<AddReport | null>(null);
 
+/**
+ * The entry this form is about, which cannot be one of its own requirements.
+ *
+ * While typing, that is the name in the field. After a successful add the field is cleared
+ * but the banner still names what was added, so the form still reads as being about that
+ * entry — and the reload has just put it in the picker. Typing the next name moves the
+ * exclusion onto it and frees the one just added to be depended on.
+ */
+const selfRef = computed(() => {
+  const typed = name.value.trim();
+  if (typed) return `${type.value}:${typed}`;
+  return report.value ? `${report.value.added.type}:${report.value.added.name}` : "";
+});
+
 /** Only this catalog's entries: a ref into another catalog would dangle. */
-const available = computed(() => requirableRefs(props.entries, props.catalogId));
+const available = computed(() => requirableRefs(props.entries, props.catalogId, selfRef.value));
 
 /**
  * What the source has to point at, which differs by type.
