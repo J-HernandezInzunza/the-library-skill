@@ -26,6 +26,9 @@ case "$sub" in
     case "$1" in
       triage-bug) cat "$here/payloads/show-deps.json" ;;
       broken)     cat "$here/payloads/show-broken.json" ;;
+      # Installed from a path on this machine: no repository, so the receipts carry a
+      # null commit. Every other payload here has a real one.
+      scratch)    cat "$here/payloads/show-local.json" ;;
       *)          cat "$here/payloads/show.json" ;;
     esac
     ;;

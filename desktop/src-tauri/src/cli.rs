@@ -702,8 +702,11 @@ pub struct Receipt {
     pub catalog: String,
     #[serde(default)]
     pub source: String,
+    /// `None` for an install from a path on this machine, which has no commit to
+    /// record. The CLI sends the key as an explicit `null`, so the `Option` is what
+    /// carries it: `#[serde(default)]` covers a *missing* key, never a null one.
     #[serde(default)]
-    pub commit: String,
+    pub commit: Option<String>,
     #[serde(default)]
     pub content_hash: String,
     #[serde(default)]
@@ -1735,7 +1738,18 @@ mod tests {
         let receipt = r#","receipt":{"dest":"/x","scope":"global","commit":"abc"}"#;
         let raw = entry_json("").replace(",\"receipt\":null", receipt);
         let entry: Entry = serde_json::from_str(&raw).expect("parse");
-        assert_eq!(entry.receipt.expect("receipt").commit, "abc");
+        assert_eq!(entry.receipt.expect("receipt").commit.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn a_receipt_for_a_local_install_carries_a_null_commit() {
+        // Installing from a path on this machine records no commit, and the CLI says so
+        // with a null rather than by dropping the key. Parsed as a `String` that null
+        // failed the whole payload, taking every view that reads a receipt with it.
+        let receipt = r#","receipt":{"dest":"/x","scope":"global","commit":null}"#;
+        let raw = entry_json("").replace(",\"receipt\":null", receipt);
+        let entry: Entry = serde_json::from_str(&raw).expect("parse");
+        assert_eq!(entry.receipt.expect("receipt").commit, None);
     }
 
     #[test]

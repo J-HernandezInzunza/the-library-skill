@@ -251,6 +251,31 @@ fn a_dependency_the_catalog_cannot_follow_is_reported_not_dropped() {
 }
 
 #[test]
+fn an_entry_installed_from_a_local_path_parses_without_a_commit() {
+    // A catalog pointing at a path on this machine records no commit, so every receipt
+    // in the payload reports a null one. Parsed as a required `String` that null failed
+    // the whole `show`, and the app rendered nothing but a parse error. Every other
+    // payload here is git-sourced, which is why nothing caught it.
+    let _guard = with_fixture_home();
+    let detail = cli::show(&Recorder::default(), "scratch").expect("fixture show should parse");
+
+    assert_eq!(detail.source.kind, "local");
+    assert_eq!(detail.installs.len(), 1);
+    assert_eq!(detail.installs[0].commit, None);
+    // The nested copies too: a receipt hangs off the entry and off each location, and
+    // one unparsed occurrence is enough to lose the payload.
+    let receipt = detail.entry.receipt.as_ref().expect("the entry's own receipt");
+    assert_eq!(receipt.commit, None);
+    let installed = detail
+        .entry
+        .locations
+        .iter()
+        .find(|l| l.state == "installed")
+        .expect("the installed location");
+    assert_eq!(installed.receipt.as_ref().expect("its receipt").commit, None);
+}
+
+#[test]
 fn a_preview_reports_every_destination_and_what_is_already_there() {
     let _guard = with_fixture_home();
     let log = Recorder::default();

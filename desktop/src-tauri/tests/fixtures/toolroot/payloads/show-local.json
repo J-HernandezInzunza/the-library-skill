@@ -1,0 +1,125 @@
+{
+  "status": "OK",
+  "name": "scratch",
+  "entry": {
+    "type": "skill",
+    "name": "scratch",
+    "description": "A skill kept in a catalog that points at a path on this machine, with no repository behind it.",
+    "source": "/Users/tester/work/skills/scratch/SKILL.md",
+    "requires": [],
+    "installed": true,
+    "scopes": [
+      "global"
+    ],
+    "catalog": "local-catalog",
+    "overridden_by": null,
+    "state": "installed",
+    "receipt": {
+      "dest": "/Users/tester/.claude/skills/scratch",
+      "name": "scratch",
+      "type": "skill",
+      "catalog": "local-catalog",
+      "catalog_key": "/Users/tester/work/library.yaml",
+      "scope": "global",
+      "source": "/Users/tester/work/skills/scratch/SKILL.md",
+      "commit": null,
+      "content_hash": "sha256:0dcca4ce5292b235bb7d2e94d80c21cb7620b2a9776d3b823976873a214a433b",
+      "installed_at": "2026-09-16T14:37:51Z"
+    },
+    "has_setup": false,
+    "locations": [
+      {
+        "path": "/Users/tester/.claude/skills/scratch",
+        "scope": "global",
+        "state": "installed",
+        "archive_path": "/Users/tester/.claude/skills-disabled/scratch",
+        "archived": false,
+        "receipt": {
+          "dest": "/Users/tester/.claude/skills/scratch",
+          "name": "scratch",
+          "type": "skill",
+          "catalog": "local-catalog",
+          "catalog_key": "/Users/tester/work/library.yaml",
+          "scope": "global",
+          "source": "/Users/tester/work/skills/scratch/SKILL.md",
+          "commit": null,
+          "content_hash": "sha256:0dcca4ce5292b235bb7d2e94d80c21cb7620b2a9776d3b823976873a214a433b",
+          "installed_at": "2026-09-16T14:37:51Z"
+        }
+      },
+      {
+        "path": "/Users/tester/work/.claude/skills/scratch",
+        "scope": "project",
+        "state": "not_installed",
+        "archive_path": "/Users/tester/work/.claude/skills-disabled/scratch",
+        "archived": false,
+        "receipt": null
+      }
+    ]
+  },
+  "copies": [
+    {
+      "catalog": "local-catalog",
+      "type": "skill",
+      "description": "A skill kept in a catalog that points at a path on this machine, with no repository behind it.",
+      "source": "/Users/tester/work/skills/scratch/SKILL.md",
+      "requires": [],
+      "wins": true,
+      "overrides": [],
+      "overridden_by": []
+    }
+  ],
+  "requires": [],
+  "unresolved_requires": [],
+  "dependents": [],
+  "installs": [
+    {
+      "dest": "/Users/tester/.claude/skills/scratch",
+      "name": "scratch",
+      "type": "skill",
+      "catalog": "local-catalog",
+      "catalog_key": "/Users/tester/work/library.yaml",
+      "scope": "global",
+      "source": "/Users/tester/work/skills/scratch/SKILL.md",
+      "commit": null,
+      "content_hash": "sha256:0dcca4ce5292b235bb7d2e94d80c21cb7620b2a9776d3b823976873a214a433b",
+      "installed_at": "2026-09-16T14:37:51Z"
+    }
+  ],
+  "locations": [
+    {
+      "path": "/Users/tester/.claude/skills/scratch",
+      "scope": "global",
+      "state": "installed",
+      "archive_path": "/Users/tester/.claude/skills-disabled/scratch",
+      "archived": false,
+      "receipt": {
+        "dest": "/Users/tester/.claude/skills/scratch",
+        "name": "scratch",
+        "type": "skill",
+        "catalog": "local-catalog",
+        "catalog_key": "/Users/tester/work/library.yaml",
+        "scope": "global",
+        "source": "/Users/tester/work/skills/scratch/SKILL.md",
+        "commit": null,
+        "content_hash": "sha256:0dcca4ce5292b235bb7d2e94d80c21cb7620b2a9776d3b823976873a214a433b",
+        "installed_at": "2026-09-16T14:37:51Z"
+      }
+    },
+    {
+      "path": "/Users/tester/work/.claude/skills/scratch",
+      "scope": "project",
+      "state": "not_installed",
+      "archive_path": "/Users/tester/work/.claude/skills-disabled/scratch",
+      "archived": false,
+      "receipt": null
+    }
+  ],
+  "has_setup": false,
+  "source": {
+    "raw": "/Users/tester/work/skills/scratch/SKILL.md",
+    "kind": "local",
+    "path": "/Users/tester/work/skills/scratch/SKILL.md",
+    "exists": true
+  }
+}

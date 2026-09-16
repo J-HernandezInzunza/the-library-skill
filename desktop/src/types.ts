@@ -505,7 +505,8 @@ export interface Receipt {
   scope: string;
   catalog: string;
   source: string;
-  commit: string;
+  /** `null` for an install from a path on this machine, which has no commit to record. */
+  commit: string | null;
   content_hash: string;
   installed_at: string;
 }
