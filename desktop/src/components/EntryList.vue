@@ -3,7 +3,7 @@ import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { archivedPath, catalogHue, SESSION_TIMING, type Row } from "../catalog";
 import { withActivity } from "../commandActivity";
-import { describeAppError, type Catalog, type ToggleReport } from "../types";
+import { describeAppError, type Catalog, type EntryRef, type ToggleReport } from "../types";
 import { notify } from "../toasts";
 
 const props = defineProps<{
@@ -21,7 +21,8 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  select: [name: string];
+  /** Which copy was opened. A row is one catalog's copy, so its name alone is ambiguous. */
+  select: [ref: EntryRef];
   toggle: [name: string];
   /** A toggle landed; the list's owner refetches, because the CLI owns the new state. */
   changed: [];
@@ -80,7 +81,7 @@ function selectable(row: Row): boolean {
  */
 function activate(row: Row) {
   if (selecting.value) emit("toggle", row.entry.name);
-  else emit("select", row.entry.name);
+  else emit("select", { name: row.entry.name, catalog: row.entry.catalog });
 }
 
 /** True while the entry's content is on the machine but parked out of the agent's reach. */
@@ -202,6 +203,16 @@ const hueByCatalog = computed(
               :style="{ '--catalog-hue': hueByCatalog.get(row.entry.catalog) ?? 220 }"
             >
               {{ row.entry.catalog }}
+            </span>
+
+            <!-- Only where a pin is doing work: on a single-catalog machine every row
+                 would carry it and it would say nothing. -->
+            <span
+              v-if="row.entry.pinned && showOrigin"
+              class="entry-list__pinned"
+              title="Pinned: this catalog's copy installs, whatever the catalog order says"
+            >
+              pinned
             </span>
 
             <span v-if="row.overriddenBy" class="entry-list__overridden">
@@ -480,6 +491,14 @@ const hueByCatalog = computed(
   border-radius: 999px;
   background: var(--status-override-tint);
   color: var(--status-attention-ink);
+}
+.entry-list__pinned {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: var(--status-ok-tint);
+  color: var(--status-ok-ink);
 }
 .entry-list__overrides {
   font-size: 0.7rem;

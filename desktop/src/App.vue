@@ -12,7 +12,14 @@ import {
 } from "./catalog";
 import { useCommandActivity, withActivity } from "./commandActivity";
 import { tabCatalog, type Tab } from "./tabs";
-import { describeAppError, isAppError, type Catalog, type Entry } from "./types";
+import {
+  describeAppError,
+  isAppError,
+  type Catalog,
+  type Entry,
+  type EntryRef,
+  type InstallSource,
+} from "./types";
 import ActivityBar from "./components/ActivityBar.vue";
 import Busy from "./components/Busy.vue";
 import CatalogSummary from "./components/CatalogSummary.vue";
@@ -66,8 +73,12 @@ const query = ref("");
  * A trail rather than a single name so Back returns to where you came from: opening a
  * dependency from a detail view and landing back on the full catalog loses your place
  * exactly when you are walking a dependency chain.
+ *
+ * Each stop carries its catalog, because a name is not an identity: the list shows a row
+ * per copy, and clicking the overridden one used to open the winner — the same page you
+ * would have got from the row above it.
  */
-const trail = ref<string[]>([]);
+const trail = ref<EntryRef[]>([]);
 const openEntry = computed(() => trail.value.at(-1) ?? null);
 /** The entry Back returns to, or null when that is the catalog. */
 const previousEntry = computed(() => trail.value.at(-2) ?? null);
@@ -234,7 +245,9 @@ async function load({ pull = false } = {}) {
  */
 function pruneTrail(loaded: Entry[]) {
   const known = new Set(loaded.map((entry) => entry.name));
-  trail.value = trail.value.filter((name) => known.has(name));
+  // Keyed by name, not by copy: a stop whose own catalog dropped the entry is still a
+  // page the CLI can answer, from whichever catalog still defines the name.
+  trail.value = trail.value.filter((stop) => known.has(stop.name));
   // The install page is about one name too, and a page whose entry the catalog no longer has is
   // a page whose every command would fail.
   if (installFor.value !== null && !known.has(installFor.value)) installFor.value = null;
@@ -283,6 +296,24 @@ const installForOnDisk = computed(() => {
 const installForHasSetup = computed(() => {
   const entry = entries.value.find((candidate) => candidate.name === installFor.value);
   return entry?.has_setup ?? false;
+});
+
+/**
+ * The catalogs the open install page could install that name from, in resolution order.
+ *
+ * Empty when only one catalog defines the name, which is the signal the install page uses to
+ * stay a one-button page: a picker with a single option is a setting the user is failing to use.
+ * Read from the same snapshot as `installForOnDisk`, so a pin made on the detail page lands here
+ * as soon as the list reloads.
+ */
+const installForSources = computed<InstallSource[]>(() => {
+  const copies = entries.value.filter((candidate) => candidate.name === installFor.value);
+  if (copies.length < 2) return [];
+  return copies.map((copy) => ({
+    catalog: copy.catalog,
+    resolves: !copy.overridden_by,
+    pinned: copy.pinned,
+  }));
 });
 
 const multiCatalog = computed(() => catalogs.value.length > 1);
@@ -473,7 +504,7 @@ onMounted(async () => {
         :entries="entries"
         :at-catalog="manage.catalog"
         :at-entry="manage.entry"
-        :back-to="openEntry ?? 'The Library'"
+        :back-to="openEntry?.name ?? 'The Library'"
         @close="manage = null"
         @changed="load()"
         @add="addingTo = $event"
@@ -485,7 +516,7 @@ onMounted(async () => {
       <Walkthrough
         v-else-if="walkingThrough"
         :skill="walkingThrough"
-        :back-to="installFor ? 'Install and set up' : (openEntry ?? 'The Library')"
+        :back-to="installFor ? 'Install and set up' : (openEntry?.name ?? 'The Library')"
         @close="walkingThrough = null"
       />
 
@@ -495,6 +526,7 @@ onMounted(async () => {
         :name="installFor"
         :installed="installForOnDisk"
         :has-setup="installForHasSetup"
+        :sources="installForSources"
         :back-to="installFor"
         @close="installFor = null"
         @installed="load()"
@@ -503,8 +535,9 @@ onMounted(async () => {
 
       <EntryDetail
         v-else-if="openEntry"
-        :name="openEntry"
-        :back-to="previousEntry"
+        :name="openEntry.name"
+        :catalog="openEntry.catalog"
+        :back-to="previousEntry?.name ?? null"
         :catalogs="catalogs"
         :entries="entries"
         @close="trail.pop()"

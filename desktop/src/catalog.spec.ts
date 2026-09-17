@@ -202,6 +202,8 @@ describe("dependencies", () => {
         source: "",
         requires: ["skill:bug-investigator", "skill: bug-triager"],
         wins: true,
+        pinned: false,
+        subject: true,
         overrides: [],
         overridden_by: [],
       },
@@ -658,6 +660,8 @@ function copy(overrides: Partial<CatalogCopy> = {}): CatalogCopy {
     source: "/Users/dev/skills/a-skill/SKILL.md",
     requires: [],
     wins: true,
+    pinned: false,
+    subject: true,
     overrides: [],
     overridden_by: [],
     ...overrides,
@@ -955,6 +959,9 @@ describe("installedCopies", () => {
         pushFrom: "global",
         removable: true,
         tracked: true,
+        // The receipt's own catalog: two catalogs' copies share this destination, so it
+        // is the only thing that says whose files are actually there.
+        fromCatalog: "personal",
       },
     ]);
   });

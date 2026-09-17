@@ -14,6 +14,7 @@ const COPY: InstalledCopy = {
   pushFrom: "global",
   removable: true,
   tracked: true,
+  fromCatalog: "personal",
 };
 
 function report(overrides: Partial<UninstallReport["results"][0]> = {}): UninstallReport {

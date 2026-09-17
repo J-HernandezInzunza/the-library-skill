@@ -8,6 +8,7 @@
  * controls and back out again. Install and setup are the same job — you install a copy, then find
  * out what it wants — and they are the only two things here.
  */
+import type { InstallSource } from "../types";
 import InstallPreview from "./InstallPreview.vue";
 import PageHeader from "./PageHeader.vue";
 import SetupReadiness from "./SetupReadiness.vue";
@@ -29,6 +30,14 @@ defineProps<{
    * than flashing a "Checking…" card on install of the (common) no-setup skill.
    */
   hasSetup: boolean;
+  /**
+   * The catalogs this name could be installed from, empty when only one defines it.
+   *
+   * Passed through rather than read here for the same reason `installed` is: it comes
+   * from the catalog snapshot the app already holds, so it stays true after a pin made
+   * on this very page.
+   */
+  sources: InstallSource[];
   /** The title of the page Back returns to. */
   backTo: string;
 }>();
@@ -45,7 +54,12 @@ defineEmits<{ close: []; installed: []; walkthrough: [] }>();
         <span class="entry-install__name">{{ name }}</span>
       </template>
 
-      <InstallPreview :name="name" :installed="installed" @installed="$emit('installed')" />
+      <InstallPreview
+        :name="name"
+        :installed="installed"
+        :sources="sources"
+        @installed="$emit('installed')"
+      />
 
       <!-- Below the install panel, not above it: it reports on the copy that panel puts there,
            and on a machine with nothing installed there is nothing for it to read yet. -->

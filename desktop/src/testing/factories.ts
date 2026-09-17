@@ -23,6 +23,7 @@ export function entry(overrides: Partial<Entry> = {}): Entry {
     receipt: null,
     has_setup: false,
     locations: [],
+    pinned: false,
     ...overrides,
   };
 }

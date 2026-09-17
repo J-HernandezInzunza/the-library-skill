@@ -78,6 +78,28 @@ function switches(list: ReturnType<typeof mountList>) {
   return list.findAll(".entry-list__switch").map((button) => button.attributes("aria-checked"));
 }
 
+describe("EntryList selection identity", () => {
+  it("opens the copy that was clicked, not just its name", async () => {
+    // A row is one catalog's copy. Emitting the name alone is what made clicking the
+    // overridden row open the copy from the row above it.
+    const list = mount(EntryList, {
+      props: {
+        rows: allRows([
+          entry({ name: "herdr", catalog: "personal" }),
+          entry({ name: "herdr", catalog: "shared", overridden_by: "personal" }),
+        ]),
+        catalogs: [catalog(), catalog({ id: "shared", precedence: 2 })],
+        showOrigin: true,
+        selected: null,
+      },
+    });
+
+    await list.findAll(".entry-list__open")[1].trigger("click");
+
+    expect(list.emitted("select")).toEqual([[{ name: "herdr", catalog: "shared" }]]);
+  });
+});
+
 describe("EntryList toggle", () => {
   it("offers the switch only for skills whose content is on the machine", () => {
     const list = mountList([

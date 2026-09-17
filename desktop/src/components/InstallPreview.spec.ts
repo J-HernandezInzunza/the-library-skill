@@ -2,7 +2,7 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { afterEach, describe, expect, it } from "vitest";
 import { answer, callTo, resetTauri } from "../testing/tauri";
-import type { UsePreview, UseReport } from "../types";
+import type { InstallSource, UsePreview, UseReport } from "../types";
 import InstallPreview from "./InstallPreview.vue";
 
 afterEach(resetTauri);
@@ -41,9 +41,16 @@ const REPORT: UseReport = {
   overridden_by: null,
 };
 
-function mountPanel() {
-  return mount(InstallPreview, { props: { name: "alpha", installed: false } });
+/** No `sources` is the one-catalog case: nothing to choose between, so no picker. */
+function mountPanel(sources: InstallSource[] = []) {
+  return mount(InstallPreview, { props: { name: "alpha", installed: false, sources } });
 }
+
+/** The two-catalog case the picker exists for: `team` resolves, `mine` is the alternative. */
+const TWO_SOURCES: InstallSource[] = [
+  { catalog: "team", resolves: true, pinned: false },
+  { catalog: "mine", resolves: false, pinned: false },
+];
 
 describe("InstallPreview", () => {
   /**
@@ -62,7 +69,8 @@ describe("InstallPreview", () => {
     await panel.findAll("button").find((b) => b.text() === "Preview install")!.trigger("click");
     await flushPromises();
 
-    expect(callTo("entry_use_preview")!.args).toEqual({ names: ["alpha"], project: null });
+    expect(callTo("entry_use_preview")!.args)
+      .toEqual({ names: ["alpha"], project: null, catalog: null });
   });
 
   it("sends the same shape when installing for real", async () => {
@@ -75,8 +83,77 @@ describe("InstallPreview", () => {
     await panel.find(".install-preview__go").trigger("click");
     await flushPromises();
 
-    expect(callTo("entry_use")!.args).toEqual({ names: ["alpha"], project: null });
+    expect(callTo("entry_use")!.args)
+      .toEqual({ names: ["alpha"], project: null, catalog: null });
     expect(panel.text()).toContain("Installed 1 item.");
+  });
+
+  it("offers no source picker when only one catalog defines the name", () => {
+    // A control with a single option reads as a setting you are failing to use.
+    expect(mountPanel().find(".install-preview__sources").exists()).toBe(false);
+  });
+
+  it("installs from the picked catalog and offers to make the choice stick", async () => {
+    answer("entry_use_preview", PREVIEW);
+    answer("entry_use", REPORT);
+    answer("entry_pin", { name: "alpha", catalog: "mine", holders: ["team", "mine"],
+                          dangling: false, resolves_to: "mine" });
+    const panel = mountPanel(TWO_SOURCES);
+
+    // The resolving catalog carries the empty value, so the default install sends no
+    // --catalog at all and runs exactly the command it ran before the picker existed.
+    const picker = panel.findAll(".install-preview__source-row input");
+    expect(picker.map((input) => input.attributes("value"))).toEqual(["", "mine"]);
+    expect(panel.find(".install-preview__remember").exists()).toBe(false);
+
+    await picker[1].setValue("mine");
+    await panel.find(".install-preview__remember input").setValue(true);
+    await panel.findAll("button").find((b) => b.text() === "Preview install")!.trigger("click");
+    await flushPromises();
+    await panel.find(".install-preview__go").trigger("click");
+    await flushPromises();
+
+    expect(callTo("entry_use_preview")!.args)
+      .toEqual({ names: ["alpha"], project: null, catalog: "mine" });
+    // The pin is written before the files, so a refusal cannot leave the copy on disk
+    // disagreeing with what the next refresh would fetch.
+    expect(callTo("entry_pin")!.args).toEqual({ name: "alpha", catalog: "mine" });
+    expect(callTo("entry_use")!.args)
+      .toEqual({ names: ["alpha"], project: null, catalog: "mine" });
+  });
+
+  it("does not pin when the choice is left on the catalog that already resolves", async () => {
+    answer("entry_use_preview", PREVIEW);
+    answer("entry_use", REPORT);
+    const panel = mountPanel(TWO_SOURCES);
+
+    await panel.findAll("button").find((b) => b.text() === "Preview install")!.trigger("click");
+    await flushPromises();
+    await panel.find(".install-preview__go").trigger("click");
+    await flushPromises();
+
+    expect(callTo("entry_pin")).toBeUndefined();
+    expect(callTo("entry_use")!.args)
+      .toEqual({ names: ["alpha"], project: null, catalog: null });
+  });
+
+  it("stops before installing when the pin is refused", async () => {
+    answer("entry_use_preview", PREVIEW);
+    answer("entry_use", REPORT);
+    answer("entry_pin", () => {
+      throw { kind: "cli", code: 1, stderr: "'mine' does not define 'alpha'" };
+    });
+    const panel = mountPanel(TWO_SOURCES);
+
+    await panel.findAll(".install-preview__source-row input")[1].setValue("mine");
+    await panel.find(".install-preview__remember input").setValue(true);
+    await panel.findAll("button").find((b) => b.text() === "Preview install")!.trigger("click");
+    await flushPromises();
+    await panel.find(".install-preview__go").trigger("click");
+    await flushPromises();
+
+    expect(callTo("entry_use")).toBeUndefined();
+    expect(panel.find("pre").text()).toContain("does not define");
   });
 
   it("shows a rejected preview as an error and no plan", async () => {

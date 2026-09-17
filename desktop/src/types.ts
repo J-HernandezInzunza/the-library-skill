@@ -13,6 +13,18 @@ export interface DoctorReport {
   warnings: DoctorItem[];
 }
 
+/**
+ * Which copy of a name a view is about.
+ *
+ * A name alone is not an identity once two catalogs define one: the list shows a row per
+ * copy, so "open this row" has to carry which row. `catalog` is null only where the
+ * caller genuinely means "whichever resolves".
+ */
+export interface EntryRef {
+  name: string;
+  catalog: string | null;
+}
+
 /** One catalog's copy of a name, with its place in the override order. */
 export interface CatalogCopy {
   catalog: string;
@@ -21,6 +33,16 @@ export interface CatalogCopy {
   source: string;
   requires: string[];
   wins: boolean;
+  /**
+   * Whether a pin is why this copy resolves, rather than catalog precedence.
+   *
+   * A separate fact from `wins`, not a restatement of it: both look identical in the
+   * override chain, and they are undone by different things — a pin by clearing it, a
+   * precedence win by reordering the registry.
+   */
+  pinned: boolean;
+  /** Whether this is the copy the page is about, which under a restriction is not `wins`. */
+  subject: boolean;
   /** Catalogs this copy beats, and the ones that beat it: different questions. */
   overrides: string[];
   overridden_by: string[];
@@ -571,6 +593,108 @@ export interface Entry {
   has_setup: boolean;
   /** Every destination this entry occupies, each with its own state and archive path. */
   locations: Location[];
+  /** Whether this copy resolves because it is pinned, rather than by precedence. */
+  pinned: boolean;
+}
+
+/**
+ * One pin: the catalog a name resolves from, ahead of catalog precedence.
+ *
+ * Precedence is a single lever for the whole registry, so on its own it cannot say "my
+ * copies, except this one" — which is the shape the choice takes as soon as a personal
+ * catalog sits beside a shared one holding some of the same names.
+ */
+export interface Pin {
+  name: string;
+  catalog: string;
+  /** Every catalog defining this name, in resolution order. */
+  holders: string[];
+  /**
+   * True when nothing can honour the pin: the catalog is unregistered, was skipped this
+   * run, or no longer defines the name.
+   *
+   * Worth its own field because the failure is *silent* — the name still installs, from
+   * `resolves_to`, so without this the only way to notice is the next surprising install.
+   */
+  dangling: boolean;
+  /** Where the name resolves from as things stand; null when no catalog defines it. */
+  resolves_to: string | null;
+}
+
+/**
+ * One catalog the install page can install a name from.
+ *
+ * Flattened out of the entry rows the app already holds rather than fetched: the install
+ * page needs only "which catalogs, which one resolves, and why", and reading it from the
+ * same snapshot as everything else means a pin made elsewhere shows up on the next reload
+ * instead of on the next navigation.
+ */
+export interface InstallSource {
+  catalog: string;
+  /** True for the copy a plain install would fetch. */
+  resolves: boolean;
+  /** True when a pin is what put it there, rather than catalog order. */
+  pinned: boolean;
+}
+
+/** One installed copy a pin now disagrees with. */
+export interface StaleCopy {
+  dest: string;
+  scope: string;
+  /** `installed` / `drifted` / `untracked` / `disabled`, as the CLI derives it. */
+  state: string;
+  /** The catalog these files came from; empty when no receipt records one. */
+  from: string;
+}
+
+/** An installed entry that still expects the copy a switch would replace. */
+export interface PinDependent {
+  name: string;
+  catalog: string;
+  direct: boolean;
+}
+
+/**
+ * What a pin means for what is already on the machine.
+ *
+ * A pin decides what the *next* install fetches, so where the name is already installed
+ * from elsewhere the config and the disk disagree until something reconciles them. Left
+ * implicit, that gap is invisible until a refresh months later swaps a skill underfoot.
+ */
+export interface SwitchAssessment {
+  /** True when something installed came from a different catalog. */
+  switchable: boolean;
+  /**
+   * True when reconciling it needs no judgement: every stale copy is clean, global and
+   * tool-placed, and the newly pinned copy's dependencies all resolve in its catalog.
+   */
+  simple: boolean;
+  stale: StaleCopy[];
+  /** Why it is not simple, as sentences — each is something a person decides about. */
+  blockers: string[];
+  /** Entries that would newly land as dependencies of the pinned copy. */
+  new_dependencies: string[];
+  dependents: PinDependent[];
+}
+
+/** What pinning reports. It writes the pin and assesses; it never installs. */
+export interface PinResult {
+  name: string;
+  catalog: string;
+  previous: string | null;
+  /** True when only this catalog defines the name, so the pin changes nothing yet. */
+  only_holder: boolean;
+  switch: SwitchAssessment;
+}
+
+/** What clearing a pin reports. */
+export interface UnpinReport {
+  status: string;
+  name: string;
+  /** The catalog it had been pinned to. */
+  was: string;
+  /** Where it resolves now that precedence decides again. */
+  resolves_to: string | null;
 }
 
 /**

@@ -10,7 +10,13 @@ import {
 } from "../catalog";
 import { withActivity } from "../commandActivity";
 import { forgetProject, recentProjects, rememberProject } from "../recentProjects";
-import { describeAppError, type UsePreview, type UseReport } from "../types";
+import {
+  describeAppError,
+  type InstallSource,
+  type Pin,
+  type UsePreview,
+  type UseReport,
+} from "../types";
 import Busy from "./Busy.vue";
 import StatusBanner from "./StatusBanner.vue";
 
@@ -18,6 +24,8 @@ const props = defineProps<{
   name: string;
   /** Already on this machine somewhere, so this panel is about adding or refreshing. */
   installed: boolean;
+  /** The catalogs this name could come from; empty when only one defines it. */
+  sources: InstallSource[];
 }>();
 const emit = defineEmits<{ installed: [] }>();
 
@@ -28,6 +36,22 @@ const installing = ref(false);
 const error = ref("");
 /** Ticked by hand when the plan would discard local edits. */
 const acknowledged = ref(false);
+
+/**
+ * The catalog to install from, "" meaning whatever resolves.
+ *
+ * Kept as the empty string rather than pre-filled with the resolving catalog's id so the
+ * default install runs the exact command it ran before this picker existed — `--catalog`
+ * is only ever added once someone has actually chosen against the default.
+ */
+const source = ref("");
+/** Ticked to write the picked source as a pin, so the next install agrees with this one. */
+const remember = ref(false);
+
+/** The catalog a plain install would fetch, which is what the picker starts on. */
+const resolving = computed(() => props.sources.find((s) => s.resolves)?.catalog ?? "");
+/** True once the picked source is not the one that would resolve on its own. */
+const overriding = computed(() => !!source.value && source.value !== resolving.value);
 
 const scope = ref<"global" | "project">("global");
 /** The directory this install goes into, chosen for this install alone. */
@@ -89,7 +113,11 @@ async function runPreview() {
   report.value = null;
   try {
     preview.value = await withActivity("resolving the destination…", () =>
-      invoke<UsePreview>("entry_use_preview", { names: [props.name], project: project.value }),
+      invoke<UsePreview>("entry_use_preview", {
+        names: [props.name],
+        project: project.value,
+        catalog: overriding.value ? source.value : null,
+      }),
     );
   } catch (e) {
     error.value = describeAppError(e);
@@ -103,8 +131,21 @@ async function install() {
   installing.value = true;
   error.value = "";
   try {
+    // The pin goes first, and a failure here stops the install: it is the cheap,
+    // reversible half, and writing the files against a choice that did not stick would
+    // leave the next refresh quietly pulling the other copy back.
+    if (remember.value && overriding.value) {
+      await withActivity(`pinning ${props.name} to ${source.value}…`, () =>
+        invoke<Pin>("entry_pin", { name: props.name, catalog: source.value }),
+      );
+      remember.value = false;
+    }
     report.value = await withActivity(`installing ${props.name}…`, () =>
-      invoke<UseReport>("entry_use", { names: [props.name], project: project.value }),
+      invoke<UseReport>("entry_use", {
+        names: [props.name],
+        project: project.value,
+        catalog: overriding.value ? source.value : null,
+      }),
     );
     // The plan described the disk as it was before the write, so it is now a lie.
     preview.value = null;
@@ -117,13 +158,28 @@ async function install() {
   }
 }
 
-// A plan resolved for one entry, or one scope, says nothing about another.
-watch([() => props.name, scope], () => {
+// A plan resolved for one entry, scope, or source says nothing about another.
+watch([() => props.name, scope, source], () => {
   preview.value = null;
   report.value = null;
   error.value = "";
   acknowledged.value = false;
 });
+
+// Nothing to remember once the picked source is the one that resolves anyway, and a tick
+// left over from a previous selection would write a pin the user is no longer asking for.
+watch(overriding, (against) => {
+  if (!against) remember.value = false;
+});
+
+// The picker starts wherever the catalog currently resolves, including after a pin made
+// elsewhere changes that under us.
+watch(
+  () => props.sources,
+  () => {
+    source.value = "";
+  },
+);
 </script>
 
 <template>
@@ -136,6 +192,35 @@ watch([() => props.name, scope], () => {
     <div class="card">
 
       <StatusBanner v-if="error" kind="error" :detail="error" />
+
+      <!-- Only when there is a choice: one catalog holding the name makes this a control
+           with a single option, which reads as a setting you are failing to use. Above
+           scope because it decides *what* gets installed, not where it lands. -->
+      <div v-if="sources.length > 1" class="install-preview__sources">
+        <p class="install-preview__label">Install from</p>
+        <div class="install-preview__source-row">
+          <label v-for="option in sources" :key="option.catalog">
+            <input
+              v-model="source"
+              type="radio"
+              :value="option.resolves ? '' : option.catalog"
+            />
+            {{ option.catalog }}
+            <span v-if="option.pinned" class="install-preview__source-note">pinned</span>
+            <span v-else-if="option.resolves" class="install-preview__source-note">
+              by catalog order
+            </span>
+          </label>
+        </div>
+        <label v-if="overriding" class="install-preview__remember">
+          <input v-model="remember" type="checkbox" />
+          <span>
+            Always use {{ source }} for {{ name }}. Without this the choice applies to this
+            install only, and the next refresh goes back to
+            {{ resolving || "whatever the catalog order resolves" }}.
+          </span>
+        </label>
+      </div>
 
       <div class="install-preview__scopes">
         <label><input v-model="scope" type="radio" value="global" /> Globally</label>
@@ -316,6 +401,35 @@ watch([() => props.name, scope], () => {
   margin: 0.75rem 0 0.5rem;
   font-size: 0.75rem;
   opacity: 0.6;
+}
+.install-preview__sources {
+  margin-bottom: 0.9rem;
+}
+.install-preview__source-row {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+}
+.install-preview__source-row label {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.install-preview__source-note {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  opacity: 0.5;
+}
+.install-preview__remember {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  opacity: 0.85;
 }
 .install-preview__scopes {
   display: flex;

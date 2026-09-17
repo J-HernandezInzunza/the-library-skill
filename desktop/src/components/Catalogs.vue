@@ -1,9 +1,16 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { catalogHue, describeCatalog, editableCatalogs } from "../catalog";
 import { withActivity } from "../commandActivity";
-import { describeAppError, type Catalog, type Entry, type UnregisterReport } from "../types";
+import {
+  describeAppError,
+  type Catalog,
+  type Entry,
+  type Pin,
+  type UnpinReport,
+  type UnregisterReport,
+} from "../types";
 import EntryEditor from "./EntryEditor.vue";
 import EntryRemove from "./EntryRemove.vue";
 import PageHeader from "./PageHeader.vue";
@@ -137,6 +144,50 @@ async function unregister() {
     failure.value = describeAppError(e);
   }
 }
+
+/**
+ * Every pin, fetched rather than derived from `entries`.
+ *
+ * A *dangling* pin — one whose catalog is unregistered, skipped, or no longer holds the
+ * name — has no row in `entries` carrying `pinned`, because no copy of that name is
+ * pinned to anything that exists. It is also the only case worth a block of its own, so
+ * deriving would have missed exactly what this is for.
+ */
+const pins = ref<Pin[]>([]);
+const pinFailure = ref("");
+/** The name whose pin is being cleared, which is also "a write is in flight". */
+const clearing = ref("");
+
+async function loadPins() {
+  try {
+    pins.value = await invoke<Pin[]>("pins_list");
+  } catch (e) {
+    pinFailure.value = describeAppError(e);
+  }
+}
+
+async function clearPin(name: string) {
+  clearing.value = name;
+  pinFailure.value = "";
+  try {
+    await withActivity(`unpinning ${name}…`, () =>
+      invoke<UnpinReport>("entry_unpin", { name }),
+    );
+    await loadPins();
+    // The registry did not change, but which copy of that name resolves did, and the
+    // list behind this view renders it.
+    emit("changed");
+  } catch (e) {
+    pinFailure.value = describeAppError(e);
+  } finally {
+    clearing.value = "";
+  }
+}
+
+onMounted(loadPins);
+// Unregistering a catalog can strand a pin that named it, so the block is re-read rather
+// than left describing the registry as it was.
+watch(() => props.catalogs, loadPins);
 
 /**
  * The catalog's own inventory, overridden copies included.
@@ -292,6 +343,41 @@ watch(
           <code>library.yaml</code> file on this machine — <strong>Add a catalog</strong> above
           will create an empty one and register it.
         </p>
+        <!-- Below the registry, because it is the exception to what the registry says
+             and reads as nonsense before the order it overrides. -->
+        <section v-if="pins.length" class="catalogs__pins">
+          <h3 class="catalogs__pins-title">Pinned names ({{ pins.length }})</h3>
+          <p class="catalogs__lead">
+            These ignore the order above and come from the catalog named here. Set one from
+            an entry's own page, under <strong>Where this comes from</strong>.
+          </p>
+          <StatusBanner v-if="pinFailure" kind="error" :detail="pinFailure" />
+          <ul class="catalogs__pin-list">
+            <li v-for="pin in pins" :key="pin.name" class="catalogs__pin">
+              <span class="catalogs__pin-name">{{ pin.name }}</span>
+              <span class="catalogs__pin-arrow">→</span>
+              <span class="catalogs__chip catalogs__pin-chip">{{ pin.catalog }}</span>
+              <!-- The silent failure this block exists for: the name still installs, just
+                   not from where it was asked, so nothing else would ever mention it. -->
+              <span v-if="pin.dangling" class="catalogs__pin-dangling">
+                {{ pin.catalog }} can't supply this
+                <template v-if="pin.resolves_to">
+                  — it comes from {{ pin.resolves_to }} instead
+                </template>
+                <template v-else>— and no catalog defines the name</template>
+              </span>
+              <button
+                type="button"
+                class="ghost catalogs__pin-clear"
+                :disabled="clearing === pin.name"
+                @click="clearPin(pin.name)"
+              >
+                {{ clearing === pin.name ? "Clearing…" : "Clear" }}
+              </button>
+            </li>
+          </ul>
+        </section>
+
         <ul class="catalogs__list">
           <li
             v-for="option in catalogs"
@@ -440,6 +526,55 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+.catalogs__pins {
+  margin-bottom: 1.4rem;
+}
+.catalogs__pins-title {
+  margin: 0 0 0.4rem;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.5;
+}
+.catalogs__pin-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.catalogs__pin {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.45rem 0.9rem;
+  border-radius: 8px;
+  background: var(--surface-raised);
+}
+.catalogs__pin-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.catalogs__pin-arrow {
+  opacity: 0.4;
+}
+.catalogs__pin-chip {
+  background: var(--surface-strong);
+  color: inherit;
+}
+.catalogs__pin-dangling {
+  flex: 1;
+  font-size: 0.74rem;
+  line-height: 1.4;
+  color: var(--status-attention-ink);
+}
+.catalogs__pin-clear {
+  margin-left: auto;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.72rem;
 }
 .catalogs__row {
   padding: 0.7rem 0.9rem;

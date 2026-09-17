@@ -8,6 +8,14 @@ import UninstallControl from "./UninstallControl.vue";
 const props = defineProps<{
   name: string;
   copies: InstalledCopy[];
+  /**
+   * The catalog whose copy this page is about.
+   *
+   * Both catalogs' copies land at the same destination, so without this the page cannot
+   * tell "your copy is installed" from "the other catalog's copy is sitting where yours
+   * would go" — and those call for opposite next actions.
+   */
+  subject: string;
   /** The entry's source, so a push can name where the edits are going. */
   source: Source;
   /** Installed entries that depend on this one, for the removal warning. */
@@ -64,6 +72,15 @@ watch(() => props.name, () => {
           <code v-if="copy.dest" class="copies__dest">{{ copy.dest }}</code>
           <span v-else class="copies__dest copies__dest--unknown">
             put here by hand — the tool has no record of it
+          </span>
+
+          <!-- The one fact that distinguishes two copies once they are on disk. Silent
+               when they agree, which is the common case and not worth a line. -->
+          <span
+            v-if="copy.fromCatalog && copy.fromCatalog !== subject"
+            class="copies__foreign"
+          >
+            from {{ copy.fromCatalog }}, not {{ subject }}
           </span>
 
           <span class="copies__actions">
@@ -168,6 +185,13 @@ watch(() => props.name, () => {
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 0.75rem;
   overflow-wrap: anywhere;
+}
+.copies__foreign {
+  font-size: 0.7rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: var(--status-attention-tint);
+  color: var(--status-attention-ink);
 }
 .copies__dest--unknown {
   font-family: inherit;

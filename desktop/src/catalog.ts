@@ -597,6 +597,14 @@ export interface InstalledCopy {
   removable: boolean;
   /** The tool has a receipt for it, so its provenance is known rather than assumed. */
   tracked: boolean;
+  /**
+   * The catalog these files came from, per the receipt; null when untracked.
+   *
+   * Two catalogs' copies of a name share one destination, so this is the only thing that
+   * distinguishes them once they are on disk. It is what lets a page about the losing
+   * copy say the directory holds the other one rather than claiming it as its own.
+   */
+  fromCatalog: string | null;
 }
 
 /**
@@ -622,6 +630,7 @@ export function installedCopies(scopes: string[], installs: Receipt[]): Installe
     pushFrom: scope,
     removable: true,
     tracked: byScope.has(scope),
+    fromCatalog: byScope.get(scope)?.catalog ?? null,
   }));
 
   // Receipts for destinations no scope resolves: a project install somewhere the app is
@@ -637,6 +646,7 @@ export function installedCopies(scopes: string[], installs: Receipt[]): Installe
       pushFrom: parentDir(install.dest),
       removable: false,
       tracked: true,
+      fromCatalog: install.catalog,
     }));
 
   return [...resolved, ...unresolved];
