@@ -163,7 +163,7 @@ fn deep_is_passed_through_only_when_asked_for() {
 #[test]
 fn show_reports_the_override_chain_in_both_directions() {
     let _guard = with_fixture_home();
-    let detail = cli::show(&Recorder::default(), "grilling").expect("fixture show should parse");
+    let detail = cli::show(&Recorder::default(), "grilling", None).expect("fixture show should parse");
 
     assert_eq!(detail.name, "grilling");
     // The winner is the copy `use` would install, and it is identified as such.
@@ -193,7 +193,7 @@ fn requires_is_the_transitive_closure_not_what_the_entry_declares() {
     // The reason the view has to split them: triage-bug declares two dependencies and
     // resolves three, and the payload gives no hint which is which.
     let _guard = with_fixture_home();
-    let detail = cli::show(&Recorder::default(), "triage-bug").expect("fixture show should parse");
+    let detail = cli::show(&Recorder::default(), "triage-bug", None).expect("fixture show should parse");
 
     let winner = detail.copies.iter().find(|c| c.wins).expect("a winning copy");
     assert_eq!(winner.requires, ["skill:bug-investigator", "skill:bug-triager"]);
@@ -206,7 +206,7 @@ fn show_reports_what_breaks_if_the_entry_is_removed() {
     // The inverse of `requires`, and the only source for it: no caller can derive the
     // blast radius from a payload about one entry.
     let _guard = with_fixture_home();
-    let detail = cli::show(&Recorder::default(), "grilling").expect("fixture show should parse");
+    let detail = cli::show(&Recorder::default(), "grilling", None).expect("fixture show should parse");
 
     let direct: Vec<&str> = detail
         .dependents
@@ -230,7 +230,7 @@ fn show_reports_what_breaks_if_the_entry_is_removed() {
 #[test]
 fn an_entry_nothing_depends_on_reports_an_empty_list_not_a_missing_key() {
     let _guard = with_fixture_home();
-    let detail = cli::show(&Recorder::default(), "triage-bug").expect("fixture show should parse");
+    let detail = cli::show(&Recorder::default(), "triage-bug", None).expect("fixture show should parse");
 
     assert!(detail.dependents.is_empty());
 }
@@ -238,7 +238,7 @@ fn an_entry_nothing_depends_on_reports_an_empty_list_not_a_missing_key() {
 #[test]
 fn a_dependency_the_catalog_cannot_follow_is_reported_not_dropped() {
     let _guard = with_fixture_home();
-    let detail = cli::show(&Recorder::default(), "broken").expect("fixture show should parse");
+    let detail = cli::show(&Recorder::default(), "broken", None).expect("fixture show should parse");
 
     let reasons: Vec<&str> = detail
         .unresolved_requires
@@ -257,7 +257,7 @@ fn an_entry_installed_from_a_local_path_parses_without_a_commit() {
     // the whole `show`, and the app rendered nothing but a parse error. Every other
     // payload here is git-sourced, which is why nothing caught it.
     let _guard = with_fixture_home();
-    let detail = cli::show(&Recorder::default(), "scratch").expect("fixture show should parse");
+    let detail = cli::show(&Recorder::default(), "scratch", None).expect("fixture show should parse");
 
     assert_eq!(detail.source.kind, "local");
     assert_eq!(detail.installs.len(), 1);
@@ -280,7 +280,7 @@ fn a_preview_reports_every_destination_and_what_is_already_there() {
     let _guard = with_fixture_home();
     let log = Recorder::default();
 
-    let preview = cli::use_preview(&log, &["triage-bug".into()], None).expect("fixture preview should parse");
+    let preview = cli::use_preview(&log, &["triage-bug".into()], None, None).expect("fixture preview should parse");
 
     // --dry-run is the whole contract, so the argv is asserted rather than the result.
     assert_eq!(
@@ -308,7 +308,7 @@ fn a_preview_of_a_locally_edited_copy_reports_the_drift() {
     // The state the second confirmation exists for: installing overwrites edits the
     // tool did not make, and this payload is the only warning the user gets.
     let _guard = with_fixture_home();
-    let preview = cli::use_preview(&Recorder::default(), &["grilling".into()], None).expect("a preview");
+    let preview = cli::use_preview(&Recorder::default(), &["grilling".into()], None, None).expect("a preview");
 
     assert_eq!(preview.would_install[0].state, "drifted");
     // Not drift: a hand-installed copy the tool never wrote, which is normal.
@@ -331,7 +331,7 @@ fn an_install_reports_every_destination_and_what_changed_at_it() {
     let _guard = with_fixture_home();
     let log = Recorder::default();
 
-    let report = cli::use_entry(&log, &["triage-bug".into()], None).expect("fixture install should parse");
+    let report = cli::use_entry(&log, &["triage-bug".into()], None, None).expect("fixture install should parse");
 
     assert_eq!(
         &log.started.lock().unwrap()[0].argv[1..],
@@ -353,7 +353,7 @@ fn an_install_whose_main_file_is_missing_is_still_an_install() {
     // main file is absent. Treating that as a failure would deny an install that
     // demonstrably happened, and hide the warning that explains why.
     let _guard = with_fixture_home();
-    let report = cli::use_entry(&Recorder::default(), &["grilling".into()], None).expect("exit 1 is still a report");
+    let report = cli::use_entry(&Recorder::default(), &["grilling".into()], None, None).expect("exit 1 is still a report");
 
     assert_eq!(report.status, "OK");
     assert!(!report.installed[0].verified);
@@ -366,7 +366,7 @@ fn an_install_that_actually_failed_stays_a_failure() {
     // The other exit 1: a parseable body carrying `status`, which the tolerant path
     // would otherwise hand back as a successful report.
     let _guard = with_fixture_home();
-    let err = cli::use_entry(&Recorder::default(), &["broken".into()], None).unwrap_err();
+    let err = cli::use_entry(&Recorder::default(), &["broken".into()], None, None).unwrap_err();
 
     match err {
         AppError::Cli { stderr, .. } => assert!(stderr.contains("repository not found"), "{stderr}"),
@@ -382,7 +382,7 @@ fn a_project_install_is_anchored_at_the_picked_directory_not_the_tool_repo() {
     let log = Recorder::default();
 
     let preview =
-        cli::use_preview(&log, &["grilling".into()], Some("/tmp/some-project")).expect("a project preview");
+        cli::use_preview(&log, &["grilling".into()], Some("/tmp/some-project"), None).expect("a project preview");
 
     let started = log.started.lock().unwrap();
     assert_eq!(&started[0].argv[1..], ["use", "grilling", "--project", "--dry-run", "--json"]);
@@ -401,7 +401,7 @@ fn a_global_install_stays_anchored_at_the_tool_repo() {
     let _guard = with_fixture_home();
     let log = Recorder::default();
 
-    cli::use_preview(&log, &["grilling".into()], None).expect("a global preview");
+    cli::use_preview(&log, &["grilling".into()], None, None).expect("a global preview");
 
     let started = log.started.lock().unwrap();
     assert!(!started[0].argv.contains(&"--project".to_string()));
@@ -820,7 +820,7 @@ fn a_batch_install_is_one_command_with_every_name() {
     let log = Recorder::default();
 
     let names = vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()];
-    cli::use_preview(&log, &names, None).expect("the fixture preview should parse");
+    cli::use_preview(&log, &names, None, None).expect("the fixture preview should parse");
 
     assert_eq!(
         &log.started.lock().unwrap()[0].argv[1..],
@@ -834,7 +834,7 @@ fn a_batch_install_into_a_project_still_anchors_at_the_picked_directory() {
     let log = Recorder::default();
 
     let names = vec!["alpha".to_string(), "beta".to_string()];
-    cli::use_preview(&log, &names, Some("/tmp/some-project")).expect("preview should parse");
+    cli::use_preview(&log, &names, Some("/tmp/some-project"), None).expect("preview should parse");
 
     let argv = log.started.lock().unwrap()[0].argv[1..].to_vec();
     assert_eq!(argv, ["use", "alpha", "beta", "--project", "--dry-run", "--json"]);

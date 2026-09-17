@@ -38,6 +38,10 @@ pub struct Entry {
     pub catalog: String,
     #[serde(default)]
     pub overridden_by: Option<String>,
+    /// Whether this copy resolves because it is pinned. Defaulted so the app still runs
+    /// against a CLI that predates the key.
+    #[serde(default)]
+    pub pinned: bool,
     /// `installed` / `drifted` / `untracked` / `missing` / `stale`, derived by the
     /// CLI from install receipts. Deliberately a `String`, not an enum: a state a
     /// future CLI adds must render as unknown, not fail the whole parse.
@@ -110,6 +114,15 @@ pub struct CatalogCopy {
     #[serde(default)]
     pub requires: Vec<String>,
     pub wins: bool,
+    /// Whether a pin is why this copy resolves, rather than catalog precedence. A
+    /// separate fact from `wins`: they look identical in the override chain and are
+    /// undone by different commands.
+    #[serde(default)]
+    pub pinned: bool,
+    /// Whether this is the copy the report is *about*, which under a catalog restriction
+    /// is not the one that resolves.
+    #[serde(default)]
+    pub subject: bool,
     /// Both directions are reported, because "what does this beat" and "what beats
     /// this" are different questions and the answer to one does not imply the other.
     #[serde(default)]
@@ -901,8 +914,18 @@ pub fn list(sink: &dyn CommandSink, no_pull: bool) -> Result<Vec<Entry>, AppErro
 }
 
 /// Everything known about one name (R2.1).
-pub fn show(sink: &dyn CommandSink, name: &str) -> Result<EntryDetail, AppError> {
-    parse(run_json(sink, &["show", name])?)
+pub fn show(
+    sink: &dyn CommandSink,
+    name: &str,
+    catalog: Option<&str>,
+) -> Result<EntryDetail, AppError> {
+    let mut args = vec!["show", name];
+    // Which copy the page is about. Without it the CLI resolves by name alone and hands
+    // back the winner, so opening the overridden row showed the other catalog's entry.
+    if let Some(id) = catalog {
+        args.extend(["--catalog", id]);
+    }
+    parse(run_json(sink, &args)?)
 }
 
 /// Where an install would land: the tool repo for a global one, the picked project
@@ -921,11 +944,21 @@ fn anchor(project: Option<&str>) -> PathBuf {
 /// closures, so a selection installs a shared dependency once and a typo in the last name
 /// installs nothing at all. That is why bulk install is one call rather than N: the drift
 /// gate is per-plan, and N calls would mean N confirmations or none.
-fn use_args<'a>(names: &'a [String], project: Option<&str>) -> Vec<&'a str> {
+fn use_args<'a>(
+    names: &'a [String],
+    project: Option<&str>,
+    catalog: Option<&'a str>,
+) -> Vec<&'a str> {
     let mut args = vec!["use"];
     args.extend(names.iter().map(String::as_str));
     if project.is_some() {
         args.push("--project");
+    }
+    // Only ever set for a single-name install from the source picker: `--catalog`
+    // restricts every name in the call, so applying it to a bulk selection would
+    // silently refuse the ones that catalog does not hold.
+    if let Some(id) = catalog {
+        args.extend(["--catalog", id]);
     }
     args
 }
@@ -935,8 +968,9 @@ pub fn use_preview(
     sink: &dyn CommandSink,
     names: &[String],
     project: Option<&str>,
+    catalog: Option<&str>,
 ) -> Result<UsePreview, AppError> {
-    let mut args = use_args(names, project);
+    let mut args = use_args(names, project, catalog);
     args.push("--dry-run");
     parse(run_json_at(sink, &args, &anchor(project))?)
 }
@@ -952,8 +986,9 @@ pub fn use_entry(
     sink: &dyn CommandSink,
     names: &[String],
     project: Option<&str>,
+    catalog: Option<&str>,
 ) -> Result<UseReport, AppError> {
-    let body = run_report(sink, &use_args(names, project), &anchor(project))?;
+    let body = run_report(sink, &use_args(names, project, catalog), &anchor(project))?;
     if body.get("status").and_then(|s| s.as_str()) != Some("OK") {
         let reason = body
             .get("reason")
@@ -1395,6 +1430,139 @@ pub fn registry_remove(
 /// remote look like an absence of shared work.
 pub fn registry(sink: &dyn CommandSink) -> Result<Vec<Catalog>, AppError> {
     parse(run_json(sink, &["catalog", "list"])?)
+}
+
+/// One pin: the catalog a name resolves from, ahead of precedence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Pin {
+    pub name: String,
+    pub catalog: String,
+    /// Every catalog defining this name, in resolution order.
+    #[serde(default)]
+    pub holders: Vec<String>,
+    /// True when nothing can honour the pin — the catalog is unregistered, skipped this
+    /// run, or no longer defines the name. The name still installs, from `resolves_to`,
+    /// which is exactly why this needs showing rather than being left to be discovered.
+    #[serde(default)]
+    pub dangling: bool,
+    /// Where the name resolves from as things stand. `None` when no catalog defines it.
+    #[serde(default)]
+    pub resolves_to: Option<String>,
+}
+
+/// What `library pin --json` reports when listing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct PinList {
+    #[serde(default)]
+    pins: Vec<Pin>,
+}
+
+/// Every pin, name-sorted.
+pub fn pins(sink: &dyn CommandSink) -> Result<Vec<Pin>, AppError> {
+    let listed: PinList = parse(run_json(sink, &["pin"])?)?;
+    Ok(listed.pins)
+}
+
+/// One installed copy the pin now disagrees with.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StaleCopy {
+    pub dest: String,
+    pub scope: String,
+    /// `installed` / `drifted` / `untracked` / `disabled`, as the CLI derives it.
+    pub state: String,
+    /// The catalog these files came from; empty when no receipt records one.
+    #[serde(default)]
+    pub from: String,
+}
+
+/// An installed entry that still expects the copy a switch would replace.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PinDependent {
+    pub name: String,
+    pub catalog: String,
+    pub direct: bool,
+}
+
+/// What a pin means for the copies already on the machine.
+///
+/// A pin decides what the *next* install fetches, so where the name is already installed
+/// from elsewhere the config and the disk disagree until something reconciles them.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SwitchAssessment {
+    /// True when something installed came from a different catalog.
+    #[serde(default)]
+    pub switchable: bool,
+    /// True when reconciling it needs no judgement: every stale copy is clean, global,
+    /// and tool-placed, and the newly pinned copy's dependencies all resolve.
+    #[serde(default)]
+    pub simple: bool,
+    #[serde(default)]
+    pub stale: Vec<StaleCopy>,
+    /// Why it is not simple, as sentences — each one is something a person decides about.
+    #[serde(default)]
+    pub blockers: Vec<String>,
+    /// Entries that would newly land as dependencies of the pinned copy.
+    #[serde(default)]
+    pub new_dependencies: Vec<String>,
+    #[serde(default)]
+    pub dependents: Vec<PinDependent>,
+}
+
+/// What `library pin <name> <catalog> --json` reports.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PinResult {
+    pub name: String,
+    pub catalog: String,
+    /// The catalog it had been pinned to, if any.
+    #[serde(default)]
+    pub previous: Option<String>,
+    /// True when only this catalog defines the name, so the pin changes nothing yet.
+    #[serde(default)]
+    pub only_holder: bool,
+    #[serde(default)]
+    pub switch: SwitchAssessment,
+}
+
+/// Pin a name to one catalog, so its copy is what the next `use` installs.
+///
+/// The CLI refuses a pin the named catalog cannot honour — it does not define the name —
+/// rather than writing one that would sit in the config doing nothing. That refusal
+/// arrives here as an ordinary command failure, with the catalogs that *do* define it.
+///
+/// Writes the pin and reports; it never installs. The caller shows the user what would be
+/// overwritten and then drives `use` itself, because informing *before* the overwrite is
+/// the whole point and this layer cannot ask.
+pub fn pin(sink: &dyn CommandSink, name: &str, catalog: &str) -> Result<PinResult, AppError> {
+    parse(run_json(sink, &["pin", name, catalog])?)
+}
+
+/// What pinning would overwrite, without writing the pin or touching a file.
+///
+/// The assessment reads the registry and the disk, never the pin itself, so it can be
+/// answered before anything changes. That is what lets the app show the overwrite as a
+/// question rather than as a report of something already done.
+pub fn pin_preview(
+    sink: &dyn CommandSink,
+    name: &str,
+    catalog: &str,
+) -> Result<PinResult, AppError> {
+    parse(run_json(sink, &["pin", name, catalog, "--dry-run"])?)
+}
+
+/// Drop a pin, handing the name back to catalog precedence.
+pub fn unpin(sink: &dyn CommandSink, name: &str) -> Result<UnpinReport, AppError> {
+    parse(run_json(sink, &["unpin", name])?)
+}
+
+/// What `library unpin --json` reports.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UnpinReport {
+    pub name: String,
+    /// The catalog it had been pinned to.
+    pub was: String,
+    /// Where it resolves now that precedence decides again.
+    #[serde(default)]
+    pub resolves_to: Option<String>,
 }
 
 /// Prepare an unbootstrapped tool directory by running its own `bootstrap.py`.

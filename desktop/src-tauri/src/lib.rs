@@ -23,9 +23,9 @@ pub mod walkthrough;
 
 use cli::{
     AddReport, AddRequest, BootstrapReport, Catalog, CatalogRequest, DoctorReport, Entry,
-    EntryDetail, InitReport, PushPreview, PushReport, RegistrationReport, RemovePreview,
-    RemoveReport, SourceSuggestion, SyncReport, ToggleReport, UninstallReport, UnregisterReport,
-    UpdateReport, UpdateRequest, UsePreview, UseReport,
+    EntryDetail, InitReport, Pin, PinResult, PushPreview, PushReport, RegistrationReport, RemovePreview,
+    RemoveReport, SourceSuggestion, SyncReport, ToggleReport, UninstallReport, UnpinReport,
+    UnregisterReport, UpdateReport, UpdateRequest, UsePreview, UseReport,
 };
 use error::AppError;
 use secrets::Secrets;
@@ -69,9 +69,16 @@ async fn library_list(app: tauri::AppHandle, no_pull: bool) -> Result<Vec<Entry>
 }
 
 /// Everything known about one name: copies, override chain, requires, installs.
+///
+/// `catalog` names which copy the page is about. Absent means the one that resolves; the
+/// list shows a row per copy, so opening one has to be able to say which.
 #[tauri::command]
-async fn entry_show(app: tauri::AppHandle, name: String) -> Result<EntryDetail, AppError> {
-    off_thread(move || cli::show(&app, &name)).await
+async fn entry_show(
+    app: tauri::AppHandle,
+    name: String,
+    catalog: Option<String>,
+) -> Result<EntryDetail, AppError> {
+    off_thread(move || cli::show(&app, &name, catalog.as_deref())).await
 }
 
 /// Where installing this entry would write, without writing anything (R3.2).
@@ -82,18 +89,57 @@ async fn entry_use_preview(
     app: tauri::AppHandle,
     names: Vec<String>,
     project: Option<String>,
+    catalog: Option<String>,
 ) -> Result<UsePreview, AppError> {
-    off_thread(move || cli::use_preview(&app, &names, project.as_deref())).await
+    off_thread(move || cli::use_preview(&app, &names, project.as_deref(), catalog.as_deref())).await
 }
 
 /// Install an entry and its dependencies, globally or into a picked project (R3.1).
+/// `catalog` installs one named catalog's copy instead of the one that resolves, for the
+/// source picker. Only ever set for a single name: `--catalog` restricts the whole call.
 #[tauri::command]
 async fn entry_use(
     app: tauri::AppHandle,
     names: Vec<String>,
     project: Option<String>,
+    catalog: Option<String>,
 ) -> Result<UseReport, AppError> {
-    off_thread(move || cli::use_entry(&app, &names, project.as_deref())).await
+    off_thread(move || cli::use_entry(&app, &names, project.as_deref(), catalog.as_deref())).await
+}
+
+/// Every pin: which names resolve from a chosen catalog rather than by precedence.
+#[tauri::command]
+async fn pins_list(app: tauri::AppHandle) -> Result<Vec<Pin>, AppError> {
+    off_thread(move || cli::pins(&app)).await
+}
+
+/// What pinning would overwrite, writing nothing (R3.2, as `entry_use_preview` does).
+#[tauri::command]
+async fn entry_pin_preview(
+    app: tauri::AppHandle,
+    name: String,
+    catalog: String,
+) -> Result<PinResult, AppError> {
+    off_thread(move || cli::pin_preview(&app, &name, &catalog)).await
+}
+
+/// Make one name resolve from `catalog`, ahead of catalog precedence.
+///
+/// Decides what the *next* install of that name fetches. Copies already on disk keep the
+/// source their receipt records until they are installed again.
+#[tauri::command]
+async fn entry_pin(
+    app: tauri::AppHandle,
+    name: String,
+    catalog: String,
+) -> Result<PinResult, AppError> {
+    off_thread(move || cli::pin(&app, &name, &catalog)).await
+}
+
+/// Drop a pin, handing the name back to catalog precedence.
+#[tauri::command]
+async fn entry_unpin(app: tauri::AppHandle, name: String) -> Result<UnpinReport, AppError> {
+    off_thread(move || cli::unpin(&app, &name)).await
 }
 
 /// Delete installed copies of one or more entries. The catalog entries are untouched
@@ -431,6 +477,10 @@ pub fn run() {
             registry_list,
             registry_add,
             registry_remove,
+            pins_list,
+            entry_pin_preview,
+            entry_pin,
+            entry_unpin,
             entry_setup,
             agent_available,
             walkthrough_start,
