@@ -11,7 +11,13 @@ import StatusBanner from "./StatusBanner.vue";
 
 const props = defineProps<{
   name: string;
-  /** The copy whose edits are being sent. No dropdown: you pressed its button. */
+  /**
+   * The copy whose edits are being sent. No dropdown: you pressed its button.
+   *
+   * Always a copy in a scope this app resolves — the only kind `installedCopies` reports —
+   * so its scope name is what `--from` takes, and the CLI resolves it against the same
+   * anchor the app ran the read with.
+   */
   copy: InstalledCopy;
   /** The entry's source, as the CLI parsed it — the other end of the operation. */
   source: Source;
@@ -48,7 +54,7 @@ async function runPreview() {
   report.value = null;
   try {
     preview.value = await withActivity(`checking what pushing ${props.name} would send…`, () =>
-      invoke<PushPreview>("entry_push_preview", { name: props.name, from: props.copy.pushFrom }),
+      invoke<PushPreview>("entry_push_preview", { name: props.name, from: props.copy.scope }),
     );
   } catch (e) {
     failure.value = describeAppError(e);
@@ -64,7 +70,7 @@ async function confirm() {
     report.value = await withActivity(`pushing ${props.name}…`, () =>
       invoke<PushReport>("entry_push", {
         name: props.name,
-        from: props.copy.pushFrom,
+        from: props.copy.scope,
         message: message.value.trim() || undefined,
       }),
     );

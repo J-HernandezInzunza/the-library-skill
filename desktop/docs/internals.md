@@ -59,6 +59,17 @@ default it to `$PWD`, and a project install anchored at a Finder-launched app's 
 scatter files into arbitrary directories. Project installs pass the directory you picked; every
 other call is anchored at the tool root.
 
+This is also why a project install is a one-way copy. Only `use` carries the directory you picked,
+so every *read* is anchored at the tool root and the scopes the app resolves do not include it: the
+copy it just wrote is already invisible to the next `list`. It survives only as an install receipt,
+which the app deliberately does not render — `sync` never sees such a destination, `uninstall
+--scope` resolves to a different one, and only `push --from <path>` ever reached it, which made the
+app look like it maintained a directory it had written to exactly once. The receipt is not wasted;
+the CLI uses it correctly when run from inside that project. The app is the wrong reader of it, and
+a per-device receipt is a poor account of a directory a whole team commits to — two developers on
+one repo hold two different notes about the same files. So the app reports on the copies it can
+actually refresh and remove, and says at install time that the rest belong to the project.
+
 ## Layout
 
 ```

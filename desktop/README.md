@@ -103,9 +103,13 @@ not check for one.
   copy is on the entry's page with what beats what, and picking one pins it — the per-name
   exception to registry order. A pin that would replace an installed copy says so, with what
   it would overwrite, before anything is written.
-- **Install and uninstall**, globally or into a project you pick, with a preview of exactly what
-  would be written before anything is. Select several entries to install them at once, and the
-  project picker remembers your recent install directories.
+- **Install**, globally or into a project you pick, with a preview of exactly what would be
+  written before anything is. Select several entries to install them at once, and the project
+  picker remembers your recent install directories.
+- **A project install is a one-way copy.** Everything below acts on the copies in your own Claude
+  directory; files installed into a project become that project's, managed by its repo and
+  workflow, and the app neither lists nor touches them again. It says so before you install, and
+  points at the `library` CLI, which does manage them when run from inside that project.
 - **Switch a skill off and on** without uninstalling it. The content stays on the device and
   stops loading; a `disabled` tab at the end of the catalog strip lists what is currently off.
   Claude Code reads its skills when a session starts, so a switch takes effect in your next

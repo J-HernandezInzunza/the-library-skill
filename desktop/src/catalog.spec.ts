@@ -20,11 +20,13 @@ import {
   describePush,
   entryEdits,
   installedCopies,
+  installStatus,
   purgeable,
 } from "./catalog";
 import type {
   CatalogCopy,
   Changes,
+  Location,
   PushReport,
   Receipt,
   Entry,
@@ -948,6 +950,93 @@ describe("describePush", () => {
   });
 });
 
+describe("installStatus", () => {
+  /** One destination as the CLI reports it, with its own state. */
+  function location(overrides: Partial<Location> = {}): Location {
+    return {
+      path: "/Users/dev/.claude/skills/a-skill",
+      scope: "global",
+      state: "installed",
+      archive_path: "/Users/dev/.claude/skills-disabled/a-skill",
+      archived: false,
+      receipt: null,
+      ...overrides,
+    };
+  }
+
+  /** A destination only a receipt claims: a project install the app is not anchored at. */
+  const inSomeoneElsesProject = location({
+    path: "/work/repo/.claude/skills/a-skill",
+    scope: null,
+  });
+
+  it("names the scope a copy is in", () => {
+    const said = installStatus(
+      entry({ state: "installed", scopes: ["global"], locations: [location()] }),
+    );
+
+    expect(said.status).toBe("installed · global");
+    expect(said.tone).toBe("installed");
+  });
+
+  it("calls an entry that only lives in another project not installed", () => {
+    // The CLI's `state` counts that destination, because from inside that project it is a
+    // real install the CLI can act on. From here it is a directory this app wrote to once
+    // and can no longer refresh, remove, or list, so claiming it is installed claims a
+    // relationship that does not exist.
+    const said = installStatus(
+      entry({ state: "installed", scopes: [], locations: [inSomeoneElsesProject] }),
+    );
+
+    expect(said.status).toBe("not installed");
+    expect(said.tone).toBe("absent");
+  });
+
+  it("still reports a tracked copy that has gone missing from a scope it does resolve", () => {
+    // Not collateral of the rule above: both have no scopes, and only this one is about a
+    // destination the app owns. Losing it would hide a broken global install.
+    const said = installStatus(
+      entry({ state: "missing", scopes: [], locations: [location({ state: "missing" })] }),
+    );
+
+    expect(said.status).toBe("installed, but gone from disk");
+  });
+
+  it("does not let a copy in another project set the badge for the one here", () => {
+    // `entry.state` is the worst across every destination, so an edited project copy
+    // would otherwise report the clean global copy beside it as edited.
+    const said = installStatus(
+      entry({
+        state: "drifted",
+        scopes: ["global"],
+        locations: [location({ state: "installed" }), inSomeoneElsesProject],
+      }),
+    );
+
+    expect(said.status).toBe("installed · global");
+  });
+
+  it("keeps the update-available badge, which no location can carry", () => {
+    // `stale` is computed only for the headline state — `locations[]` reports the copy as
+    // plainly `installed` — so reading a location's own answer here would quietly retire
+    // the one badge that says a newer version exists.
+    const said = installStatus(
+      entry({ state: "stale", scopes: ["global"], locations: [location({ state: "installed" })] }),
+    );
+
+    expect(said.status).toBe("update available · global");
+    expect(said.tone).toBe("attention");
+  });
+
+  it("falls back to the entry's own state when there are no locations to read", () => {
+    // An overridden copy, or a CLI too old to report them. As with `archivedPath`, that
+    // costs the correction rather than the badge.
+    expect(installStatus(entry({ state: "installed", scopes: ["global"] })).status).toBe(
+      "installed · global",
+    );
+  });
+});
+
 describe("installedCopies", () => {
   it("reports a tool-installed global copy with its path", () => {
     const copies = installedCopies(["global"], [receipt()]);
@@ -956,8 +1045,6 @@ describe("installedCopies", () => {
       {
         scope: "global",
         dest: "/Users/dev/.claude/skills/a-skill",
-        pushFrom: "global",
-        removable: true,
         tracked: true,
         // The receipt's own catalog: two catalogs' copies share this destination, so it
         // is the only thing that says whose files are actually there.
@@ -974,31 +1061,25 @@ describe("installedCopies", () => {
     expect(copies).toHaveLength(1);
     expect(copies[0].tracked).toBe(false);
     expect(copies[0].dest).toBeNull();
-    expect(copies[0].removable).toBe(true);
   });
 
-  it("surfaces a receipt no scope resolves, and refuses to offer Remove for it", () => {
-    // A project install in a directory the app is not anchored at. It is real, and
-    // `uninstall --scope project` would reach a different destination or none at all.
+  it("ignores a receipt for a destination no scope resolves", () => {
+    // A project install the app is not anchored at. The files are real and the receipt is
+    // real, but this app cannot refresh, remove, or vouch for them: that project owns them
+    // now. A row for one was an offer to manage a directory written to exactly once.
     const copies = installedCopies(
       ["global"],
       [receipt(), receipt({ scope: "project", dest: "/work/repo/.claude/skills/a-skill" })],
     );
 
-    const project = copies.find((copy) => copy.scope === "project");
-    expect(project?.removable).toBe(false);
-    expect(project?.dest).toBe("/work/repo/.claude/skills/a-skill");
-    // `--from` takes the base the copy sits in, so a push can still reach it.
-    expect(project?.pushFrom).toBe("/work/repo/.claude/skills");
+    expect(copies).toHaveLength(1);
+    expect(copies[0].scope).toBe("global");
   });
 
-  it("lets the scope win when a receipt describes the same copy", () => {
-    // Otherwise the entry would render twice, and the second row would carry a --from
-    // that resolves to the same place by a longer route.
-    const copies = installedCopies(["global"], [receipt()]);
-
-    expect(copies).toHaveLength(1);
-    expect(copies[0].pushFrom).toBe("global");
+  it("reports nothing for an entry that lives only in another project", () => {
+    expect(
+      installedCopies([], [receipt({ scope: "project", dest: "/work/repo/.claude/skills/a-skill" })]),
+    ).toEqual([]);
   });
 
   it("reports nothing for an entry that is not installed", () => {

@@ -55,6 +55,9 @@ watch(() => props.name, () => {
   <section class="copies">
     <h3 class="copies__heading">On this machine ({{ copies.length }})</h3>
 
+    <!-- Copies in a project this app is not anchored at are not listed and not counted:
+         installing into a project hands the files over, and a row for one would be a
+         record of something this app can no longer refresh, remove, or vouch for. -->
     <p v-if="!copies.length" class="copies__none">
       Not installed anywhere yet. Installing puts a copy in your Claude directory; the
       catalog entry above is only a pointer to where it comes from.
@@ -93,7 +96,6 @@ watch(() => props.name, () => {
               Send edits back
             </button>
             <button
-              v-if="copy.removable"
               type="button"
               class="ghost danger"
               :aria-pressed="isOpen(copy.scope, 'remove')"
@@ -103,13 +105,6 @@ watch(() => props.name, () => {
             </button>
           </span>
         </div>
-
-        <!-- A receipt whose destination this app cannot resolve: real, worth showing, and
-             not safely removable from here, because the scope would resolve elsewhere. -->
-        <p v-if="!copy.removable" class="copies__caveat">
-          Recorded by the tool but outside the directory this app resolves, so it can only
-          be removed from that project.
-        </p>
 
         <div v-if="panel?.scope === copy.scope" class="copies__panel fade-in">
           <PushControl
@@ -207,13 +202,6 @@ watch(() => props.name, () => {
 }
 .copies__actions button[aria-pressed="true"] {
   background: var(--surface-strong);
-}
-.copies__caveat {
-  margin: 0;
-  padding: 0 0.85rem 0.5rem;
-  font-size: 0.74rem;
-  line-height: 1.45;
-  opacity: 0.65;
 }
 .copies__panel {
   padding: 0.2rem 0.85rem 0.85rem;

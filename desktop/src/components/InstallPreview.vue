@@ -9,7 +9,11 @@ import {
   summarizeChanges,
 } from "../catalog";
 import { withActivity } from "../commandActivity";
-import { forgetProject, recentProjects, rememberProject } from "../recentProjects";
+import {
+  forgetProject,
+  recentProjects,
+  rememberProject,
+} from "../recentProjects";
 import {
   describeAppError,
   type InstallSource,
@@ -49,9 +53,13 @@ const source = ref("");
 const remember = ref(false);
 
 /** The catalog a plain install would fetch, which is what the picker starts on. */
-const resolving = computed(() => props.sources.find((s) => s.resolves)?.catalog ?? "");
+const resolving = computed(
+  () => props.sources.find((s) => s.resolves)?.catalog ?? "",
+);
 /** True once the picked source is not the one that would resolve on its own. */
-const overriding = computed(() => !!source.value && source.value !== resolving.value);
+const overriding = computed(
+  () => !!source.value && source.value !== resolving.value,
+);
 
 const scope = ref<"global" | "project">("global");
 /** The directory this install goes into, chosen for this install alone. */
@@ -59,11 +67,18 @@ const projectDir = ref<string | null>(null);
 const recents = ref(recentProjects());
 
 /** What the backend sends as `project`: absent for a global install. */
-const project = computed(() => (scope.value === "project" ? projectDir.value : null));
-const needsDirectory = computed(() => scope.value === "project" && !projectDir.value);
+const project = computed(() =>
+  scope.value === "project" ? projectDir.value : null,
+);
+const needsDirectory = computed(
+  () => scope.value === "project" && !projectDir.value,
+);
 
 async function pickDirectory() {
-  const picked = await open({ directory: true, title: "Install into which project?" });
+  const picked = await open({
+    directory: true,
+    title: "Install into which project?",
+  });
   if (typeof picked !== "string") return;
 
   chooseDirectory(picked);
@@ -105,7 +120,9 @@ const canInstall = computed(() => {
 });
 
 /** Installed, but the main file the type expects is not there. */
-const unverified = computed(() => report.value?.installed.filter((item) => !item.verified) ?? []);
+const unverified = computed(
+  () => report.value?.installed.filter((item) => !item.verified) ?? [],
+);
 
 async function runPreview() {
   loading.value = true;
@@ -190,7 +207,6 @@ watch(
       {{ installed ? "Install elsewhere, or refresh a copy" : "Install" }}
     </h3>
     <div class="card">
-
       <StatusBanner v-if="error" kind="error" :detail="error" />
 
       <!-- Only when there is a choice: one catalog holding the name makes this a control
@@ -206,8 +222,13 @@ watch(
               :value="option.resolves ? '' : option.catalog"
             />
             {{ option.catalog }}
-            <span v-if="option.pinned" class="install-preview__source-note">pinned</span>
-            <span v-else-if="option.resolves" class="install-preview__source-note">
+            <span v-if="option.pinned" class="install-preview__source-note"
+              >pinned</span
+            >
+            <span
+              v-else-if="option.resolves"
+              class="install-preview__source-note"
+            >
               by catalog order
             </span>
           </label>
@@ -215,19 +236,33 @@ watch(
         <label v-if="overriding" class="install-preview__remember">
           <input v-model="remember" type="checkbox" />
           <span>
-            Always use {{ source }} for {{ name }}. Without this the choice applies to this
-            install only, and the next refresh goes back to
+            Always use {{ source }} for {{ name }}. Without this the choice
+            applies to this install only, and the next refresh goes back to
             {{ resolving || "whatever the catalog order resolves" }}.
           </span>
         </label>
       </div>
 
       <div class="install-preview__scopes">
-        <label><input v-model="scope" type="radio" value="global" /> Globally</label>
-        <label><input v-model="scope" type="radio" value="project" /> Into a project</label>
+        <label
+          ><input v-model="scope" type="radio" value="global" /> Globally</label
+        >
+        <label
+          ><input v-model="scope" type="radio" value="project" /> Into a
+          project</label
+        >
       </div>
 
       <div v-if="scope === 'project'" class="install-preview__project">
+        <!-- Said where the choice is made, not after it. A project install is the one
+             action here with no follow-up: the files land in a repo with its own history,
+             review, and team, and nothing in this app tracks them from that point. -->
+        <p class="install-preview__handoff">
+          A project install is a copy-out. The files become that project's,
+          managed by its own repo and workflow, and this app will not list,
+          refresh, or remove them afterwards.
+        </p>
+
         <button
           type="button"
           :class="{ ghost: !needsDirectory }"
@@ -243,11 +278,17 @@ watch(
         <template v-if="recents.length">
           <p class="install-preview__label">Recent directories</p>
           <ul class="install-preview__recents">
-            <li v-for="dir in recents" :key="dir" class="install-preview__recent-row">
+            <li
+              v-for="dir in recents"
+              :key="dir"
+              class="install-preview__recent-row"
+            >
               <button
                 type="button"
                 class="install-preview__recent"
-                :class="{ 'install-preview__recent--current': dir === projectDir }"
+                :class="{
+                  'install-preview__recent--current': dir === projectDir,
+                }"
                 @click="chooseDirectory(dir)"
               >
                 {{ dir }}
@@ -276,8 +317,8 @@ watch(
       </button>
       <!-- A disabled control with no stated reason reads as a broken one. -->
       <p v-if="needsDirectory" class="install-preview__blocked">
-        Choose a directory first — a project install resolves against it, so there is no
-        destination to preview yet.
+        Choose a directory first — a project install resolves against it, so
+        there is no destination to preview yet.
       </p>
 
       <Busy v-if="loading" inline label="Resolving the destination…" />
@@ -285,17 +326,20 @@ watch(
       <template v-if="plan">
         <!-- Per state, not a blanket warning: "this overwrites your edits" is false for a
              clean copy, and a warning that cries wolf stops being read. -->
-        <p v-if="action.caution" class="install-preview__caution">{{ action.caution }}</p>
+        <p v-if="action.caution" class="install-preview__caution">
+          {{ action.caution }}
+        </p>
 
         <p v-if="plan.blocked" class="install-preview__warning">
-          Installing overwrites local edits that the tool did not make. The edited copies
-          are marked below; they cannot be recovered afterwards.
+          Installing overwrites local edits that the tool did not make. The
+          edited copies are marked below; they cannot be recovered afterwards.
         </p>
 
         <p class="install-preview__scope">
           {{ preview?.scope }} · nothing has been written
           <span v-if="preview?.overrides.length">
-            · installing the {{ winningCatalog }} copy, over {{ preview.overrides.join(", ") }}
+            · installing the {{ winningCatalog }} copy, over
+            {{ preview.overrides.join(", ") }}
           </span>
         </p>
 
@@ -308,7 +352,9 @@ watch(
           >
             <span class="install-preview__item-head">
               <strong>{{ item.install.name }}</strong>
-              <span v-if="!item.target" class="install-preview__role">dependency</span>
+              <span v-if="!item.target" class="install-preview__role"
+                >dependency</span
+              >
               <span
                 class="install-preview__state"
                 :class="{ 'install-preview__state--drifted': item.drifted }"
@@ -323,7 +369,8 @@ watch(
         <label v-if="plan.blocked" class="install-preview__ack">
           <input v-model="acknowledged" type="checkbox" />
           Overwrite {{ plan.drifted.length }} locally edited
-          {{ plan.drifted.length === 1 ? "copy" : "copies" }}, discarding those edits.
+          {{ plan.drifted.length === 1 ? "copy" : "copies" }}, discarding those
+          edits.
         </label>
 
         <button
@@ -343,9 +390,17 @@ watch(
           {{ report.installed.length === 1 ? "item" : "items" }}.
         </p>
 
+        <!-- Repeated here because this is the screen someone closes the app on, and the
+             entry is about to stop reporting itself as installed at all. -->
+        <p v-if="scope === 'project'" class="install-preview__handoff fade-in">
+          Those files are that project's now, and this app keeps no further
+          record of them — it will go on reporting {{ name }} as not installed.
+        </p>
+
         <p v-if="unverified.length" class="install-preview__warning">
-          {{ unverified.map((item) => item.name).join(", ") }} landed, but the main file the
-          catalog expects is not there. The copy is on disk; the catalog entry needs fixing.
+          {{ unverified.map((item) => item.name).join(", ") }} landed, but the
+          main file the catalog expects is not there. The copy is on disk; the
+          catalog entry needs fixing.
         </p>
 
         <ul class="install-preview__plan fade-in">
@@ -356,13 +411,21 @@ watch(
           >
             <span class="install-preview__item-head">
               <strong>{{ item.name }}</strong>
-              <span class="install-preview__state">{{ summarizeChanges(item.changes) }}</span>
+              <span class="install-preview__state">{{
+                summarizeChanges(item.changes)
+              }}</span>
             </span>
             <code class="install-preview__dest">{{ item.dest }}</code>
             <ul v-if="!item.changes.new_install" class="install-preview__files">
-              <li v-for="file in item.changes.modified" :key="`~${file}`">~ {{ file }}</li>
-              <li v-for="file in item.changes.added" :key="`+${file}`">+ {{ file }}</li>
-              <li v-for="file in item.changes.removed" :key="`-${file}`">- {{ file }}</li>
+              <li v-for="file in item.changes.modified" :key="`~${file}`">
+                ~ {{ file }}
+              </li>
+              <li v-for="file in item.changes.added" :key="`+${file}`">
+                + {{ file }}
+              </li>
+              <li v-for="file in item.changes.removed" :key="`-${file}`">
+                - {{ file }}
+              </li>
             </ul>
           </li>
         </ul>
@@ -441,6 +504,18 @@ watch(
   display: flex;
   align-items: center;
   gap: 0.3rem;
+}
+.install-preview__handoff {
+  margin: 0 0 0.6rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: 6px;
+  background: var(--surface-hover);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  opacity: 0.85;
+}
+.install-preview__handoff code {
+  font-family: ui-monospace, SFMono-Regular, monospace;
 }
 .install-preview__project {
   margin-bottom: 0.75rem;

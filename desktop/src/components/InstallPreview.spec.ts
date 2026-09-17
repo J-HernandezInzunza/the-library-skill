@@ -184,6 +184,19 @@ describe("InstallPreview", () => {
     expect(preview.attributes("disabled")).toBeDefined();
   });
 
+  it("says a project install is a hand-off, where the choice is made", async () => {
+    // The detail page used to carry this as a row per project copy, with buttons. It
+    // cannot any more: the app does not track those copies, so the only honest moment to
+    // say what a project install costs is before it happens.
+    const panel = mountPanel();
+    expect(panel.text()).not.toContain("copy-out");
+
+    await panel.find('input[value="project"]').setValue();
+
+    expect(panel.text()).toContain("A project install is a copy-out");
+    expect(panel.text()).toContain("will not list, refresh, or remove them");
+  });
+
   it("holds the install behind the acknowledgement when the plan would discard edits", async () => {
     answer("entry_use_preview", {
       ...PREVIEW,

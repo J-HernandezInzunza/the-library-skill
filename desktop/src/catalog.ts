@@ -178,10 +178,35 @@ export const SESSION_TIMING =
  * an installed entry could open with a panel headed "Install".
  */
 export function installStatus(entry: Entry): Pick<Row, "status" | "tone"> {
+  // The destinations this app's anchor resolves, holding something. `locations[]` is the
+  // CLI's own per-destination answer, so this picks which destinations the badge is about
+  // and re-judges none of them.
+  //
+  // A destination only a receipt claims has `scope: null` — a project install this app is
+  // not anchored at — and is deliberately excluded. `entry.state` counts it, so an entry
+  // living only in someone's project used to carry an `installed` badge for files this app
+  // can neither refresh nor remove. Empty `locations[]` means an overridden copy or a CLI
+  // too old to report them, so the rule only fires when there is something to read: as
+  // with `archivedPath`, an old CLI costs the correction rather than the badge.
+  const here = entry.locations.filter(
+    (location) => location.scope !== null && location.state !== "not_installed",
+  );
+  if (entry.locations.length && !here.length) {
+    return { status: "not installed", tone: "absent" };
+  }
+
   const scopes = entry.scopes.join(", ");
   const where = scopes ? ` · ${scopes}` : "";
+  // One resolvable destination is the ordinary case and its own state is exact, where
+  // `entry.state` is the worst across *every* destination including the ones excluded
+  // above — so a clean global copy beside an edited project one would read as edited.
+  //
+  // Except for `stale`, which the CLI computes only for the headline state: no location
+  // carries it, so preferring a location's own answer here would silently retire the
+  // "update available" badge on every single-copy entry.
+  const state = here.length === 1 && entry.state !== "stale" ? here[0].state : entry.state;
 
-  switch (entry.state) {
+  switch (state) {
     case "installed":
       return { status: `installed${where}`, tone: "installed" };
     case "untracked":
@@ -202,7 +227,7 @@ export function installStatus(entry: Entry): Pick<Row, "status" | "tone"> {
     default:
       // A state this build has never heard of. Rendered rather than hidden, and
       // toned by the one fact the CLI still agrees on.
-      return { status: entry.state, tone: entry.installed ? "installed" : "absent" };
+      return { status: state, tone: entry.installed ? "installed" : "absent" };
   }
 }
 
@@ -581,20 +606,6 @@ export interface InstalledCopy {
   scope: string;
   /** Where it is, from the install receipt. Null when the tool did not place it. */
   dest: string | null;
-  /**
-   * What `--from` must be to push *this* copy: a scope name when the destination
-   * resolves from the app's own anchor, otherwise the copy's base directory.
-   */
-  pushFrom: string;
-  /**
-   * True when `uninstall --scope <scope>` would reach this exact copy.
-   *
-   * False for a receipt whose destination no longer resolves from here — a project
-   * install in a directory the app is not anchored at. That copy is real and worth
-   * showing, but offering Remove for it would delete a *different* destination or
-   * nothing at all. Known gap G4.
-   */
-  removable: boolean;
   /** The tool has a receipt for it, so its provenance is known rather than assumed. */
   tracked: boolean;
   /**
@@ -608,54 +619,31 @@ export interface InstalledCopy {
 }
 
 /**
- * Every copy of an entry on this machine, from the two sources that each know half.
+ * Every copy of an entry this app can act on: one per scope its own anchor resolves.
  *
- * `entry.scopes` is **disk-driven** — what is actually there, at destinations this app's
- * anchor resolves — and `installs[]` is **receipt-driven**, what the tool believes it
- * wrote, including into project directories the app is not anchored at. Neither is a
- * superset, which is the finding behind T3.5 and gap G4, so the union is the only honest
- * list and each row records which half it came from.
+ * Driven by `entry.scopes`, which is what is actually on disk at destinations this app
+ * resolves. `installs[]` is consulted only for the path and catalog of those same copies,
+ * never to add rows of its own.
  *
- * A scope wins when both describe the same one: it is the half that proves the files are
- * there *now*, and it makes `--from`/`--scope` resolve to the copy being shown.
+ * It used to add them, unioning in receipts for destinations no scope resolves — which in
+ * practice is every project install, since the app anchors at the tool's own home. Those
+ * rows outlived what the app could do with them: `sync` never sees them, `uninstall
+ * --scope` reaches a different destination, and only `push --from <path>` still worked, so
+ * the page offered to manage directories the app had written to exactly once. Installing
+ * into a project is a copy-out. That repo has its own history, review, and team, and the
+ * receipt is a per-device note this app wrote, not something the project keeps — two
+ * developers on one repo have two different notes about the same committed files. The CLI
+ * still records and uses them, correctly, when it is run *inside* that project.
  */
 export function installedCopies(scopes: string[], installs: Receipt[]): InstalledCopy[] {
   const byScope = new Map(installs.map((install) => [install.scope, install]));
 
-  const resolved: InstalledCopy[] = scopes.map((scope) => ({
+  return scopes.map((scope) => ({
     scope,
     dest: byScope.get(scope)?.dest ?? null,
-    // A scope name, because `scopes` was computed against the same anchor the app runs
-    // its commands with, so the CLI resolves it to this very copy.
-    pushFrom: scope,
-    removable: true,
     tracked: byScope.has(scope),
     fromCatalog: byScope.get(scope)?.catalog ?? null,
   }));
-
-  // Receipts for destinations no scope resolves: a project install somewhere the app is
-  // not anchored. Invisible until now, which is how a stale one goes unnoticed.
-  const known = new Set(scopes);
-  const unresolved: InstalledCopy[] = installs
-    .filter((install) => !known.has(install.scope) && !!install.dest)
-    .map((install) => ({
-      scope: install.scope,
-      dest: install.dest,
-      // The receipt's own directory. `--from <path>` takes the *base* the copy sits in,
-      // which is its parent whatever the layout — no knowledge of `.claude/skills` here.
-      pushFrom: parentDir(install.dest),
-      removable: false,
-      tracked: true,
-      fromCatalog: install.catalog,
-    }));
-
-  return [...resolved, ...unresolved];
-}
-
-/** The directory holding `path`, with no trailing slash. */
-function parentDir(path: string): string {
-  const cut = path.replace(/\/+$/, "").lastIndexOf("/");
-  return cut > 0 ? path.slice(0, cut) : "/";
 }
 
 /** How a push actually ended, said in words that match what happened. */

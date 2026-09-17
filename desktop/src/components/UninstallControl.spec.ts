@@ -11,8 +11,6 @@ afterEach(resetTauri);
 const COPY: InstalledCopy = {
   scope: "global",
   dest: "/Users/dev/.claude/skills/grilling",
-  pushFrom: "global",
-  removable: true,
   tracked: true,
   fromCatalog: "personal",
 };
