@@ -49,12 +49,6 @@ says so rather than letting you find out.
 
 Build it once from your own clone, then launch it like any Mac app:
 
-```bash
-git clone <this-repo> && cd the-library-skill
-just app-setup      # npm install
-just app-install    # build, then copy into /Applications
-```
-
 Building needs **just**, **Node ≥ 20**, and the **Rust toolchain** (Tauri's backend compiles
 from source), so the first build takes several minutes. `just app-prereqs` checks Node, Rust,
 and Python in one go and names the fix for whichever is missing. If you install Rust as part
