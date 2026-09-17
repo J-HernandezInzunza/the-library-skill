@@ -36,6 +36,7 @@ For the one-line-per-command summary instead, see **[docs/commands.md](../docs/c
 | [remove.md](remove.md) | Removing an entry, and optionally its local copy |
 | [push.md](push.md) | Pushing local improvements back to an item's source |
 | [catalog.md](catalog.md) | The catalog registry: add, init, remove, migrate, precedence |
+| [pin.md](pin.md) | `pin` / `unpin` — make one name resolve from a chosen catalog |
 
 ## Keeping it healthy
 

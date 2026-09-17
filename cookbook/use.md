@@ -98,10 +98,11 @@ Optional flags:
 - `--cwd <dir>` → explicitly set the project dir that `--project`/relative paths anchor to.
 - `--dry-run` → resolve destination + dependencies without installing.
 - `--no-pull` → skip pulling the catalog clone.
-- `--catalog <id>` → install *that* catalog's copy, bypassing precedence.
+- `--catalog <id>` → install *that* catalog's copy, bypassing precedence **and** any pin.
 
 **Which copy gets installed.** A name defined in several catalogs resolves to the
-highest-precedence one, and the CLI says so in the report:
+highest-precedence one — unless it is pinned, which outranks the order for that one name
+([pin.md](pin.md)). Either way the CLI says so in the report:
 
 ```
 Installed [skill] session-retro → ~/.claude/skills/session-retro · new install (from personal, overrides shared)

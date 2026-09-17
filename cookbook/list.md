@@ -51,7 +51,8 @@ Catalogs
 - Under `--catalog <id>`, entries from other catalogs are filtered out but the status
   column still reports overriding, so an overridden entry stays visibly overridden.
 
-In `--json`, every item carries `catalog` and `overridden_by` (`null` when it wins), plus
+In `--json`, every item carries `catalog`, `overridden_by` (`null` when it wins) and `pinned`
+(true when a pin rather than the registry order is why it resolves), plus
 three keys that come from the install receipt rather than the catalog:
 
 | Key | Meaning |

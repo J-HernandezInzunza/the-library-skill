@@ -21,8 +21,11 @@ This is deterministic: the CLI does all of it. Do **not** reconstruct it from `l
 - The name must be **exact**. A near miss returns `status: "AMBIGUOUS"` with candidates
   (resolve it the same way `use` does — see [use.md](use.md)); no match returns
   `NOT_FOUND`. Both exit `2`.
-- `--catalog <id>` shows *that* catalog's copy as the resolved one, which is how you
-  answer "what would I get if I bypassed my personal override?".
+- `--catalog <id>` makes *that* catalog's copy the **subject** of the report — how you
+  answer "what would I get if I bypassed my personal override?". It narrows what the report
+  is *about*, never what exists: `copies[]` still spans every catalog holding the name, and
+  `wins` still marks whichever copy a bare `use` would install, which under a restriction is
+  not the subject. Compare `entry.catalog` against `wins` to tell them apart.
 - `--no-pull` only when the user is explicitly offline.
 
 ## What comes back
@@ -30,8 +33,8 @@ This is deterministic: the CLI does all of it. Do **not** reconstruct it from `l
 | Key | What it answers |
 | --- | --- |
 | `entry` | the winning copy, in the same record shape `list`/`search` return |
-| `copies[]` | every copy of the name, in precedence order, each with `wins`, `overrides`, `overridden_by` |
-| `requires[]` | dependencies resolved **within the winner's own catalog** (that's where `use` resolves them) |
+| `copies[]` | every copy of the name, in resolution order, each with `wins`, `pinned`, `subject`, `overrides`, `overridden_by` |
+| `requires[]` | dependencies resolved **within the subject's own catalog** (that's where `use` resolves them) |
 | `installs[]` | every install receipt for the name: `dest`, `scope`, `catalog`, `commit`, `installed_at` |
 | `locations[]` | every destination the entry occupies, uncollapsed: `path`, `scope`, its own `state`, `archive_path`, `archived`, `receipt` |
 | `has_setup` | the installed copy ships a `setup.yaml` walkthrough |

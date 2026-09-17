@@ -16,7 +16,7 @@ A remote catalog is read from a persistent clone, refreshed automatically on mos
 
 ## Catalogs
 
-`config.local.yaml` holds a **registry** of catalogs in precedence order, highest first. Each is either **local** (an `id` plus a `path` to a `library.yaml` on this machine, edited in place) or **remote** (an `id` plus `repo` + `yaml_path` + `branch`, read through a persistent clone). "Shared" and "personal" are conventions rather than settings: the team catalog is a protected remote, a personal one is usually local. The file is machine-owned — `library catalog …` rewrites it — so never hand-edit it or tell the user to. Full schema in `README.md`; changing it is [cookbook/catalog.md](cookbook/catalog.md).
+`config.local.yaml` holds a **registry** of catalogs in precedence order, highest first. Each is either **local** (an `id` plus a `path` to a `library.yaml` on this machine, edited in place) or **remote** (an `id` plus `repo` + `yaml_path` + `branch`, read through a persistent clone). "Shared" and "personal" are conventions rather than settings: the team catalog is a protected remote, a personal one is usually local. The file is machine-owned — `library catalog …` and `library pin`/`unpin` rewrite it — so never hand-edit it or tell the user to. Full schema in `README.md`; changing it is [cookbook/catalog.md](cookbook/catalog.md).
 
 A legacy singular `catalog:` mapping still works and is read as one protected remote catalog with id `shared`; `library catalog migrate` rewrites it into the registry shape.
 
@@ -140,6 +140,7 @@ Each command has a detailed step-by-step guide. **Read the relevant cookbook fil
 | ------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
 | init    | [cookbook/init.md](cookbook/init.md)       | Create or repoint the per-device config + clone the catalog (re-runnable; `--force` to switch catalogs)  |
 | catalog | [cookbook/catalog.md](cookbook/catalog.md) | User wants their own catalog, or asks what catalogs exist / which one wins (list, add, init, remove, migrate) |
+| pin / unpin | [cookbook/pin.md](cookbook/pin.md)     | User wants one name to come from a chosen catalog ("use the team's copy of X, keep the rest of mine"), or to undo that |
 | link    | [cookbook/link.md](cookbook/link.md)       | Make the clone discoverable as a skill (create/repair/repoint the symlink)                               |
 | add     | [cookbook/add.md](cookbook/add.md)         | User wants to register a new skill/agent/prompt in catalog                                               |
 | update  | [cookbook/update.md](cookbook/update.md)   | User wants to edit an existing entry's description/source/requires (e.g. add a dependency)               |

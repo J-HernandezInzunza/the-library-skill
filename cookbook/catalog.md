@@ -179,7 +179,9 @@ config is a no-op that says so.
 
 This is the part users get wrong, so be explicit rather than terse:
 
-- **Registry order is precedence, highest first.** The first catalog defining a name wins.
+- **Registry order is precedence, highest first.** The first catalog defining a name wins,
+  unless that name is pinned — a pin outranks the order for that one name. See
+  [pin.md](pin.md).
 - **The winner is called the resolution; the losers are overridden.** They are still listed,
   still installable via `--catalog <id>`, just not what a bare name resolves to.
 - **Overriding is the feature, not a warning.** Registering a personal catalog ahead of the
@@ -190,6 +192,10 @@ This is the part users get wrong, so be explicit rather than terse:
   still passes. A duplicate *within* one catalog is a different thing and is an error.
 - **`list` marks overridden entries and `use` names the catalog it installed from.** Pass
   those on; the user cannot see the registry from where they are sitting.
+- **Reordering is the wrong fix for one name.** When the user wants a different copy of a
+  single entry, pin it rather than moving a catalog — the order moves everything else with
+  it. `list` and `show` mark a pinned copy `pinned`, distinct from winning by order, because
+  the two are undone by different things.
 
 ## After registering a second writable catalog
 

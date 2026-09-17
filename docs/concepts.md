@@ -58,7 +58,7 @@ Existing solutions don't fit:
 - **Agent-agnostic**: Default target is `.claude/skills/` but supports any directory for any agent harness.
 - **Catalog, not manifest**: Entries define what's available, not what's installed. Pull on demand.
 - **PR-gated writes where it matters**: a protected catalog's branch is never pushed to directly — shared changes land via reviewed PRs. Your own catalog is yours: a local catalog is edited in place, with no gate and no reviewer to wait for.
-- **Yours wins locally**: a personal catalog registered ahead of the shared one overrides it by name, without editing, forking, or overriding what your team sees.
+- **Yours wins locally**: a personal catalog registered ahead of the shared one overrides it by name, without editing, forking, or overriding what your team sees. Per name, you can say otherwise — a pin points one entry at a chosen catalog without moving the order for everything else.
 
 ## The Agentic Stack
 

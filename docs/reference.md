@@ -60,6 +60,8 @@ catalogs:
     branch: develop
     protected: true
 autopush: false
+pins:
+  commit-and-push: shared
 ```
 
 Per catalog:
@@ -79,6 +81,11 @@ Per catalog:
 
 Top level:
 
+- **`pins`** — `entry name: catalog id`, the per-name exception to registry order. A pinned
+  name resolves from the catalog named here whatever the precedence says, which is the one
+  thing the order alone cannot express: "my copies, except this one". Managed with
+  `library pin` / `library unpin`; a pin naming a catalog that does not hold the name is
+  inert rather than fatal — resolution falls back to precedence and `doctor` reports it.
 - **`default_add_catalog`** — which catalog a write targets when `--catalog` is omitted and
   more than one is writable. Without it, such a write stops and asks.
 - **`default_dirs`** — optional per-machine override of where items install (see
@@ -90,8 +97,8 @@ Top level:
   you to open manually. (Bitbucket has no `gh` equivalent, so it always uses the
   compare-URL path.)
 
-This file is machine-owned: `library catalog add|init|remove|migrate` rewrite it, so
-hand-added comments don't survive. Install locations are **not** taken from any catalog —
+This file is machine-owned: `library catalog add|init|remove|migrate` and `library
+pin|unpin` rewrite it, so hand-added comments don't survive. Install locations are **not** taken from any catalog —
 they come from the tool, overridable by `default_dirs` here.
 
 ## Install Receipts (`.installs.json`, gitignored)

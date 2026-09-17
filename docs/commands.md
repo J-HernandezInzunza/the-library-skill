@@ -44,7 +44,7 @@ Two ways to drive it, same result:
 **Common flags** (per-command reference in the [cookbook](../cookbook/)): `--json`
 (machine-readable) · `--no-pull` (skip catalog refresh) · `--check-remote` (`list`: mark
 installs whose source has moved as `stale`) · `--force` (`sync`: re-fetch even unchanged
-items) · `--dry-run` (preview `add`/`update`/`remove`/`push`, or resolve a `use` destination
+items) · `--dry-run` (preview `add`/`update`/`remove`/`push`/`pin`, or resolve a `use` destination
 without installing) · `--project`/`--dir` (`use` target; default is global) · `--cwd`
 (anchor relative `project`-scope installs to a directory other than where you run) ·
 `--deep` (`doctor` source-liveness) · `--catalog <id>` (restrict any name-taking command

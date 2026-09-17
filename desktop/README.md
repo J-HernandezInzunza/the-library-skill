@@ -99,6 +99,10 @@ not check for one.
 
 - **Browse and search** the catalog, with install state, scope, catalog origin, and override
   badges. Search filters the already-loaded list, so it is instant and works offline.
+- **Choose which catalog an entry comes from** when more than one defines the same name. Every
+  copy is on the entry's page with what beats what, and picking one pins it — the per-name
+  exception to registry order. A pin that would replace an installed copy says so, with what
+  it would overwrite, before anything is written.
 - **Install and uninstall**, globally or into a project you pick, with a preview of exactly what
   would be written before anything is. Select several entries to install them at once, and the
   project picker remembers your recent install directories.
