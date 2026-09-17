@@ -608,22 +608,29 @@ onMounted(async () => {
             Nothing here can be installed: every copy is overridden by a higher-precedence
             catalog, so installing any of these names would fetch that catalog's copy instead.
           </span>
-          <template v-if="activeCatalog && selectable.length">
+          <!-- The right-pin belongs to the group, not to a button in it: it sat on "Select
+               all", which is hidden once everything is ticked, and the buttons left behind
+               slid back into the counts text. -->
+          <span v-if="activeCatalog && selectable.length" class="summary__actions">
             <button
               v-if="!picked"
               type="button"
-              class="ghost btn-xs summary__all"
+              class="ghost btn-xs"
               @click="setSelecting(true)"
             >
-              Select
+              Install or remove several
             </button>
             <template v-else>
+              <!-- One job each. This was a "Select all"/"Select none" toggle sitting next to
+                   Clear, and with everything ticked the toggle and Clear were the same button
+                   twice: both emptied the selection. -->
               <button
+                v-if="pickedNames.length < selectable.length"
                 type="button"
-                class="ghost btn-xs summary__all"
-                @click="pickedNames.length === selectable.length ? (picked = new Set()) : selectAll()"
+                class="ghost btn-xs"
+                @click="selectAll()"
               >
-                {{ pickedNames.length === selectable.length ? "Select none" : `Select all ${selectable.length}` }}
+                Select all {{ selectable.length }}
               </button>
               <button
                 v-if="pickedNames.length"
@@ -637,7 +644,7 @@ onMounted(async () => {
                 Stop selecting
               </button>
             </template>
-          </template>
+          </span>
         </p>
 
         <!-- Rendered for the whole of selection mode, not just while something is ticked: it
@@ -961,8 +968,11 @@ h1 {
   align-items: center;
   gap: 0.3rem;
 }
-.summary__all {
+.summary__actions {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
 }
 .summary__freshness {
   /* Reads as a footnote to the counts, not as another count: it is about the data's age,

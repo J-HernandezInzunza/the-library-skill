@@ -418,10 +418,10 @@ describe("selection in a catalog tab", () => {
 
     await openTab(app, "shared");
 
-    // A missing Select button reads as a bug. Every copy here resolves to another
+    // A missing bulk-action button reads as a bug. Every copy here resolves to another
     // catalog, so installing any of these names would fetch that catalog's copy instead.
     expect(app.text()).toContain("Nothing here can be installed");
-    expect(app.findAll("button").some((b) => b.text() === "Select")).toBe(false);
+    expect(app.findAll("button").some((b) => b.text() === "Install or remove several")).toBe(false);
   });
 
   it("offers selection in a tab that has something installable", async () => {
@@ -430,7 +430,7 @@ describe("selection in a catalog tab", () => {
     await openTab(app, "personal");
 
     expect(app.text()).not.toContain("Nothing here can be installed");
-    expect(app.findAll("button").some((b) => b.text() === "Select")).toBe(true);
+    expect(app.findAll("button").some((b) => b.text() === "Install or remove several")).toBe(true);
   });
 
   it("does not enter selection mode just because a tab was opened", async () => {
