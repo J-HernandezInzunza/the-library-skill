@@ -7,6 +7,9 @@ import App from "./App.vue";
 // the microtask queue that `flushPromises` drains — so without this the setup screens
 // never render inside a test, however many times it is awaited.
 import "./components/FirstRun.vue";
+// And the catalog manager, for the same reason: the shortcut into it resolves a dynamic
+// import, so without this the view it opens never renders inside a test.
+import "./components/Catalogs.vue";
 import { catalog, entry } from "./testing/factories";
 import { answer, calls, commandsCalled, resetTauri, setTauri } from "./testing/tauri";
 import type { Catalog, Entry } from "./types";
@@ -40,6 +43,11 @@ async function mountFailing(error: unknown) {
   // replaces the banner is a module load behind the rejection that asked for it.
   for (let i = 0; i < 4; i += 1) await flushPromises();
   return app;
+}
+
+/** Click into the named catalog's tab. */
+async function openTab(app: Awaited<ReturnType<typeof mountApp>>, id: string) {
+  await app.findAll("button").find((b) => b.text().startsWith(id))!.trigger("click");
 }
 
 describe("the disabled tab", () => {
@@ -269,21 +277,58 @@ describe("the catalog view's error states", () => {
 });
 
 describe("the catalog view's empty states", () => {
-  it("says the catalog is empty rather than rendering an empty list", async () => {
-    const app = await mountApp([]);
-
-    expect(app.find(".state").text()).toBe("No matching entries.");
-    expect(app.find(".entry-list").exists()).toBe(false);
-  });
-
-  it("says a search matched nothing, with the same sentence", async () => {
+  // These were deliberately one sentence — "No matching entries" — on the grounds that both
+  // ended in the same next action. They do not: a search that found nothing is fixed by
+  // changing the search, an empty catalog by putting something in it. The one sentence under
+  // an empty catalog and an untouched search box read as a filter nobody had set.
+  it("names the search that matched nothing, and offers to undo it", async () => {
     const app = await mountApp([entry({ name: "alpha" })]);
 
     await app.find('input[type="search"]').setValue("zzz");
 
-    // Deliberately one message for both: "the catalog is empty" and "your search found
-    // nothing" are the same next action — the list you asked for is not there.
-    expect(app.find(".state").text()).toBe("No matching entries.");
+    expect(app.find(".state").text()).toContain("Nothing here matches zzz");
+    expect(app.findAll("button").some((b) => b.text() === "Clear the search")).toBe(true);
+    expect(app.find(".entry-list").exists()).toBe(false);
+  });
+
+  it("blames the catalog, not the search, when the catalog is the empty one", async () => {
+    const app = await mountApp(
+      [entry({ name: "alpha", catalog: "personal" })],
+      [catalog({ id: "personal" }), catalog({ id: "df", precedence: 2, entries: 0 })],
+    );
+
+    await openTab(app, "df");
+
+    expect(app.find(".state").text()).toContain("df has no entries yet");
+    expect(app.find(".state").text()).not.toContain("matches");
+  });
+
+  it("offers the first entry only where the app will write to the catalog", async () => {
+    const shared = catalog({
+      id: "shared",
+      precedence: 2,
+      kind: "remote",
+      write_mode: "pr",
+      entries: 0,
+    });
+    const app = await mountApp([entry({ name: "alpha", catalog: "personal" })], [
+      catalog({ id: "personal" }),
+      shared,
+    ]);
+
+    await openTab(app, "shared");
+
+    // The button opens a form that writes to the catalog file, so it carries the same gate
+    // the Manage entries shortcut does rather than offering a write the CLI refuses.
+    expect(app.find(".state").text()).toContain("shared has no entries yet");
+    expect(app.findAll("button").some((b) => b.text() === "Add the first one")).toBe(false);
+  });
+
+  it("says so plainly when no catalog holds anything at all", async () => {
+    const app = await mountApp([]);
+
+    expect(app.find(".state").text()).toContain("No catalog holds an entry yet");
+    expect(app.find(".entry-list").exists()).toBe(false);
   });
 
   it("counts what is shown against what there is", async () => {
@@ -322,13 +367,48 @@ describe("the catalog view's empty states", () => {
   });
 });
 
+describe("the shortcut from a catalog tab into that catalog", () => {
+  const catalogs = [
+    catalog({ id: "personal" }),
+    catalog({
+      id: "shared",
+      precedence: 2,
+      kind: "remote",
+      write_mode: "pr",
+      location: "git@example.test:team/catalog.git",
+    }),
+  ];
+
+  it("opens the manager at that catalog rather than at the registry", async () => {
+    const app = await mountApp([entry({ name: "grilling", catalog: "personal" })], catalogs);
+    await openTab(app, "personal");
+
+    await app.findAll("button").find((b) => b.text() === "Manage entries")!.trigger("click");
+    for (let i = 0; i < 3; i += 1) await flushPromises();
+
+    // The second level, not the first. Landing on a list of catalogs makes the button a
+    // navigation hint rather than the shortcut it is supposed to be.
+    expect(app.find(".page-title__heading").text()).toBe("personal");
+    // And Back names where the user actually came from, rather than the registry level they
+    // were carried past and would otherwise have to walk back out of.
+    expect(app.find(".page-head button").text()).toBe("← The Library");
+  });
+
+  it("is absent on a catalog this app will not write to", async () => {
+    const app = await mountApp([entry({ name: "grilling", catalog: "shared" })], catalogs);
+
+    await openTab(app, "shared");
+
+    // The page it opens renders Edit and Remove on every row without checking, which it can
+    // only do while every door into it is gated. The write mode left standing in the strip
+    // is the reason the button is missing.
+    expect(app.findAll("button").some((b) => b.text() === "Manage entries")).toBe(false);
+    expect(app.find(".catalog-summary").text()).toContain("writes via pull request");
+  });
+});
+
 describe("selection in a catalog tab", () => {
   const catalogs = [catalog({ id: "personal" }), catalog({ id: "shared", precedence: 2 })];
-
-  /** Click into the named catalog's tab. */
-  async function openTab(app: Awaited<ReturnType<typeof mountApp>>, id: string) {
-    await app.findAll("button").find((b) => b.text().startsWith(id))!.trigger("click");
-  }
 
   it("explains a tab where nothing can be installed instead of hiding the control", async () => {
     const app = await mountApp(

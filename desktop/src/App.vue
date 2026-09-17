@@ -1,7 +1,15 @@
 <script setup lang="ts">
 import { ref, computed, defineAsyncComponent, onMounted, onUnmounted, watch } from "vue";
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { allRows, catalogRows, isOnDisk, searchRows, winningRows, type Row } from "./catalog";
+import {
+  allRows,
+  catalogRows,
+  editableCatalogs,
+  isOnDisk,
+  searchRows,
+  winningRows,
+  type Row,
+} from "./catalog";
 import { useCommandActivity, withActivity } from "./commandActivity";
 import { tabCatalog, type Tab } from "./tabs";
 import { describeAppError, isAppError, type Catalog, type Entry } from "./types";
@@ -285,6 +293,17 @@ const selectedCatalog = computed(() => {
 });
 
 /**
+ * The catalogs this app will write to, which is what the shortcut into the manager is gated on.
+ *
+ * Deliberately the *same* rule the registry applies to its own "Manage entries" button, because
+ * the page they both open renders Edit and Remove on every row without checking: it can only do
+ * that while every door into it is gated, and a shortcut is a new door.
+ */
+const editableIds = computed(
+  () => new Set(editableCatalogs(catalogs.value).map((catalog) => catalog.id)),
+);
+
+/**
  * Changing tabs leaves selection mode entirely.
  *
  * `null`, not an empty Set: an empty Set *is* selection mode, so the earlier version
@@ -529,7 +548,15 @@ onMounted(async () => {
           :catalogs="catalogs"
           :disabled-count="disabledCount"
         />
-        <CatalogSummary v-if="selectedCatalog" :catalog="selectedCatalog" />
+        <!-- Lands straight on that catalog's entries rather than on the registry. `Catalogs`
+             already handles the arrival: a non-null `atCatalog` opens at the second level and
+             sends Back to the page named here rather than to a list the user never visited. -->
+        <CatalogSummary
+          v-if="selectedCatalog"
+          :catalog="selectedCatalog"
+          :manageable="editableIds.has(selectedCatalog.id)"
+          @manage="manage = { catalog: activeCatalog, entry: null }"
+        />
 
         <p v-if="!firstLoad && !errorMessage" class="summary">
           {{ summary }}
@@ -596,7 +623,33 @@ onMounted(async () => {
              rows, ran a spinner, and faded the whole list back in to show one row changed. -->
         <Busy v-if="firstLoad" label="Reading the catalog…" />
         <StatusBanner v-else-if="errorMessage" kind="error" :detail="errorMessage" />
-        <p v-else-if="!filtered.length" class="state">No matching entries.</p>
+        <!-- Two different nothings, told apart. They were one sentence on the grounds that
+             the next action was the same, and it is not: a search that matched nothing is
+             fixed by changing the search, and an empty catalog is fixed by putting something
+             in it. Reading "No matching entries" under an empty catalog and an empty search
+             box is what sent someone hunting for a filter they had not set. -->
+        <div v-else-if="!filtered.length" class="state">
+          <template v-if="rows.length">
+            <p class="state__line">Nothing here matches <strong>{{ query }}</strong>.</p>
+            <button type="button" class="ghost" @click="query = ''">Clear the search</button>
+          </template>
+          <template v-else-if="activeCatalog">
+            <p class="state__line">{{ activeCatalog }} has no entries yet.</p>
+            <!-- Same gate as the strip above it, and the same reason: this opens a form that
+                 writes to the catalog file. -->
+            <button
+              v-if="editableIds.has(activeCatalog)"
+              type="button"
+              class="ghost"
+              @click="addingTo = activeCatalog"
+            >
+              Add the first one
+            </button>
+          </template>
+          <p v-else class="state__line">
+            No catalog holds an entry yet. <strong>Catalogs</strong> above is where you add one.
+          </p>
+        </div>
         <EntryList
           v-else
           :class="{ 'is-refreshing': loading }"
@@ -881,9 +934,16 @@ h1 {
   opacity: 0.75;
 }
 .state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.7rem;
   padding: 2rem 0;
   text-align: center;
   opacity: 0.8;
+}
+.state__line {
+  margin: 0;
 }
 .state.error {
   text-align: left;
