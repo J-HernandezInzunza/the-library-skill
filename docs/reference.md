@@ -132,13 +132,19 @@ the two scopes mean one entry can legitimately live in several places.
 | `stale` | behind its source's current head — **only** with `list --check-remote` |
 | `not_installed` | neither |
 
-Two deliberate choices:
+Three deliberate choices:
 
 - **A missing receipt is never an error.** Every install that predates receipts, and every
   hand-copied skill, reads as `untracked` and keeps working. `library use` adopts it.
 - **Drift is reported, never enforced.** `use` and `sync` overwrite exactly as they always
   have. `use --dry-run --json` and `sync` report the state *before* overwriting, so a
   caller can warn first — that decision belongs to whoever is driving, not to the CLI.
+- **A `missing` receipt is evidence, not an instruction.** Delete an installed copy by
+  hand and `sync` names it (`missing[]` in `--json`) without putting it back, because
+  `uninstall` prunes that same receipt rather than obeying it, and a receipt's `dest` is
+  absolute — a `--dir` install or a project checkout you have moved on from is not a path
+  a refresh should write to on its own. `library use <name>` restores it; `library
+  uninstall <name>` drops the record.
 
 Receipts are device state, like `config.local.yaml`: gitignored, machine-owned, written
 atomically under a lock, and re-creatable by re-installing. `library uninstall` drops them

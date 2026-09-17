@@ -50,6 +50,8 @@ describe("Sync", () => {
       status: "OK",
       synced: [{ ...CLEAN.synced[0], name: "atlassian-toolkit", up_to_date: false }],
       failed: [],
+      dependencies: [],
+      missing: [],
     });
 
     expect(view.find(".sync__item--changed").exists()).toBe(false);
@@ -85,11 +87,54 @@ describe("Sync", () => {
       status: "OK",
       synced: [{ ...PARTIAL.synced[1], name: "grilling", state: "installed" }],
       failed: [],
+      dependencies: [],
+      missing: [],
     });
 
     // A warning that cries wolf stops being read, and "this replaced your edits" is simply
     // false for a copy that had none.
     expect(view.find(".sync__warning").exists()).toBe(false);
+  });
+
+  it("names a copy the receipts claim and the disk does not have", async () => {
+    const view = await mountSync(PARTIAL);
+
+    expect(view.find(".sync__summary").text().replace(/\s+/g, " ")).toContain(
+      "1 gone from disk",
+    );
+    const gone = view.find(".sync__item--gone");
+    expect(gone.text()).toContain("session-retro");
+    // The path is the fact being reported and it is not derivable from the scope, so it
+    // is on the row rather than left for the user to guess.
+    expect(gone.text()).toContain("/Users/dev/.claude/skills/session-retro");
+  });
+
+  it("does not claim to have put a missing copy back", async () => {
+    // Sync reports this state and leaves the disk alone. Wording that implied a fix
+    // would send the user away believing the machine was whole.
+    const view = await mountSync(PARTIAL);
+
+    expect(view.find(".sync__note").text()).toContain("The record was kept");
+    expect(view.text()).not.toContain("Reinstalled");
+  });
+
+  it("names the dependency it wrote on its own initiative, and why", async () => {
+    // Nothing asked for this copy; the entry that requires it did. A write the report
+    // does not mention is a change to the machine the user never sees.
+    const view = await mountSync(PARTIAL);
+
+    const dep = view.findAll(".sync__item--changed").at(-1)!;
+    expect(dep.text()).toContain("atlassian-toolkit");
+    expect(dep.text()).toContain("was gone from disk");
+    expect(dep.text()).toContain("required by bug-investigator");
+  });
+
+  it("shows neither section for a run with nothing to report", async () => {
+    const view = await mountSync(CLEAN);
+
+    expect(view.find(".sync__item--gone").exists()).toBe(false);
+    expect(view.text()).not.toContain("Also written");
+    expect(view.text()).not.toContain("gone from disk");
   });
 
   it("forces a re-fetch only when asked", async () => {

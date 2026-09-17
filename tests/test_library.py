@@ -5277,6 +5277,17 @@ library:
         self.assertEqual(self.owners(self.sync("--catalog", "personal")),
                          [("own-dep", "personal")])
 
+    def test_the_restriction_scopes_what_is_reported_gone_too(self) -> None:
+        # Otherwise `sync --catalog personal` answers with a copy from `shared`, which
+        # is exactly the entry the restriction said to leave alone this run.
+        self.use("own-dep")
+        self.use("shared-item")
+        shutil.rmtree(self.installed_dir("shared-item"))
+
+        self.assertEqual([m["name"] for m in self.sync("--catalog", "shared")["missing"]],
+                         ["shared-item"])
+        self.assertEqual(self.sync("--catalog", "personal")["missing"], [])
+
     def test_the_restriction_refreshes_the_overridden_copy_instead(self) -> None:
         # Restricting narrows the resolution universe, so within `shared` its own
         # session-retro wins and that is the copy that lands on disk.
@@ -6067,6 +6078,212 @@ library:
         self.assertEqual(code, 0, err)
         self.assertIn("up to date [skill] local-skill (global)", out)
         self.assertIn("0 changed", out)
+
+
+class SyncGoneFromDiskFixture(unittest.TestCase):
+    """One entry with a dependency, one with none, all from local sources."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for name in ("alpha", "shared-dep", "solo"):
+            (self.src / name).mkdir(parents=True)
+            (self.src / name / "SKILL.md").write_text(f"# {name}\n")
+        install_local_only_fixture(self.tool, f"""\
+library:
+  skills:
+    - name: alpha
+      description: Needs the shared dep
+      source: {self.src}/alpha/SKILL.md
+      requires: ["skill:shared-dep"]
+    - name: shared-dep
+      description: Required by alpha
+      source: {self.src}/shared-dep/SKILL.md
+    - name: solo
+      description: Nothing requires it
+      source: {self.src}/solo/SKILL.md
+  agents: []
+  prompts: []
+""")
+        self.skills = self.tool.home / ".claude" / "skills"
+
+    def use(self, *names: str) -> None:
+        code, _, err = run_cli("use", *names, "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+    def sync(self, *extra: str, expect: int = 0) -> dict[str, Any]:
+        code, out, err = run_cli("sync", *extra, "--no-pull", "--json")
+        self.assertEqual(code, expect, err or out)
+        return json.loads(out)
+
+    def delete_by_hand(self, name: str) -> None:
+        """What the app's uninstall is not: the copy removed, the receipt left behind."""
+        shutil.rmtree(self.skills / name)
+
+
+class TestSyncReportsCopiesGoneFromDisk(SyncGoneFromDiskFixture):
+    """A copy removed outside the tool is named, never quietly reinstalled (design §3.1).
+
+    `missing` is defined as "receipt exists, dest is gone — pruned on next write,
+    reported meanwhile", and sync is the command that looks at every install. It
+    reported nothing: `installed_scopes` scans the disk, so a deleted entry dropped out
+    of the run before the report was built — neither `synced` nor `failed` ever
+    mentioned it, and with every copy gone the run claimed nothing was installed at all.
+    """
+
+    def test_a_hand_deleted_copy_is_reported_and_left_deleted(self) -> None:
+        self.use("solo")
+        self.delete_by_hand("solo")
+
+        payload = self.sync()
+
+        self.assertEqual([m["name"] for m in payload["missing"]], ["solo"])
+        self.assertEqual(payload["missing"][0]["dest"], str(self.skills / "solo"))
+        self.assertEqual(payload["missing"][0]["scope"], "global")
+        self.assertFalse((self.skills / "solo").exists(),
+                         "sync put back a copy the user deleted")
+
+    def test_force_does_not_put_it_back_either(self) -> None:
+        # "Force re-fetch" means rewrite what is there, not resurrect what is not.
+        self.use("solo")
+        self.delete_by_hand("solo")
+
+        payload = self.sync("--force")
+
+        self.assertEqual([m["name"] for m in payload["missing"]], ["solo"])
+        self.assertFalse((self.skills / "solo").exists())
+
+    def test_it_is_still_a_clean_run(self) -> None:
+        # Nothing was asked for and nothing broke, so this is not a failure: an exit 1
+        # here would break every caller that treats sync's code as "did it work".
+        self.use("solo")
+        self.delete_by_hand("solo")
+
+        payload = self.sync()
+
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual(payload["failed"], [])
+
+    def test_the_report_survives_a_second_sync(self) -> None:
+        # Pruning the receipt here would make the next run silent, dropping the state
+        # before the user had a chance to act on it.
+        self.use("solo")
+        self.delete_by_hand("solo")
+        self.sync()
+
+        self.assertEqual([m["name"] for m in self.sync()["missing"]], ["solo"])
+
+    def test_it_is_reported_when_nothing_is_left_installed_at_all(self) -> None:
+        # The early return said "Nothing installed locally. Use `library use` first",
+        # which is the worst place to be silent: every copy on the machine is gone.
+        self.use("solo")
+        self.delete_by_hand("solo")
+
+        payload = self.sync()
+
+        self.assertEqual(payload["synced"], [])
+        self.assertEqual([m["name"] for m in payload["missing"]], ["solo"])
+
+    def test_an_entry_the_catalog_no_longer_carries_is_still_reported(self) -> None:
+        # The scan reads receipts, not the catalog, so the copy that can no longer be
+        # resolved by name — the one the user is least able to explain — still gets said.
+        self.use("solo")
+        self.delete_by_hand("solo")
+        catalog = self.tool.root / "personal" / "library.yaml"
+        catalog.write_text(catalog.read_text().replace(
+            f"""    - name: solo
+      description: Nothing requires it
+      source: {self.src}/solo/SKILL.md
+""", ""))
+
+        self.assertEqual([m["name"] for m in self.sync()["missing"]], ["solo"])
+
+    def test_a_disabled_entry_is_not_reported_missing(self) -> None:
+        # Its destination is empty by design and the copy is parked in the archive.
+        self.use("solo")
+        code, _, err = run_cli("disable", "solo", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+        self.assertEqual(self.sync()["missing"], [])
+
+    def test_an_intact_machine_reports_nothing(self) -> None:
+        self.use("solo")
+
+        self.assertEqual(self.sync()["missing"], [])
+
+    def test_the_human_output_names_the_copy_and_counts_it(self) -> None:
+        self.use("solo")
+        self.delete_by_hand("solo")
+
+        code, out, err = run_cli("sync", "--no-pull")
+
+        self.assertEqual(code, 0, err)
+        self.assertIn("gone from disk [skill] solo (global)", out)
+        self.assertIn("1 gone from disk", out)
+
+    def test_the_human_output_says_so_when_nothing_else_is_installed(self) -> None:
+        self.use("solo")
+        self.delete_by_hand("solo")
+
+        code, out, err = run_cli("sync", "--no-pull")
+
+        self.assertEqual(code, 0, err)
+        self.assertIn("gone from disk [skill] solo (global)", out)
+        self.assertNotIn("Nothing installed locally", out)
+
+
+class TestSyncNamesTheDependenciesItWrites(SyncGoneFromDiskFixture):
+    """A dependency is the one thing sync installs without being asked, so it says so.
+
+    The write itself is right: something still installed requires the dep, and an entry
+    with a broken chain is broken. What was wrong is that the report carried only
+    `results[-1]` — the entry itself — so the copy sync had just written appeared
+    nowhere in it.
+    """
+
+    def test_a_dependency_it_put_back_is_named_with_the_reason(self) -> None:
+        self.use("alpha")
+        self.delete_by_hand("shared-dep")
+
+        payload = self.sync()
+
+        self.assertEqual([d["name"] for d in payload["dependencies"]], ["shared-dep"])
+        dep = payload["dependencies"][0]
+        self.assertEqual(dep["state"], "missing")
+        self.assertEqual(dep["required_by"], "alpha")
+        self.assertTrue(dep["changes"]["new_install"])
+        self.assertTrue((self.skills / "shared-dep").exists())
+
+    def test_a_dependency_it_put_back_is_not_also_reported_missing(self) -> None:
+        # Both statements would be true of different moments and the pair reads as a
+        # contradiction, so the scan runs after the writes: "still gone", not "was gone".
+        self.use("alpha")
+        self.delete_by_hand("shared-dep")
+
+        self.assertEqual(self.sync()["missing"], [])
+
+    def test_an_unchanged_dependency_is_not_named(self) -> None:
+        self.use("alpha")
+
+        self.assertEqual(self.sync()["dependencies"], [])
+
+    def test_a_dependency_force_merely_refetched_is_not_named(self) -> None:
+        # --force rewrites every dep on the machine. Listing those would bury the one
+        # line that matters under a copy of the install list.
+        self.use("alpha")
+
+        self.assertEqual(self.sync("--force")["dependencies"], [])
+
+    def test_the_human_output_names_the_write_and_why(self) -> None:
+        self.use("alpha")
+        self.delete_by_hand("shared-dep")
+
+        code, out, err = run_cli("sync", "--no-pull")
+
+        self.assertEqual(code, 0, err)
+        self.assertIn("also wrote [skill] shared-dep (global)", out)
+        self.assertIn("required by alpha", out)
 
 
 class TestListCheckRemote(unittest.TestCase):

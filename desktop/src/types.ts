@@ -237,11 +237,46 @@ export interface SyncFailure {
   reason: string;
 }
 
+/**
+ * A dependency sync installed while refreshing whatever requires it.
+ *
+ * The one write sync makes that nobody asked for. The report used to carry no trace of
+ * it: a synced item reports only its own diff, so a dependency fetched alongside it
+ * landed on disk unannounced.
+ */
+export interface DependencyWrite {
+  type: string;
+  name: string;
+  catalog: string;
+  scope: string;
+  /**
+   * The destination's state *before* the write, which is the reason for it:
+   * `missing` | `not_installed` | `disabled` | `drifted` | `untracked`.
+   */
+  state: string;
+  /** The entry whose refresh pulled this one in. */
+  required_by: string;
+  changes: Changes;
+}
+
+/** An install the receipts claim and the disk does not have. */
+export interface MissingCopy {
+  type: string;
+  name: string;
+  catalog: string;
+  scope: string;
+  /** The path that is empty — not derivable from the scope, since `--dir` installs anywhere. */
+  dest: string;
+}
+
 /** What `library sync --json` reports. `status` is `OK` or `PARTIAL`. */
 export interface SyncReport {
   status: string;
   synced: SyncedItem[];
   failed: SyncFailure[];
+  dependencies: DependencyWrite[];
+  /** Reported, never acted on: sync names these and leaves the disk as it found it. */
+  missing: MissingCopy[];
 }
 
 /** The exact argv about to run, from `command://started`. */

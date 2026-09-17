@@ -39,5 +39,30 @@
       "catalog": "shared",
       "reason": "could not clone https://example.test/gone.git: repository not found"
     }
+  ],
+  "dependencies": [
+    {
+      "type": "skill",
+      "name": "atlassian-toolkit",
+      "catalog": "personal",
+      "scope": "global",
+      "state": "missing",
+      "required_by": "bug-investigator",
+      "changes": {
+        "new_install": true,
+        "added": [],
+        "removed": [],
+        "modified": []
+      }
+    }
+  ],
+  "missing": [
+    {
+      "type": "skill",
+      "name": "session-retro",
+      "catalog": "personal",
+      "scope": "global",
+      "dest": "/Users/dev/.claude/skills/session-retro"
+    }
   ]
 }

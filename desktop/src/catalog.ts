@@ -780,6 +780,30 @@ export function summarizeChanges(changes: Changes): string {
   return parts.length ? parts.join(", ") : "no changes";
 }
 
+/**
+ * Why sync wrote a dependency, from the state its destination was in beforehand.
+ *
+ * Deliberately not `describeDestState`: that one answers "what is this copy", in the
+ * present tense, for a row the user is looking at. This answers "why did a write
+ * happen", about a moment that has already passed.
+ */
+export function describeDependencyWrite(state: string): string {
+  switch (state) {
+    case "missing":
+      return "was gone from disk";
+    case "not_installed":
+      return "was not installed";
+    case "disabled":
+      return "was disabled";
+    case "drifted":
+      return "local edits replaced";
+    case "untracked":
+      return "replaced a hand-installed copy";
+    default:
+      return state;
+  }
+}
+
 /** A destination's current state in words. Anything unrecognised renders as-is. */
 export function describeDestState(state: string): string {
   switch (state) {

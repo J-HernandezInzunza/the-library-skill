@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { summarizeChanges } from "../catalog";
+import { describeDependencyWrite, summarizeChanges } from "../catalog";
 import { withActivity } from "../commandActivity";
 import { describeAppError, type SyncedItem, type SyncReport } from "../types";
 import Busy from "./Busy.vue";
@@ -89,6 +89,9 @@ run(false);
           <span v-if="report.failed.length" class="sync__count--failed">
             · {{ report.failed.length }} failed
           </span>
+          <span v-if="report.missing.length" class="sync__count--gone">
+            · {{ report.missing.length }} gone from disk
+          </span>
         </p>
 
         <p v-if="overwritten.length" class="sync__warning">
@@ -102,6 +105,27 @@ run(false);
             <li v-for="item in report.failed" :key="item.name" class="sync__item sync__item--error">
               <span class="sync__name">{{ item.name }}</span>
               <span class="sync__detail">{{ item.reason }}</span>
+            </li>
+          </ul>
+        </template>
+
+        <template v-if="report.missing.length">
+          <h3 class="sync__section sync__section--gone">
+            Gone from disk · {{ report.missing.length }}
+          </h3>
+          <!-- Said once above the list rather than on every row: a machine restored from
+               backup has this state on everything, and the advice is the same for all of it. -->
+          <p class="sync__note">
+            The record was kept and nothing was deleted. Install one of these again to put a
+            copy back, or uninstall it to drop the record.
+          </p>
+          <ul class="sync__list fade-in">
+            <li v-for="item in report.missing" :key="item.dest" class="sync__item sync__item--gone">
+              <div class="sync__head">
+                <span class="sync__name">{{ item.name }}</span>
+                <span class="sync__detail">{{ item.scope }}</span>
+              </div>
+              <p class="sync__path">{{ item.dest }}</p>
             </li>
           </ul>
         </template>
@@ -132,6 +156,27 @@ run(false);
                   <span class="sync__glyph">{{ line.glyph }}</span> {{ line.path }}
                 </li>
               </ul>
+            </li>
+          </ul>
+        </template>
+
+        <template v-if="report.dependencies.length">
+          <h3 class="sync__section sync__section--changed">
+            Also written · {{ report.dependencies.length }}
+          </h3>
+          <ul class="sync__list fade-in">
+            <li
+              v-for="item in report.dependencies"
+              :key="`${item.type}:${item.name}:${item.scope}`"
+              class="sync__item sync__item--changed"
+            >
+              <div class="sync__head">
+                <span class="sync__name">{{ item.name }}</span>
+                <span class="sync__badge">{{ describeDependencyWrite(item.state) }}</span>
+                <span class="sync__detail">
+                  required by {{ item.required_by }} · {{ item.scope }}
+                </span>
+              </div>
             </li>
           </ul>
         </template>
@@ -170,6 +215,9 @@ run(false);
 .sync__count--failed {
   color: var(--status-danger-ink);
 }
+.sync__count--gone {
+  color: var(--status-attention-ink);
+}
 .sync__warning {
   margin: 0.75rem 0 0;
   padding: 0.65rem 0.85rem;
@@ -193,6 +241,16 @@ run(false);
 .sync__section--changed {
   color: var(--accent-bright);
   opacity: 0.9;
+}
+.sync__section--gone {
+  color: var(--status-attention-ink);
+  opacity: 0.85;
+}
+.sync__note {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  opacity: 0.7;
 }
 .sync__list {
   list-style: none;
@@ -220,8 +278,19 @@ run(false);
   border-left-color: var(--status-attention-ink);
   background: var(--status-attention-tint);
 }
+.sync__item--gone {
+  border-left: 3px solid var(--status-attention-ink);
+  background: var(--status-attention-tint);
+}
 .sync__item--quiet {
   opacity: 0.6;
+}
+.sync__path {
+  margin: 0.3rem 0 0;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.75rem;
+  opacity: 0.7;
+  overflow-wrap: anywhere;
 }
 .sync__head {
   display: flex;

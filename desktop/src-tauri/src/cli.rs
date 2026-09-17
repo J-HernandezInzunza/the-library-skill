@@ -272,6 +272,41 @@ pub struct SyncReport {
     pub synced: Vec<SyncedItem>,
     #[serde(default)]
     pub failed: Vec<SyncFailure>,
+    /// Copies sync wrote that nobody asked for, because something installed requires
+    /// them. Defaulted, so a tool dir older than this app reads as "none reported"
+    /// rather than as a parse failure.
+    #[serde(default)]
+    pub dependencies: Vec<DependencyWrite>,
+    /// Receipts whose copy is gone from disk. Reported, never acted on.
+    #[serde(default)]
+    pub missing: Vec<MissingCopy>,
+}
+
+/// A dependency sync installed while refreshing whatever requires it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DependencyWrite {
+    pub r#type: String,
+    pub name: String,
+    pub catalog: String,
+    pub scope: String,
+    /// The destination's state *before* the write, which is the reason for it:
+    /// `missing`, `not_installed`, `disabled`, `drifted`, or `untracked`.
+    pub state: String,
+    /// The entry whose refresh pulled this one in.
+    pub required_by: String,
+    pub changes: Changes,
+}
+
+/// An install the receipts claim and the disk does not have.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MissingCopy {
+    pub r#type: String,
+    pub name: String,
+    pub catalog: String,
+    pub scope: String,
+    /// The path that is empty. The fact being reported, and not always derivable from
+    /// the scope: a `--dir` install can sit anywhere.
+    pub dest: String,
 }
 
 /// One installed entry sync looked at.

@@ -444,6 +444,43 @@ fn a_partial_sync_reports_both_what_refreshed_and_what_failed() {
 }
 
 #[test]
+fn a_sync_carries_the_writes_it_made_and_the_copies_it_found_gone() {
+    // Both are things the report used to be silent about: a dependency written on the
+    // run's own initiative, and a receipt whose copy is no longer on disk.
+    let _guard = with_fixture_home();
+    let log = Recorder::default();
+
+    let report = cli::sync(&log, true).expect("exit 1 with PARTIAL is a report");
+
+    let dep = &report.dependencies[0];
+    assert_eq!(dep.name, "atlassian-toolkit");
+    assert_eq!(dep.state, "missing");
+    assert_eq!(dep.required_by, "bug-investigator");
+    assert!(dep.changes.new_install);
+    let gone = &report.missing[0];
+    assert_eq!(gone.name, "session-retro");
+    assert_eq!(gone.dest, "/Users/dev/.claude/skills/session-retro");
+}
+
+#[test]
+fn a_tool_dir_older_than_this_app_reports_neither_rather_than_failing_to_parse() {
+    // The app and the CLI update separately, and a tool dir that predates these two keys
+    // omits them. Read as "nothing to report", which is the truth: that sync never
+    // looked. Parsed from a literal rather than a fixture because the fixtures are what
+    // today's CLI prints, and this is the shape that is deliberately out of date.
+    let body = serde_json::json!({
+        "status": "OK",
+        "synced": [],
+        "failed": [],
+    });
+
+    let report: cli::SyncReport = serde_json::from_value(body).expect("older payloads still parse");
+
+    assert!(report.dependencies.is_empty());
+    assert!(report.missing.is_empty());
+}
+
+#[test]
 fn an_uninstall_names_what_it_deleted() {
     let _guard = with_fixture_home();
     let log = Recorder::default();

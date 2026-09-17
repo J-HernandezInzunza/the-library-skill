@@ -1922,6 +1922,32 @@ def dest_state(dest: Path, receipt: "dict[str, Any] | None") -> str:
     return "installed" if receipt.get("content_hash") == content_hash(dest) else "drifted"
 
 
+def missing_installs(receipts: dict[str, dict[str, Any]],
+                     only: "str | None" = None) -> list[dict[str, Any]]:
+    """Every receipt whose copy is gone from disk, with nothing parked in its archive.
+
+    The `missing` state of design §3.1 — "pruned on next write, reported meanwhile" —
+    collected for the one command that looks at every install. Reported and never acted
+    on: `uninstall` already prunes a receipt whose destination is empty rather than
+    reading it as a standing order to reinstall, and a receipt's `dest` is absolute, so
+    obeying it here would write into `--dir` destinations and project checkouts that no
+    configured scope resolves to any more.
+
+    Read from the receipts rather than the catalog, so the copy whose entry has since
+    left the catalog — the one a user cannot look up by name — is still named.
+    """
+    gone: list[dict[str, Any]] = []
+    for dest, rec in sorted(receipts.items()):
+        if only and rec.get("catalog") != only:
+            continue
+        if dest_state(Path(dest), rec) != "missing":
+            continue
+        gone.append({"type": rec.get("type"), "name": rec.get("name"),
+                     "catalog": rec.get("catalog"), "scope": rec.get("scope"),
+                     "dest": dest})
+    return gone
+
+
 def entry_dests(dirs: dict[str, dict[str, str]], entry: Entry,
                 receipts: dict[str, dict[str, Any]]) -> dict[str, "dict[str, Any] | None"]:
     """Every destination *entry* could occupy, mapped to its receipt (or None).
@@ -3116,6 +3142,37 @@ def _state_note(state: str, past: bool = False) -> str:
 # Where a disabled item's fetch lands and what it is afterwards. One phrase, so `sync`
 # and `use` cannot teach a user two vocabularies for the same thing (R5.2, R5.4).
 _ARCHIVE_NOTE = "in the archive — still disabled"
+
+
+# Why sync wrote a dependency nobody asked for, keyed by the destination's state before
+# the write. Every one of these is a change to the machine that the report used to carry
+# no trace of, so each gets its own phrase rather than a shared "installed".
+_DEP_WRITE_NOTES = {
+    "missing": "was gone from disk",
+    "not_installed": "was not installed",
+    "disabled": "was disabled",
+    "drifted": "local edits replaced",
+    "untracked": "replaced a hand-installed copy",
+}
+
+
+def _record_dep_write(writes: list[dict[str, Any]], dep: "Entry", required_by: "Entry",
+                      scope: str, state: str, changes: dict[str, Any]) -> None:
+    """Note a dependency install worth reporting, and drop the ones that are not.
+
+    Skipped: the entry itself, which is the line the report already carries; a copy that
+    was already installed and matched its receipt, because `--force` rewrites every one
+    of those and listing them would bury the writes that changed something; and a name
+    already noted this run, since two entries can require the same dependency and the
+    second pass over it rewrites the same bytes.
+    """
+    if (dep.type, dep.name) == (required_by.type, required_by.name) or state == "installed":
+        return
+    if any((w["type"], w["name"], w["scope"]) == (dep.type, dep.name, scope) for w in writes):
+        return
+    writes.append({"type": dep.type, "name": dep.name, "catalog": dep.catalog,
+                   "scope": scope, "state": state, "required_by": required_by.name,
+                   "changes": changes})
 
 
 def _install_one(
@@ -4529,15 +4586,20 @@ def cmd_sync(args: argparse.Namespace) -> int:
         if archived:
             installed.append((e, _location_scope(archived), archived))
 
-    if not installed:
+    only = catalog_restriction(cfg, args)
+    # Consulted before the early return, not after it: with every copy deleted by hand
+    # there is nothing to refresh and everything to say, and "nothing installed locally"
+    # was the one sentence that could not be true then.
+    if not installed and not missing_installs(receipts, only):
         if args.json:
-            print(json.dumps({"status": "OK", "synced": [], "failed": []}))
+            print(json.dumps({"status": "OK", "synced": [], "failed": [],
+                              "dependencies": [], "missing": []}))
         else:
             print("Nothing installed locally. Use `library use <name>` first.")
         return 0
 
     heads: dict[str, str | None] = {}  # one ls-remote per repo+branch, not per entry
-    synced, failed = [], []
+    synced, failed, dep_writes = [], [], []
     # And one clone per repo+branch, for the same reason. `--force` re-fetches every item,
     # which on a machine whose entries share a repository was that many clones of it.
     with clone_cache() as clones:
@@ -4576,8 +4638,8 @@ def cmd_sync(args: argparse.Namespace) -> int:
                 results = []
                 for dep in resolve_deps(cfg.entries_of(e.catalog), e):
                     dep_dest = install_dest(dep, resolve_target_base(dirs, dep, scope, None))
-                    if not args.force and source_unchanged(dep, dep_dest,
-                                                           receipts.get(str(dep_dest)), heads):
+                    dep_receipt = receipts.get(str(dep_dest))
+                    if not args.force and source_unchanged(dep, dep_dest, dep_receipt, heads):
                         results.append({"type": dep.type, "name": dep.name,
                                         "catalog": dep.catalog,
                                         "dest": str(dep_dest), "verified": True,
@@ -4585,8 +4647,15 @@ def cmd_sync(args: argparse.Namespace) -> int:
                                                     "removed": [], "modified": []},
                                         "up_to_date": True})
                     else:
+                        # A dependency is the only thing sync writes that nobody asked
+                        # for: the entry requires it, so a copy that is gone — or was
+                        # never there — is fetched along with what needs it. Read before
+                        # the write, the last moment the reason for it is observable.
+                        dep_state = dest_state(dep_dest, dep_receipt)
                         results.append(_install_one(dirs, dep, scope, None,
                                                     entry_catalog_key(cfg, dep), clones))
+                        _record_dep_write(dep_writes, dep, e, scope, dep_state,
+                                          results[-1]["changes"])
                 synced.append({"type": e.type, "name": e.name, "catalog": e.catalog,
                                "scope": scope, "state": state, "disabled": False,
                                "changes": results[-1]["changes"],
@@ -4595,9 +4664,15 @@ def cmd_sync(args: argparse.Namespace) -> int:
                 failed.append({"type": e.type, "name": e.name, "catalog": e.catalog,
                                "reason": str(ex)})
 
+    # Scanned after the run, not before: a dependency this sync put back is no longer
+    # gone, and reporting it as both would be two true statements about two different
+    # moments that read as one contradiction.
+    gone = missing_installs(load_receipts(), only)
+
     if args.json:
         status = "PARTIAL" if failed else "OK"
-        print(json.dumps({"status": status, "synced": synced, "failed": failed}, indent=2))
+        print(json.dumps({"status": status, "synced": synced, "failed": failed,
+                          "dependencies": dep_writes, "missing": gone}, indent=2))
         return 0 if not failed else 1
 
     changed_count = 0
@@ -4627,9 +4702,23 @@ def cmd_sync(args: argparse.Namespace) -> int:
     for r in failed:
         origin = f" (from {r['catalog']})" if multi else ""
         print(f"  FAILED    [{r['type']}] {r['name']}{origin}: {r['reason']}")
+    for r in dep_writes:
+        origin = f" (from {r['catalog']})" if multi else ""
+        note = _DEP_WRITE_NOTES.get(r["state"], r["state"])
+        print(f"  also wrote [{r['type']}] {r['name']} ({r['scope']}){origin} · "
+              f"required by {r['required_by']} — {note}")
+    for r in gone:
+        origin = f" (from {r['catalog']})" if multi else ""
+        print(f"  gone from disk [{r['type']}] {r['name']} ({r['scope']}){origin} · {r['dest']}")
+    if gone:
+        # Said once for the whole list rather than on every line: nine deleted copies is
+        # where this matters most, and nine copies of the advice is where it stops being read.
+        print("  The record was kept. `library use <name>` puts one back; "
+              "`library uninstall <name>` drops the record.")
     disabled_part = f" · {disabled_count} disabled" if disabled_count else ""
+    gone_part = f" · {len(gone)} gone from disk" if gone else ""
     print(f"\nSynced {len(synced)} · {changed_count} changed{disabled_part} · "
-          f"failed {len(failed)}")
+          f"failed {len(failed)}{gone_part}")
     return 0 if not failed else 1
 
 

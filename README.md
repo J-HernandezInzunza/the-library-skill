@@ -32,7 +32,7 @@ entry. Search filters the loaded list instantly, and offline.
 ![Installing a skill from the catalog, with a preview of what will be written first](images/desktop/install-preview.gif)
 
 Pick a skill and the app previews every file it would write — the skill itself plus the
-dependencies it pulls in — before anything touches disk. Install, and the entry's badge flips to
+dependencies it pulls in before anything touches disk. Install, and the entry's badge flips to
 installed.
 
 ### Switch a skill off without uninstalling it
@@ -42,24 +42,15 @@ installed.
 Flip the switch and the skill stops loading without leaving your machine — switching it back on is
 a move, not a re-fetch. A `disabled` tab appears at the end of the strip, so what you have parked
 stays findable instead of vanishing from the list. Claude Code reads its skills when a session
-starts, so the change lands in your next session rather than one you already have open, and the app
-says so rather than letting you find out.
+starts, so the change lands in your next session rather than one you already have open.
 
 ### Get it
 
 Build it once from your own clone, then launch it like any Mac app:
 
-Building needs **just**, **Node ≥ 20**, and the **Rust toolchain** (Tauri's backend compiles
-from source), so the first build takes several minutes. `just app-prereqs` checks Node, Rust,
-and Python in one go and names the fix for whichever is missing. If you install Rust as part
-of this, run `source "$HOME/.cargo/env"` or open a new terminal before building — the
-installer cannot put `cargo` on the `PATH` of a shell that is already running. The app prompts
-you through the rest — bootstrapping the CLI and registering your catalog are both first-run
-screens, not prerequisites you satisfy beforehand.
+Building needs **just**, **Node ≥ 20**, and the **Rust toolchain** (Tauri's backend compiles from source), so the first build takes several minutes.
 
-**→ Full setup, what it does, and the guided-setup walkthrough that configures a
-credentialed skill without the secret ever entering the agent's context:
-[desktop/README.md](desktop/README.md)**
+### → Full setup, what it does, and the guided-setup walkthrough: [desktop/README.md](desktop/README.md)
 
 ---
 

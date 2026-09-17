@@ -16,5 +16,7 @@
       }
     }
   ],
-  "failed": []
+  "failed": [],
+  "dependencies": [],
+  "missing": []
 }

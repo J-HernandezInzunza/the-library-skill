@@ -6,8 +6,9 @@ A fast "make sure everything is up to date" command. The catalog is read from
 `.catalog-repo/` — the persistent local clone of the catalog repo.
 
 This is fully deterministic — the `library` CLI finds every installed item (project +
-global), re-pulls each from source, and pulls any missing dependencies. Do **not**
-re-implement it.
+global), re-pulls each from source, and pulls any missing dependencies. It finds them by
+scanning the install directories, so an item whose copy was deleted outside the tool is
+reported rather than refreshed. Do **not** re-implement it.
 
 ## Steps
 
@@ -49,6 +50,33 @@ In `--json`, each synced item carries `disabled` (a boolean) and reports
 `state: "disabled"`. Its install receipt keeps naming the **active** destination, because
 that is where `library enable` puts the content back.
 
+**A copy that is gone from disk is reported, not reinstalled.** When a receipt says an
+item is installed and nothing is at its destination — deleted by hand, wiped by a `git
+clean`, lost with a restored machine — `sync` names it and changes nothing:
+
+```
+  gone from disk [skill] session-retro (global) · /Users/dev/.claude/skills/session-retro
+  The record was kept. `library use <name>` puts one back; `library uninstall <name>` drops the record.
+
+Synced 3 · 1 changed · failed 0 · 1 gone from disk
+```
+
+`--json` carries these as `missing[]` (`type`, `name`, `catalog`, `scope`, `dest`). Relay
+them: this is the one state where the tool's record and the disk disagree, and neither
+`use` nor `uninstall` will mention it until the user runs one. Nothing about it is a
+failure — the exit code is unchanged, and `--force` does not resurrect these either.
+
+**A dependency is the one thing `sync` writes without being asked.** Refreshing an entry
+also refreshes what it `requires`, so a dependency that is missing, disabled, or never
+installed gets fetched along with it. Those writes are listed separately, with the reason:
+
+```
+  also wrote [skill] atlassian-toolkit (global) · required by bug-investigator — was gone from disk
+```
+
+`--json` carries them as `dependencies[]` (`type`, `name`, `catalog`, `scope`, `state`,
+`required_by`, `changes`), where `state` is what the destination was **before** the write.
+
 If the CLI prints a staleness warning on stderr (`catalog 'shared' is N commit(s) behind
 origin/...`), relay it to the user. With several catalogs the warning names which one.
 
@@ -78,7 +106,7 @@ overwriting it:
 - `~` modified · `+` added · `-` removed (relative paths within the item).
 - `new install` means the item wasn't present locally before this sync.
 - The footer reports `Synced N · M changed · failed K`, with `· D disabled` when a
-  disabled item was refreshed.
+  disabled item was refreshed and `· G gone from disk` when a receipt's copy is missing.
 - `--json` adds a `changes` object (`{new_install, added, removed, modified}`) and a
   `state` to each synced entry; all pre-existing fields are unchanged.
 - `state` is what the installed copy looked like **before** the refresh, from its install

@@ -18,7 +18,7 @@ clones the repo and runs one command.
 ## Prerequisites
 
 Four things have to be on the machine before you can build. `just` is one of them, and it is
-the one that checks the other three:
+the one that checks the other three, run this as you configure your env:
 
 ```bash
 just app-prereqs
@@ -30,9 +30,13 @@ just app-prereqs
   ✓ Python    3.13.1 (/opt/homebrew/bin/python3)
 ```
 
-- **just** — the command runner the `app-*` recipes live in. `just --version`; install with
-  `brew install just`.
-- **Node** ≥ 20 (developed on 22) — `node -v`.
+- **just** — the command runner the `app-*` recipes live in. `just --version`; install with:
+
+  ```bash
+  brew install just
+  ```
+
+- **Node** ≥ 20 (developed on 22). `node -v`.
 - **Rust** (stable) — Tauri's backend, compiled from source. `cargo --version`; install with:
 
   ```bash
@@ -49,8 +53,7 @@ just app-prereqs
   wrapper both pick an interpreter *by version*.
 
   *Don't check this one with `python3 --version`* — it answers a question the tool never asks.
-  A 3.7 first on `PATH` reads as a failure when the build is fine, and a passing 3.13 tells you
-  nothing about which interpreter got picked. Ask the wrapper what it resolved:
+  Instead, you can ask the wrapper what it resolved, and validate that if needed:
 
   ```bash
   ./library --python-path     # prints the interpreter, or exits 3 with the fix
@@ -85,7 +88,7 @@ scratch. After that it is in `/Applications` and in Spotlight as **The Library**
 double-clicking it like anything else. `just app` opens it from the terminal.
 
 You need the network for the in-app setup step (it pip-installs PyYAML) and the URL of your team's
-catalog repository, with git access to it — the app clones it for you but cannot invent the address
+catalog repository, with git access to it, the app clones it for you but cannot invent the address
 or your credentials.
 
 To pick the bundle up yourself instead of installing it, `just app-build` leaves it at
