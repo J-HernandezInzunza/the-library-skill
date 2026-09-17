@@ -185,7 +185,7 @@ watch(
         <!-- The offer sits directly under what it would act on, and only over a skill the CLI
              calls ready: starting a conversation whose first act is to report the problem this
              panel is already showing helps nobody. -->
-        <button v-if="canWalk" type="button" class="setup__walk" @click="emit('walkthrough')">
+        <button v-if="canWalk" type="button" class="ghost setup__walk" @click="emit('walkthrough')">
           {{ report?.configured ? "Run setup again" : "Set this up" }}
         </button>
         <!-- R7.2: the agent is an enhancement, so a missing one is a fact stated next to the
@@ -255,7 +255,7 @@ watch(
               <button
                 v-if="secret.url"
                 type="button"
-                class="ghost setup__link"
+                class="ghost btn-xs setup__link"
                 @click="openUrl(secret.url)"
               >
                 Where to get it
@@ -273,13 +273,6 @@ watch(
 .setup__walk {
   align-self: flex-start;
   margin-top: 0.15rem;
-  padding: 0.35rem 0.8rem;
-  border: 1px solid var(--border-control);
-  border-radius: 0.35rem;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
 }
 .setup__no-agent {
   margin: 0;
@@ -449,7 +442,5 @@ watch(
 }
 .setup__link {
   margin-top: 0.45rem;
-  padding: 0.22rem 0.5rem;
-  font-size: 0.72rem;
 }
 </style>

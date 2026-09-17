@@ -368,7 +368,7 @@ watch(
               </span>
               <button
                 type="button"
-                class="ghost catalogs__pin-clear"
+                class="ghost btn-xs catalogs__pin-clear"
                 :disabled="clearing === pin.name"
                 @click="clearPin(pin.name)"
               >
@@ -394,7 +394,7 @@ watch(
               <button
                 v-if="editableIds.has(option.id)"
                 type="button"
-                class="ghost catalogs__manage"
+                class="ghost btn-sm catalogs__manage"
                 @click="goTo(option.id)"
               >
                 Manage entries
@@ -406,7 +406,7 @@ watch(
             <button
               v-if="canUnregister && unregistering?.id !== option.id"
               type="button"
-              class="ghost danger catalogs__unregister"
+              class="danger btn-sm catalogs__unregister"
               @click="unregistering = option"
             >
               Unregister
@@ -476,7 +476,7 @@ watch(
               <span class="catalogs__entry-actions">
                 <button
                   type="button"
-                  class="ghost"
+                  class="ghost btn-sm"
                   :aria-pressed="isOpen(entry.name, 'edit')"
                   @click="show(entry.name, 'edit')"
                 >
@@ -484,7 +484,7 @@ watch(
                 </button>
                 <button
                   type="button"
-                  class="ghost danger"
+                  class="danger btn-sm"
                   :aria-pressed="isOpen(entry.name, 'remove')"
                   @click="show(entry.name, 'remove')"
                 >
@@ -573,8 +573,6 @@ watch(
 }
 .catalogs__pin-clear {
   margin-left: auto;
-  padding: 0.2rem 0.55rem;
-  font-size: 0.72rem;
 }
 .catalogs__row {
   padding: 0.7rem 0.9rem;
@@ -601,10 +599,6 @@ watch(
   font-size: 0.75rem;
   opacity: 0.7;
 }
-.catalogs__manage {
-  padding: 0.3rem 0.6rem;
-  font-size: 0.75rem;
-}
 .catalogs__where {
   margin: 0.35rem 0 0;
   font-family: ui-monospace, SFMono-Regular, monospace;
@@ -620,8 +614,6 @@ watch(
 }
 .catalogs__unregister {
   margin-top: 0.5rem;
-  padding: 0.25rem 0.55rem;
-  font-size: 0.72rem;
 }
 .catalogs__confirm {
   margin-top: 0.6rem;
@@ -708,11 +700,7 @@ watch(
 }
 .catalogs__entry-actions {
   display: flex;
-  gap: 0.35rem;
-}
-.catalogs__entry-actions button {
-  padding: 0.25rem 0.6rem;
-  font-size: 0.75rem;
+  gap: 0.5rem;
 }
 /* Pressed state, so an open form's own button reads as the thing that opened it. */
 .catalogs__entry-actions button[aria-pressed="true"] {

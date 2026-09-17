@@ -218,7 +218,7 @@ watch(
       <button
         v-if="names.length"
         type="button"
-        class="ghost danger"
+        class="danger btn-sm"
         :disabled="running"
         @click="startUninstall()"
       >
@@ -227,6 +227,7 @@ watch(
       <button
         v-if="names.length"
         type="button"
+        class="btn-sm"
         :disabled="running"
         @click="runPreview()"
       >
@@ -328,10 +329,6 @@ watch(
   flex: 1;
   font-size: 0.82rem;
   opacity: 0.8;
-}
-.bulk__bar button {
-  padding: 0.35rem 0.7rem;
-  font-size: 0.8rem;
 }
 .bulk__scope {
   margin: 0.75rem 0 0;

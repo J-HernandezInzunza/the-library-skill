@@ -140,11 +140,11 @@ async function decline() {
         :disabled="busy"
       />
       <div class="secret__actions">
-        <button type="submit" class="secret__submit" :disabled="busy || !value">
+        <button type="submit" class="ghost secret__submit" :disabled="busy || !value">
           Submit
         </button>
         <!-- Declining is a real answer, not a cancel: the agent is told, and it stops asking. -->
-        <button type="button" class="secret__decline" :disabled="busy" @click="decline">
+        <button type="button" class="ghost secret__decline" :disabled="busy" @click="decline">
           Not now
         </button>
       </div>
@@ -239,23 +239,6 @@ async function decline() {
 .secret__actions {
   display: flex;
   gap: 0.5rem;
-}
-
-.secret__submit,
-.secret__decline {
-  padding: 0.35rem 0.75rem;
-  border: 1px solid var(--border-control);
-  border-radius: 0.35rem;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-}
-
-.secret__submit:disabled,
-.secret__decline:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 
 .secret__route {

@@ -258,7 +258,7 @@ describe("EntryDetail pin reconcile", () => {
       .toEqual(["Pin to this", "Use this one"]);
     // Both actions on a card are the same kind of control and carry the same sizing.
     for (const button of view.findAll(".entry-detail__choose, .entry-detail__manage")) {
-      expect(button.classes()).toContain("entry-detail__copy-action");
+      expect(button.classes()).toContain("btn-sm");
     }
   });
 

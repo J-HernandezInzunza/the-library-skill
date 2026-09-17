@@ -271,7 +271,7 @@ async function reveal(path: string) {
           <strong>{{ report.catalog }}</strong>, under {{ report.added.section }}.
         </p>
         <p v-if="report.path" class="add-entry__added-where">
-          <button type="button" class="ghost" @click="reveal(report.path)">Show in Finder</button>
+          <button type="button" class="ghost btn-sm" @click="reveal(report.path)">Show in Finder</button>
           <code>{{ report.path }}</code>
         </p>
         <p v-if="report.pushed" class="add-entry__added-where">
@@ -358,8 +358,8 @@ async function reveal(path: string) {
             <span>This file is in a git repo. Teammates would need this URL instead:</span>
             <code>{{ suggestion.suggestion }}</code>
             <span class="add-entry__suggestion-actions">
-              <button type="button" @click="applySuggestion">Use this URL</button>
-              <button type="button" class="ghost" @click="suggestion = null">Keep the path</button>
+              <button type="button" class="btn-sm" @click="applySuggestion">Use this URL</button>
+              <button type="button" class="ghost btn-sm" @click="suggestion = null">Keep the path</button>
             </span>
           </span>
           <span v-else-if="suggestion" class="add-entry__hint">
@@ -467,11 +467,7 @@ async function reveal(path: string) {
 }
 .add-entry__suggestion-actions {
   display: flex;
-  gap: 0.4rem;
-}
-.add-entry__suggestion-actions button {
-  padding: 0.3rem 0.6rem;
-  font-size: 0.75rem;
+  gap: 0.5rem;
 }
 .add-entry__added-line {
   margin: 0;
@@ -492,8 +488,6 @@ async function reveal(path: string) {
 }
 .add-entry__added-where button {
   flex: none;
-  padding: 0.25rem 0.55rem;
-  font-size: 0.72rem;
 }
 .add-entry__check {
   display: flex;

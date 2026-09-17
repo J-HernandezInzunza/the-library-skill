@@ -394,11 +394,7 @@ watch(() => [props.name, props.catalog], () => load(props.name), { immediate: tr
         <h3 class="entry-detail__section">Install and set up</h3>
         <div class="card entry-detail__handoff">
           <p class="entry-detail__handoff-lede">{{ handoff }}</p>
-          <button
-            type="button"
-            class="ghost"
-            @click="emit('install', detail.name)"
-          >
+          <button type="button" @click="emit('install', detail.name)">
             Install and set up
           </button>
         </div>
@@ -567,7 +563,7 @@ watch(() => [props.name, props.catalog], () => load(props.name), { immediate: tr
               <button
                 v-if="action"
                 type="button"
-                class="ghost entry-detail__copy-action entry-detail__choose"
+                class="ghost btn-sm entry-detail__choose"
                 :disabled="!!pinning"
                 :title="action.hint || undefined"
                 @click="runPinAction(copy)"
@@ -584,7 +580,7 @@ watch(() => [props.name, props.catalog], () => load(props.name), { immediate: tr
             <button
               v-if="editableIds.has(copy.catalog)"
               type="button"
-              class="ghost entry-detail__copy-action entry-detail__manage"
+              class="ghost btn-sm entry-detail__manage"
               @click="emit('manage', { catalog: copy.catalog, name: detail.name })"
             >
               Edit this entry in {{ copy.catalog }}
@@ -888,12 +884,6 @@ watch(() => [props.name, props.catalog], () => load(props.name), { immediate: tr
   font-size: 0.78rem;
   line-height: 1.5;
   opacity: 0.7;
-}
-/* One size for every action on a copy card, so the pin control and the hand-off under
-   it do not read as two different kinds of button. */
-.entry-detail__copy-action {
-  padding: 0.25rem 0.55rem;
-  font-size: 0.72rem;
 }
 /* Hard right of the head row whatever the label's width, and whatever sits to its left. */
 .entry-detail__choose {

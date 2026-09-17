@@ -49,7 +49,7 @@ const writeMode = computed(() => {
       <button
         v-if="manageable"
         type="button"
-        class="ghost catalog-summary__manage"
+        class="ghost btn-xs catalog-summary__manage"
         @click="emit('manage')"
       >
         Manage entries
@@ -103,8 +103,6 @@ const writeMode = computed(() => {
      long before it has finished disappearing. */
   flex: none;
   margin-left: auto;
-  padding: 0.2rem 0.5rem;
-  font-size: 0.75rem;
 }
 .catalog-summary__skipped {
   margin: 0.5rem 0 0;

@@ -198,10 +198,6 @@ async function setUp() {
   font-size: 0.85rem;
   opacity: 0.6;
 }
-.first-run__action:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
 .first-run__form {
   display: flex;
   flex-direction: column;

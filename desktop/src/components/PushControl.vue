@@ -103,7 +103,7 @@ onMounted(runPreview);
       <p class="push__done">{{ outcome.headline }}</p>
       <p v-if="outcome.detail" class="push__done-detail">{{ outcome.detail }}</p>
       <p v-if="outcome.link" class="push__done-detail">
-        <button type="button" @click="follow(outcome.link.url)">{{ outcome.link.label }}</button>
+        <button type="button" class="btn-sm" @click="follow(outcome.link.url)">{{ outcome.link.label }}</button>
       </p>
     </StatusBanner>
 
@@ -256,9 +256,5 @@ onMounted(runPreview);
   line-height: 1.45;
   opacity: 0.85;
   overflow-wrap: anywhere;
-}
-.push__done-detail button {
-  padding: 0.3rem 0.6rem;
-  font-size: 0.78rem;
 }
 </style>

@@ -89,7 +89,7 @@ watch(() => props.name, () => {
           <span class="copies__actions">
             <button
               type="button"
-              class="ghost"
+              class="ghost btn-sm"
               :aria-pressed="isOpen(copy.scope, 'push')"
               @click="show(copy.scope, 'push')"
             >
@@ -97,7 +97,7 @@ watch(() => props.name, () => {
             </button>
             <button
               type="button"
-              class="ghost danger"
+              class="danger btn-sm"
               :aria-pressed="isOpen(copy.scope, 'remove')"
               @click="show(copy.scope, 'remove')"
             >
@@ -194,11 +194,7 @@ watch(() => props.name, () => {
 }
 .copies__actions {
   display: flex;
-  gap: 0.35rem;
-}
-.copies__actions button {
-  padding: 0.25rem 0.6rem;
-  font-size: 0.75rem;
+  gap: 0.5rem;
 }
 .copies__actions button[aria-pressed="true"] {
   background: var(--surface-strong);

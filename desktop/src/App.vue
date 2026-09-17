@@ -612,7 +612,7 @@ onMounted(async () => {
             <button
               v-if="!picked"
               type="button"
-              class="ghost summary__all"
+              class="ghost btn-xs summary__all"
               @click="setSelecting(true)"
             >
               Select
@@ -620,7 +620,7 @@ onMounted(async () => {
             <template v-else>
               <button
                 type="button"
-                class="ghost summary__all"
+                class="ghost btn-xs summary__all"
                 @click="pickedNames.length === selectable.length ? (picked = new Set()) : selectAll()"
               >
                 {{ pickedNames.length === selectable.length ? "Select none" : `Select all ${selectable.length}` }}
@@ -628,12 +628,12 @@ onMounted(async () => {
               <button
                 v-if="pickedNames.length"
                 type="button"
-                class="ghost summary__clear"
+                class="ghost btn-xs"
                 @click="picked = new Set()"
               >
                 Clear
               </button>
-              <button type="button" class="ghost summary__done" @click="setSelecting(false)">
+              <button type="button" class="ghost btn-xs" @click="setSelecting(false)">
                 Stop selecting
               </button>
             </template>
@@ -750,6 +750,26 @@ button {
 button:active:not(:disabled) {
   transform: scale(0.97);
   filter: brightness(0.92);
+}
+/* Two steps down from the default, keyed to what the button is attached to rather than to
+   how big it should look: `.btn-sm` for an action on a row or card inside a view, `.btn-xs`
+   for one sitting inside a line of running text. The default is a view's own action.
+
+   Global for the same reason `.ghost` is, and against the same drift: this replaces eleven
+   sizes spread over thirteen components, which is what the detail page was showing — the
+   copy actions and the installed-copy actions sat 0.03rem of type and 0.05rem of padding
+   apart, close enough to read as a rendering fault rather than as a distinction.
+
+   Radius is deliberately not among them. Four values were in use on button-shaped buttons
+   (8px, 6px, 0.35rem, 0.25rem) with nothing to tell them apart, so the base 8px is now the
+   only one; the genuinely bespoke shapes (the switch, the tabs, the log bar) keep theirs. */
+button.btn-sm {
+  padding: 0.3rem 0.6rem;
+  font-size: 0.78rem;
+}
+button.btn-xs {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.72rem;
 }
 button.ghost {
   background: transparent;
@@ -943,13 +963,6 @@ h1 {
 }
 .summary__all {
   margin-left: auto;
-  padding: 0.2rem 0.5rem;
-  font-size: 0.75rem;
-}
-.summary__clear,
-.summary__done {
-  padding: 0.2rem 0.5rem;
-  font-size: 0.75rem;
 }
 .summary__freshness {
   /* Reads as a footnote to the counts, not as another count: it is about the data's age,

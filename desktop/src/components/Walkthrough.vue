@@ -189,7 +189,7 @@ onUnmounted(() => {
           It can read this skill's files and run the commands the skill declares. It cannot run a
           shell, and it cannot change your catalog.
         </p>
-        <button type="button" class="walkthrough__start" @click="start">Start setup</button>
+        <button type="button" class="ghost walkthrough__start" @click="start">Start setup</button>
       </div>
 
       <div v-else class="walkthrough__thread">
@@ -247,7 +247,7 @@ onUnmounted(() => {
           :placeholder="canReply ? 'Reply…' : 'Waiting for the assistant…'"
           @keydown.enter.exact.prevent="send"
         />
-        <button type="submit" class="walkthrough__send" :disabled="!canReply || !reply.trim()">
+        <button type="submit" class="ghost walkthrough__send" :disabled="!canReply || !reply.trim()">
           Send
         </button>
       </div>
@@ -275,16 +275,6 @@ onUnmounted(() => {
   opacity: 0.75;
 }
 
-.walkthrough__start,
-.walkthrough__send {
-  padding: 0.4rem 0.9rem;
-  border: 1px solid var(--border-control);
-  border-radius: 0.35rem;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-}
 .walkthrough__send {
   /* Height comes from the row, not from padding — `align-items: stretch` above matches it to the
      textarea. Width is whatever the input does not take: both flex from a zero basis, so the row
@@ -292,11 +282,6 @@ onUnmounted(() => {
      space beside it at one size and crowding at another. */
   flex: 1;
   padding-block: 0;
-}
-
-.walkthrough__send:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 
 /*
