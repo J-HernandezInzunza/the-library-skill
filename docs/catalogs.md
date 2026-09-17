@@ -97,6 +97,86 @@ gets it. You just resolve to yours first. Delete your copy and the name falls st
 back through to the team's. `doctor` reports overriding as a warning, not an error: it is
 the feature working.
 
+## Pinning one name
+
+Precedence is a single lever for the whole registry. It says "personal before shared" and
+that is all it can say — so the day you want your copy of everything *except* one skill,
+there is nothing to reach for. A **pin** is that exception:
+
+```bash
+./library pin session-retro shared     # this one name comes from the team catalog
+```
+
+```
+Pinned 'session-retro' to 'shared'.
+  `library use session-retro` now installs the 'shared' copy, ahead of personal
+  already-installed copies are untouched; re-run `library use` to switch one over
+```
+
+The pin outranks precedence for that name and nothing else: every other name your personal
+catalog holds still wins. `list`, `show`, `use`, `push`, and `doctor` all follow it, because
+it is applied where they already resolve rather than checked separately by each.
+
+```bash
+./library pin                          # every pin, and any that nothing can honour
+./library unpin session-retro          # back to precedence
+```
+
+Pins live in `pins:` in `config.local.yaml`, keyed by entry name. Three things are worth
+knowing:
+
+- **An inert pin is never written.** Pinning to a catalog that does not define the name is
+  refused up front, with the catalogs that do define it listed.
+- **A pin that stops working is not fatal.** Unregister the catalog it names, or lose its
+  clone for a run, and the name falls back to precedence — `doctor` reports the dangling
+  pin rather than every command failing.
+- **A pin reconciles what is already installed.** See below.
+
+### Pinning something you already have
+
+Both catalogs' copies of a name land at the same path, so once one is installed a pin on
+its own would leave the config saying one thing and the files another — until a refresh
+months later quietly swapped the skill underneath you. So `pin` looks at what is there:
+
+```
+./library pin alpha team
+```
+
+```
+Pinned 'alpha' to 'team'.
+  `library use alpha` now installs the 'team' copy, ahead of mine
+
+1 installed copy came from elsewhere:
+  ~/.claude/skills/alpha  (global, from mine) · installed
+
+Switching them over — this overwrites what is installed.
+```
+
+It only does that when the switch needs no judgement. Each of these stops it, names why,
+and leaves both the pin and the files alone:
+
+- **The installed copy has local edits** (`drifted`) — overwriting discards work the tool
+  cannot recover.
+- **The tool did not place it** (`untracked`) — there is no record of what it actually is.
+- **It is a project install** — `use --project` anchors to the directory you run it from,
+  which is not necessarily the one that copy sits in.
+- **The newly pinned copy depends on something its catalog does not have.** `requires`
+  resolve within one catalog, so a copy naming something only its old catalog had arrives
+  broken. This is the one failure that is worse after the switch than before it.
+
+It also names what still expects the copy being replaced. Those entries resolve the name
+inside *their* catalog, so after a switch what is on disk is no longer the copy they name.
+
+`--no-install` writes the pin and stops. `--dry-run` writes nothing at all and just reports
+what a pin would replace — the assessment reads the registry and the disk, never the pin, so
+it can be answered while both are still untouched. That is what the app asks with before it
+changes anything; under `--json` nothing is ever installed, because informing you *before*
+the overwrite is the whole point.
+
+You can also pin the copy that already wins. It changes nothing today and everything the day
+the registry is reordered, which is the case a chooser offering only the losing copies could
+not express without pinning the wrong one first.
+
 Two rules worth knowing up front:
 
 - **Dependencies resolve within one catalog.** A `requires` ref is looked up only in its

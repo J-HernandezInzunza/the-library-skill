@@ -2249,14 +2249,14 @@ class TestSingleCatalogGoldens(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(len(payload), 4)
         for item in payload:
-            # `catalog`/`overridden_by` (R2.4) and `state`/`receipt`/`has_setup`
-            # (design §4.1) are the additive keys; every pre-existing key keeps its
-            # name, type, and meaning (C-D8).
+            # `catalog`/`overridden_by` (R2.4), `state`/`receipt`/`has_setup`
+            # (design §4.1) and `pinned` are the additive keys; every pre-existing key
+            # keeps its name, type, and meaning (C-D8).
             self.assertEqual(
                 sorted(item),
                 ["catalog", "description", "has_setup", "installed", "locations",
-                 "name", "overridden_by", "receipt", "requires", "scopes", "source",
-                 "state", "type"],
+                 "name", "overridden_by", "pinned", "receipt", "requires", "scopes",
+                 "source", "state", "type"],
             )
             self.assertEqual((item["catalog"], item["overridden_by"]), ("shared", None))
         retro = next(i for i in payload if i["name"] == "session-retro")
@@ -2270,8 +2270,8 @@ class TestSingleCatalogGoldens(unittest.TestCase):
         # §4.1: the same record as `list`, not a thinner one.
         self.assertEqual([sorted(i) for i in payload],
                          [["catalog", "description", "has_setup", "installed",
-                           "locations", "name", "overridden_by", "receipt", "requires",
-                           "scopes", "source", "state", "type"]])
+                           "locations", "name", "overridden_by", "pinned", "receipt",
+                           "requires", "scopes", "source", "state", "type"]])
         self.assertEqual((payload[0]["catalog"], payload[0]["overridden_by"]), ("shared", None))
 
     def test_doctor_json_keys(self) -> None:
@@ -4327,6 +4327,377 @@ class TestPrecedenceAndOverriding(unittest.TestCase):
         self.assertIn("available: personal, shared", str(ctx.exception))
 
 
+class TestPins(unittest.TestCase):
+    """`pins:` names the catalog one colliding name resolves from, ahead of precedence.
+
+    The fixture registers `personal` ahead of `shared` and both hold `session-retro`,
+    so an unpinned resolve is the personal copy — every test here is about a pin
+    overriding that without disturbing the names beside it.
+    """
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        install_two_catalog_fixture(self.tool)
+
+    def load(self, pins: "dict[str, str] | None" = None) -> library.Config:
+        """Reload the sandbox config with *pins* spliced in."""
+        data = yaml.safe_load(self.tool.config_path.read_text())
+        if pins is not None:
+            data["pins"] = pins
+        self.tool.write_config(data)
+        return library.load_config()
+
+    def test_a_pin_beats_catalog_precedence(self) -> None:
+        cfg = self.load({"session-retro": "shared"})
+        self.assertEqual(cfg.resolve("session-retro").catalog, "shared")
+        self.assertEqual(library.winning_catalogs(cfg)["session-retro"], "shared")
+
+    def test_a_pin_moves_only_the_name_it_names(self) -> None:
+        cfg = self.load({"session-retro": "shared"})
+        self.assertEqual(cfg.resolve("scratch-thing").catalog, "personal")
+
+    def test_both_override_directions_follow_the_pin(self) -> None:
+        cfg = self.load({"session-retro": "shared"})
+        self.assertEqual([e.catalog for e in cfg.overridden("session-retro")], ["personal"])
+        winner = cfg.resolve("session-retro")
+        self.assertEqual(library.override_split(cfg, winner), (["personal"], []))
+        loser = cfg.resolve("session-retro", catalog="personal")
+        self.assertEqual(library.override_split(cfg, loser), ([], ["shared"]))
+
+    def test_a_catalog_restricted_resolve_ignores_the_pin(self) -> None:
+        # `--catalog` is the explicit ask for one catalog's copy; a pin redirecting it
+        # would leave no way to reach the other copy at all.
+        cfg = self.load({"session-retro": "shared"})
+        self.assertEqual(cfg.resolve("session-retro", "personal").catalog, "personal")
+
+    def test_a_pin_to_the_precedence_winner_changes_nothing(self) -> None:
+        cfg = self.load({"session-retro": "personal"})
+        self.assertEqual(cfg.resolve("session-retro").catalog, "personal")
+        self.assertEqual([e.catalog for e in cfg.overridden("session-retro")], ["shared"])
+
+    def test_a_pin_no_catalog_can_honour_leaves_precedence_standing(self) -> None:
+        # Unregistering a catalog, or a clone that failed this run, must not resolve the
+        # name to nothing — it falls back and `doctor` reports the dangling pin.
+        for pins in ({"session-retro": "gone"}, {"nobody-has-this": "shared"}):
+            with self.subTest(pins=pins):
+                cfg = self.load(pins)
+                self.assertEqual(cfg.resolve("session-retro").catalog, "personal")
+
+    def test_an_unrelated_pin_does_not_reorder_the_merged_list(self) -> None:
+        # `list` reads this order, so a pin that shuffled slots it does not own would
+        # move rows the user never touched.
+        plain = [(e.name, e.catalog) for e in self.load().entries()]
+        pinned = [(e.name, e.catalog) for e in self.load({"session-retro": "shared"}).entries()]
+        self.assertEqual(len(plain), len(pinned))
+        moved = {a[0] for a, b in zip(plain, pinned) if a != b}
+        self.assertEqual(moved, {"session-retro"})
+
+    def test_only_the_shape_of_pins_is_a_config_problem(self) -> None:
+        base = {"catalogs": [LOCAL_ITEM]}
+        self.assertIn("'pins:' is not a mapping",
+                      library.Config.problems({**base, "pins": ["session-retro"]})[0])
+        self.assertIn("does not name a catalog",
+                      library.Config.problems({**base, "pins": {"session-retro": ""}})[0])
+        # A pin on a catalog nobody registered is a doctor finding, never fatal.
+        self.assertEqual(library.Config.problems({**base, "pins": {"session-retro": "gone"}}), [])
+
+
+class TestPinCommands(unittest.TestCase):
+    """`library pin` / `unpin`, the front door to the `pins:` block."""
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        install_two_catalog_fixture(self.tool)
+
+    def pins(self) -> dict[str, str]:
+        return yaml.safe_load(self.tool.config_path.read_text()).get("pins") or {}
+
+    def test_pinning_writes_the_config_and_reports_what_it_beats(self) -> None:
+        code, out, _ = run_cli("pin", "session-retro", "shared", "--no-pull")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.pins(), {"session-retro": "shared"})
+        self.assertIn("Pinned 'session-retro' to 'shared'", out)
+        self.assertIn("ahead of personal", out)
+        # Nothing of that name is on disk here, so there is nothing to reconcile.
+        self.assertIn("nothing to reconcile", out)
+        self.assertEqual(library.load_config().resolve("session-retro").catalog, "shared")
+
+    def test_pinning_to_a_catalog_without_the_name_is_refused(self) -> None:
+        # Writing an inert pin would look like the choice had been made.
+        code, _, err = run_cli("pin", "grill-me", "personal", "--no-pull")
+        self.assertEqual(code, 1)
+        self.assertIn("'personal' does not define 'grill-me'", err)
+        self.assertIn("defined in: shared", err)
+        self.assertEqual(self.pins(), {})
+
+    def test_pinning_an_unknown_name_or_catalog_is_refused(self) -> None:
+        code, _, err = run_cli("pin", "session-retro", "nope", "--no-pull")
+        self.assertEqual((code, self.pins()), (1, {}))
+        self.assertIn("unknown catalog 'nope'", err)
+
+        code, _, err = run_cli("pin", "no-such-entry", "shared", "--no-pull")
+        self.assertEqual((code, self.pins()), (1, {}))
+        self.assertIn("no catalog defines 'no-such-entry'", err)
+
+    def test_pinning_a_name_only_one_catalog_holds_says_it_changes_nothing(self) -> None:
+        code, out, _ = run_cli("pin", "grill-me", "shared", "--no-pull")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.pins(), {"grill-me": "shared"})
+        self.assertIn("only catalog defining it", out)
+
+    def test_repinning_names_the_catalog_it_replaced(self) -> None:
+        run_cli("pin", "session-retro", "shared", "--no-pull")
+        code, out, _ = run_cli("pin", "session-retro", "personal", "--no-pull")
+        self.assertEqual(code, 0)
+        self.assertIn("was pinned to 'shared'", out)
+        self.assertEqual(self.pins(), {"session-retro": "personal"})
+
+    def test_listing_shows_every_pin_and_flags_a_dangling_one(self) -> None:
+        run_cli("pin", "session-retro", "shared", "--no-pull")
+        data = yaml.safe_load(self.tool.config_path.read_text())
+        data["pins"]["grill-me"] = "personal"  # hand-edited past the command's refusal
+        self.tool.write_config(data)
+
+        code, out, _ = run_cli("pin", "--no-pull")
+        self.assertEqual(code, 0)
+        self.assertIn("session-retro", out)
+        self.assertIn("dangling", out)
+
+        code, out, _ = run_cli("pin", "--no-pull", "--json")
+        payload = {p["name"]: p for p in json.loads(out)["pins"]}
+        self.assertEqual((payload["session-retro"]["dangling"],
+                          payload["session-retro"]["resolves_to"]), (False, "shared"))
+        self.assertEqual((payload["grill-me"]["dangling"],
+                          payload["grill-me"]["resolves_to"]), (True, "shared"))
+
+    def test_listing_with_no_pins_says_precedence_decides(self) -> None:
+        code, out, _ = run_cli("pin", "--no-pull")
+        self.assertEqual(code, 0)
+        self.assertIn("No pins", out)
+
+    def test_unpinning_hands_the_name_back_to_precedence(self) -> None:
+        run_cli("pin", "session-retro", "shared", "--no-pull")
+        code, out, _ = run_cli("unpin", "session-retro")
+        self.assertEqual(code, 0)
+        self.assertIn("now resolves from 'personal'", out)
+        # The key goes with the last pin, so a config that stopped using the feature
+        # reads the same as one that never did.
+        self.assertNotIn("pins", yaml.safe_load(self.tool.config_path.read_text()))
+        self.assertEqual(library.load_config().resolve("session-retro").catalog, "personal")
+
+    def test_unpinning_something_that_is_not_pinned_is_refused(self) -> None:
+        code, _, err = run_cli("unpin", "session-retro")
+        self.assertEqual(code, 1)
+        self.assertIn("is not pinned", err)
+
+    def test_list_and_show_report_why_a_copy_resolves(self) -> None:
+        # A pin and a precedence win look identical in `overridden_by`, and they are
+        # undone by different commands, so the reason is its own key.
+        run_cli("pin", "session-retro", "shared", "--no-pull")
+
+        _, out, _ = run_cli("list", "--no-pull", "--json")
+        rows = {(r["catalog"], r["name"]): r for r in json.loads(out)}
+        self.assertTrue(rows[("shared", "session-retro")]["pinned"])
+        self.assertIsNone(rows[("shared", "session-retro")]["overridden_by"])
+        self.assertFalse(rows[("personal", "session-retro")]["pinned"])
+        self.assertEqual(rows[("personal", "session-retro")]["overridden_by"], "shared")
+        self.assertFalse(rows[("personal", "scratch-thing")]["pinned"])
+
+        _, out, _ = run_cli("show", "session-retro", "--no-pull", "--json")
+        copies = {c["catalog"]: c for c in json.loads(out)["copies"]}
+        self.assertEqual((copies["shared"]["wins"], copies["shared"]["pinned"]), (True, True))
+        self.assertEqual((copies["personal"]["wins"], copies["personal"]["pinned"]),
+                         (False, False))
+
+    def test_doctor_reports_a_dangling_pin_as_a_warning(self) -> None:
+        data = yaml.safe_load(self.tool.config_path.read_text())
+        data["pins"] = {"session-retro": "gone"}
+        self.tool.write_config(data)
+        with stubbed_gh():
+            code, out, _ = run_cli("doctor", "--no-pull", "--json")
+        payload = json.loads(out)
+        messages = [w["message"] for w in payload["warnings"]]
+        self.assertTrue(any("pinned to 'gone'" in m and "not registered" in m for m in messages),
+                        messages)
+        # Inert, never fatal: the name still installs, just not from where it was asked,
+        # so the finding is a warning and nothing about it raises the exit code.
+        self.assertNotIn("pinned to", " ".join(e["message"] for e in payload["errors"]))
+
+
+class TestPinSwitch(unittest.TestCase):
+    """Pinning a name that is already installed from somewhere else.
+
+    A pin decides what the *next* install fetches, so on a machine where the name is
+    already on disk the config and the files disagree until something reconciles them.
+    Both catalogs here have real local sources, so `use` runs offline.
+    """
+
+    def setUp(self) -> None:
+        self.tool = TempTool()
+        self.addCleanup(self.tool.stop)
+        self.src = self.tool.root / "sources"
+        for owner in ("mine", "team"):
+            for name in ("alpha", "helper"):
+                (self.src / owner / name).mkdir(parents=True)
+                (self.src / owner / name / "SKILL.md").write_text(f"# {name} from {owner}\n")
+        self.write_catalogs()
+
+    def write_catalogs(self, team_requires: str = "", mine_extra: str = "") -> None:
+        mine = self.tool.root / "mine.yaml"
+        mine.write_text(f"""library:
+  skills:
+    - name: alpha
+      description: my alpha
+      source: {self.src}/mine/alpha/SKILL.md
+{mine_extra}  agents: []
+  prompts: []
+""")
+        team = self.tool.root / "team.yaml"
+        team.write_text(f"""library:
+  skills:
+    - name: alpha
+      description: team alpha
+      source: {self.src}/team/alpha/SKILL.md
+{team_requires}  agents: []
+  prompts: []
+""")
+        self.tool.write_config({"catalogs": [
+            {"id": "mine", "path": str(mine)},
+            {"id": "team", "path": str(team)},
+        ]})
+
+    @property
+    def dest(self) -> Path:
+        return self.tool.home / ".claude" / "skills" / "alpha"
+
+    def install_mine(self) -> None:
+        code, _, err = run_cli("use", "alpha", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(library.load_receipts()[str(self.dest)]["catalog"], "mine")
+
+    def test_a_clean_switch_is_made_and_reported(self) -> None:
+        self.install_mine()
+        code, out, err = run_cli("pin", "alpha", "team", "--no-pull")
+        self.assertEqual(code, 0, err)
+
+        self.assertIn("came from elsewhere", out)
+        self.assertIn("from mine", out)
+        self.assertIn("this overwrites what is installed", out)
+        # The files really were swapped, and the receipt now names the pinned catalog.
+        self.assertEqual((self.dest / "SKILL.md").read_text(), "# alpha from team\n")
+        self.assertEqual(library.load_receipts()[str(self.dest)]["catalog"], "team")
+
+    def test_no_install_writes_the_pin_and_leaves_the_files(self) -> None:
+        self.install_mine()
+        code, out, err = run_cli("pin", "alpha", "team", "--no-pull", "--no-install")
+        self.assertEqual(code, 0, err)
+
+        self.assertIn("Left as they are", out)
+        self.assertEqual((self.dest / "SKILL.md").read_text(), "# alpha from mine\n")
+        self.assertEqual(library.load_receipts()[str(self.dest)]["catalog"], "mine")
+        # The pin itself still landed: only the disk was left alone.
+        self.assertEqual(library.load_config().resolve("alpha").catalog, "team")
+
+    def test_local_edits_block_the_switch_and_the_pin_still_stands(self) -> None:
+        self.install_mine()
+        (self.dest / "SKILL.md").write_text("# alpha, edited by hand\n")
+
+        code, out, err = run_cli("pin", "alpha", "team", "--no-pull")
+        self.assertEqual(code, 0, err)
+
+        self.assertIn("Not switchable without a decision", out)
+        self.assertIn("edits this tool did not make", out)
+        # Nothing was overwritten, and the choice the user expressed was still recorded.
+        self.assertEqual((self.dest / "SKILL.md").read_text(), "# alpha, edited by hand\n")
+        self.assertEqual(library.load_config().resolve("alpha").catalog, "team")
+
+    def test_a_dependency_the_new_catalog_cannot_resolve_blocks_the_switch(self) -> None:
+        # The failure that is worse *after* the switch than before: `requires` resolve
+        # within the entry's own catalog, so a copy naming something only its old
+        # catalog had arrives broken.
+        self.write_catalogs(team_requires='      requires: ["skill:nowhere"]\n')
+        self.install_mine()
+
+        code, out, err = run_cli("pin", "alpha", "team", "--no-pull")
+        self.assertEqual(code, 0, err)
+
+        self.assertIn("does not resolve in 'team'", out)
+        self.assertEqual((self.dest / "SKILL.md").read_text(), "# alpha from mine\n")
+
+    def test_an_installed_dependent_of_the_replaced_copy_is_named(self) -> None:
+        self.write_catalogs(mine_extra=f"""    - name: helper
+      description: needs alpha
+      source: {self.src}/mine/helper/SKILL.md
+      requires: ["skill:alpha"]
+""")
+        code, _, err = run_cli("use", "helper", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+        code, out, err = run_cli("pin", "alpha", "team", "--no-pull")
+        self.assertEqual(code, 0, err)
+        self.assertIn("still expected by helper", out)
+
+    def test_a_dry_run_reports_the_overwrite_and_writes_nothing(self) -> None:
+        # The whole point of informing first: the caller can show what a pin would
+        # replace before anything — config or files — has changed.
+        self.install_mine()
+        code, out, err = run_cli("pin", "alpha", "team", "--no-pull", "--dry-run", "--json")
+        self.assertEqual(code, 0, err)
+
+        payload = json.loads(out)
+        self.assertIs(payload["dry_run"], True)
+        self.assertEqual((payload["switch"]["switchable"], payload["switch"]["simple"]),
+                         (True, True))
+        self.assertEqual([s["from"] for s in payload["switch"]["stale"]], ["mine"])
+        # Neither half was touched.
+        self.assertEqual((self.dest / "SKILL.md").read_text(), "# alpha from mine\n")
+        self.assertEqual(library.load_config().pins, {})
+        self.assertEqual(library.load_config().resolve("alpha").catalog, "mine")
+
+    def test_a_dry_run_describes_a_blocked_switch_the_same_way(self) -> None:
+        self.install_mine()
+        (self.dest / "SKILL.md").write_text("# edited\n")
+
+        code, out, _ = run_cli("pin", "alpha", "team", "--no-pull", "--dry-run")
+        self.assertEqual(code, 0)
+        self.assertIn("nothing has been written", out)
+        self.assertIn("Not switchable without a decision", out)
+        self.assertIn("edits this tool did not make", out)
+        self.assertEqual(library.load_config().pins, {})
+
+    def test_nothing_installed_means_nothing_to_reconcile(self) -> None:
+        code, out, err = run_cli("pin", "alpha", "team", "--no-pull")
+        self.assertEqual(code, 0, err)
+        self.assertIn("nothing to reconcile", out)
+
+    def test_json_reports_the_assessment_and_installs_nothing(self) -> None:
+        # The app shows the user what would be overwritten before overwriting it, so this
+        # channel reports and stops. Informing *before* the write is the point.
+        self.install_mine()
+        code, out, err = run_cli("pin", "alpha", "team", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+        switch = json.loads(out)["switch"]
+        self.assertEqual((switch["switchable"], switch["simple"]), (True, True))
+        self.assertEqual(switch["blockers"], [])
+        self.assertEqual([s["from"] for s in switch["stale"]], ["mine"])
+        self.assertEqual([s["state"] for s in switch["stale"]], ["installed"])
+        self.assertEqual((self.dest / "SKILL.md").read_text(), "# alpha from mine\n")
+
+    def test_json_reports_why_a_switch_is_not_simple(self) -> None:
+        self.install_mine()
+        (self.dest / "SKILL.md").write_text("# edited\n")
+
+        code, out, _ = run_cli("pin", "alpha", "team", "--no-pull", "--json")
+        self.assertEqual(code, 0)
+        switch = json.loads(out)["switch"]
+        self.assertEqual((switch["switchable"], switch["simple"]), (True, False))
+        self.assertEqual(len(switch["blockers"]), 1)
+        self.assertIn("discards them", switch["blockers"][0])
+
+
 class TestCatalogFlag(unittest.TestCase):
     def setUp(self) -> None:
         self.tool = TempTool()
@@ -5271,8 +5642,8 @@ library:
         self.assertEqual(
             sorted(record),
             ["catalog", "description", "has_setup", "installed", "locations", "name",
-             "overridden_by", "receipt", "requires", "scopes", "source", "state",
-             "type"],
+             "overridden_by", "pinned", "receipt", "requires", "scopes", "source",
+             "state", "type"],
         )
 
     def _record(self, name: str) -> dict:
@@ -5424,7 +5795,7 @@ library:
 
     def test_the_documented_keys_are_untouched_by_the_addition(self) -> None:
         # C-D8: additive means additive — every pre-existing key keeps its name, type
-        # and value, and only `locations` is new.
+        # and value; only `locations` and `pinned` are new.
         self.use("alpha")
         disable_on_disk(self.global_dest())
         record = self.record()
@@ -5434,7 +5805,7 @@ library:
             {"type": "skill", "name": "alpha", "description": "First",
              "source": f"{self.src}/alpha/SKILL.md", "requires": [],
              "installed": True, "scopes": ["global"],
-             "catalog": "personal", "overridden_by": None,
+             "catalog": "personal", "overridden_by": None, "pinned": False,
              "state": "disabled", "receipt": receipt, "has_setup": False},
         )
 
@@ -6502,8 +6873,62 @@ library:
 
     def test_the_catalog_restriction_picks_the_other_copy(self) -> None:
         payload = self.show("session-retro", "--catalog", "shared")
-        self.assertEqual([c["catalog"] for c in payload["copies"]], ["shared"])
         self.assertEqual(payload["entry"]["catalog"], "shared")
+        # Every catalog holding the name, not just the subject: asking about one copy is
+        # not saying the others stopped existing, and a caller offering to switch between
+        # them cannot do it from a list of one.
+        self.assertEqual([c["catalog"] for c in payload["copies"]], ["personal", "shared"])
+
+    def test_the_subject_is_marked_separately_from_the_copy_that_resolves(self) -> None:
+        # Under `--catalog` these are different copies, and a page that conflated them
+        # reported the copy you asked for as the one a plain `use` would install.
+        payload = self.show("session-retro", "--catalog", "shared")
+        copies = {c["catalog"]: c for c in payload["copies"]}
+        self.assertEqual((copies["personal"]["wins"], copies["personal"]["subject"]),
+                         (True, False))
+        self.assertEqual((copies["shared"]["wins"], copies["shared"]["subject"]),
+                         (False, True))
+
+    def test_unrestricted_show_makes_the_resolved_copy_the_subject(self) -> None:
+        copies = {c["catalog"]: c for c in self.show("session-retro")["copies"]}
+        self.assertEqual((copies["personal"]["wins"], copies["personal"]["subject"]),
+                         (True, True))
+        self.assertEqual((copies["shared"]["wins"], copies["shared"]["subject"]),
+                         (False, False))
+
+    def test_the_overridden_copys_page_reports_the_destination_it_shares(self) -> None:
+        # `list` blanks install status for a copy that does not resolve, so two rows never
+        # both claim one destination. On a page *about* that copy it read "not installed"
+        # over a directory that plainly held something; the receipt names whose it is.
+        code, _, err = run_cli("use", "session-retro", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+
+        entry = self.show("session-retro", "--catalog", "shared")["entry"]
+        self.assertEqual(entry["catalog"], "shared")
+        # Still honestly reported as the losing copy…
+        self.assertEqual(entry["overridden_by"], "personal")
+        # …while the destination it shares is described as it actually is.
+        self.assertEqual((entry["installed"], entry["scopes"]), (True, ["global"]))
+        self.assertEqual(entry["state"], "installed")
+        self.assertEqual(entry["receipt"]["catalog"], "personal")
+
+    def test_the_resolved_copys_page_is_unchanged_by_that(self) -> None:
+        code, _, err = run_cli("use", "session-retro", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        entry = self.show("session-retro")["entry"]
+        self.assertIsNone(entry["overridden_by"])
+        self.assertEqual((entry["installed"], entry["scopes"]), (True, ["global"]))
+        self.assertEqual(entry["receipt"]["catalog"], "personal")
+
+    def test_the_restricted_subject_reports_its_own_catalogs_entry(self) -> None:
+        # The bug this exists for: opening the shared copy showed the personal one's
+        # description and source, because a name alone resolved to the winner.
+        payload = self.show("session-retro", "--catalog", "shared")
+        self.assertEqual(payload["entry"]["description"],
+                         "Distill a finished session into durable style learnings")
+        self.assertIn("shared", payload["entry"]["catalog"])
+        self.assertNotEqual(payload["entry"]["description"],
+                            self.show("session-retro")["entry"]["description"])
 
     def test_an_unknown_name_reports_not_found(self) -> None:
         self.assertEqual(self.show("nope", expect=2)["status"], "NOT_FOUND")

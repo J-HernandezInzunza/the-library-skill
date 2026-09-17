@@ -32,6 +32,8 @@ Two ways to drive it, same result:
 | Sync everything | "sync all my installed library skills" | `./library sync` |
 | What a skill needs to work | "what setup does atlassian-toolkit need?" | `./library setup atlassian-toolkit` |
 | Author a skill's setup manifest | "start a setup.yaml for my-skill" | `./library setup my-skill --scaffold > setup.yaml` |
+| Choose which catalog a name comes from | "use the team's copy of commit-and-push" | `./library pin commit-and-push shared` |
+| Hand a name back to precedence | "stop pinning commit-and-push" | `./library unpin commit-and-push` |
 | Health check | "check the library catalog for problems" | `./library doctor` |
 | See your catalogs | "what catalogs am I using?" | `./library catalog list` |
 | Start a personal catalog | "give me my own catalog" | `./library catalog init <path>` |
@@ -46,7 +48,7 @@ items) · `--dry-run` (preview `add`/`update`/`remove`/`push`, or resolve a `use
 without installing) · `--project`/`--dir` (`use` target; default is global) · `--cwd`
 (anchor relative `project`-scope installs to a directory other than where you run) ·
 `--deep` (`doctor` source-liveness) · `--catalog <id>` (restrict any name-taking command
-to one catalog, bypassing precedence — see [Personal Catalogs](catalogs.md)).
+to one catalog, bypassing precedence — see [Personal Catalogs](catalogs.md)). `./library pin` with no name lists every pin.
 
 **Write-op flags:** `add --batch <file>` (register many entries in one PR; mutually exclusive
 with `--name`/`--source`) · `push --from <path|scope>` (which installed copy to push) and

@@ -22,6 +22,8 @@ A legacy singular `catalog:` mapping still works and is read as one protected re
 
 **Precedence and overriding.** Registry order is precedence, and the first catalog defining a name wins — the losers are **overridden**. That is the point of a personal catalog: iterate on your own copy of a team skill without touching the team's. Nothing is silently replaced — the overridden entry is untouched and still installable with `--catalog`. Overriding is never silent either: `list`, `use`, `push`, and `doctor` name the winner and the losers outright, and `search` returns every copy in precedence order with its catalog (so the first hit is the one a bare `use` installs). Pass that on to the user; it is not noise.
 
+**Pinning.** Precedence is one lever for the whole registry, so it cannot say "my copies, except this one skill". `library pin <name> <catalog>` does: it makes that one name resolve from the named catalog, ahead of precedence, and `library unpin <name>` gives it back. Pins live in `pins:` in `config.local.yaml` and are keyed by entry name, matching how the tool resolves. A pin also reconciles what is already installed: where a copy of that name came from another catalog, `pin` switches it over when that needs no judgement, and otherwise names what is in the way (local edits, a copy the tool did not place, a project install, or a dependency the new catalog cannot resolve) and leaves the files alone. `--no-install` skips it; `--json` never installs, so the app can show the overwrite first. A pin naming a catalog that does not hold the name is inert rather than fatal: precedence takes over and `doctor` reports it. Pinning is refused up front when the named catalog does not define the name, so an inert pin is never written by the command.
+
 **`--catalog <id>`** restricts any name-taking command to one catalog, bypassing precedence. Use it to reach an overridden copy, or to name a write's destination.
 
 **Writes need to know where they're going.** With more than one writable catalog and no `--catalog`, a write exits `2` with `status: "AMBIGUOUS_CATALOG"` and the candidate ids rather than guessing — ask the user which, then re-run with `--catalog`. Guessing is expensive here: one destination is a local file, another is a public PR on the team's repo.
@@ -120,6 +122,8 @@ Never say "PR opened" unless `mode == "pr"` **and** `method == "gh"`. Claiming a
 | `/library remove <name>`    | Remove from a catalog (same three modes); optionally purge local                       |
 | `/library list`             | Show full catalog with install status                                                 |
 | `/library show <name>`      | Everything about one entry: copies, overrides, deps, dependents, source, installs     |
+| `/library pin <name> <catalog>` | Make one colliding name resolve from a chosen catalog, ahead of precedence (no name: list pins) |
+| `/library unpin <name>`     | Drop that pin, handing the name back to catalog precedence                            |
 | `/library sync`             | Re-pull all installed items from source                                               |
 | `/library setup <name>`     | Report an installed skill's setup manifest + prerequisite state (never executes it)   |
 | `/library setup <name> --scaffold` | Print a canonical `setup.yaml` skeleton to stdout for a skill author to redirect       |

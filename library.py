@@ -729,6 +729,37 @@ def _catalog_from_raw(item: dict[str, Any]) -> Catalog:
     )
 
 
+def _pinned_first(entries: list[Entry], pins: dict[str, str]) -> list[Entry]:
+    """*entries* with each pinned copy moved to the front of its own name's slots.
+
+    Only the positions a pinned name already occupies are rewritten, so the merged
+    list stays grouped by catalog everywhere a pin does not reach — `list` output does
+    not shuffle because of a pin on some unrelated name.
+
+    A pin naming a catalog that does not hold the name is left to stand rather than
+    resolving to nothing: unregistering a catalog, or a clone that failed to refresh
+    this run, would otherwise silently discard the choice instead of falling back to
+    precedence. `doctor` reports it.
+    """
+    if not pins:
+        return entries
+
+    slots: dict[str, list[int]] = {}
+    for i, entry in enumerate(entries):
+        if entry.name in pins:
+            slots.setdefault(entry.name, []).append(i)
+
+    out = list(entries)
+    for name, where in slots.items():
+        group = [entries[i] for i in where]
+        winner = next((e for e in group if e.catalog == pins[name]), None)
+        if winner is None:
+            continue
+        for i, entry in zip(where, [winner] + [e for e in group if e is not winner]):
+            out[i] = entry
+    return out
+
+
 @dataclass
 class Config:
     """Per-device settings, loaded from config.local.yaml.
@@ -740,8 +771,14 @@ class Config:
     Holds the catalog registry in precedence order, highest first, so the first
     match for a name wins and a personal catalog registered ahead of the shared one
     overrides it.
+
+    `pins` is the per-name exception to that order. Precedence is one lever for the
+    whole registry, so it cannot say "my copy of everything, except this one skill" —
+    which is the shape the choice actually has once you keep a personal catalog beside
+    a team one.
     """
     catalogs: list[Catalog] = field(default_factory=list)
+    pins: dict[str, str] = field(default_factory=dict)  # entry name -> catalog it resolves from
     autopush: bool = False        # if true, pr-mode writes also run `gh pr create`
     default_add_catalog: str = ""  # write destination when --catalog is omitted
     dirs: dict[str, dict[str, str]] = field(default_factory=dict)  # install dirs
@@ -773,11 +810,17 @@ class Config:
 
     # ── entry resolution ────────────────────────────────────────────────
     def entries(self) -> list[Entry]:
-        """Every active catalog's entries, in precedence order, stamped with origin."""
+        """Every active catalog's entries, in resolution order, stamped with origin.
+
+        Catalog precedence, then pins. Applying the pin to the merged list — rather
+        than teaching each command to check for one — is what keeps a single
+        resolution path: `find_exact` takes the first match, so every caller that
+        already resolves through this list follows the pin without knowing pins exist.
+        """
         out: list[Entry] = []
         for c in self.active:
             out.extend(iter_catalog_entries(c))
-        return out
+        return _pinned_first(out, self.pins)
 
     def entries_of(self, cid: str) -> list[Entry]:
         """One catalog's entries — the scope dependencies resolve within."""
@@ -888,6 +931,20 @@ class Config:
                 path = str(item.get("path") or "")
                 if not (path.startswith("/") or path.startswith("~")):
                     out.append(f"catalog {label} path {path!r} must be absolute or start with '~'")
+
+        # A pin naming a catalog that is not registered is deliberately *not* a problem
+        # here: resolution falls back to precedence and `doctor` reports it, so an
+        # unregistered catalog — or one whose clone failed this run — cannot take every
+        # command down with it. Only the shape is validated.
+        pins = data.get("pins")
+        if pins is not None and not isinstance(pins, dict):
+            out.append("'pins:' is not a mapping of entry name to catalog id")
+        elif pins:
+            for name, cid in pins.items():
+                if not isinstance(name, str) or not name.strip():
+                    out.append(f"pin key {name!r} is not an entry name")
+                elif not isinstance(cid, str) or not cid.strip():
+                    out.append(f"pin '{name}' does not name a catalog")
         return out
 
     @classmethod
@@ -899,6 +956,8 @@ class Config:
                 "  or run `library init` to (re)create the config")
         return cls(
             catalogs=[_catalog_from_raw(item) for item in _normalize_catalogs(data)],
+            pins={str(k).strip(): str(v).strip() for k, v in (data.get("pins") or {}).items()
+                  if str(k).strip() and str(v).strip()},
             autopush=bool(data.get("autopush", False)),
             default_add_catalog=str(data.get("default_add_catalog") or ""),
             dirs=effective_dirs(default_dirs(data)),
@@ -952,6 +1011,9 @@ _CONFIG_HEADER = """\
 # catalogs: precedence order, highest first — the first catalog defining a name wins.
 #   local  = id + path (a library.yaml file, or a directory containing one)
 #   remote = id + repo + yaml_path + branch (protected: true -> writes open a PR)
+#
+# pins: entry name -> catalog id, the per-name exception to that order. Managed with
+#   `library pin <name> <catalog>` and `library unpin <name>`.
 """
 
 
@@ -1162,24 +1224,25 @@ def cross_catalog_conflict(cfg: Config, name: str) -> "AmbiguousCatalog | None":
 
 
 def override_split(cfg: Config, entry: Entry) -> tuple[list[str], list[str]]:
-    """(catalogs *entry* overrides, catalogs that override *entry*), by precedence.
+    """(catalogs *entry* overrides, catalogs that override *entry*), in resolution order.
 
     "Override" is about which copy resolves, never about editing the other one: the
-    lower-precedence entry is untouched and still installable with `--catalog`.
+    losing entry is untouched and still installable with `--catalog`.
 
-    Relative to *entry*, not to precedence alone: under `--catalog` the resolved entry
-    can be the overridden one. `cfg.overridden()` slices the merged list positionally, so
+    Read off the merged list rather than off catalog precedence, so a pin carries both
+    directions with it — the merged list is where `entries()` applies one, and a pin
+    that reversed "wins" without reversing "overrides" would have the two halves of the
+    same answer contradicting each other.
+
+    Relative to *entry*, not to the winner: under `--catalog` the resolved entry can be
+    the overridden one. `cfg.overridden()` slices positionally from the winner, so
     reading it here reported that a `--catalog shared` install overrode shared itself.
     """
-    order = [c.id for c in cfg.active]
-    rank = order.index(entry.catalog) if entry.catalog in order else len(order)
-    below: list[str] = []
-    above: list[str] = []
-    for e in cfg.entries():
-        if e.name != entry.name or e.catalog == entry.catalog:
-            continue
-        (above if order.index(e.catalog) < rank else below).append(e.catalog)
-    return list(dict.fromkeys(below)), list(dict.fromkeys(above))
+    order = list(dict.fromkeys(e.catalog for e in cfg.entries() if e.name == entry.name))
+    if entry.catalog not in order:
+        return [], order
+    rank = order.index(entry.catalog)
+    return order[rank + 1:], order[:rank]
 
 
 def override_note(cfg: Config, entry: Entry) -> str:
@@ -1199,25 +1262,40 @@ def new_entry_override_warnings(cfg: Config, cat: Catalog, name: str) -> list[st
 
     The add is allowed — overriding is the point of a personal catalog — but which copy
     wins is invisible in the command the user typed, so the direction is always named.
+
+    A pin settles the direction on its own where there is one, and is named as the
+    reason: "takes precedence" would be the wrong explanation for a copy that wins
+    because it was pinned, and the wrong fix to reach for when it loses.
     """
     order = [c.id for c in cfg.active]
     if cat.id not in order:
         return []
     rank = order.index(cat.id)
+    pinned = cfg.pins.get(name, "")
     overrides: list[str] = []
     overridden_by: list[str] = []
     for other in cfg.active:
         if other.id == cat.id or find_exact(iter_catalog_entries(other), name) is None:
             continue
-        (overrides if order.index(other.id) > rank else overridden_by).append(other.id)
+        if pinned == cat.id:
+            overrides.append(other.id)
+        elif pinned == other.id:
+            overridden_by.append(other.id)
+        else:
+            (overrides if order.index(other.id) > rank else overridden_by).append(other.id)
 
     out: list[str] = []
     if overrides:
+        why = "is pinned" if pinned == cat.id else "takes precedence"
         out.append(f"'{name}' also exists in {', '.join(overrides)}; the copy in "
-                   f"'{cat.id}' takes precedence and will override it")
+                   f"'{cat.id}' {why} and will override it")
     if overridden_by:
-        out.append(f"'{name}' also exists in {', '.join(overridden_by)}, which takes "
-                   f"precedence; the copy in '{cat.id}' will be overridden")
+        if pinned and pinned != cat.id:
+            out.append(f"'{name}' also exists in {', '.join(overridden_by)}; '{pinned}' is "
+                       f"pinned for this name, so the copy in '{cat.id}' will be overridden")
+        else:
+            out.append(f"'{name}' also exists in {', '.join(overridden_by)}, which takes "
+                       f"precedence; the copy in '{cat.id}' will be overridden")
     return out
 
 
@@ -3183,6 +3261,9 @@ def entry_record(cfg: Config, entry: Entry, winners: dict[str, str],
         # overridden entry, for the same reason `scopes` is: the losing copy is not what
         # `use` installs, so it reports no install of its own.
         "locations": [] if overridden_by else entry_locations(cfg.dirs, entry, receipts),
+        # Why this copy resolves, not just that it does: a pin and a precedence win look
+        # identical in `overridden_by`, and they are undone by different commands.
+        "pinned": cfg.pins.get(entry.name) == entry.catalog,
     }
 
 
@@ -3313,16 +3394,39 @@ def cmd_show(args: argparse.Namespace) -> int:
             print(f'No entry named "{args.name}". Try `library search`.')
         return 2
 
-    # copies are already in precedence order, so the first one is what `use` installs.
+    # The copy this report is *about*: the resolved one, or the named catalog's under
+    # `--catalog`. `copies` came from the restricted list, so its first element is
+    # already whichever of those applies.
     winner = copies[0]
     winner_record = entry_record(cfg, winner, winners, receipts)
+    # `entry_record` blanks install status for a copy that does not resolve, which is
+    # right for `list`: two rows share one destination and only one can claim it. This
+    # page is *about* one copy though, so blanking it left the overridden copy's page
+    # reading "not installed" over a destination that plainly held something. The
+    # destination is reported as it is, and the receipt it carries names the catalog the
+    # files actually came from — which is the fact that makes the difference actionable.
+    if winner_record["overridden_by"]:
+        own = entry_record(cfg, winner, {**winners, winner.name: winner.catalog}, receipts)
+        for key in ("installed", "scopes", "state", "receipt", "has_setup", "locations"):
+            winner_record[key] = own[key]
 
+    # …but which catalogs hold the name is not a question the restriction narrows. Asking
+    # about one catalog's copy is not saying the others stopped existing, and reporting
+    # only the subject left a caller unable to tell an overridden copy from a name only
+    # one catalog defines.
+    every_copy = [e for e in cfg.entries() if e.name == args.name]
     copy_records = []
-    for e in copies:
+    for e in every_copy:
         overrides, overridden_by = override_split(cfg, e)
         copy_records.append({"catalog": e.catalog, "type": e.type,
                              "description": e.description, "source": e.source,
-                             "requires": e.requires, "wins": e is winner,
+                             "requires": e.requires,
+                             # What a plain `use` installs, never "is this the subject":
+                             # under `--catalog` those differ, and a caller offering to
+                             # switch copies needs the first question answered.
+                             "wins": winners.get(e.name) == e.catalog,
+                             "subject": e.catalog == winner.catalog,
+                             "pinned": cfg.pins.get(e.name) == e.catalog,
                              "overrides": overrides, "overridden_by": overridden_by})
 
     # Dependencies resolve within the winner's own catalog, as `use` resolves them (D9);
@@ -3398,14 +3502,16 @@ def cmd_show(args: argparse.Namespace) -> int:
             print(f"  [{d.type}] {d.name}" + ("" if direct else "  (indirectly)"))
 
     if multi:
-        print("\nCopies (precedence order):")
+        print("\nCopies (resolution order):")
         for c in copy_records:
             marker = "*" if c["wins"] else " "
-            note = ""
+            note = "  ← this copy" if c["subject"] and not c["wins"] else ""
             if c["overridden_by"]:
-                note = f"  overridden by {', '.join(c['overridden_by'])}"
+                note += f"  overridden by {', '.join(c['overridden_by'])}"
             elif c["overrides"]:
-                note = f"  overrides {', '.join(c['overrides'])}"
+                note += f"  overrides {', '.join(c['overrides'])}"
+            if c["pinned"]:
+                note += "  (pinned)"
             print(f"  {marker} {c['catalog']}{note}")
             print(f"      {c['source']}")
 
@@ -3434,6 +3540,282 @@ def cmd_show(args: argparse.Namespace) -> int:
                 print(f"      installed {rec['installed_at']}")
     else:
         print("\nInstalled copies: none recorded by this tool")
+    return 0
+
+
+def pin_records(cfg: Config) -> list[dict[str, Any]]:
+    """Every pin, with what the registry can currently say about it.
+
+    `dangling` is the one fact a caller cannot derive: a pin whose catalog is
+    unregistered, skipped this run, or no longer holds the name is silently inert —
+    resolution falls back to precedence — and that is exactly the state worth showing
+    rather than leaving to be discovered at the next install.
+    """
+    out: list[dict[str, Any]] = []
+    for name, cid in sorted(cfg.pins.items()):
+        holders = list(dict.fromkeys(e.catalog for e in cfg.entries() if e.name == name))
+        resolved = cfg.resolve(name)
+        out.append({
+            "name": name,
+            "catalog": cid,
+            "holders": holders,
+            "dangling": cid not in holders,
+            "resolves_to": resolved.catalog if resolved else None,
+        })
+    return out
+
+
+def switch_assessment(cfg: Config, name: str, catalog: str,
+                      receipts: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """What pointing *name* at *catalog* means for the copies already on this machine.
+
+    A pin decides what the *next* install fetches, so on a machine where the name is
+    already installed from somewhere else the config and the disk disagree until
+    something reconciles them. Left implicit, that gap is invisible until a refresh
+    months later quietly swaps a skill under the user.
+
+    Four questions, because they fail differently:
+
+    - **Which destinations hold another catalog's copy.** Both catalogs' copies land at
+      the same path, so only the receipt distinguishes them.
+    - **Would overwriting destroy anything.** A `drifted` copy has edits the tool did not
+      make and cannot recover; an `untracked` one it never placed at all.
+    - **Does the new copy even resolve.** `requires` are looked up in the entry's own
+      catalog (D9), so a copy that depends on something only its old catalog had is
+      broken on arrival — the one failure that is worse after the switch than before.
+    - **What still expects the copy being replaced.** Scoped to the catalog being
+      switched away from, for the same D9 reason: a ref elsewhere naming this name
+      resolves to its own catalog's copy and is not this entry's dependent.
+    """
+    pinned = cfg.resolve(name, catalog)
+    empty = {"switchable": False, "simple": False, "stale": [], "blockers": [],
+             "unresolved_requires": [], "new_dependencies": [], "dependents": []}
+    if pinned is None:
+        return empty
+
+    stale: list[dict[str, Any]] = []
+    for loc in entry_locations(cfg.dirs, pinned, receipts):
+        if loc["state"] == "not_installed":
+            continue
+        came_from = (loc.get("receipt") or {}).get("catalog") or ""
+        if came_from == catalog:
+            continue  # already the pinned copy; nothing to reconcile
+        stale.append({"dest": loc["archive_path"] if loc["state"] == "disabled" else loc["path"],
+                      "scope": loc["scope"], "state": loc["state"], "from": came_from})
+
+    unresolved: list[dict[str, str]] = []
+    chain = resolve_deps(cfg.entries_of(catalog), pinned, unresolved)
+    new_deps = [d.name for d in chain
+                if d is not pinned
+                and entry_install_state(cfg.dirs, d, receipts)[0] == "not_installed"]
+
+    dependents: list[dict[str, Any]] = []
+    for old_id in sorted({s["from"] for s in stale if s["from"]}):
+        old = cfg.resolve(name, old_id)
+        if old is None:
+            continue
+        for dep, direct in resolve_dependents(cfg.entries_of(old_id), old):
+            if entry_install_state(cfg.dirs, dep, receipts)[0] != "not_installed":
+                dependents.append({"name": dep.name, "catalog": old_id, "direct": direct})
+
+    # Each blocker is a reason a caller must not reconcile this unattended. Stated as
+    # sentences rather than codes because every one of them is something the user has to
+    # decide about, and a code would only be translated back into this.
+    blockers: list[str] = []
+    for copy in stale:
+        if copy["state"] == "drifted":
+            blockers.append(f"the copy at {copy['dest']} has edits this tool did not make; "
+                            "installing over it discards them")
+        elif copy["state"] == "untracked":
+            blockers.append(f"the copy at {copy['dest']} was not placed by this tool, so "
+                            "there is no record of what it is")
+        elif copy["scope"] != "global":
+            # `use --project` anchors to the directory it runs in, which is not
+            # necessarily the one this copy sits in.
+            blockers.append(f"the copy at {copy['dest']} is a {copy['scope']} install; "
+                            f"switch it from that directory with `library use {name} --project`")
+    for ref in unresolved:
+        blockers.append(f"the '{catalog}' copy requires {ref['ref']}, which does not "
+                        f"resolve in '{catalog}'")
+
+    return {"switchable": bool(stale), "simple": bool(stale) and not blockers,
+            "stale": stale, "blockers": blockers,
+            "unresolved_requires": unresolved, "new_dependencies": new_deps,
+            "dependents": dependents}
+
+
+def _print_switch(name: str, catalog: str, switch: dict[str, Any]) -> None:
+    """The consequence block, shared by `pin` and `pin --dry-run` so they cannot drift."""
+    if not switch["switchable"]:
+        print("  nothing is installed under that name yet, so there is nothing to reconcile")
+        return
+
+    print(f"\n{len(switch['stale'])} installed "
+          f"{'copy' if len(switch['stale']) == 1 else 'copies'} came from elsewhere:")
+    for copy in switch["stale"]:
+        origin = copy["from"] or "an unrecorded source"
+        print(f"  {copy['dest']}  ({copy['scope']}, from {origin}) · {copy['state']}")
+    if switch["dependents"]:
+        named = ", ".join(sorted({d["name"] for d in switch["dependents"]}))
+        print(f"  still expected by {named} — those resolve '{name}' within their own "
+              "catalog, so the files they get are no longer the ones they name")
+    if switch["new_dependencies"]:
+        print(f"  switching also installs {', '.join(switch['new_dependencies'])}")
+    if switch["blockers"]:
+        print("\nNot switchable without a decision:")
+        for why in switch["blockers"]:
+            print(f"  - {why}")
+
+
+def cmd_pin(args: argparse.Namespace) -> int:
+    """Pin a name to one catalog, or list the pins when given no name.
+
+    A pin outranks catalog precedence for that one name. Precedence is a single lever
+    for the whole registry, so on its own it cannot express "my copies, except this
+    one" — which is the shape the choice takes as soon as a personal catalog sits
+    beside a shared one holding some of the same names.
+    """
+    cfg = load_config()
+    refresh_catalogs(cfg, args.no_pull)
+
+    if not args.name:
+        records = pin_records(cfg)
+        if args.json:
+            print(json.dumps({"status": "OK", "pins": records}, indent=2))
+            return 0
+        if not records:
+            print("No pins. Names resolve by catalog precedence alone "
+                  "(`library catalog list` shows the order).")
+            return 0
+        width = max(len(r["name"]) for r in records)
+        print("Pinned names (these beat catalog precedence):\n")
+        for rec in records:
+            note = "  ← dangling: that catalog does not hold this name" if rec["dangling"] else ""
+            print(f"  {rec['name'].ljust(width)}  {rec['catalog']}{note}")
+        return 0
+
+    if not args.catalog:
+        die(f"which catalog should '{args.name}' resolve from?\n"
+            f"  library pin {args.name} <catalog>")
+
+    if not any(c.id == args.catalog for c in cfg.active):
+        available = ", ".join(c.id for c in cfg.active) or "none"
+        die(f"unknown catalog '{args.catalog}' (available: {available})")
+
+    holders = list(dict.fromkeys(e.catalog for e in cfg.entries() if e.name == args.name))
+    if not holders:
+        die(f"no catalog defines '{args.name}' — nothing to pin. Try `library search`.")
+    # Refused rather than written: a pin on a catalog that does not hold the name is
+    # inert, and writing one silently would look like the choice had been made.
+    if args.catalog not in holders:
+        die(f"'{args.catalog}' does not define '{args.name}' "
+            f"(defined in: {', '.join(holders)})")
+
+    # The assessment reads the registry and the disk, never the pin, so it can be answered
+    # before anything is written — which is the only way a caller can show what a pin
+    # would overwrite *before* it overwrites it.
+    if args.dry_run:
+        switch = switch_assessment(cfg, args.name, args.catalog, load_receipts())
+        payload = {"status": "OK", "dry_run": True, "name": args.name,
+                   "catalog": args.catalog, "previous": cfg.pins.get(args.name) or None,
+                   "holders": holders, "only_holder": len(holders) == 1,
+                   "switch": switch, "migrated": []}
+        if args.json:
+            print(json.dumps(payload, indent=2))
+            return 0
+        print(f"Would pin '{args.name}' to '{args.catalog}' — nothing has been written.")
+        _print_switch(args.name, args.catalog, switch)
+        return 0
+
+    raw, notes = canonical_raw_config()
+    pins = dict(raw.get("pins") or {})
+    previous = pins.get(args.name, "")
+    pins[args.name] = args.catalog
+    raw["pins"] = pins
+    write_config(raw)
+
+    # A name only one catalog defines has nothing to win against. The pin is honoured
+    # and kept — it starts mattering the day a second catalog defines the name — but
+    # saying so beats letting it read as a change that did nothing.
+    inert = len(holders) == 1
+    # Re-read: resolution changed under us, and the assessment is about the registry as
+    # it is now, not as it was when this command started.
+    cfg = load_config()
+    switch = switch_assessment(cfg, args.name, args.catalog, load_receipts())
+
+    if args.json:
+        print(json.dumps({"status": "OK", "name": args.name, "catalog": args.catalog,
+                          "previous": previous or None, "holders": holders,
+                          "only_holder": inert, "switch": switch,
+                          "migrated": notes}, indent=2))
+        # Deliberately no install under `--json`: the caller drives its own, having shown
+        # the user what would be overwritten first. Informing *before* the overwrite is
+        # the whole point, and this channel cannot ask.
+        return 0
+
+    for note in notes:
+        print(f"  migrated config: {note}")
+    print(f"Pinned '{args.name}' to '{args.catalog}'.")
+    if previous and previous != args.catalog:
+        print(f"  was pinned to '{previous}'")
+    if inert:
+        print(f"  '{args.catalog}' is the only catalog defining it, so nothing changes "
+              "until another one does")
+    else:
+        beaten = ", ".join(c for c in holders if c != args.catalog)
+        print(f"  `library use {args.name}` now installs the '{args.catalog}' copy, "
+              f"ahead of {beaten}")
+
+    _print_switch(args.name, args.catalog, switch)
+    if not switch["switchable"]:
+        return 0
+    if switch["blockers"]:
+        print(f"\nThe pin stands; nothing was overwritten. Run `library use {args.name}` "
+              "when you have settled those.")
+        return 0
+
+    if getattr(args, "no_install", False):
+        print(f"\nLeft as they are (--no-install). Run `library use {args.name}` to switch "
+              "them over.")
+        return 0
+
+    print(f"\nSwitching them over — this overwrites what is installed.\n")
+    return cmd_use(argparse.Namespace(
+        name=[args.name], glob=True, project=False, dir=None, dry_run=False,
+        json=False, no_pull=True, cwd=None, catalog=None,
+    ))
+
+
+def cmd_unpin(args: argparse.Namespace) -> int:
+    """Drop a pin, handing the name back to catalog precedence."""
+    raw, notes = canonical_raw_config()
+    pins = dict(raw.get("pins") or {})
+    if args.name not in pins:
+        pinned = ", ".join(sorted(pins)) or "none"
+        die(f"'{args.name}' is not pinned (pinned: {pinned})")
+
+    was = pins.pop(args.name)
+    # Dropped entirely rather than left as `pins: {}`, so a config that never used the
+    # feature reads the same as one that stopped.
+    if pins:
+        raw["pins"] = pins
+    else:
+        raw.pop("pins", None)
+    cfg = write_config(raw)
+
+    resolved = cfg.resolve(args.name)
+    now = resolved.catalog if resolved else None
+    if args.json:
+        print(json.dumps({"status": "OK", "name": args.name, "was": was,
+                          "resolves_to": now, "migrated": notes}, indent=2))
+        return 0
+
+    for note in notes:
+        print(f"  migrated config: {note}")
+    print(f"Unpinned '{args.name}' (was '{was}').")
+    if now:
+        print(f"  it now resolves from '{now}' by catalog precedence")
+    print("  already-installed copies are untouched; re-run `library use` to switch one over")
     return 0
 
 
@@ -5610,18 +5992,48 @@ def _override_findings(cfg: Config) -> list[tuple[str, str]]:
 
     Overriding is deliberate — it is the whole reason to register a personal catalog —
     so this is a warning naming winner and losers (R14.5, R4.5), never an error.
-    `cfg.entries()` is in precedence order, so the first holder is the winner.
+    `cfg.entries()` is in resolution order, so the first holder is the winner whether
+    it got there by precedence or by a pin; the message says which, because they are
+    undone by different commands.
     """
     holders: dict[str, list[str]] = {}
     for e in cfg.entries():
         ids = holders.setdefault(e.name, [])
         if e.catalog not in ids:  # a within-catalog duplicate is a different finding
             ids.append(e.catalog)
-    return [
-        (name, f"'{name}' is defined in {len(ids)} catalogs — '{ids[0]}' overrides "
-               f"{', '.join(ids[1:])}")
-        for name, ids in holders.items() if len(ids) > 1
-    ]
+    out: list[tuple[str, str]] = []
+    for name, ids in holders.items():
+        if len(ids) < 2:
+            continue
+        how = " (pinned)" if cfg.pins.get(name) == ids[0] else ""
+        out.append((name, f"'{name}' is defined in {len(ids)} catalogs — '{ids[0]}'{how} "
+                          f"overrides {', '.join(ids[1:])}"))
+    return out
+
+
+def _pin_findings(cfg: Config) -> list[tuple[str, str]]:
+    """One warning per pin nothing can honour: (entry name, message).
+
+    A dangling pin is inert, not fatal — resolution falls back to precedence — which is
+    what makes it worth a finding: the name still installs, just not from where the
+    user said, and nothing else on the way would mention it.
+    """
+    out: list[tuple[str, str]] = []
+    for name, cid in sorted(cfg.pins.items()):
+        holders = list(dict.fromkeys(e.catalog for e in cfg.entries() if e.name == name))
+        if cid in holders:
+            continue
+        if not holders:
+            out.append((name, f"'{name}' is pinned to '{cid}', but no catalog defines that "
+                              f"name — `library unpin {name}` to drop it"))
+        elif not any(c.id == cid for c in cfg.catalogs):
+            out.append((name, f"'{name}' is pinned to '{cid}', which is not registered; it "
+                              f"resolves from '{holders[0]}' instead"))
+        else:
+            out.append((name, f"'{name}' is pinned to '{cid}', which does not define it "
+                              f"(defined in: {', '.join(holders)}); it resolves from "
+                              f"'{holders[0]}' instead"))
+    return out
 
 
 def _catalog_findings(
@@ -5854,6 +6266,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         # ── Cross-catalog overrides (R14.5) — the one check no single ───
         #    catalog owns, so it carries an entry but no catalog id.
         warns.extend((None, n, m) for n, m in _override_findings(cfg))
+
+        # ── Pins nothing can honour, for the same reason: no one catalog owns one ──
+        warns.extend((None, n, m) for n, m in _pin_findings(cfg))
 
         # ── Installed copies: setup manifests and install health (§4.5) ─
         #    Each name is checked once, against the copy resolution picks — the same
@@ -6234,6 +6649,22 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(sp)
     add_catalog_flag(sp)
     sp.set_defaults(func=cmd_show)
+
+    sp = sub.add_parser("pin", help="choose which catalog a colliding name resolves from "
+                                    "(no name: list the pins)")
+    sp.add_argument("name", nargs="?", help="exact entry name; omit to list every pin")
+    sp.add_argument("catalog", nargs="?", help="id of the catalog its copy should come from")
+    sp.add_argument("--no-install", dest="no_install", action="store_true",
+                    help="write the pin only; leave copies installed from elsewhere alone")
+    sp.add_argument("--dry-run", dest="dry_run", action="store_true",
+                    help="report what pinning would overwrite, writing nothing")
+    add_common(sp)
+    sp.set_defaults(func=cmd_pin)
+
+    sp = sub.add_parser("unpin", help="drop a pin, handing the name back to catalog precedence")
+    sp.add_argument("name", help="exact entry name to unpin")
+    sp.add_argument("--json", action="store_true", help="machine-readable output")
+    sp.set_defaults(func=cmd_unpin)
 
     sp = sub.add_parser("uninstall", help="delete installed copies of one or more entries (the catalog entry is kept)")
     sp.add_argument("name", nargs="+", metavar="name",
