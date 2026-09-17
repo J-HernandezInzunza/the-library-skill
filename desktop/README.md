@@ -30,13 +30,8 @@ just app-prereqs
   ✓ Python    3.13.1 (/opt/homebrew/bin/python3)
 ```
 
-It runs automatically before every `app-*` recipe too, so a missing toolchain fails there,
-naming the fix, rather than several layers down inside `cargo`.
-
 - **just** — the command runner the `app-*` recipes live in. `just --version`; install with
-  `brew install just`. Building through `npm run tauri build` directly does work, but it
-  skips the prerequisite check, which is the thing that turns a missing toolchain into a
-  sentence instead of a `cargo metadata` stack trace.
+  `brew install just`.
 - **Node** ≥ 20 (developed on 22) — `node -v`.
 - **Rust** (stable) — Tauri's backend, compiled from source. `cargo --version`; install with:
 
@@ -49,14 +44,11 @@ naming the fix, rather than several layers down inside `cargo`.
   shell profile, but a profile is only read when a shell starts — so the terminal you ran the
   installer in still has no `cargo` on its `PATH`. Source it, or open a new terminal. Skipping
   this is the most common way a correctly installed Rust still reads as missing, and
-  `just app-prereqs` says so when it happens rather than letting `cargo` fail later.
-- **Python ≥ 3.9**, present *somewhere* — not necessarily first on `PATH`. `library.py` uses 3.8+
-  syntax, so an older `python3` shadowing a newer one is a real failure mode. The app and the
-  `library` wrapper both pick an interpreter *by version* rather than trusting the first `python3`,
-  so a stale 3.7 on your `PATH` no longer breaks setup as long as a 3.9+ exists (macOS's own
-  `/usr/bin/python3` qualifies). If none does, both say so and name the fix.
+  `just app-prereqs` says so when it happens.
+- **Python ≥ 3.9**, present *somewhere*, `library.py` uses 3.8+ syntax. The app and the `library`
+  wrapper both pick an interpreter *by version*.
 
-  **Don't check this one with `python3 --version`** — it answers a question the tool never asks.
+  *Don't check this one with `python3 --version`* — it answers a question the tool never asks.
   A 3.7 first on `PATH` reads as a failure when the build is fine, and a passing 3.13 tells you
   nothing about which interpreter got picked. Ask the wrapper what it resolved:
 
@@ -72,16 +64,16 @@ satisfy beforehand:
   `bootstrap.py` for you.
 - **A registered catalog.** Without `config.local.yaml` the app shows a first-run screen that
   clones and registers one.
-- **`claude`, installed and authenticated** — only for guided setup walkthroughs. Everything else
+- **`claude code`, installed and authenticated** — only for guided setup walkthroughs. Everything else
   works without it, and the app says so next to the disabled control rather than failing.
 
-**The app sets no credentials of its own.** The agent inherits whatever auth your Claude Code
+**The app sets no credentials of its own.** The agent inherits whatever auth your Claude Code CLI
 already uses — a subscription login or an API key, whichever you have. There is nothing to
 configure here and nothing for the app to store.
 
 ## Install it
 
-From the tool root, once per machine:
+From the repo root, once per machine:
 
 ```bash
 just app-setup      # npm install
@@ -145,7 +137,7 @@ a shell, and it cannot reach `add`, `update`, `remove`, or `push` — mutating t
 you fill in, not something an agent does on your behalf.
 
 Start one from the **Setup** panel on a skill's page. It appears for a skill the CLI reports as
-ready — a manifest that validates and its prerequisites met — and only when `claude` is installed
+ready — a manifest that validates and its prerequisites met — and only when `claude code` is installed
 and signed in. Leaving the panel ends the walkthrough: the token is retired, the collected values
 are forgotten, and the agent's config files are deleted.
 
