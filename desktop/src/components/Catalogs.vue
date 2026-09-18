@@ -170,6 +170,26 @@ async function unregister() {
 }
 
 /**
+ * Drop the unregister outcome, because the level that reported it is being left.
+ *
+ * The banner answers "how did that go?" about the registry, and nothing else ever ended
+ * it: it is component state, and every level below this one — the register form, a
+ * catalog's entries — keeps this view mounted, so it survived the round trip. Coming back
+ * from registering a catalog landed on a success message naming the catalog you had just
+ * put back, which reads as the registration having failed.
+ */
+function clearOutcome() {
+  removed.value = null;
+  failure.value = "";
+}
+
+/** Open the register level at `source`, which is one of the ways the registry is left. */
+function openRegister(source: CatalogSource) {
+  clearOutcome();
+  registerAs.value = source;
+}
+
+/**
  * Every pin, fetched rather than derived from `entries`.
  *
  * A *dangling* pin — one whose catalog is unregistered, skipped, or no longer holds the
@@ -240,6 +260,7 @@ function isOpen(name: string, mode: Panel["mode"]): boolean {
 function goTo(id: string | null) {
   openCatalog.value = id;
   panel.value = null;
+  clearOutcome();
   // Navigating within the view means the registry *is* now behind us, so Back stops
   // belonging to whoever opened it.
   arrivedHere.value = false;
@@ -315,7 +336,7 @@ watch(
     <template v-else-if="!openCatalog">
       <PageHeader title="Catalogs" :back="backTo" @back="emit('close')">
         <template #actions>
-          <button type="button" class="ghost" @click="registerAs = 'existing'">
+          <button type="button" class="ghost" @click="openRegister('existing')">
             Add a catalog
           </button>
           <!-- `doctor` validates config and catalog integrity, so this is its subject
@@ -382,7 +403,7 @@ watch(
               until you decide to share it.
             </li>
           </ul>
-          <button type="button" @click="registerAs = 'create'">
+          <button type="button" @click="openRegister('create')">
             Create a personal catalog
           </button>
           <p class="catalogs__own-note">

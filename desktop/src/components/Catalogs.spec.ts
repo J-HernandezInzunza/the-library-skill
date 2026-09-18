@@ -3,7 +3,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { afterEach, describe, expect, it } from "vitest";
 import { catalog, entry } from "../testing/factories";
 import { answer, resetTauri } from "../testing/tauri";
-import type { Catalog, Entry } from "../types";
+import type { Catalog, Entry, UnregisterReport } from "../types";
 import Catalogs from "./Catalogs.vue";
 
 afterEach(resetTauri);
@@ -116,5 +116,74 @@ describe("Catalogs", () => {
     // would be selling one that does not happen.
     expect(view.find(".catalogs__empty").text()).toContain("personal has no entries yet");
     expect(view.find(".catalogs__empty").text()).not.toContain("your copy is the one that installs");
+  });
+});
+
+/**
+ * The report the banner draws, defaulting to the plainest outcome: nothing was deleted.
+ */
+function removal(overrides: Partial<UnregisterReport> = {}): UnregisterReport {
+  return {
+    status: "OK",
+    id: "shared",
+    purged_clone: null,
+    clone_kept_at: null,
+    purged_installs: [],
+    cleared_receipts: [],
+    migrated: [],
+    ...overrides,
+  };
+}
+
+/** A registry of two, since the last catalog cannot be unregistered, with shared second. */
+async function mountPair() {
+  answer("registry_remove", removal());
+  return mountCatalogs([catalog({ id: "personal" }), shared({ precedence: 2 })]);
+}
+
+/** Unregister `shared`, through the confirmation the user has to go through. */
+async function unregisterShared(view: Awaited<ReturnType<typeof mountPair>>) {
+  await view.findAll("button.catalogs__unregister")[1].trigger("click");
+  await view.find(".catalogs__confirm-actions button.danger").trigger("click");
+  await flushPromises();
+}
+
+describe("the unregister report", () => {
+  it("says what happened once the command comes back", async () => {
+    const view = await mountPair();
+
+    await unregisterShared(view);
+
+    expect(view.text()).toContain("Unregistered shared");
+  });
+
+  /**
+   * The bug both of these were written for. The report is component state, and the two
+   * levels below the registry keep this view mounted, so nothing ever ended it: coming back
+   * from registering a catalog landed on a success message naming the one just put back,
+   * which reads as the registration having failed.
+   */
+  it("is gone after a trip through the register level", async () => {
+    const view = await mountPair();
+    await unregisterShared(view);
+
+    await view.findAll("button").find((b) => b.text() === "Add a catalog")!.trigger("click");
+    await flushPromises();
+    await view.find(".page-head button").trigger("click");
+    await flushPromises();
+
+    expect(view.text()).not.toContain("Unregistered shared");
+  });
+
+  it("is gone after a trip into a catalog's entries", async () => {
+    const view = await mountPair();
+    await unregisterShared(view);
+
+    await view.find("button.catalogs__manage").trigger("click");
+    await flushPromises();
+    await view.find(".page-head button").trigger("click");
+    await flushPromises();
+
+    expect(view.text()).not.toContain("Unregistered shared");
   });
 });
