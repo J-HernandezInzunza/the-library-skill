@@ -90,7 +90,12 @@ describe("InstallPreview", () => {
 
   it("offers no source picker when only one catalog defines the name", () => {
     // A control with a single option reads as a setting you are failing to use.
-    expect(mountPanel().find(".install-preview__sources").exists()).toBe(false);
+    const panel = mountPanel();
+    expect(panel.find(".install-preview__sources").exists()).toBe(false);
+
+    // Which leaves the scope radios alone in the card, so they carry their own label
+    // rather than inheriting one from the row above that is no longer there.
+    expect(panel.text()).toContain("Install where");
   });
 
   it("installs from the picked catalog and offers to make the choice stick", async () => {
@@ -102,11 +107,15 @@ describe("InstallPreview", () => {
 
     // The resolving catalog carries the empty value, so the default install sends no
     // --catalog at all and runs exactly the command it ran before the picker existed.
-    const picker = panel.findAll(".install-preview__source-row input");
-    expect(picker.map((input) => input.attributes("value"))).toEqual(["", "mine"]);
+    const options = panel.findAll(".install-preview__source option");
+    expect(options.map((option) => option.attributes("value"))).toEqual(["", "mine"]);
+    // The option that installs when the control is left alone says so, in its own text,
+    // so the closed select still carries it.
+    expect(options[0].text()).toBe("team · default");
+    expect(options[1].text()).toBe("mine");
     expect(panel.find(".install-preview__remember").exists()).toBe(false);
 
-    await picker[1].setValue("mine");
+    await panel.find(".install-preview__source").setValue("mine");
     await panel.find(".install-preview__remember input").setValue(true);
     await panel.findAll("button").find((b) => b.text() === "Preview install")!.trigger("click");
     await flushPromises();
@@ -145,7 +154,7 @@ describe("InstallPreview", () => {
     });
     const panel = mountPanel(TWO_SOURCES);
 
-    await panel.findAll(".install-preview__source-row input")[1].setValue("mine");
+    await panel.find(".install-preview__source").setValue("mine");
     await panel.find(".install-preview__remember input").setValue(true);
     await panel.findAll("button").find((b) => b.text() === "Preview install")!.trigger("click");
     await flushPromises();
@@ -195,6 +204,20 @@ describe("InstallPreview", () => {
 
     expect(panel.text()).toContain("A project install is a copy-out");
     expect(panel.text()).toContain("will not list, refresh, or remove them");
+  });
+
+  it("says what a global install does, in the same place", async () => {
+    // The scope picker's two options differ in who owns the files afterwards, and a
+    // note on only one of them reads as a caveat attached to that option rather than
+    // as the difference between them.
+    const panel = mountPanel();
+
+    expect(panel.text()).toContain("A global install puts one copy in your Claude directory");
+    expect(panel.text()).toContain("listed, refreshed by a sync, and removable");
+
+    await panel.find('input[value="project"]').setValue();
+
+    expect(panel.text()).not.toContain("A global install");
   });
 
   it("holds the install behind the acknowledgement when the plan would discard edits", async () => {

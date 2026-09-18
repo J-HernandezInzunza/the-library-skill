@@ -80,7 +80,7 @@ async function setUp() {
 
 <template>
   <section class="view first-run">
-    <div class="view__body column">
+    <div class="view__body column stack">
       <StatusBanner v-if="failure" kind="error" :detail="failure" />
 
       <div class="first-run__panel">

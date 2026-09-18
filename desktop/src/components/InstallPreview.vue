@@ -52,6 +52,23 @@ const source = ref("");
 /** Ticked to write the picked source as a pin, so the next install agrees with this one. */
 const remember = ref(false);
 
+/**
+ * What marks out one option: it is the one that installs if the control is left alone.
+ *
+ * Folded into the option text rather than sat beside it as a badge, so a closed select
+ * still says it for the catalog in force.
+ *
+ * It used to name the *mechanism* — "by catalog order", meaning this catalog wins on
+ * registration precedence because no pin overrides it. That is the app's reason, not the
+ * reader's question, which is only ever "what do I get if I don't touch this". `pinned`
+ * stays because it says the default was chosen and will hold, rather than following
+ * whatever order the catalogs happen to be registered in.
+ */
+function sourceNote(option: InstallSource): string {
+  if (!option.resolves) return "";
+  return option.pinned ? " · default, pinned" : " · default";
+}
+
 /** The catalog a plain install would fetch, which is what the picker starts on. */
 const resolving = computed(
   () => props.sources.find((s) => s.resolves)?.catalog ?? "",
@@ -213,26 +230,22 @@ watch(
            with a single option, which reads as a setting you are failing to use. Above
            scope because it decides *what* gets installed, not where it lands. -->
       <div v-if="sources.length > 1" class="install-preview__sources">
-        <p class="install-preview__label">Install from</p>
-        <div class="install-preview__source-row">
-          <label v-for="option in sources" :key="option.catalog">
-            <input
-              v-model="source"
-              type="radio"
+        <!-- A select, where the scope below is radios: the two rows ask different
+             questions, and as two identical radio groups they read as one group of four.
+             This one also grows with the number of catalogs registered, which is the
+             other half of why it is not a row of radios. -->
+        <label class="install-preview__field">
+          <span class="install-preview__label">Install from</span>
+          <select v-model="source" class="install-preview__source">
+            <option
+              v-for="option in sources"
+              :key="option.catalog"
               :value="option.resolves ? '' : option.catalog"
-            />
-            {{ option.catalog }}
-            <span v-if="option.pinned" class="install-preview__source-note"
-              >pinned</span
             >
-            <span
-              v-else-if="option.resolves"
-              class="install-preview__source-note"
-            >
-              by catalog order
-            </span>
-          </label>
-        </div>
+              {{ option.catalog }}{{ sourceNote(option) }}
+            </option>
+          </select>
+        </label>
         <label v-if="overriding" class="install-preview__remember">
           <input v-model="remember" type="checkbox" />
           <span>
@@ -243,6 +256,7 @@ watch(
         </label>
       </div>
 
+      <p class="install-preview__label">Install where</p>
       <div class="install-preview__scopes">
         <label
           ><input v-model="scope" type="radio" value="global" /> Globally</label
@@ -253,16 +267,21 @@ watch(
         >
       </div>
 
-      <div v-if="scope === 'project'" class="install-preview__project">
-        <!-- Said where the choice is made, not after it. A project install is the one
-             action here with no follow-up: the files land in a repo with its own history,
-             review, and team, and nothing in this app tracks them from that point. -->
-        <p class="install-preview__handoff">
+      <p class="install-preview__note">
+        <template v-if="scope === 'project'">
           A project install is a copy-out. The files become that project's,
           managed by its own repo and workflow, and this app will not list,
           refresh, or remove them afterwards.
-        </p>
+        </template>
+        <template v-else>
+          A global install puts one copy in your Claude directory, where every
+          project on this machine can use it. The copy stays this app's to
+          manage: it will be listed, refreshed by a sync, and removable
+          afterwards.
+        </template>
+      </p>
 
+      <div v-if="scope === 'project'" class="install-preview__project">
         <button
           type="button"
           :class="{ ghost: !needsDirectory }"
@@ -392,7 +411,7 @@ watch(
 
         <!-- Repeated here because this is the screen someone closes the app on, and the
              entry is about to stop reporting itself as installed at all. -->
-        <p v-if="scope === 'project'" class="install-preview__handoff fade-in">
+        <p v-if="scope === 'project'" class="install-preview__note fade-in">
           Those files are that project's now, and this app keeps no further
           record of them — it will go on reporting {{ name }} as not installed.
         </p>
@@ -468,22 +487,21 @@ watch(
 .install-preview__sources {
   margin-bottom: 0.9rem;
 }
-.install-preview__source-row {
+.install-preview__field {
   display: flex;
-  gap: 1rem;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.install-preview__source {
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 0.35rem 0.5rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-control);
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
   font-size: 0.85rem;
-}
-.install-preview__source-row label {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-}
-.install-preview__source-note {
-  font-size: 0.68rem;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  opacity: 0.5;
 }
 .install-preview__remember {
   display: flex;
@@ -505,7 +523,7 @@ watch(
   align-items: center;
   gap: 0.3rem;
 }
-.install-preview__handoff {
+.install-preview__note {
   margin: 0 0 0.6rem;
   padding: 0.5rem 0.7rem;
   border-radius: 6px;
@@ -514,7 +532,7 @@ watch(
   line-height: 1.5;
   opacity: 0.85;
 }
-.install-preview__handoff code {
+.install-preview__note code {
   font-family: ui-monospace, SFMono-Regular, monospace;
 }
 .install-preview__project {

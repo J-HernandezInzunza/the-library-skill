@@ -33,7 +33,9 @@ const writeMode = computed(() => {
   >
     <div class="catalog-summary__line">
       <p class="catalog-summary__meta">
-        <span class="catalog-summary__rank">precedence {{ catalog.precedence }}</span>
+        <span class="catalog-summary__rank"
+          >precedence {{ catalog.precedence }}</span
+        >
         <span>{{ catalog.kind }}</span>
         <span>{{ writeMode }}</span>
         <span class="catalog-summary__location">{{ catalog.location }}</span>
@@ -57,14 +59,18 @@ const writeMode = computed(() => {
     </div>
 
     <p v-if="catalog.skipped" class="catalog-summary__skipped">
-      This catalog was skipped, so nothing below comes from it: {{ catalog.skipped }}
+      This catalog was skipped, so nothing below comes from it:
+      {{ catalog.skipped }}
     </p>
   </section>
 </template>
 
 <style scoped>
 .catalog-summary {
-  margin: 0 0 1rem;
+  /* No margin: this is a row in the view's `.stack`, which owns the space around it. The
+     strip carried 0.75rem of its own while the counts line under it carried a 2.5rem
+     reserve, which is how it came to sit twice as far from what is below it as from the
+     tabs above. */
   padding: 0.6rem 0.8rem;
   border-left: 3px solid var(--catalog-edge);
   border-radius: 0 8px 8px 0;
@@ -74,6 +80,14 @@ const writeMode = computed(() => {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+  /* The strip is the same height on every tab, including the ones where "Manage entries" is
+     absent. Without this its height is whatever happens to be inside it, and a `btn-xs` is
+     ~7px taller than the line of meta beside it — so switching from a writable catalog to a
+     read-only one made the banner, and everything under it, jump.
+
+     A `btn-xs` box: 0.72rem of type at the browser's normal leading, plus 0.2rem of padding
+     and 1px of border top and bottom. */
+  min-height: 1.4rem;
 }
 .catalog-summary__meta {
   display: flex;

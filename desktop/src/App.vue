@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { ref, computed, defineAsyncComponent, onMounted, onUnmounted, watch } from "vue";
+import {
+  ref,
+  computed,
+  defineAsyncComponent,
+  onMounted,
+  onUnmounted,
+  watch,
+} from "vue";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import {
   allRows,
@@ -31,22 +38,36 @@ import Toasts from "./components/Toasts.vue";
 
 // Shown only on a machine that has never run the tool, so it stays out of the
 // initial bundle everyone else loads.
-const FirstRun = defineAsyncComponent(() => import("./components/FirstRun.vue"));
+const FirstRun = defineAsyncComponent(
+  () => import("./components/FirstRun.vue"),
+);
 
 // Only reached by clicking into an entry, so it stays out of the initial bundle.
-const EntryDetail = defineAsyncComponent(() => import("./components/EntryDetail.vue"));
+const EntryDetail = defineAsyncComponent(
+  () => import("./components/EntryDetail.vue"),
+);
 const Doctor = defineAsyncComponent(() => import("./components/Doctor.vue"));
 const Sync = defineAsyncComponent(() => import("./components/Sync.vue"));
-const AddEntry = defineAsyncComponent(() => import("./components/AddEntry.vue"));
-const Catalogs = defineAsyncComponent(() => import("./components/Catalogs.vue"));
+const AddEntry = defineAsyncComponent(
+  () => import("./components/AddEntry.vue"),
+);
+const Catalogs = defineAsyncComponent(
+  () => import("./components/Catalogs.vue"),
+);
 // Only reached from an entry page, and it pulls in the install preview and the setup report,
 // so it stays out of the initial bundle.
-const EntryInstall = defineAsyncComponent(() => import("./components/EntryInstall.vue"));
+const EntryInstall = defineAsyncComponent(
+  () => import("./components/EntryInstall.vue"),
+);
 // Only reachable inside a catalog tab, so it stays out of the initial bundle.
-const BulkInstall = defineAsyncComponent(() => import("./components/BulkInstall.vue"));
+const BulkInstall = defineAsyncComponent(
+  () => import("./components/BulkInstall.vue"),
+);
 // Only reached by starting a setup walkthrough, and it pulls in the agent transcript machinery,
 // so it stays well out of the initial bundle.
-const Walkthrough = defineAsyncComponent(() => import("./components/Walkthrough.vue"));
+const Walkthrough = defineAsyncComponent(
+  () => import("./components/Walkthrough.vue"),
+);
 
 // Attached here, at the earliest point in the app, so the command log and the activity
 // bar are subscribed before anything can run.
@@ -108,7 +129,9 @@ const addingTo = ref<string | null>(null);
  * Held here rather than inside the view so the detail page can hand off to a specific
  * entry: "edit this" has to arrive at the form, not at the top of a three-level view.
  */
-const manage = ref<{ catalog: string | null; entry: string | null } | null>(null);
+const manage = ref<{ catalog: string | null; entry: string | null } | null>(
+  null,
+);
 /** Collapse the catalog to just the copies that would actually install. */
 const hideOverridden = ref(false);
 /**
@@ -133,7 +156,9 @@ function togglePicked(name: string) {
 
 /** Every row in this tab that `use` would actually install. */
 const selectable = computed(() =>
-  filtered.value.filter((row) => !row.entry.overridden_by).map((row) => row.entry.name),
+  filtered.value
+    .filter((row) => !row.entry.overridden_by)
+    .map((row) => row.entry.name),
 );
 const pickedNames = computed(() =>
   selectable.value.filter((name) => picked.value?.has(name)),
@@ -250,7 +275,8 @@ function pruneTrail(loaded: Entry[]) {
   trail.value = trail.value.filter((stop) => known.has(stop.name));
   // The install page is about one name too, and a page whose entry the catalog no longer has is
   // a page whose every command would fail.
-  if (installFor.value !== null && !known.has(installFor.value)) installFor.value = null;
+  if (installFor.value !== null && !known.has(installFor.value))
+    installFor.value = null;
 }
 
 /**
@@ -284,7 +310,9 @@ const errorMessage = computed(() => {
  * card hidden until the user navigated out and back.
  */
 const installForOnDisk = computed(() => {
-  const entry = entries.value.find((candidate) => candidate.name === installFor.value);
+  const entry = entries.value.find(
+    (candidate) => candidate.name === installFor.value,
+  );
   return entry ? isOnDisk(entry.state) : false;
 });
 
@@ -294,7 +322,9 @@ const installForOnDisk = computed(() => {
  * and the readiness card can trust that `hasSetup: false` truly means nothing to read.
  */
 const installForHasSetup = computed(() => {
-  const entry = entries.value.find((candidate) => candidate.name === installFor.value);
+  const entry = entries.value.find(
+    (candidate) => candidate.name === installFor.value,
+  );
   return entry?.has_setup ?? false;
 });
 
@@ -307,7 +337,9 @@ const installForHasSetup = computed(() => {
  * as soon as the list reloads.
  */
 const installForSources = computed<InstallSource[]>(() => {
-  const copies = entries.value.filter((candidate) => candidate.name === installFor.value);
+  const copies = entries.value.filter(
+    (candidate) => candidate.name === installFor.value,
+  );
   if (copies.length < 2) return [];
   return copies.map((copy) => ({
     catalog: copy.catalog,
@@ -319,7 +351,9 @@ const installForSources = computed<InstallSource[]>(() => {
 const multiCatalog = computed(() => catalogs.value.length > 1);
 
 const selectedCatalog = computed(() => {
-  const found = catalogs.value.find((catalog) => catalog.id === activeCatalog.value);
+  const found = catalogs.value.find(
+    (catalog) => catalog.id === activeCatalog.value,
+  );
   return found ?? null;
 });
 
@@ -345,15 +379,17 @@ watch(tab, () => {
   picked.value = null;
 });
 
-
 const rows = computed<Row[]>(() => {
   // Winners only: a switched-off copy is by definition the one that resolved, and showing
   // the copies it beats under a tab about install state would be answering the other
   // question. `disabled` is what the CLI reports, not something derived here.
   if (tab.value.kind === "disabled") {
-    return winningRows(entries.value).filter((row) => row.entry.state === "disabled");
+    return winningRows(entries.value).filter(
+      (row) => row.entry.state === "disabled",
+    );
   }
-  if (tab.value.kind === "catalog") return catalogRows(entries.value, tab.value.id);
+  if (tab.value.kind === "catalog")
+    return catalogRows(entries.value, tab.value.id);
   if (hideOverridden.value) return winningRows(entries.value);
   return allRows(entries.value);
 });
@@ -400,11 +436,20 @@ const summary = computed(() => {
   // Counted off the CLI's own flag and state rather than the row's tone: `installed` means
   // the content is on this device, so a disabled copy is still installed and is counted in
   // both parts.
-  const installed = filtered.value.filter(({ entry }) => entry.installed).length;
-  const disabled = filtered.value.filter(({ entry }) => entry.state === "disabled").length;
-  const overridden = filtered.value.filter(({ overriddenBy }) => overriddenBy !== null).length;
+  const installed = filtered.value.filter(
+    ({ entry }) => entry.installed,
+  ).length;
+  const disabled = filtered.value.filter(
+    ({ entry }) => entry.state === "disabled",
+  ).length;
+  const overridden = filtered.value.filter(
+    ({ overriddenBy }) => overriddenBy !== null,
+  ).length;
 
-  const parts = [`${filtered.value.length} of ${rows.value.length} entries`, `${installed} installed`];
+  const parts = [
+    `${filtered.value.length} of ${rows.value.length} entries`,
+    `${installed} installed`,
+  ];
   if (disabled) parts.push(`${disabled} disabled`);
   if (overridden) parts.push(`${overridden} overridden`);
   return parts.join(" · ");
@@ -423,7 +468,9 @@ onUnmounted(() => clearInterval(ticking));
 /** How long ago the catalogs were pulled, or null until the first pull lands. */
 const freshness = computed(() => {
   if (!lastPulled.value) return null;
-  const minutes = Math.floor((now.value.getTime() - lastPulled.value.getTime()) / 60_000);
+  const minutes = Math.floor(
+    (now.value.getTime() - lastPulled.value.getTime()) / 60_000,
+  );
   if (minutes < 1) return "refreshed just now";
   if (minutes === 1) return "refreshed 1 minute ago";
   if (minutes < 60) return `refreshed ${minutes} minutes ago`;
@@ -460,92 +507,100 @@ onMounted(async () => {
          for every view and names the command that starts it, rather than letting the rest of the
          app render against a catalog that can never load. -->
     <section v-if="browserOnly" class="view">
-      <div class="view__body column">
+      <div class="view__body column stack">
         <StatusBanner kind="warning">
           <strong>The backend isn't running.</strong>
-          This window is the frontend on its own — the Rust backend it reads the catalog from only
-          runs when you launch through Tauri. Stop this, then start it with
-          <code>npm run tauri dev</code> from the <code>desktop</code> directory.
+          This window is the frontend on its own — the Rust backend it reads the
+          catalog from only runs when you launch through Tauri. Stop this, then
+          start it with
+          <code>npm run tauri dev</code> from the
+          <code>desktop</code> directory.
         </StatusBanner>
       </div>
     </section>
 
     <FirstRun
-        v-else-if="setupNeeded"
-        :state="setupNeeded.state"
-        :path="setupNeeded.path"
-        @ready="load()"
-      />
+      v-else-if="setupNeeded"
+      :state="setupNeeded.state"
+      :path="setupNeeded.path"
+      @ready="load()"
+    />
 
-      <!-- Ordered so a view opened *from* another sits above it: closing Doctor or the add
+    <!-- Ordered so a view opened *from* another sits above it: closing Doctor or the add
            form falls back to whatever is still open underneath, with no state to restore. -->
-      <Doctor
-        v-else-if="showDoctor"
-        :back-to="manage ? 'Catalogs' : 'The Library'"
-        @close="showDoctor = false"
-      />
+    <Doctor
+      v-else-if="showDoctor"
+      :back-to="manage ? 'Catalogs' : 'The Library'"
+      @close="showDoctor = false"
+    />
 
-      <!-- No pull on the read back: a sync has just refreshed every clone, so the copy on
+    <!-- No pull on the read back: a sync has just refreshed every clone, so the copy on
            disk is the fresh one and pulling again would be a second round trip for it. -->
-      <Sync v-else-if="showSync" @close="showSync = false" @synced="afterSync()" />
+    <Sync
+      v-else-if="showSync"
+      @close="showSync = false"
+      @synced="afterSync()"
+    />
 
-      <AddEntry
-        v-else-if="addingTo"
-        :catalog-id="addingTo"
-        :catalogs="catalogs"
-        :entries="entries"
-        @close="addingTo = null"
-        @added="load()"
-      />
+    <AddEntry
+      v-else-if="addingTo"
+      :catalog-id="addingTo"
+      :catalogs="catalogs"
+      :entries="entries"
+      @close="addingTo = null"
+      @added="load()"
+    />
 
-      <Catalogs
-        v-else-if="manage"
-        :catalogs="catalogs"
-        :entries="entries"
-        :at-catalog="manage.catalog"
-        :at-entry="manage.entry"
-        :back-to="openEntry?.name ?? 'The Library'"
-        @close="manage = null"
-        @changed="load()"
-        @add="addingTo = $event"
-        @doctor="showDoctor = true"
-        @navigate="manage = { catalog: $event, entry: null }"
-      />
+    <Catalogs
+      v-else-if="manage"
+      :catalogs="catalogs"
+      :entries="entries"
+      :at-catalog="manage.catalog"
+      :at-entry="manage.entry"
+      :back-to="openEntry?.name ?? 'The Library'"
+      @close="manage = null"
+      @changed="load()"
+      @add="addingTo = $event"
+      @doctor="showDoctor = true"
+      @navigate="manage = { catalog: $event, entry: null }"
+    />
 
-      <!-- Above the page it was opened from, so closing it lands back there. -->
-      <Walkthrough
-        v-else-if="walkingThrough"
-        :skill="walkingThrough"
-        :back-to="installFor ? 'Install and set up' : (openEntry?.name ?? 'The Library')"
-        @close="walkingThrough = null"
-      />
+    <!-- Above the page it was opened from, so closing it lands back there. -->
+    <Walkthrough
+      v-else-if="walkingThrough"
+      :skill="walkingThrough"
+      :back-to="
+        installFor ? 'Install and set up' : (openEntry?.name ?? 'The Library')
+      "
+      @close="walkingThrough = null"
+    />
 
-      <!-- Above the entry page, and below the walkthrough it starts. -->
-      <EntryInstall
-        v-else-if="installFor"
-        :name="installFor"
-        :installed="installForOnDisk"
-        :has-setup="installForHasSetup"
-        :sources="installForSources"
-        :back-to="installFor"
-        @close="installFor = null"
-        @installed="load()"
-        @walkthrough="walkingThrough = installFor"
-      />
+    <!-- Above the entry page, and below the walkthrough it starts. -->
+    <EntryInstall
+      v-else-if="installFor"
+      :name="installFor"
+      :installed="installForOnDisk"
+      :has-setup="installForHasSetup"
+      :sources="installForSources"
+      :back-to="installFor"
+      @close="installFor = null"
+      @installed="load()"
+      @walkthrough="walkingThrough = installFor"
+    />
 
-      <EntryDetail
-        v-else-if="openEntry"
-        :name="openEntry.name"
-        :catalog="openEntry.catalog"
-        :back-to="previousEntry?.name ?? null"
-        :catalogs="catalogs"
-        :entries="entries"
-        @close="trail.pop()"
-        @open="trail.push($event)"
-        @installed="load()"
-        @manage="manage = { catalog: $event.catalog, entry: $event.name }"
-        @install="installFor = $event"
-      />
+    <EntryDetail
+      v-else-if="openEntry"
+      :name="openEntry.name"
+      :catalog="openEntry.catalog"
+      :back-to="previousEntry?.name ?? null"
+      :catalogs="catalogs"
+      :entries="entries"
+      @close="trail.pop()"
+      @open="trail.push($event)"
+      @installed="load()"
+      @manage="manage = { catalog: $event.catalog, entry: $event.name }"
+      @install="installFor = $event"
+    />
 
     <!-- The catalog list: the one view with nowhere to go back to, so its head is its title and
          what you do to the list rather than a back row. Adding an entry and checking catalog
@@ -560,7 +615,9 @@ onMounted(async () => {
             placeholder="Search skills, agents, prompts…"
           />
           <!-- Explicitly asking for fresh, so this is a pull: the ambient reads are not. -->
-          <button type="button" class="ghost" @click="load({ pull: true })">Refresh</button>
+          <button type="button" class="ghost" @click="load({ pull: true })">
+            Refresh
+          </button>
           <button
             type="button"
             class="ghost"
@@ -568,11 +625,13 @@ onMounted(async () => {
           >
             Catalogs
           </button>
-          <button type="button" class="ghost" @click="showSync = true">Sync</button>
+          <button type="button" class="ghost" @click="showSync = true">
+            Sync
+          </button>
         </form>
       </header>
 
-      <div class="view__body column">
+      <div class="view__body column stack">
         <!-- Shown for the disabled tab too, so a single-catalog setup still gets somewhere
              to find what it has switched off. -->
         <CatalogTabs
@@ -597,21 +656,33 @@ onMounted(async () => {
                "current" was a safe assumption and needed no cue. It is not any more, and
                an unanswered "how old is this?" is how someone reads a catalog a teammate
                changed an hour ago without knowing it. -->
-          <span v-if="freshness" class="summary__freshness">{{ freshness }}</span>
-          <label v-if="activeCatalog === null && overriddenCount" class="summary__toggle">
+          <span v-if="freshness" class="summary__freshness">{{
+            freshness
+          }}</span>
+          <label
+            v-if="activeCatalog === null && overriddenCount"
+            class="summary__toggle"
+          >
             <input v-model="hideOverridden" type="checkbox" />
             Hide overridden
           </label>
           <!-- A missing control reads as a bug rather than a decision, so a tab where nothing
                would install says so instead of just not offering it. -->
-          <span v-if="activeCatalog && !selectable.length && rows.length" class="summary__note">
-            Nothing here can be installed: every copy is overridden by a higher-precedence
-            catalog, so installing any of these names would fetch that catalog's copy instead.
+          <span
+            v-if="activeCatalog && !selectable.length && rows.length"
+            class="summary__note"
+          >
+            Nothing here can be installed: every copy is overridden by a
+            higher-precedence catalog, so installing any of these names would
+            fetch that catalog's copy instead.
           </span>
           <!-- The right-pin belongs to the group, not to a button in it: it sat on "Select
                all", which is hidden once everything is ticked, and the buttons left behind
                slid back into the counts text. -->
-          <span v-if="activeCatalog && selectable.length" class="summary__actions">
+          <span
+            v-if="activeCatalog && selectable.length"
+            class="summary__actions"
+          >
             <button
               v-if="!picked"
               type="button"
@@ -640,7 +711,11 @@ onMounted(async () => {
               >
                 Clear
               </button>
-              <button type="button" class="ghost btn-xs" @click="setSelecting(false)">
+              <button
+                type="button"
+                class="ghost btn-xs"
+                @click="setSelecting(false)"
+              >
                 Stop selecting
               </button>
             </template>
@@ -662,7 +737,11 @@ onMounted(async () => {
              list used to unmount on every refetch, so flipping one switch blanked all 42
              rows, ran a spinner, and faded the whole list back in to show one row changed. -->
         <Busy v-if="firstLoad" label="Reading the catalog…" />
-        <StatusBanner v-else-if="errorMessage" kind="error" :detail="errorMessage" />
+        <StatusBanner
+          v-else-if="errorMessage"
+          kind="error"
+          :detail="errorMessage"
+        />
         <!-- Two different nothings, told apart. They were one sentence on the grounds that
              the next action was the same, and it is not: a search that matched nothing is
              fixed by changing the search, and an empty catalog is fixed by putting something
@@ -670,8 +749,13 @@ onMounted(async () => {
              box is what sent someone hunting for a filter they had not set. -->
         <div v-else-if="!filtered.length" class="state">
           <template v-if="rows.length">
-            <p class="state__line">Nothing here matches <strong>{{ query }}</strong>.</p>
-            <button type="button" class="ghost" @click="query = ''">Clear the search</button>
+            <p class="state__line">
+              Nothing here matches <strong>{{ query }}</strong
+              >.
+            </p>
+            <button type="button" class="ghost" @click="query = ''">
+              Clear the search
+            </button>
           </template>
           <template v-else-if="activeCatalog">
             <p class="state__line">{{ activeCatalog }} has no entries yet.</p>
@@ -687,7 +771,8 @@ onMounted(async () => {
             </button>
           </template>
           <p v-else class="state__line">
-            No catalog holds an entry yet. <strong>Catalogs</strong> above is where you add one.
+            No catalog holds an entry yet. <strong>Catalogs</strong> above is
+            where you add one.
           </p>
         </div>
         <EntryList
@@ -716,7 +801,8 @@ onMounted(async () => {
 
 <style>
 :root {
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, sans-serif;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, sans-serif;
 }
 /* The window is a fixed frame; only a view's `.view__body` inside it scrolls (D22).
 
@@ -752,7 +838,10 @@ button {
   cursor: pointer;
   /* Fast on purpose: this is the acknowledgement of the click itself, so it has to
      land in the same frame rather than easing in over the command's latency. */
-  transition: transform 0.06s ease, opacity 0.15s ease, filter 0.15s ease;
+  transition:
+    transform 0.06s ease,
+    opacity 0.15s ease,
+    filter 0.15s ease;
 }
 button:active:not(:disabled) {
   transform: scale(0.97);
@@ -817,6 +906,37 @@ button:disabled {
   padding-inline: max(1.25rem, calc((100% - 860px) / 2));
 }
 
+/* A page's vertical rhythm, owned by the stack rather than by the things in it.
+
+   The space between two rows is a fact about the page, not about either row, and every
+   element that decided its own ended up deciding a different one: the catalog view's tabs
+   and its precedence strip each carried 0.75rem, the counts line under them 0.5rem and a
+   2.5rem reserve it centred its text in, and the banner that renders between them 1.25rem.
+   Four opinions, so the strip sat 12px under the tabs and 24px above the counts — the same
+   element looking mispositioned because nothing on the page was measuring against anything
+   else.
+
+   `gap` rather than margins on purpose: the rows here are almost all conditional, and a gap
+   only exists between rows that rendered. Margins had to be on one side to avoid doubling
+   up, which is why every one of them was a bottom margin, and a bottom margin is the wrong
+   shape for this — the last row in the stack was paying for a neighbour it did not have. */
+.view__body.stack {
+  display: flex;
+  flex-direction: column;
+  /* The step, declared once. Not a custom property: this rule is already the only place
+     that decides it, and tokens.css — where a token would have to be declared for
+     `tokens.spec` to accept it — is the colour vocabulary and says so in its first line. */
+  gap: 0.75rem;
+}
+/* Two classes deep so this beats a row's own rule whatever order the styles load in.
+
+   Aimed at the outer margins only: a row still owns everything inside it. Shared rows keep
+   their margins for the pages that are not stacks yet — this says the stack does not want
+   them, rather than taking them away from elsewhere. */
+.view__body.stack > * {
+  margin-block: 0;
+}
+
 /* Every full-screen view is the window's frame (D22).
  *
  * Three rows: the view's own chrome, the one thing in it that scrolls, and — where the view has
@@ -864,7 +984,7 @@ button:disabled {
   scrollbar-gutter: stable;
   /* The padding five views had each written for themselves, in three different values, so the
      header visibly shifted as you navigated between them. */
-  padding-block: 1.25rem 2rem;
+  padding-block: 0.5rem 1.5rem;
 }
 .view__foot {
   grid-row: 3;
@@ -954,11 +1074,6 @@ h1 {
   gap: 0.75rem;
   font-size: 0.85rem;
   opacity: 0.7;
-  margin: 0.5rem 0 1rem;
-  /* Reserve the height of the tallest variant — the two-line "nothing can be installed"
-     note on a fully-overridden catalog — so switching tabs does not shift the list up
-     and down under it. Content stays vertically centred in the reserved space. */
-  min-height: 2.5rem;
 }
 .summary__toggle {
   /* Pinned right so it stays put when the counts text changes width on toggle — it

@@ -68,7 +68,8 @@ const active = defineModel<Tab>({ required: true });
 .catalog-tabs {
   display: flex;
   gap: 0.35rem;
-  margin: 0 0 0.75rem;
+  /* No bottom margin: this is a row in the view's `.stack`, which sets the space to the
+     next row for every row at once. */
   border-bottom: 1px solid var(--border-hairline);
 }
 .catalog-tabs__tab {
