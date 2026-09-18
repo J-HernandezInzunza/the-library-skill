@@ -6,6 +6,7 @@ import { withActivity } from "../commandActivity";
 import {
   describeAppError,
   type Catalog,
+  type CatalogSource,
   type Entry,
   type Pin,
   type UnpinReport,
@@ -80,7 +81,30 @@ const catalog = computed(() => props.catalogs.find((c) => c.id === openCatalog.v
 /** True when nothing on this machine can be written to, which needs saying out loud. */
 const nothingEditable = computed(() => editableIds.value.size === 0);
 
-const registering = ref(false);
+/**
+ * Whether there is no catalog of your own at all — the case the page has to teach rather
+ * than merely report.
+ *
+ * Split from `nothingEditable`, which was answering two questions with one sentence: a
+ * local catalog that is skipped or read-only *is* yours, and its fix is repairing the one
+ * you have. Offering to create a second one there answers a question nobody asked and
+ * leaves the broken one broken.
+ */
+const noOwnCatalog = computed(
+  // Guarded on there being a registry at all: a failed load empties `catalogs` under
+  // whatever view is open, and a card explaining what "every catalog below" is would then
+  // be describing an empty list, next to the banner saying why it is empty.
+  () => props.catalogs.length > 0 && !props.catalogs.some((catalog) => catalog.kind === "local"),
+);
+
+/**
+ * Which act the register level opens on, and `null` for "not registering".
+ *
+ * One value rather than a flag beside a mode, for the reason `panel` is one value: the
+ * form is open *at* something, and "open but with no act chosen" is a state the view would
+ * otherwise have to decide what to do with.
+ */
+const registerAs = ref<CatalogSource | null>(null);
 /** The catalog awaiting an unregister confirmation. */
 const unregistering = ref<Catalog | null>(null);
 const purgeClone = ref(false);
@@ -275,13 +299,14 @@ watch(
          drill-in level for managing a catalog's entries, and a second navigation idiom
          for "go do a focused thing, then come back" was the inconsistency, not the
          inline form itself. -->
-    <template v-if="registering">
-      <PageHeader title="Add a catalog" back="Catalogs" @back="registering = false">
+    <template v-if="registerAs">
+      <PageHeader title="Add a catalog" back="Catalogs" @back="registerAs = null">
 
         <RegisterCatalog
           :catalogs="catalogs"
+          :start="registerAs"
           @registered="emit('changed')"
-          @close="registering = false"
+          @close="registerAs = null"
         />
       </PageHeader>
     </template>
@@ -290,7 +315,7 @@ watch(
     <template v-else-if="!openCatalog">
       <PageHeader title="Catalogs" :back="backTo" @back="emit('close')">
         <template #actions>
-          <button type="button" class="ghost" @click="registering = true">
+          <button type="button" class="ghost" @click="registerAs = 'existing'">
             Add a catalog
           </button>
           <!-- `doctor` validates config and catalog integrity, so this is its subject
@@ -334,14 +359,50 @@ watch(
           </p>
         </StatusBanner>
 
+        <!-- Above the precedence lead, not beside it: to someone whose only catalog is the
+             team's, precedence is a rule about a collision they cannot have yet, while this
+             is the one thing on the page worth doing. It carries no dismiss control on
+             purpose — it is derived from the registry, so registering a catalog of your own
+             is what takes it away, and nothing else can leave it wrongly hidden. -->
+        <section v-if="noOwnCatalog" class="catalogs__own card">
+          <h3 class="catalogs__own-title">You don't have a personal catalog yet</h3>
+          <p class="catalogs__own-lead">
+            Every catalog below lives in a git repository, where a change lands for everyone
+            who reads it. A <strong>personal catalog</strong> is a second one, kept on this
+            machine and checked first, holding entries only you see.
+          </p>
+          <ul class="catalogs__own-why">
+            <li>Add your own skills, agents, and prompts without opening a pull request.</li>
+            <li>
+              Keep your own version of a shared entry: added under the same name, your copy is
+              the one that installs and the shared one stays where it is.
+            </li>
+            <li>
+              It is a plain <code>library.yaml</code> on this machine. Nothing in it is shared
+              until you decide to share it.
+            </li>
+          </ul>
+          <button type="button" @click="registerAs = 'create'">
+            Create a personal catalog
+          </button>
+          <p class="catalogs__own-note">
+            Writes an empty <code>library.yaml</code> where you choose and registers it ahead of
+            what you already have. No repository, no review step. Already keep a
+            <code>library.yaml</code> on this machine? <strong>Add a catalog</strong> above
+            registers that one as it stands.
+          </p>
+        </section>
+        <!-- The other half of what one sentence used to cover, and a different fix: a local
+             catalog that is registered but unusable is repaired, not replaced. -->
+        <p v-else-if="nothingEditable" class="catalogs__lead">
+          None of these is a catalog you can edit from here. The ones on this machine are
+          read-only or were not loaded, and each row below says which.
+          <strong>Check catalog health</strong> above is where that gets diagnosed.
+        </p>
+
         <p class="catalogs__lead">
           Where your entries come from, in precedence order: when two catalogs define the same
           name, the one nearer the top is the copy that installs.
-        </p>
-        <p v-if="nothingEditable" class="catalogs__lead">
-          None of these is a catalog you can edit from here. A catalog of your own is a
-          <code>library.yaml</code> file on this machine — <strong>Add a catalog</strong> above
-          will create an empty one and register it.
         </p>
         <!-- Below the registry, because it is the exception to what the registry says
              and reads as nonsense before the order it overrides. -->
@@ -458,9 +519,24 @@ watch(
         </template>
 
         <p class="catalogs__lead">{{ catalog?.location }}</p>
-        <p v-if="!held.length" class="catalogs__lead">
-          This catalog has no entries yet.
-        </p>
+        <!-- The second beat of the empty registry: a catalog just created is a file with
+             nothing in it, and "no entries" on its own leaves the next move to be guessed.
+             It names the header's button rather than repeating it — the same action twice on
+             one screen is what the page has been removing, and the control is a line away. -->
+        <div v-if="!held.length" class="catalogs__empty">
+          <p class="catalogs__empty-line">{{ openCatalog }} has no entries yet.</p>
+          <p class="catalogs__empty-line catalogs__first">
+            <strong>Add an entry</strong> above puts the first one in.
+            <!-- Only where it is true: the claim is precedence 1's, not every catalog's, and
+                 a "wins" box left unticked at registration is exactly how this one ends up
+                 further down the order. -->
+            <template v-if="catalog?.precedence === 1">
+              A common first move is your own version of a shared entry, added under the same
+              name: this catalog is checked first, so your copy is the one that installs and
+              the shared one stays where it is.
+            </template>
+          </p>
+        </div>
         <ul v-else class="catalogs__entries">
           <li
             v-for="entry in held"
@@ -517,6 +593,61 @@ watch(
   line-height: 1.5;
   opacity: 0.7;
   overflow-wrap: anywhere;
+}
+/* A card rather than another paragraph: it is the only block on the page that teaches
+   something instead of reporting it, and at the lead's size and opacity it read as more of
+   the boilerplate above the list — which is where it spent a release being skipped. */
+.catalogs__own {
+  margin-bottom: 1.4rem;
+  border-left: 3px solid var(--accent-edge);
+}
+.catalogs__own-title {
+  margin: 0 0 0.4rem;
+  font-size: 0.95rem;
+}
+.catalogs__own-lead {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  opacity: 0.85;
+}
+.catalogs__own-why {
+  margin: 0.5rem 0 0.8rem;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  opacity: 0.8;
+}
+.catalogs__own-note {
+  margin: 0.5rem 0 0;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  opacity: 0.6;
+}
+/* The shape the app's other empty states use — centred, roomy, quiet — rather than a lead
+   paragraph, so an empty catalog reads as a state and not as a page whose list failed to
+   render. Its own rule and not App.vue's `.state`, which is scoped to that component. */
+.catalogs__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 2rem 0;
+  text-align: center;
+  opacity: 0.8;
+}
+.catalogs__empty-line {
+  margin: 0;
+}
+/* A measure on the follow-through only: centred running text past this width stops being
+   readable as a sentence, and the line above it is short enough not to care. */
+.catalogs__first {
+  max-width: 34rem;
+  font-size: 0.85rem;
+  line-height: 1.5;
 }
 .catalogs__list,
 .catalogs__entries {

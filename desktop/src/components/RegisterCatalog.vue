@@ -3,7 +3,12 @@ import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { withActivity } from "../commandActivity";
-import { describeAppError, type Catalog, type RegistrationReport } from "../types";
+import {
+  describeAppError,
+  type Catalog,
+  type CatalogSource,
+  type RegistrationReport,
+} from "../types";
 import { RAW_TEXT } from "../rawText";
 import Busy from "./Busy.vue";
 import StatusBanner from "./StatusBanner.vue";
@@ -11,19 +16,33 @@ import StatusBanner from "./StatusBanner.vue";
 const props = defineProps<{
   /** The registry, to catch a duplicate id before the CLI refuses one. */
   catalogs: Catalog[];
+  /**
+   * Which act the form opens on.
+   *
+   * Decided by whoever opened it, because the caller knows what was asked for and the form
+   * does not: the header's "Add a catalog" is a blank question, while the empty state's
+   * button is a person who has just been told what a personal catalog is. Landing the
+   * second one on `existing` made them pick the mode again, from radio labels that do not
+   * say which is the one they were promised.
+   */
+  start: CatalogSource;
 }>();
 const emit = defineEmits<{ registered: []; close: [] }>();
 
-/**
- * The three things you can be doing, which are genuinely different acts.
- *
- * `create` scaffolds a file that does not exist yet — the answer for a teammate with no
- * catalog of their own, and the reason the registry's empty state has somewhere to point.
- */
-type Mode = "existing" | "create" | "remote";
-const mode = ref<Mode>("existing");
+const mode = ref<CatalogSource>(props.start);
 
-const id = ref("");
+/**
+ * Prefilled when the form opens to create, because that name is not really a choice: the
+ * docs, the config examples and the override rules all call it `personal`, and a field the
+ * user has to fill before the button works is one more thing between the empty state and a
+ * catalog. Left blank when something already holds the name, so the form never opens
+ * showing a conflict nobody typed.
+ */
+const id = ref(
+  props.start === "create" && !props.catalogs.some((catalog) => catalog.id === "personal")
+    ? "personal"
+    : "",
+);
 const path = ref("");
 const repo = ref("");
 const branch = ref("");
@@ -68,6 +87,29 @@ const filled = computed(() => {
 const canSubmit = computed(
   () => filled.value && !takenId.value && !submitting.value && (!needsDirectPushAck.value || directPushAck.value),
 );
+
+/**
+ * The one create failure with a better answer than "try again": a catalog is already there.
+ *
+ * Matched on the message because it is the only signal the CLI gives — a refusal is exit 1
+ * with stderr, not a code of its own. A miss costs the shortcut and nothing else: the error
+ * is printed verbatim above it either way, hint included.
+ */
+const fileExists = computed(
+  () => mode.value === "create" && /already exists/i.test(failure.value),
+);
+
+/**
+ * Take the catalog that is already there, keeping what the form has collected.
+ *
+ * The CLI's own hint for this refusal is `catalog add --id <id> --path <path>`, which is the
+ * mode one radio up with the fields already filled. Printing that as a command in a window
+ * that has the door in it makes the user translate a suggestion they could have clicked.
+ */
+function registerExisting() {
+  mode.value = "existing";
+  failure.value = "";
+}
 
 /** A one-line description of what picking this mode means, since the bare radio
  * labels don't say what "existing" vs. "remote" cashes out to until you've already
@@ -194,6 +236,17 @@ async function submit() {
 
     <template v-else>
       <StatusBanner v-if="failure" kind="error" :detail="failure" />
+      <!-- Under the banner rather than inside it: the banner is how a command turned out,
+           verbatim, and this is what to do about it. -->
+      <div v-if="fileExists" class="register__recover">
+        <p class="register__recover-line">
+          Creating one will not overwrite what is there. Registering it instead takes the
+          catalog as it stands, with the entries it already holds.
+        </p>
+        <button type="button" class="ghost btn-sm" @click="registerExisting">
+          Register the one that's there
+        </button>
+      </div>
 
       <div class="register__modes">
         <label><input v-model="mode" type="radio" value="existing" /> Register an existing catalog</label>
@@ -296,6 +349,21 @@ async function submit() {
 <style scoped>
 .register {
   margin-bottom: 1rem;
+}
+.register__recover {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin: -0.5rem 0 1.1rem;
+}
+.register__recover-line {
+  flex: 1;
+  min-width: 14rem;
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  opacity: 0.85;
 }
 .register__modes {
   display: flex;

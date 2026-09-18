@@ -534,6 +534,15 @@ export interface UnregisterReport {
   migrated: string[];
 }
 
+/**
+ * Which of the three acts the registration form is doing.
+ *
+ * Genuinely different acts rather than one form with optional fields: `create` scaffolds a
+ * file that does not exist yet, which is the answer for someone with no catalog of their
+ * own, and the reason the registry's empty state has somewhere to point.
+ */
+export type CatalogSource = "existing" | "create" | "remote";
+
 /** The fields the registration form collects, sent as one value. */
 export interface CatalogRequest {
   id: string;
