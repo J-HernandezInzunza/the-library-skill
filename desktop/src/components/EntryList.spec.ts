@@ -100,6 +100,28 @@ describe("EntryList selection identity", () => {
   });
 });
 
+describe("EntryList type badge", () => {
+  it("puts the type in the card's own leading column, out of the head row", () => {
+    // Inline after the name, the badge started at a different x on every row and there was
+    // no edge to run the eye down. Its own column is what makes the types scannable, so the
+    // structure is the behaviour here.
+    const list = mountList([INSTALLED_SKILL, { name: "grill-me", type: "prompt" }]);
+
+    expect(list.findAll(".entry-list__item > .entry-list__type").map((b) => b.text())).toEqual([
+      "skill",
+      "prompt",
+    ]);
+    expect(list.find(".entry-list__head .entry-list__type").exists()).toBe(false);
+    // The head and the description are rows of the card's own grid, not children of a
+    // wrapper: the switch sits in the gutter beside the description, and a grid item can
+    // only share a baseline with the name if it occupies exactly one row.
+    expect(list.find(".entry-list__item > .entry-list__head").exists()).toBe(true);
+    expect(list.find(".entry-list__item > .entry-list__desc").exists()).toBe(true);
+    expect(list.find(".entry-list__item > .entry-list__switch").exists()).toBe(true);
+    expect(list.find(".entry-list__head .entry-list__switch").exists()).toBe(false);
+  });
+});
+
 describe("EntryList toggle", () => {
   it("offers the switch only for skills whose content is on the machine", () => {
     const list = mountList([

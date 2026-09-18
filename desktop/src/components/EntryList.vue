@@ -3,7 +3,12 @@ import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { archivedPath, catalogHue, SESSION_TIMING, type Row } from "../catalog";
 import { withActivity } from "../commandActivity";
-import { describeAppError, type Catalog, type EntryRef, type ToggleReport } from "../types";
+import {
+  describeAppError,
+  type Catalog,
+  type EntryRef,
+  type ToggleReport,
+} from "../types";
 import { notify } from "../toasts";
 
 const props = defineProps<{
@@ -60,7 +65,9 @@ watch(
 );
 
 /** True while the list is in selection mode at all. */
-const selecting = computed(() => props.selected !== null && props.selected !== undefined);
+const selecting = computed(
+  () => props.selected !== null && props.selected !== undefined,
+);
 
 /**
  * An overridden copy cannot be picked, because `use` would not install it.
@@ -151,14 +158,24 @@ async function flip(row: Row) {
   } catch (e) {
     // Nothing moved, so the switch must not claim it did.
     pending.value.delete(name);
-    notify({ kind: "error", message: `Could not switch ${name}.`, detail: describeAppError(e) });
+    notify({
+      kind: "error",
+      message: `Could not switch ${name}.`,
+      detail: describeAppError(e),
+    });
   } finally {
     toggling.value.delete(name);
   }
 }
 
 const hueByCatalog = computed(
-  () => new Map(props.catalogs.map((catalog) => [catalog.id, catalogHue(catalog.precedence)])),
+  () =>
+    new Map(
+      props.catalogs.map((catalog) => [
+        catalog.id,
+        catalogHue(catalog.precedence),
+      ]),
+    ),
 );
 </script>
 
@@ -187,20 +204,45 @@ const hueByCatalog = computed(
             type="button"
             class="entry-list__open"
             :disabled="selecting && !selectable(row)"
-            :aria-pressed="selectable(row) ? selected?.has(row.entry.name) : undefined"
+            :aria-pressed="
+              selectable(row) ? selected?.has(row.entry.name) : undefined
+            "
             :aria-label="`${selecting ? 'Select' : 'Open'} ${row.entry.name}`"
             :title="switchedOff(row) ? statusTitle(row) : undefined"
             @click="activate(row)"
           ></button>
 
+          <!-- In a column of its own rather than inline after the name. Inline, the one
+               word telling a skill from a prompt started at a different x on every row,
+               so there was no edge for the eye to run down — and it sat between a
+               600-weight name and two filled pills, which is every contrast contest on
+               the card lost. A fixed column costs no colour: the alignment is the cue. -->
+          <span class="entry-list__type">{{ row.entry.type }}</span>
+
+          <!-- Under the type, in the same column, on the description's line. A track and
+               a knob, not a labelled button: the label had to be read to work out which way
+               the row would move, and it was the only thing on the card whose width varied
+               with its state. -->
+          <button
+            v-if="switchable(row)"
+            type="button"
+            role="switch"
+            class="entry-list__switch"
+            :aria-checked="switchedOn(row)"
+            :disabled="toggling.has(row.entry.name)"
+            :aria-label="`${row.entry.name} enabled`"
+            :title="`${switchedOn(row) ? 'Disable' : 'Enable'} ${row.entry.name}`"
+            @click="flip(row)"
+          ></button>
+
           <div class="entry-list__head">
             <span class="entry-list__name">{{ row.entry.name }}</span>
-            <span class="entry-list__type">{{ row.entry.type }}</span>
-
             <span
               v-if="showOrigin"
               class="entry-list__origin"
-              :style="{ '--catalog-hue': hueByCatalog.get(row.entry.catalog) ?? 220 }"
+              :style="{
+                '--catalog-hue': hueByCatalog.get(row.entry.catalog) ?? 220,
+              }"
             >
               {{ row.entry.catalog }}
             </span>
@@ -223,32 +265,15 @@ const hueByCatalog = computed(
               overrides {{ row.overrides.join(", ") }}
             </span>
 
-            <!-- The switch and the state it reports, right-aligned as one group so they
-                 wrap together. Right-aligning them separately put the switch mid-row,
-                 because flexbox splits the free space between two auto margins rather
-                 than giving it all to the first. -->
-            <span class="entry-list__aside">
-              <!-- A track and a knob, not a labelled button: the label had to be read to
-                   work out which way the row would move, and it was the only thing on the
-                   card whose width varied with its state. -->
-              <button
-                v-if="switchable(row)"
-                type="button"
-                role="switch"
-                class="entry-list__switch"
-                :aria-checked="switchedOn(row)"
-                :disabled="toggling.has(row.entry.name)"
-                :aria-label="`${row.entry.name} enabled`"
-                :title="`${switchedOn(row) ? 'Disable' : 'Enable'} ${row.entry.name}`"
-                @click="flip(row)"
-              ></button>
-
-              <!-- Whether this copy is on the machine, held apart from the precedence
-                   pills so an overridden copy can say both "overridden by X" and "not
-                   installed". -->
-              <span class="entry-list__status" :class="`entry-list__status--${row.tone}`">
-                {{ row.status }}
-              </span>
+            <!-- Whether this copy is on the machine, held apart from the precedence pills
+                 so an overridden copy can say both "overridden by X" and "not installed".
+                 Right-aligned on its own now that the switch it used to travel with sits
+                 in the left column. -->
+            <span
+              class="entry-list__status"
+              :class="`entry-list__status--${row.tone}`"
+            >
+              {{ row.status }}
             </span>
           </div>
 
@@ -296,6 +321,7 @@ const hueByCatalog = computed(
 .entry-list__card--off > .entry-list__item {
   border-style: dashed;
 }
+.entry-list__card--off .entry-list__type,
 .entry-list__card--off .entry-list__name,
 .entry-list__card--off .entry-list__desc {
   opacity: 0.55;
@@ -313,7 +339,13 @@ const hueByCatalog = computed(
   /* Above the stretched open button, so pressing the switch does not open the entry. */
   position: relative;
   z-index: 2;
-  flex: none;
+  grid-column: 1;
+  grid-row: 2;
+  justify-self: start;
+  /* Out of the baseline group — a control has no text to sit on a baseline — and nudged
+     to centre on the description's first line, which is what row 2 is. */
+  align-self: start;
+  margin-top: 0.5rem;
   width: 1.9rem;
   height: 1.05rem;
   padding: 0;
@@ -392,7 +424,18 @@ const hueByCatalog = computed(
 }
 .entry-list__item {
   position: relative;
-  display: block;
+  /* Two columns — the type and its switch, then everything else — and two rows: the
+     name's line, then the description's. The column is sized by the label's own
+     `min-width` rather than here, so changing the label's font size cannot silently
+     stagger the names (see `.entry-list__type`).
+
+     `baseline` rather than the default, because the label and the name are set five
+     points apart: aligning their line boxes centres two different amounts of leading and
+     leaves the smaller word riding ~2px high. Sharing a baseline is size-independent. */
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 0.5rem;
+  align-items: baseline;
   width: 100%;
   padding: 0.85rem 1rem;
   border-radius: 10px;
@@ -429,6 +472,11 @@ const hueByCatalog = computed(
   outline-offset: 1px;
 }
 .entry-list__head {
+  grid-column: 2;
+  grid-row: 1;
+  /* A grid item's automatic minimum is its content, so without this a long unbroken
+     name or catalog id widens the column instead of wrapping inside it. */
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -438,10 +486,25 @@ const hueByCatalog = computed(
   font-weight: 600;
 }
 .entry-list__type {
-  font-size: 0.7rem;
+  grid-column: 1;
+  grid-row: 1;
+  /* The column's width lives here, in the label's own em, so it tracks whatever font
+     size this rule is set to: the longest type is ~4.5em wide, and a value in `rem` went
+     stale the moment the size changed, widening the prompt rows' column and pushing
+     their names ~9px right of everyone else's. A type longer than this still widens its
+     own row rather than colliding, because the track is `auto`. */
+  min-width: 4.75em;
+  /* A width decision as much as a type one: small caps run ~20% wider than lower case,
+     and the column above is measured in this size, so every step up here is an indent
+     taken off the description on all 45 rows. */
+  font-size: 0.8rem;
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  opacity: 0.6;
+  /* Widens the column rather than breaking across two lines, which would put the second
+     half of a long type under the card's first word. */
+  white-space: nowrap;
+  opacity: 0.7;
 }
 .entry-list__origin {
   --catalog-hue: 220;
@@ -453,14 +516,9 @@ const hueByCatalog = computed(
   font-weight: 600;
   letter-spacing: 0.02em;
 }
-.entry-list__aside {
+.entry-list__status {
   /* Pushed to the card's top-right, apart from the precedence pills on the left. */
   margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-}
-.entry-list__status {
   font-size: 0.7rem;
   padding: 0.1rem 0.45rem;
   border-radius: 999px;
@@ -505,12 +563,15 @@ const hueByCatalog = computed(
   opacity: 0.55;
 }
 .entry-list__desc {
+  grid-column: 2;
+  grid-row: 2;
   margin: 0.4rem 0 0;
   font-size: 0.88rem;
   line-height: 1.4;
   opacity: 0.85;
 }
 .entry-list__requires {
+  grid-column: 2;
   margin: 0.35rem 0 0;
   font-size: 0.78rem;
   opacity: 0.6;

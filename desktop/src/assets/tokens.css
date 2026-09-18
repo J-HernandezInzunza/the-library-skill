@@ -120,9 +120,9 @@
      status rather than a control, and one in green says the same thing as the
      `installed` badge sitting beside it. Graphite is the one value that cannot be
      mistaken for a report of state, including under any colour-vision deficiency. */
-  --control-on: #3f3f46;
+  --control-on: #4d9172;
   --control-on-knob: #ffffff;
-  --control-off: rgba(128, 128, 128, 0.25);
+  --control-off: rgba(126, 115, 115, 0.732);
   /* The off track composites to rgb(210,210,210) on a light card — 1.29:1 against it, and
      1.51:1 against its own white knob, which is invisible rather than subtle. No alpha of
      grey-128 fixes that (even opaque it reaches 3.95:1), so the edge is what makes the off
