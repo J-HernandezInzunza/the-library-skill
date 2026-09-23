@@ -24,8 +24,8 @@ For most people this is the way in: a native macOS app over the same catalog and
 
 ![The Library desktop app browsing the catalog](images/desktop/hero.png)
 
-Every catalog at a glance, with install state, scope, catalog origin, and override badges on each
-entry. Search filters the loaded list instantly, and offline.
+Every catalog at a glance, with install state, scope, and catalog origin on each entry. Search
+filters the loaded list instantly, and offline.
 
 ### See exactly what installs, before it installs
 
