@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Demo recordings: frames are large and regenerable, and the finished gif/mp4 belongs
+# wherever the docs reference it, not here.
+demo/out

@@ -1,0 +1,13 @@
+{
+  "name": "hero",
+  "title": "The Library desktop app browsing the catalog",
+  "size": { "width": 900, "height": 800 },
+  "ready": ".entry-list",
+  "shot": true,
+  "cursor": false,
+  "scale": 2,
+  "outro": 300,
+  "steps": [
+    { "note": "let the activity bar and the load spinner clear before the shutter", "do": "pause", "ms": 1200 }
+  ]
+}

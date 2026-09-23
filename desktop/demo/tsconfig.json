@@ -1,0 +1,12 @@
+{
+  // The demo's own project, so `npm run build` and `npm run check` stay exactly as they
+  // were: nothing under demo/ can break the release gate. Run `npm run demo:check` to
+  // catch a fixture that has drifted from the payload shapes in src/types.ts.
+  //
+  // Only the two browser-side modules are covered. The recorder and encoder are .mjs on
+  // purpose — they are scripts run by hand, not part of anything that ships, and adding
+  // @types/node to type-check them would put a dependency on the app for their sake.
+  "extends": "../tsconfig.json",
+  "compilerOptions": { "noEmit": true },
+  "include": ["ipc/**/*.ts", "../src/types.ts"]
+}

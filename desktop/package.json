@@ -7,6 +7,11 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
+    "demo": "VITE_DEMO=1 vite",
+    "demo:check": "vue-tsc -p demo/tsconfig.json --noEmit",
+    "demo:build": "node demo/record/build.mjs",
+    "demo:record": "node demo/record/record.mjs",
+    "demo:encode": "node demo/record/encode.mjs",
     "test": "vitest",
     "check": "vue-tsc --noEmit && vitest run && cargo check --manifest-path src-tauri/Cargo.toml && cargo test --manifest-path src-tauri/Cargo.toml && vite build",
     "tauri": "tauri"

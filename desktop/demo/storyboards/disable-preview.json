@@ -1,0 +1,55 @@
+{
+  "name": "disable-preview",
+  "title": "Switch a skill off without uninstalling it",
+  "size": {
+    "width": 900,
+    "height": 800
+  },
+  "ready": ".entry-list",
+  "outro": 1600,
+  "steps": [
+    {
+      "note": "HOLD on the full catalog list before anything moves",
+      "do": "pause",
+      "ms": 900
+    },
+    {
+      "note": "cursor travels to the frontend-code-practices switch",
+      "do": "hover",
+      "sel": "[aria-label=\"frontend-code-practices enabled\"]"
+    },
+    {
+      "note": "HOLD with the cursor resting on the switch",
+      "do": "pause",
+      "ms": 500
+    },
+    {
+      "note": "flip it",
+      "do": "click",
+      "sel": "[aria-label=\"frontend-code-practices enabled\"]",
+      "settle": 400
+    },
+    {
+      "note": "the disable command runs and the list re-reads; not a timing knob",
+      "do": "wait",
+      "sel": ".catalog-tabs__tab--off",
+      "timeout": 10000
+    },
+    {
+      "note": "HOLD on the payoff: violet badge, toast, new disabled tab",
+      "do": "pause",
+      "ms": 2400
+    },
+    {
+      "note": "cursor travels to the new tab and opens it",
+      "do": "click",
+      "sel": ".catalog-tabs__tab--off",
+      "settle": 700
+    },
+    {
+      "note": "HOLD on the filtered disabled list",
+      "do": "pause",
+      "ms": 2000
+    }
+  ]
+}

@@ -1,0 +1,110 @@
+{
+  "name": "install-preview",
+  "title": "See exactly what installs, before it installs",
+  "size": {
+    "width": 900,
+    "height": 800
+  },
+  "ready": ".entry-list",
+  "outro": 1600,
+  "steps": [
+    {
+      "note": "HOLD on the full catalog list",
+      "do": "pause",
+      "ms": 900
+    },
+    {
+      "note": "open the entry",
+      "do": "click",
+      "sel": "[aria-label=\"Open pr-and-notify\"]",
+      "settle": 900
+    },
+    {
+      "note": "detail page loads; not a timing knob",
+      "do": "wait",
+      "text": "Install and set up"
+    },
+    {
+      "note": "HOLD on the detail page, showing the dependency",
+      "do": "pause",
+      "ms": 900
+    },
+    {
+      "note": "into the install panel",
+      "do": "click",
+      "text": "Install and set up",
+      "settle": 900
+    },
+    {
+      "note": "panel renders; not a timing knob",
+      "do": "wait",
+      "text": "Preview install"
+    },
+    {
+      "note": "HOLD before asking for the plan",
+      "do": "pause",
+      "ms": 700
+    },
+    {
+      "note": "ask what would be written",
+      "do": "click",
+      "text": "Preview install",
+      "settle": 400
+    },
+    {
+      "note": "the dry run resolves; not a timing knob",
+      "do": "wait",
+      "text": "Install globally",
+      "timeout": 10000
+    },
+    {
+      "note": "HOLD on the payoff: both files, their paths, nothing written yet",
+      "do": "pause",
+      "ms": 2200
+    },
+    {
+      "note": "commit to it",
+      "do": "click",
+      "text": "Install globally",
+      "settle": 400
+    },
+    {
+      "note": "the install runs; not a timing knob",
+      "do": "wait",
+      "text": "Installed 2 items.",
+      "timeout": 10000
+    },
+    {
+      "note": "HOLD on the install report",
+      "do": "pause",
+      "ms": 1800
+    },
+    {
+      "note": "back to the detail page",
+      "do": "click",
+      "text": "← pr-and-notify",
+      "settle": 700
+    },
+    {
+      "note": "back to the list",
+      "do": "click",
+      "text": "← The Library",
+      "settle": 900
+    },
+    {
+      "note": "list reloads; not a timing knob",
+      "do": "wait",
+      "sel": ".entry-list"
+    },
+    {
+      "note": "cursor settles on the row whose badge just flipped",
+      "do": "hover",
+      "sel": "[aria-label=\"Open pr-and-notify\"]"
+    },
+    {
+      "note": "HOLD on the installed badge",
+      "do": "pause",
+      "ms": 1200
+    }
+  ]
+}
