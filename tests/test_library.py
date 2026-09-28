@@ -5968,6 +5968,7 @@ class TestSyncSkipsUnchangedItems(unittest.TestCase):
 
         self.repo = TempGitRepo(self.tool.root, name="agentics")
         self.repo.commit("skills/from-git/SKILL.md", "# from-git v1\n")
+        self.repo.commit("skills/from-git-two/SKILL.md", "# from-git-two v1\n")
         self.repo.push()
 
         install_local_only_fixture(self.tool, f"""\
@@ -5979,6 +5980,9 @@ library:
     - name: from-git
       description: From a git remote
       source: {self.REMOTE_SOURCE}
+    - name: from-git-two
+      description: A second skill from the same repo
+      source: {self.REMOTE_SOURCE.replace("from-git/", "from-git-two/")}
   agents:
     - name: sql-review
       description: A single-file entry
@@ -6066,6 +6070,112 @@ library:
                 self.counted_clones() as calls:
             self.sync()
         self.assertEqual(calls, ["from-git"])
+
+    def push_elsewhere(self) -> None:
+        self.repo.commit("observations/2026-09-01-x.md", "# friction\n")
+        self.repo.push()
+
+    def receipt(self, name: str = "from-git") -> dict[str, Any]:
+        return library.load_receipts()[str(self.tool.home / ".claude/skills" / name)]
+
+    def test_a_commit_elsewhere_skips_the_refresh(self) -> None:
+        self.use("from-git")
+        self.push_elsewhere()
+        with self.counted_clones() as calls:
+            payload = self.sync()
+        self.assertEqual(calls, [], "sync re-cloned a skill whose folder didn't change")
+        self.assertTrue(payload["synced"][0]["up_to_date"])
+
+    def test_the_skip_moves_the_receipt_to_the_new_head(self) -> None:
+        # Provenance stays true: the bytes are identical at the new head. Nothing was
+        # installed, so the hash and the install time stay as they were.
+        self.use("from-git")
+        # A sentinel, so a re-install inside the same second can't pass for a skip.
+        receipts = library.load_receipts()
+        receipts[self.receipt()["dest"]]["installed_at"] = "2000-01-01T00:00:00Z"
+        library.save_receipts(receipts)
+        before = self.receipt()
+        self.push_elsewhere()
+        self.sync()
+        after = self.receipt()
+        self.assertEqual(after["commit"], self.repo.remote_head())
+        self.assertEqual({k: v for k, v in after.items() if k != "commit"},
+                         {k: v for k, v in before.items() if k != "commit"})
+
+    def test_after_the_skip_the_next_sync_never_probes(self) -> None:
+        self.use("from-git")
+        self.push_elsewhere()
+        self.sync()
+        calls: list[Any] = []
+        with patch.object(library, "remote_oid",
+                          lambda src, entry, probes: calls.append(entry.name)):
+            self.assertTrue(self.sync()["synced"][0]["up_to_date"])
+        self.assertEqual(calls, [])
+
+    def test_drift_is_refreshed_even_when_the_folder_is_unchanged(self) -> None:
+        self.use("from-git")
+        (self.tool.home / ".claude/skills/from-git/SKILL.md").write_text("# edited\n")
+        self.push_elsewhere()
+        with self.counted_clones() as calls:
+            payload = self.sync()
+        self.assertEqual(calls, ["from-git"])
+        self.assertEqual(payload["synced"][0]["state"], "drifted")
+
+    def test_an_unknown_remote_oid_falls_back_to_fetching(self) -> None:
+        self.use("from-git")
+        self.push_elsewhere()
+        with patch.object(library, "remote_oid", lambda src, entry, probes: None), \
+                self.counted_clones() as calls:
+            self.sync()
+        self.assertEqual(calls, ["from-git"])
+
+    def test_a_repointed_source_falls_back_to_fetching(self) -> None:
+        # The recorded oid says what the old source held, not the entry's current one.
+        self.use("from-git")
+        receipts = library.load_receipts()
+        rec = receipts[str(self.tool.home / ".claude/skills/from-git")]
+        rec["source"] = "https://github.com/acme/fork/blob/main/skills/from-git/SKILL.md"
+        library.save_receipts(receipts)
+        self.push_elsewhere()
+        with self.counted_clones() as calls:
+            self.sync()
+        self.assertEqual(calls, ["from-git"])
+
+    def test_force_ignores_an_unchanged_folder(self) -> None:
+        self.use("from-git")
+        self.push_elsewhere()
+        with self.counted_clones() as calls:
+            self.sync("--force")
+        self.assertEqual(calls, ["from-git"])
+
+    def test_one_probe_clone_per_repo_not_per_entry(self) -> None:
+        self.use("from-git")
+        self.use("from-git-two")
+        self.push_elsewhere()
+        runs: list[list[str]] = []
+        real = library.subprocess.run
+
+        def counting(cmd, *a, **kw):
+            if cmd[:2] == ["git", "clone"] and "--filter=blob:none" in cmd:
+                runs.append(cmd)
+            return real(cmd, *a, **kw)
+
+        with patch.object(library.subprocess, "run", counting):
+            payload = self.sync()
+        self.assertEqual(len(runs), 1, runs)
+        self.assertTrue(all(r["up_to_date"] for r in payload["synced"]), payload)
+
+    def test_a_disabled_copy_skips_the_refresh_too(self) -> None:
+        self.use("from-git")
+        code, _, err = run_cli("disable", "from-git", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        self.push_elsewhere()
+        with self.counted_clones() as calls:
+            synced = self.sync()["synced"][0]
+        self.assertEqual(calls, [])
+        self.assertTrue(synced["up_to_date"])
+        self.assertTrue(synced["disabled"])
+        self.assertEqual(self.receipt()["commit"], self.repo.remote_head())
 
     def test_one_ls_remote_per_repo_not_per_entry(self) -> None:
         cache: dict[str, Any] = {}

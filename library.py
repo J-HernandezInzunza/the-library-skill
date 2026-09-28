@@ -2512,13 +2512,19 @@ def content_unmoved(src: Source, entry: Entry, receipt: dict[str, Any],
 
 
 def source_unchanged(entry: Entry, dest: Path, receipt: "dict[str, Any] | None",
-                     heads: dict[str, "str | None"]) -> bool:
+                     heads: dict[str, "str | None"],
+                     probes: "dict[str, tuple[Path, str] | None] | None" = None) -> bool:
     """Can this item's refresh be skipped? (design §5)
 
-    True only when both ends are provably unchanged: the source is at the sha the receipt
-    recorded, and the installed copy still hashes to what was installed. Anything unknown
-    — no receipt, no commit, unreachable remote, drifted copy — is False, so the
-    fallback is always today's behavior: fetch it.
+    True only when both ends are provably unchanged: the source still holds what the
+    receipt recorded, and the installed copy still hashes to what was installed. For a
+    remote, "still holds" is the same sha, or a moved head whose folder or file oid is
+    unchanged. Anything unknown — no receipt, no commit, unreachable remote, drifted
+    copy, no oid — is False, so the fallback is always today's behavior: fetch it.
+
+    Writes one thing: when a moved head is proven unchanged, the receipt's `commit`
+    advances to it. The content is byte-identical there, so the provenance is true,
+    and the next run is back on the free `ls-remote` path.
     """
     if receipt is None or dest_state(dest, receipt) != "installed":
         return False
@@ -2534,7 +2540,20 @@ def source_unchanged(entry: Entry, dest: Path, receipt: "dict[str, Any] | None",
             return content_hash(src.path.parent) == content_hash(dest)
         return dest.is_file() and filecmp.cmp(src.path, dest, shallow=False)
     head = remote_head(src, heads)
-    return bool(head) and head == receipt.get("commit")
+    if not head:
+        return False
+    if head == receipt.get("commit"):
+        return True
+    tip = content_unmoved(src, entry, receipt, probes)
+    if tip is None:
+        return False
+    # The caller's copy too, so a dependency shared by two entries isn't re-probed.
+    receipt["commit"] = tip
+    receipts = load_receipts()
+    if receipt["dest"] in receipts:
+        receipts[receipt["dest"]]["commit"] = tip
+        save_receipts(receipts)
+    return True
 
 
 def fetch(entry: Entry, target_base: Path, clones: "dict[str, Path] | None" = None,
@@ -4702,7 +4721,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
     synced, failed, dep_writes = [], [], []
     # And one clone per repo+branch, for the same reason. `--force` re-fetches every item,
     # which on a machine whose entries share a repository was that many clones of it.
-    with clone_cache() as clones:
+    with clone_cache() as clones, probe_cache() as probes:
         for e, scope, archived in installed:
             if archived is not None:
                 # Refreshed in the archive, never into the destination, and reported as
@@ -4713,7 +4732,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
                 receipt = receipts.get(str(dest))
                 state = dest_state(dest, receipt)  # 'disabled', before and after
                 try:
-                    if not args.force and source_unchanged(e, arc, receipt, heads):
+                    if not args.force and source_unchanged(e, arc, receipt, heads, probes):
                         changes: dict[str, Any] = {"new_install": False, "added": [],
                                                    "removed": [], "modified": []}
                         up_to_date = True
@@ -4739,7 +4758,8 @@ def cmd_sync(args: argparse.Namespace) -> int:
                 for dep in resolve_deps(cfg.entries_of(e.catalog), e):
                     dep_dest = install_dest(dep, resolve_target_base(dirs, dep, scope, None))
                     dep_receipt = receipts.get(str(dep_dest))
-                    if not args.force and source_unchanged(dep, dep_dest, dep_receipt, heads):
+                    if not args.force and source_unchanged(dep, dep_dest, dep_receipt, heads,
+                                                            probes):
                         results.append({"type": dep.type, "name": dep.name,
                                         "catalog": dep.catalog,
                                         "dest": str(dep_dest), "verified": True,
