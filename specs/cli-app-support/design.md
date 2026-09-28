@@ -61,6 +61,7 @@ advisory lock (§7).
       "scope": "global",
       "source": "https://github.com/org/repo/blob/main/atlassian-toolkit/SKILL.md",
       "commit": "a1b2c3d4e5f6…",
+      "source_oid": "9f8e7d6c5b4a…",
       "content_hash": "sha256:…",
       "installed_at": "2026-08-13T13:35:19Z"
     }
@@ -85,7 +86,7 @@ State is computed on read, never stored, so a receipt can't disagree with the di
 | `drifted` | dest exists, hash differs — someone edited the installed copy |
 | `untracked` | dest exists, no receipt (hand-installed, or installed before receipts existed) |
 | `missing` | receipt exists, dest is gone — pruned on next write, reported meanwhile |
-| `stale` | receipt `commit` differs from the source's current head. **Only with `--check-remote`** (C-D5) |
+| `stale` | the installed content differs from the source's branch tip: the head moved **and** the oid of the installed folder (skill) or file (agent, prompt) changed with it. Commits elsewhere in the source repo don't count. A receipt without `source_oid`, or an oid that can't be probed, falls back to comparing heads. **Only with `--check-remote`** (C-D5) |
 
 `installed_scopes()` keeps working unchanged and remains the answer to "is it installed." Receipts
 add provenance on top; they never become the presence check, or an untracked install would vanish
@@ -164,6 +165,18 @@ changed — and "hit refresh" is a headline feature of the app.
 With receipts: `git ls-remote <url> <branch>` (one round trip per distinct repo, not per entry) gives
 the head sha. If it matches the receipt's `commit` **and** the dest hash matches, skip the clone and
 report `up to date`. `--force` restores the unconditional behavior.
+
+A moved head is not yet a change. The receipt's `source_oid` is the git object id of what was
+copied (the skill's folder tree, or the single file's blob), and one blobless shallow clone per repo
+(`--filter=blob:none --no-checkout`, trees only) gives the oid at the tip. Equal oids mean the
+content is byte-identical, so sync skips the clone and advances the receipt's `commit` to the tip it
+probed, leaving `content_hash` and `installed_at` alone. The next run is then back on the
+`ls-remote` path. The oid shortcut applies only when the receipt's `source` is the entry's current
+one; anything unproven fetches, as before. `list --check-remote` uses the same probe but never
+writes receipts, so it repeats the probe until the next `sync`.
+
+This refines `stale` and `up_to_date` rather than redefining them (C-D8): both keep their names and
+types, and "behind its source" now means the installed content is behind, not the repo.
 
 Local-path sources have no sha; they compare source-tree hash instead.
 

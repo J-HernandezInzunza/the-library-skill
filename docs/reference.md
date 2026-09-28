@@ -111,7 +111,7 @@ Every install writes a receipt next to `config.local.yaml`, recording what lande
   "name": "atlassian-toolkit", "type": "skill",
   "catalog": "shared", "scope": "global",
   "source": "https://github.com/org/repo/blob/main/atlassian-toolkit/SKILL.md",
-  "commit": "a1b2c3d…", "content_hash": "sha256:…",
+  "commit": "a1b2c3d…", "source_oid": "9f8e7d6…", "content_hash": "sha256:…",
   "installed_at": "2026-08-13T13:35:19Z"
 }
 ```
@@ -129,7 +129,7 @@ the two scopes mean one entry can legitimately live in several places.
 | `drifted` | present, but edited since — `use`/`sync` **will overwrite it** |
 | `untracked` | present with no receipt: hand-installed, or installed before receipts existed |
 | `missing` | a receipt whose files are gone |
-| `stale` | behind its source's current head — **only** with `list --check-remote` |
+| `stale` | the installed content differs from the source's branch tip; commits elsewhere in the source repo don't count. **Only** with `list --check-remote` |
 | `not_installed` | neither |
 
 Three deliberate choices:

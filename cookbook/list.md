@@ -65,8 +65,11 @@ three keys that come from the install receipt rather than the catalog:
 finer answer on top of it — an `untracked` or `drifted` item is still `installed: true`.
 
 **`--check-remote` is opt-in on purpose.** It asks each source repo for its current head
-(one call per repo, not per entry) and marks a clean install `stale` when the source has
-moved past the commit it was installed from. A plain `list` never touches the network, so
+(one call per repo, not per entry). When the head has moved, it takes one trees-only probe
+clone of the repo and marks a clean install `stale` only if the installed folder (skill) or
+file (agent, prompt) changed with it. A commit elsewhere in the repo, such as data files or
+a sibling skill, leaves it `installed`. `list` never writes receipts, so after such a commit
+each `--check-remote` repeats the probe until the next `sync` records the new head. A plain `list` never touches the network, so
 it works offline and never hangs. Pass it when the user asks "is anything out of date?" —
 not as a default. An unreachable source leaves the state unchanged rather than guessing,
 and a `drifted` copy stays `drifted`: the local edit is the more urgent fact.

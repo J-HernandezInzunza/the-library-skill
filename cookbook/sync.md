@@ -25,15 +25,17 @@ reported rather than refreshed. Do **not** re-implement it.
 **Sync skips what hasn't changed.** For each item it compares the source's current head
 (one `git ls-remote` per repo, not per entry) against the commit recorded in the install
 receipt, and the installed copy's hash against what was installed. When both match, the
-clone is skipped and the item reports `up to date`:
+clone is skipped and the item reports `up to date`. A moved head whose installed folder or
+file is unchanged (the commit touched something else in the repo) is also `up to date`: one
+trees-only probe per repo proves it, and the receipt moves to the new head:
 
 ```
   up to date [skill] grill-me (global)
   refreshed [skill] bug-investigator (global) · 2 modified
 ```
 
-Anything unknown falls back to fetching: no receipt, no recorded commit, an unreachable
-remote, or a locally-modified copy. That is deliberate — "don't know" must never be
+Anything unknown falls back to fetching: no receipt, no recorded commit or folder id, an
+unreachable remote, a failed probe, or a locally-modified copy. That is deliberate — "don't know" must never be
 reported as "up to date". In `--json`, each synced item carries `up_to_date`.
 
 **A disabled item is refreshed where it sits.** `sync` updates its archived copy in
