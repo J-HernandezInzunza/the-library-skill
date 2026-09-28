@@ -70,8 +70,8 @@ was edited), `untracked` (present, but this tool didn't install it), `missing`, 
 - **`untracked` is not a fault.** Hand-installed skills and everything installed before
   receipts existed look like this. Report it neutrally; `use` adopts it.
 
-`list --check-remote` adds `stale` (behind the source's head) at the cost of one network
-call per source repo — pass it only when the user asks whether things are out of date, and
+`list --check-remote` adds `stale` (the installed folder or file changed at the source;
+commits elsewhere in the repo don't count) at the cost of one network call per source repo — pass it only when the user asks whether things are out of date, and
 never by reflex. Deleting an installed copy is `uninstall` (the entry stays in the
 catalog); removing the entry itself is `remove`. Confusing the two is the expensive
 mistake — see [cookbook/uninstall.md](cookbook/uninstall.md). When the user wants a skill

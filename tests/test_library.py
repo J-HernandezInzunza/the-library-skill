@@ -3567,6 +3567,7 @@ def make_receipt(dest: str, **kw: Any) -> dict[str, Any]:
         "scope": "global",
         "source": "https://github.com/org/repo/blob/main/x/SKILL.md",
         "commit": "a" * 40,
+        "source_oid": "b" * 40,
         "content_hash": "sha256:deadbeef",
         "installed_at": "2026-08-13T13:35:19Z",
     }
@@ -3595,6 +3596,18 @@ class TestReceiptStore(unittest.TestCase):
         loaded = library.load_receipts()[rec["dest"]]
         self.assertIsNone(loaded["catalog_key"])
         self.assertEqual(loaded["catalog"], "shared")
+
+    def test_a_receipt_written_before_source_oid_still_loads(self) -> None:
+        # No RECEIPTS_VERSION bump (C-D3): an older receipt reads with the key as None,
+        # which staleness treats as "compare heads", today's behavior.
+        rec = make_receipt(str(self.tool.home / ".claude/skills/alpha"))
+        legacy = {k: v for k, v in rec.items() if k != "source_oid"}
+        self.tool.receipts_path.write_text(
+            json.dumps({"version": 1, "installs": [legacy]}) + "\n")
+
+        loaded = library.load_receipts()[rec["dest"]]
+        self.assertIsNone(loaded["source_oid"])
+        self.assertEqual(loaded["commit"], rec["commit"])
 
     def test_round_trips_a_receipt(self) -> None:
         rec = make_receipt(str(self.tool.home / ".claude/skills/alpha"))
@@ -5374,6 +5387,7 @@ library:
 
 class TestInstallsWriteReceipts(unittest.TestCase):
     REMOTE_SOURCE = "https://github.com/acme/agentics/blob/main/skills/from-git/SKILL.md"
+    REMOTE_AGENT_SOURCE = "https://github.com/acme/agentics/blob/main/agents/from-git-agent.md"
 
     def setUp(self) -> None:
         self.tool = TempTool()
@@ -5387,6 +5401,7 @@ class TestInstallsWriteReceipts(unittest.TestCase):
         # clone_urls is redirected at it so the clone stays offline (R18.6).
         self.repo = TempGitRepo(self.tool.root, name="agentics")
         self.repo.commit("skills/from-git/SKILL.md", "# from-git\n")
+        self.repo.commit("agents/from-git-agent.md", "# from-git-agent\n")
         self.repo.push()
         self.head = self.repo.head()
 
@@ -5403,7 +5418,10 @@ library:
     - name: from-git
       description: Installed from a git remote
       source: {self.REMOTE_SOURCE}
-  agents: []
+  agents:
+    - name: from-git-agent
+      description: A single file from a git remote
+      source: {self.REMOTE_AGENT_SOURCE}
   prompts: []
 """)
 
@@ -5453,6 +5471,25 @@ library:
         rec = library.load_receipts()[str(self.installed_dir("from-git"))]
         self.assertEqual(rec["commit"], self.head)
         self.assertEqual(rec["source"], self.REMOTE_SOURCE)
+
+    def test_a_remote_skill_records_the_oid_of_its_folder(self) -> None:
+        # The folder is what gets copied, so its tree oid is what staleness compares.
+        with self._local_remote():
+            self.use("from-git")
+        rec = library.load_receipts()[str(self.installed_dir("from-git"))]
+        self.assertEqual(rec["source_oid"],
+                         self.repo.git("rev-parse", "HEAD:skills/from-git").stdout.strip())
+
+    def test_a_remote_single_file_entry_records_the_oid_of_its_file(self) -> None:
+        with self._local_remote():
+            self.use("from-git-agent")
+        rec = library.load_receipts()[str(self.tool.home / ".claude/agents/from-git-agent.md")]
+        self.assertEqual(rec["source_oid"],
+                         self.repo.git("rev-parse", "HEAD:agents/from-git-agent.md").stdout.strip())
+
+    def test_a_local_source_records_a_null_oid(self) -> None:
+        self.use("own-dep")
+        self.assertIsNone(library.load_receipts()[str(self.installed_dir("own-dep"))]["source_oid"])
 
     def test_a_project_scope_install_records_its_own_dest_and_scope(self) -> None:
         code, _, err = run_cli("use", "own-dep", "--project", "--no-pull", "--json")
@@ -5931,6 +5968,7 @@ class TestSyncSkipsUnchangedItems(unittest.TestCase):
 
         self.repo = TempGitRepo(self.tool.root, name="agentics")
         self.repo.commit("skills/from-git/SKILL.md", "# from-git v1\n")
+        self.repo.commit("skills/from-git-two/SKILL.md", "# from-git-two v1\n")
         self.repo.push()
 
         install_local_only_fixture(self.tool, f"""\
@@ -5942,6 +5980,9 @@ library:
     - name: from-git
       description: From a git remote
       source: {self.REMOTE_SOURCE}
+    - name: from-git-two
+      description: A second skill from the same repo
+      source: {self.REMOTE_SOURCE.replace("from-git/", "from-git-two/")}
   agents:
     - name: sql-review
       description: A single-file entry
@@ -6029,6 +6070,112 @@ library:
                 self.counted_clones() as calls:
             self.sync()
         self.assertEqual(calls, ["from-git"])
+
+    def push_elsewhere(self) -> None:
+        self.repo.commit("observations/2026-09-01-x.md", "# friction\n")
+        self.repo.push()
+
+    def receipt(self, name: str = "from-git") -> dict[str, Any]:
+        return library.load_receipts()[str(self.tool.home / ".claude/skills" / name)]
+
+    def test_a_commit_elsewhere_skips_the_refresh(self) -> None:
+        self.use("from-git")
+        self.push_elsewhere()
+        with self.counted_clones() as calls:
+            payload = self.sync()
+        self.assertEqual(calls, [], "sync re-cloned a skill whose folder didn't change")
+        self.assertTrue(payload["synced"][0]["up_to_date"])
+
+    def test_the_skip_moves_the_receipt_to_the_new_head(self) -> None:
+        # Provenance stays true: the bytes are identical at the new head. Nothing was
+        # installed, so the hash and the install time stay as they were.
+        self.use("from-git")
+        # A sentinel, so a re-install inside the same second can't pass for a skip.
+        receipts = library.load_receipts()
+        receipts[self.receipt()["dest"]]["installed_at"] = "2000-01-01T00:00:00Z"
+        library.save_receipts(receipts)
+        before = self.receipt()
+        self.push_elsewhere()
+        self.sync()
+        after = self.receipt()
+        self.assertEqual(after["commit"], self.repo.remote_head())
+        self.assertEqual({k: v for k, v in after.items() if k != "commit"},
+                         {k: v for k, v in before.items() if k != "commit"})
+
+    def test_after_the_skip_the_next_sync_never_probes(self) -> None:
+        self.use("from-git")
+        self.push_elsewhere()
+        self.sync()
+        calls: list[Any] = []
+        with patch.object(library, "remote_oid",
+                          lambda src, entry, probes: calls.append(entry.name)):
+            self.assertTrue(self.sync()["synced"][0]["up_to_date"])
+        self.assertEqual(calls, [])
+
+    def test_drift_is_refreshed_even_when_the_folder_is_unchanged(self) -> None:
+        self.use("from-git")
+        (self.tool.home / ".claude/skills/from-git/SKILL.md").write_text("# edited\n")
+        self.push_elsewhere()
+        with self.counted_clones() as calls:
+            payload = self.sync()
+        self.assertEqual(calls, ["from-git"])
+        self.assertEqual(payload["synced"][0]["state"], "drifted")
+
+    def test_an_unknown_remote_oid_falls_back_to_fetching(self) -> None:
+        self.use("from-git")
+        self.push_elsewhere()
+        with patch.object(library, "remote_oid", lambda src, entry, probes: None), \
+                self.counted_clones() as calls:
+            self.sync()
+        self.assertEqual(calls, ["from-git"])
+
+    def test_a_repointed_source_falls_back_to_fetching(self) -> None:
+        # The recorded oid says what the old source held, not the entry's current one.
+        self.use("from-git")
+        receipts = library.load_receipts()
+        rec = receipts[str(self.tool.home / ".claude/skills/from-git")]
+        rec["source"] = "https://github.com/acme/fork/blob/main/skills/from-git/SKILL.md"
+        library.save_receipts(receipts)
+        self.push_elsewhere()
+        with self.counted_clones() as calls:
+            self.sync()
+        self.assertEqual(calls, ["from-git"])
+
+    def test_force_ignores_an_unchanged_folder(self) -> None:
+        self.use("from-git")
+        self.push_elsewhere()
+        with self.counted_clones() as calls:
+            self.sync("--force")
+        self.assertEqual(calls, ["from-git"])
+
+    def test_one_probe_clone_per_repo_not_per_entry(self) -> None:
+        self.use("from-git")
+        self.use("from-git-two")
+        self.push_elsewhere()
+        runs: list[list[str]] = []
+        real = library.subprocess.run
+
+        def counting(cmd, *a, **kw):
+            if cmd[:2] == ["git", "clone"] and "--filter=blob:none" in cmd:
+                runs.append(cmd)
+            return real(cmd, *a, **kw)
+
+        with patch.object(library.subprocess, "run", counting):
+            payload = self.sync()
+        self.assertEqual(len(runs), 1, runs)
+        self.assertTrue(all(r["up_to_date"] for r in payload["synced"]), payload)
+
+    def test_a_disabled_copy_skips_the_refresh_too(self) -> None:
+        self.use("from-git")
+        code, _, err = run_cli("disable", "from-git", "--no-pull", "--json")
+        self.assertEqual(code, 0, err)
+        self.push_elsewhere()
+        with self.counted_clones() as calls:
+            synced = self.sync()["synced"][0]
+        self.assertEqual(calls, [])
+        self.assertTrue(synced["up_to_date"])
+        self.assertTrue(synced["disabled"])
+        self.assertEqual(self.receipt()["commit"], self.repo.remote_head())
 
     def test_one_ls_remote_per_repo_not_per_entry(self) -> None:
         cache: dict[str, Any] = {}
@@ -6290,6 +6437,7 @@ class TestListCheckRemote(unittest.TestCase):
     """Opt-in staleness against the source (design §3.1, C-D5)."""
 
     REMOTE_SOURCE = "https://github.com/acme/agentics/blob/main/skills/from-git/SKILL.md"
+    REMOTE_AGENT_SOURCE = "https://github.com/acme/agentics/blob/main/agents/from-git-agent.md"
 
     def setUp(self) -> None:
         self.tool = TempTool()
@@ -6299,6 +6447,7 @@ class TestListCheckRemote(unittest.TestCase):
         (self.src / "local-skill" / "SKILL.md").write_text("# local-skill\n")
         self.repo = TempGitRepo(self.tool.root, name="agentics")
         self.repo.commit("skills/from-git/SKILL.md", "# from-git v1\n")
+        self.repo.commit("agents/from-git-agent.md", "# from-git-agent v1\n")
         self.repo.push()
         install_local_only_fixture(self.tool, f"""\
 library:
@@ -6309,7 +6458,10 @@ library:
     - name: local-skill
       description: From a path on this machine
       source: {self.src}/local-skill/SKILL.md
-  agents: []
+  agents:
+    - name: from-git-agent
+      description: A single file from a git remote
+      source: {self.REMOTE_AGENT_SOURCE}
   prompts: []
 """)
 
@@ -6369,6 +6521,132 @@ library:
         with patch.object(library, "remote_head", lambda src, cache: None):
             rows = self.rows("--check-remote")
         self.assertEqual(rows["from-git"]["state"], "installed")
+
+    def push(self, rel: str, text: str) -> None:
+        self.repo.commit(rel, text)
+        self.repo.push()
+
+    def edit_receipt(self, dest: Path, **fields: Any) -> None:
+        receipts = library.load_receipts()
+        receipts[str(dest)].update(fields)
+        library.save_receipts(receipts)
+
+    @property
+    def skill_dest(self) -> Path:
+        return self.tool.home / ".claude/skills/from-git"
+
+    def test_a_commit_elsewhere_in_the_repo_is_not_stale(self) -> None:
+        self.use("from-git")
+        self.push("observations/2026-09-01-x.md", "# friction\n")
+        self.assertEqual(self.rows("--check-remote")["from-git"]["state"], "installed")
+
+    def test_a_commit_to_a_sibling_skill_is_not_stale(self) -> None:
+        self.use("from-git")
+        self.push("skills/other/SKILL.md", "# other\n")
+        self.assertEqual(self.rows("--check-remote")["from-git"]["state"], "installed")
+
+    def test_a_new_file_inside_the_skill_is_stale(self) -> None:
+        # The folder is the unit: not just SKILL.md.
+        self.use("from-git")
+        self.push("skills/from-git/references/extra.md", "# extra\n")
+        self.assertEqual(self.rows("--check-remote")["from-git"]["state"], "stale")
+
+    def test_a_receipt_without_an_oid_falls_back_to_comparing_heads(self) -> None:
+        self.use("from-git")
+        self.edit_receipt(self.skill_dest, source_oid=None)
+        self.push("observations/x.md", "# friction\n")
+        self.assertEqual(self.rows("--check-remote")["from-git"]["state"], "stale")
+
+    def test_an_unknown_remote_oid_falls_back_to_comparing_heads(self) -> None:
+        self.use("from-git")
+        self.push("observations/x.md", "# friction\n")
+        with patch.object(library, "remote_oid", lambda src, entry, probes: None):
+            rows = self.rows("--check-remote")
+        self.assertEqual(rows["from-git"]["state"], "stale")
+
+    def test_a_repointed_source_falls_back_to_comparing_heads(self) -> None:
+        # The receipt's oid describes what *its* source held; it says nothing about
+        # the entry's current one.
+        self.use("from-git")
+        self.edit_receipt(self.skill_dest,
+                          source="https://github.com/acme/fork/blob/main/skills/from-git/SKILL.md")
+        self.push("observations/x.md", "# friction\n")
+        self.assertEqual(self.rows("--check-remote")["from-git"]["state"], "stale")
+
+    def test_a_skill_deleted_at_the_tip_is_stale(self) -> None:
+        self.use("from-git")
+        self.repo.git("rm", "-r", "-q", "skills/from-git")
+        self.repo.git("commit", "-q", "-m", "remove")
+        self.repo.push()
+        self.assertEqual(self.rows("--check-remote")["from-git"]["state"], "stale")
+
+    def test_a_single_file_entry_ignores_a_sibling_file(self) -> None:
+        self.use("from-git-agent")
+        self.push("agents/other.md", "# other\n")
+        self.assertEqual(self.rows("--check-remote")["from-git-agent"]["state"], "installed")
+
+    def test_a_single_file_entry_is_stale_when_its_file_changes(self) -> None:
+        self.use("from-git-agent")
+        self.push("agents/from-git-agent.md", "# from-git-agent v2\n")
+        self.assertEqual(self.rows("--check-remote")["from-git-agent"]["state"], "stale")
+
+    def test_check_remote_writes_no_receipts(self) -> None:
+        # A read command: the probe is repeated until a sync records the new head.
+        self.use("from-git")
+        self.push("observations/x.md", "# friction\n")
+        before = self.tool.receipts_path.read_bytes()
+        self.rows("--check-remote")
+        self.assertEqual(self.tool.receipts_path.read_bytes(), before)
+
+    def test_a_plain_list_never_probes(self) -> None:
+        self.use("from-git")
+        self.push("observations/x.md", "# friction\n")
+        calls: list[Any] = []
+        with patch.object(library, "remote_oid",
+                          lambda src, entry, probes: calls.append(entry.name)):
+            self.rows()
+        self.assertEqual(calls, [])
+
+    def test_an_unmoved_head_never_probes(self) -> None:
+        self.use("from-git")
+        calls: list[Any] = []
+        with patch.object(library, "remote_oid",
+                          lambda src, entry, probes: calls.append(entry.name)):
+            self.rows("--check-remote")
+        self.assertEqual(calls, [])
+
+    def test_one_probe_clone_per_repo_not_per_entry(self) -> None:
+        self.use("from-git")
+        self.use("from-git-agent")
+        self.push("observations/x.md", "# friction\n")
+        runs: list[list[str]] = []
+        real = library.subprocess.run
+
+        def counting(cmd, *a, **kw):
+            if cmd[:2] == ["git", "clone"] and "--filter=blob:none" in cmd:
+                runs.append(cmd)
+            return real(cmd, *a, **kw)
+
+        with patch.object(library.subprocess, "run", counting):
+            rows = self.rows("--check-remote")
+        self.assertEqual(len(runs), 1, runs)
+        self.assertEqual(rows["from-git"]["state"], "installed")
+        self.assertEqual(rows["from-git-agent"]["state"], "installed")
+
+    def test_probe_clones_are_removed_when_the_command_ends(self) -> None:
+        self.use("from-git")
+        self.push("observations/x.md", "# friction\n")
+        made: list[str] = []
+        real = library.tempfile.mkdtemp
+
+        def recording(*a, **kw):
+            made.append(real(*a, **kw))
+            return made[-1]
+
+        with patch.object(library.tempfile, "mkdtemp", recording):
+            self.rows("--check-remote")
+        self.assertTrue(made)
+        self.assertEqual([d for d in made if Path(d).exists()], [])
 
     def test_the_human_output_says_stale(self) -> None:
         self.use("from-git")

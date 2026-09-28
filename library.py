@@ -185,7 +185,7 @@ def move_tree(src: Path, dst: Path) -> None:
 RECEIPTS_VERSION = 1
 SETUP_FILE = "setup.yaml"  # a skill's optional setup manifest, inside its installed dir
 RECEIPT_KEYS = ("dest", "name", "type", "catalog", "catalog_key", "scope", "source",
-                "commit", "content_hash", "installed_at")
+                "commit", "source_oid", "content_hash", "installed_at")
 
 
 def content_hash(path: Path) -> str:
@@ -245,7 +245,8 @@ def save_receipts(receipts: dict[str, dict[str, Any]]) -> None:
 
 
 def record_install(entry: "Entry", dest: Path, scope: str, commit: "str | None",
-                   catalog_key: str = "", receipt_dest: "Path | None" = None) -> dict[str, Any]:
+                   catalog_key: str = "", receipt_dest: "Path | None" = None,
+                   source_oid: "str | None" = None) -> dict[str, Any]:
     """Record what was just installed at *dest*, replacing any earlier receipt for it.
 
     Keyed by dest (not name + scope), because `--dir` allows arbitrary destinations and
@@ -260,6 +261,9 @@ def record_install(entry: "Entry", dest: Path, scope: str, commit: "str | None",
     updates the archived copy, and the receipt must keep naming the active destination
     `enable` restores it to. The hash still comes from *dest*, so the provenance
     describes the content that was actually written — state is never stored here.
+
+    *source_oid* is the git object id of what was copied (the skill's folder, or the
+    single file), so staleness can ask whether *that* moved rather than the whole repo.
     """
     receipt = {
         "dest": str(receipt_dest or dest),
@@ -273,6 +277,7 @@ def record_install(entry: "Entry", dest: Path, scope: str, commit: "str | None",
         "scope": scope,
         "source": entry.source,
         "commit": commit,
+        "source_oid": source_oid,
         "content_hash": content_hash(dest),
         "installed_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -2376,8 +2381,24 @@ def _clone_repo(src: Source, clones: "dict[str, Path] | None") -> tuple[Path, "P
     raise LibraryError(f"clone failed for {src.org}/{src.repo}: {last_err or 'unknown error'}")
 
 
+def _source_path(src: Source, entry: Entry) -> str:
+    """Repo path of what *entry* installs: the skill's folder, or the single file.
+
+    Recording and probing must name the same path, or equal content compares unequal.
+    """
+    return src.parent_path if entry.type == "skill" else src.file_path
+
+
+def _rev_parse(repo: Path, rev: str) -> "str | None":
+    # On failure git echoes the rev to stdout, so the exit code is the only signal.
+    proc = subprocess.run(["git", "-C", str(repo), "rev-parse", rev],
+                          capture_output=True, text=True)
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
 def fetch_remote(src: Source, entry: Entry, target_base: Path,
-                 clones: "dict[str, Path] | None" = None) -> tuple[Path, dict[str, Any], "str | None"]:
+                 clones: "dict[str, Path] | None" = None,
+                 ) -> tuple[Path, dict[str, Any], "str | None", "str | None"]:
     repo, owned = _clone_repo(src, clones)
     try:
         ref = repo / src.file_path
@@ -2385,13 +2406,12 @@ def fetch_remote(src: Source, entry: Entry, target_base: Path,
             raise LibraryError(f"referenced file missing in repo: {src.file_path}")
         # The clone is on disk, so the sha it came from is free here and impossible to
         # recover later, once the tree is gone.
-        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
-                              capture_output=True, text=True)
-        commit = head.stdout.strip() if head.returncode == 0 else None
+        commit = _rev_parse(repo, "HEAD")
+        oid = _rev_parse(repo, f"HEAD:{_source_path(src, entry)}")
         dest = install_dest(entry, target_base)
         if entry.type == "skill":
-            return dest, _copy_dir(ref.parent, dest), commit
-        return dest, _copy_file(ref, dest), commit
+            return dest, _copy_dir(ref.parent, dest), commit, oid
+        return dest, _copy_file(ref, dest), commit, oid
     finally:
         # Only what this call created: a cached clone outlives it by design.
         if owned is not None:
@@ -2420,14 +2440,91 @@ def remote_head(src: Source, cache: dict[str, "str | None"]) -> "str | None":
     return head
 
 
+@contextlib.contextmanager
+def probe_cache():
+    """One blobless probe clone per repo+branch for the duration of a run (R18.7).
+
+    `clone_cache`'s twin for the question "what is at the tip now", which needs trees
+    but no file contents. Values are (repo dir, commit it holds), or None for a repo
+    that could not be probed, so a failure is asked once per run rather than per entry.
+    """
+    probes: dict[str, "tuple[Path, str] | None"] = {}
+    try:
+        yield probes
+    finally:
+        for probed in probes.values():
+            if probed is not None:
+                shutil.rmtree(probed[0].parent, ignore_errors=True)
+
+
+def remote_oid(src: Source, entry: Entry,
+               probes: dict[str, "tuple[Path, str] | None"]) -> "tuple[str, str] | None":
+    """(tip commit, object id there) for what *entry* installs, or None if unknown.
+
+    The commit is the probe's own, not `remote_head`'s: the branch can move between
+    the two calls, and the oid describes the commit the probe actually holds.
+
+    `--filter=blob:none` fetches one commit's trees and no file contents. A server that
+    ignores the filter sends a plain shallow clone instead: slower, still correct.
+    """
+    key = f"{src.kind}:{src.org}/{src.repo}@{src.branch}"
+    if key not in probes:
+        probes[key] = None
+        root = Path(tempfile.mkdtemp(prefix="library-probe-"))
+        for url in src.clone_urls():
+            proc = subprocess.run(
+                ["git", "clone", "--depth", "1", "--filter=blob:none", "--no-checkout",
+                 "--branch", src.branch, url, str(root / "repo")],
+                capture_output=True, text=True,
+            )
+            commit = _rev_parse(root / "repo", "HEAD") if proc.returncode == 0 else None
+            if commit:
+                probes[key] = (root / "repo", commit)
+                break
+            shutil.rmtree(root / "repo", ignore_errors=True)
+        if probes[key] is None:
+            shutil.rmtree(root, ignore_errors=True)
+    probed = probes[key]
+    if probed is None:
+        return None
+    repo, commit = probed
+    # None when the path is gone at the tip: the entry moved or was deleted.
+    oid = _rev_parse(repo, f"{commit}:{_source_path(src, entry)}")
+    return (commit, oid) if oid else None
+
+
+def content_unmoved(src: Source, entry: Entry, receipt: dict[str, Any],
+                    probes: "dict[str, tuple[Path, str] | None] | None") -> "str | None":
+    """The tip commit when *entry*'s content there is what *receipt* installed.
+
+    Asked only once the head has moved, so an unmoved head costs nothing extra. None
+    whenever it can't be proven: no probes, a receipt without an oid, a probe that
+    failed, or a receipt from a different source. The oid describes what *its* source
+    held; a catalog repointed at a fork with identical files must not borrow it.
+    """
+    if (probes is None or not receipt.get("source_oid")
+            or receipt.get("source") != entry.source):
+        return None
+    probed = remote_oid(src, entry, probes)
+    if probed is None or probed[1] != receipt["source_oid"]:
+        return None
+    return probed[0]
+
+
 def source_unchanged(entry: Entry, dest: Path, receipt: "dict[str, Any] | None",
-                     heads: dict[str, "str | None"]) -> bool:
+                     heads: dict[str, "str | None"],
+                     probes: "dict[str, tuple[Path, str] | None] | None" = None) -> bool:
     """Can this item's refresh be skipped? (design §5)
 
-    True only when both ends are provably unchanged: the source is at the sha the receipt
-    recorded, and the installed copy still hashes to what was installed. Anything unknown
-    — no receipt, no commit, unreachable remote, drifted copy — is False, so the
-    fallback is always today's behavior: fetch it.
+    True only when both ends are provably unchanged: the source still holds what the
+    receipt recorded, and the installed copy still hashes to what was installed. For a
+    remote, "still holds" is the same sha, or a moved head whose folder or file oid is
+    unchanged. Anything unknown — no receipt, no commit, unreachable remote, drifted
+    copy, no oid — is False, so the fallback is always today's behavior: fetch it.
+
+    Writes one thing: when a moved head is proven unchanged, the receipt's `commit`
+    advances to it. The content is byte-identical there, so the provenance is true,
+    and the next run is back on the free `ls-remote` path.
     """
     if receipt is None or dest_state(dest, receipt) != "installed":
         return False
@@ -2443,15 +2540,31 @@ def source_unchanged(entry: Entry, dest: Path, receipt: "dict[str, Any] | None",
             return content_hash(src.path.parent) == content_hash(dest)
         return dest.is_file() and filecmp.cmp(src.path, dest, shallow=False)
     head = remote_head(src, heads)
-    return bool(head) and head == receipt.get("commit")
+    if not head:
+        return False
+    if head == receipt.get("commit"):
+        return True
+    tip = content_unmoved(src, entry, receipt, probes)
+    if tip is None:
+        return False
+    # The caller's copy too, so a dependency shared by two entries isn't re-probed.
+    receipt["commit"] = tip
+    receipts = load_receipts()
+    if receipt["dest"] in receipts:
+        receipts[receipt["dest"]]["commit"] = tip
+        save_receipts(receipts)
+    return True
 
 
-def fetch(entry: Entry, target_base: Path,
-          clones: "dict[str, Path] | None" = None) -> tuple[Path, dict[str, Any], "str | None"]:
-    """Install *entry* under *target_base*; returns (dest, diff, source commit or None)."""
+def fetch(entry: Entry, target_base: Path, clones: "dict[str, Path] | None" = None,
+          ) -> tuple[Path, dict[str, Any], "str | None", "str | None"]:
+    """Install *entry* under *target_base*; returns (dest, diff, commit, source oid).
+
+    Commit and oid are None for a local source: a path on disk has neither.
+    """
     src = parse_source(entry.source)
     if src.kind == "local":
-        return fetch_local(src, entry, target_base)
+        return (*fetch_local(src, entry, target_base), None)
     return fetch_remote(src, entry, target_base, clones)
 
 
@@ -3184,10 +3297,10 @@ def _install_one(
     clones: "dict[str, Path] | None" = None,
 ) -> dict[str, Any]:
     base = resolve_target_base(dirs, entry, scope, custom)
-    dest, changes, commit = fetch(entry, base, clones)
+    dest, changes, commit, oid = fetch(entry, base, clones)
     main = main_file_for(entry, dest)
     ok = main.exists()
-    record_install(entry, dest, scope, commit, catalog_key)
+    record_install(entry, dest, scope, commit, catalog_key, source_oid=oid)
     return {"type": entry.type, "name": entry.name, "catalog": entry.catalog,
             "dest": str(dest), "verified": ok, "changes": changes}
 
@@ -3212,10 +3325,10 @@ def _refresh_archived(
     archive path is read from the record rather than re-derived here.
     """
     archive = Path(location["archive_path"])
-    dest, changes, commit = fetch(entry, archive.parent, clones)
+    dest, changes, commit, oid = fetch(entry, archive.parent, clones)
     main = main_file_for(entry, dest)
     record_install(entry, dest, scope, commit, catalog_key,
-                   receipt_dest=Path(location["path"]))
+                   receipt_dest=Path(location["path"]), source_oid=oid)
     return {"type": entry.type, "name": entry.name, "catalog": entry.catalog,
             "dest": str(dest), "verified": main.exists(), "changes": changes}
 
@@ -3262,7 +3375,8 @@ def winning_catalogs(cfg: Config) -> dict[str, str]:
 
 def entry_record(cfg: Config, entry: Entry, winners: dict[str, str],
                  receipts: dict[str, dict[str, Any]],
-                 heads: "dict[str, str | None] | None" = None) -> dict[str, Any]:
+                 heads: "dict[str, str | None] | None" = None,
+                 probes: "dict[str, tuple[Path, str] | None] | None" = None) -> dict[str, Any]:
     """The one JSON shape for a catalog entry, shared by `list` and `search` (§4.1).
 
     Two commands answering the same question must answer it identically; when `search`
@@ -3294,7 +3408,8 @@ def entry_record(cfg: Config, entry: Entry, winners: dict[str, str],
     # Staleness costs a network round trip, so it is only computed when asked for
     # (C-D5: a read command that silently hits the network hangs on a plane). Only a
     # clean install can be `stale`; a drifted or untracked copy has a more urgent
-    # answer already, and it isn't about the source.
+    # answer already, and it isn't about the source. A moved head is only stale when
+    # the installed content moved with it: a commit elsewhere in the repo is not.
     if heads is not None and state == "installed" and receipt and receipt.get("commit"):
         try:
             src = parse_source(entry.source)
@@ -3302,7 +3417,8 @@ def entry_record(cfg: Config, entry: Entry, winners: dict[str, str],
             src = None
         if src is not None and src.kind != "local":
             head = remote_head(src, heads)
-            if head and head != receipt["commit"]:
+            if (head and head != receipt["commit"]
+                    and not content_unmoved(src, entry, receipt, probes)):
                 state = "stale"
     return {
         # The 13 keys below are the documented contract (C-D8): never renamed, never
@@ -3334,7 +3450,10 @@ def cmd_list(args: argparse.Namespace) -> int:
 
     receipts = load_receipts()
     heads: dict[str, str | None] | None = {} if args.check_remote else None
-    records = [entry_record(cfg, e, winners, receipts, heads) for e in entries]
+    # Probes are only made under --check-remote (`heads` gates them), and only for a
+    # moved head. Their temp clones are gone before anything prints.
+    with probe_cache() as probes:
+        records = [entry_record(cfg, e, winners, receipts, heads, probes) for e in entries]
     if args.json:
         print(json.dumps(records, indent=2))
         return 0
@@ -4602,7 +4721,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
     synced, failed, dep_writes = [], [], []
     # And one clone per repo+branch, for the same reason. `--force` re-fetches every item,
     # which on a machine whose entries share a repository was that many clones of it.
-    with clone_cache() as clones:
+    with clone_cache() as clones, probe_cache() as probes:
         for e, scope, archived in installed:
             if archived is not None:
                 # Refreshed in the archive, never into the destination, and reported as
@@ -4613,7 +4732,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
                 receipt = receipts.get(str(dest))
                 state = dest_state(dest, receipt)  # 'disabled', before and after
                 try:
-                    if not args.force and source_unchanged(e, arc, receipt, heads):
+                    if not args.force and source_unchanged(e, arc, receipt, heads, probes):
                         changes: dict[str, Any] = {"new_install": False, "added": [],
                                                    "removed": [], "modified": []}
                         up_to_date = True
@@ -4639,7 +4758,8 @@ def cmd_sync(args: argparse.Namespace) -> int:
                 for dep in resolve_deps(cfg.entries_of(e.catalog), e):
                     dep_dest = install_dest(dep, resolve_target_base(dirs, dep, scope, None))
                     dep_receipt = receipts.get(str(dep_dest))
-                    if not args.force and source_unchanged(dep, dep_dest, dep_receipt, heads):
+                    if not args.force and source_unchanged(dep, dep_dest, dep_receipt, heads,
+                                                            probes):
                         results.append({"type": dep.type, "name": dep.name,
                                         "catalog": dep.catalog,
                                         "dest": str(dep_dest), "verified": True,
