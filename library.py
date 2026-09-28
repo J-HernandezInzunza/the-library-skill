@@ -2440,6 +2440,77 @@ def remote_head(src: Source, cache: dict[str, "str | None"]) -> "str | None":
     return head
 
 
+@contextlib.contextmanager
+def probe_cache():
+    """One blobless probe clone per repo+branch for the duration of a run (R18.7).
+
+    `clone_cache`'s twin for the question "what is at the tip now", which needs trees
+    but no file contents. Values are (repo dir, commit it holds), or None for a repo
+    that could not be probed, so a failure is asked once per run rather than per entry.
+    """
+    probes: dict[str, "tuple[Path, str] | None"] = {}
+    try:
+        yield probes
+    finally:
+        for probed in probes.values():
+            if probed is not None:
+                shutil.rmtree(probed[0].parent, ignore_errors=True)
+
+
+def remote_oid(src: Source, entry: Entry,
+               probes: dict[str, "tuple[Path, str] | None"]) -> "tuple[str, str] | None":
+    """(tip commit, object id there) for what *entry* installs, or None if unknown.
+
+    The commit is the probe's own, not `remote_head`'s: the branch can move between
+    the two calls, and the oid describes the commit the probe actually holds.
+
+    `--filter=blob:none` fetches one commit's trees and no file contents. A server that
+    ignores the filter sends a plain shallow clone instead: slower, still correct.
+    """
+    key = f"{src.kind}:{src.org}/{src.repo}@{src.branch}"
+    if key not in probes:
+        probes[key] = None
+        root = Path(tempfile.mkdtemp(prefix="library-probe-"))
+        for url in src.clone_urls():
+            proc = subprocess.run(
+                ["git", "clone", "--depth", "1", "--filter=blob:none", "--no-checkout",
+                 "--branch", src.branch, url, str(root / "repo")],
+                capture_output=True, text=True,
+            )
+            commit = _rev_parse(root / "repo", "HEAD") if proc.returncode == 0 else None
+            if commit:
+                probes[key] = (root / "repo", commit)
+                break
+            shutil.rmtree(root / "repo", ignore_errors=True)
+        if probes[key] is None:
+            shutil.rmtree(root, ignore_errors=True)
+    probed = probes[key]
+    if probed is None:
+        return None
+    repo, commit = probed
+    # None when the path is gone at the tip: the entry moved or was deleted.
+    oid = _rev_parse(repo, f"{commit}:{_source_path(src, entry)}")
+    return (commit, oid) if oid else None
+
+
+def content_unmoved(src: Source, entry: Entry, receipt: dict[str, Any],
+                    probes: "dict[str, tuple[Path, str] | None] | None") -> "str | None":
+    """The tip commit when *entry*'s content there is what *receipt* installed.
+
+    Asked only once the head has moved, so an unmoved head costs nothing extra. None
+    whenever it can't be proven: no probes, a receipt without an oid, a probe that
+    failed, or a receipt from a different source. The oid describes what *its* source
+    held; a catalog repointed at a fork with identical files must not borrow it.
+    """
+    if (probes is None or not receipt.get("source_oid")
+            or receipt.get("source") != entry.source):
+        return None
+    probed = remote_oid(src, entry, probes)
+    if probed is None or probed[1] != receipt["source_oid"]:
+        return None
+    return probed[0]
+
+
 def source_unchanged(entry: Entry, dest: Path, receipt: "dict[str, Any] | None",
                      heads: dict[str, "str | None"]) -> bool:
     """Can this item's refresh be skipped? (design §5)
@@ -3285,7 +3356,8 @@ def winning_catalogs(cfg: Config) -> dict[str, str]:
 
 def entry_record(cfg: Config, entry: Entry, winners: dict[str, str],
                  receipts: dict[str, dict[str, Any]],
-                 heads: "dict[str, str | None] | None" = None) -> dict[str, Any]:
+                 heads: "dict[str, str | None] | None" = None,
+                 probes: "dict[str, tuple[Path, str] | None] | None" = None) -> dict[str, Any]:
     """The one JSON shape for a catalog entry, shared by `list` and `search` (§4.1).
 
     Two commands answering the same question must answer it identically; when `search`
@@ -3317,7 +3389,8 @@ def entry_record(cfg: Config, entry: Entry, winners: dict[str, str],
     # Staleness costs a network round trip, so it is only computed when asked for
     # (C-D5: a read command that silently hits the network hangs on a plane). Only a
     # clean install can be `stale`; a drifted or untracked copy has a more urgent
-    # answer already, and it isn't about the source.
+    # answer already, and it isn't about the source. A moved head is only stale when
+    # the installed content moved with it: a commit elsewhere in the repo is not.
     if heads is not None and state == "installed" and receipt and receipt.get("commit"):
         try:
             src = parse_source(entry.source)
@@ -3325,7 +3398,8 @@ def entry_record(cfg: Config, entry: Entry, winners: dict[str, str],
             src = None
         if src is not None and src.kind != "local":
             head = remote_head(src, heads)
-            if head and head != receipt["commit"]:
+            if (head and head != receipt["commit"]
+                    and not content_unmoved(src, entry, receipt, probes)):
                 state = "stale"
     return {
         # The 13 keys below are the documented contract (C-D8): never renamed, never
@@ -3357,7 +3431,10 @@ def cmd_list(args: argparse.Namespace) -> int:
 
     receipts = load_receipts()
     heads: dict[str, str | None] | None = {} if args.check_remote else None
-    records = [entry_record(cfg, e, winners, receipts, heads) for e in entries]
+    # Probes are only made under --check-remote (`heads` gates them), and only for a
+    # moved head. Their temp clones are gone before anything prints.
+    with probe_cache() as probes:
+        records = [entry_record(cfg, e, winners, receipts, heads, probes) for e in entries]
     if args.json:
         print(json.dumps(records, indent=2))
         return 0
