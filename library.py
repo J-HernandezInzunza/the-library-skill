@@ -185,7 +185,7 @@ def move_tree(src: Path, dst: Path) -> None:
 RECEIPTS_VERSION = 1
 SETUP_FILE = "setup.yaml"  # a skill's optional setup manifest, inside its installed dir
 RECEIPT_KEYS = ("dest", "name", "type", "catalog", "catalog_key", "scope", "source",
-                "commit", "content_hash", "installed_at")
+                "commit", "source_oid", "content_hash", "installed_at")
 
 
 def content_hash(path: Path) -> str:
@@ -245,7 +245,8 @@ def save_receipts(receipts: dict[str, dict[str, Any]]) -> None:
 
 
 def record_install(entry: "Entry", dest: Path, scope: str, commit: "str | None",
-                   catalog_key: str = "", receipt_dest: "Path | None" = None) -> dict[str, Any]:
+                   catalog_key: str = "", receipt_dest: "Path | None" = None,
+                   source_oid: "str | None" = None) -> dict[str, Any]:
     """Record what was just installed at *dest*, replacing any earlier receipt for it.
 
     Keyed by dest (not name + scope), because `--dir` allows arbitrary destinations and
@@ -260,6 +261,9 @@ def record_install(entry: "Entry", dest: Path, scope: str, commit: "str | None",
     updates the archived copy, and the receipt must keep naming the active destination
     `enable` restores it to. The hash still comes from *dest*, so the provenance
     describes the content that was actually written — state is never stored here.
+
+    *source_oid* is the git object id of what was copied (the skill's folder, or the
+    single file), so staleness can ask whether *that* moved rather than the whole repo.
     """
     receipt = {
         "dest": str(receipt_dest or dest),
@@ -273,6 +277,7 @@ def record_install(entry: "Entry", dest: Path, scope: str, commit: "str | None",
         "scope": scope,
         "source": entry.source,
         "commit": commit,
+        "source_oid": source_oid,
         "content_hash": content_hash(dest),
         "installed_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -2376,8 +2381,24 @@ def _clone_repo(src: Source, clones: "dict[str, Path] | None") -> tuple[Path, "P
     raise LibraryError(f"clone failed for {src.org}/{src.repo}: {last_err or 'unknown error'}")
 
 
+def _source_path(src: Source, entry: Entry) -> str:
+    """Repo path of what *entry* installs: the skill's folder, or the single file.
+
+    Recording and probing must name the same path, or equal content compares unequal.
+    """
+    return src.parent_path if entry.type == "skill" else src.file_path
+
+
+def _rev_parse(repo: Path, rev: str) -> "str | None":
+    # On failure git echoes the rev to stdout, so the exit code is the only signal.
+    proc = subprocess.run(["git", "-C", str(repo), "rev-parse", rev],
+                          capture_output=True, text=True)
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
 def fetch_remote(src: Source, entry: Entry, target_base: Path,
-                 clones: "dict[str, Path] | None" = None) -> tuple[Path, dict[str, Any], "str | None"]:
+                 clones: "dict[str, Path] | None" = None,
+                 ) -> tuple[Path, dict[str, Any], "str | None", "str | None"]:
     repo, owned = _clone_repo(src, clones)
     try:
         ref = repo / src.file_path
@@ -2385,13 +2406,12 @@ def fetch_remote(src: Source, entry: Entry, target_base: Path,
             raise LibraryError(f"referenced file missing in repo: {src.file_path}")
         # The clone is on disk, so the sha it came from is free here and impossible to
         # recover later, once the tree is gone.
-        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
-                              capture_output=True, text=True)
-        commit = head.stdout.strip() if head.returncode == 0 else None
+        commit = _rev_parse(repo, "HEAD")
+        oid = _rev_parse(repo, f"HEAD:{_source_path(src, entry)}")
         dest = install_dest(entry, target_base)
         if entry.type == "skill":
-            return dest, _copy_dir(ref.parent, dest), commit
-        return dest, _copy_file(ref, dest), commit
+            return dest, _copy_dir(ref.parent, dest), commit, oid
+        return dest, _copy_file(ref, dest), commit, oid
     finally:
         # Only what this call created: a cached clone outlives it by design.
         if owned is not None:
@@ -2446,12 +2466,15 @@ def source_unchanged(entry: Entry, dest: Path, receipt: "dict[str, Any] | None",
     return bool(head) and head == receipt.get("commit")
 
 
-def fetch(entry: Entry, target_base: Path,
-          clones: "dict[str, Path] | None" = None) -> tuple[Path, dict[str, Any], "str | None"]:
-    """Install *entry* under *target_base*; returns (dest, diff, source commit or None)."""
+def fetch(entry: Entry, target_base: Path, clones: "dict[str, Path] | None" = None,
+          ) -> tuple[Path, dict[str, Any], "str | None", "str | None"]:
+    """Install *entry* under *target_base*; returns (dest, diff, commit, source oid).
+
+    Commit and oid are None for a local source: a path on disk has neither.
+    """
     src = parse_source(entry.source)
     if src.kind == "local":
-        return fetch_local(src, entry, target_base)
+        return (*fetch_local(src, entry, target_base), None)
     return fetch_remote(src, entry, target_base, clones)
 
 
@@ -3184,10 +3207,10 @@ def _install_one(
     clones: "dict[str, Path] | None" = None,
 ) -> dict[str, Any]:
     base = resolve_target_base(dirs, entry, scope, custom)
-    dest, changes, commit = fetch(entry, base, clones)
+    dest, changes, commit, oid = fetch(entry, base, clones)
     main = main_file_for(entry, dest)
     ok = main.exists()
-    record_install(entry, dest, scope, commit, catalog_key)
+    record_install(entry, dest, scope, commit, catalog_key, source_oid=oid)
     return {"type": entry.type, "name": entry.name, "catalog": entry.catalog,
             "dest": str(dest), "verified": ok, "changes": changes}
 
@@ -3212,10 +3235,10 @@ def _refresh_archived(
     archive path is read from the record rather than re-derived here.
     """
     archive = Path(location["archive_path"])
-    dest, changes, commit = fetch(entry, archive.parent, clones)
+    dest, changes, commit, oid = fetch(entry, archive.parent, clones)
     main = main_file_for(entry, dest)
     record_install(entry, dest, scope, commit, catalog_key,
-                   receipt_dest=Path(location["path"]))
+                   receipt_dest=Path(location["path"]), source_oid=oid)
     return {"type": entry.type, "name": entry.name, "catalog": entry.catalog,
             "dest": str(dest), "verified": main.exists(), "changes": changes}
 

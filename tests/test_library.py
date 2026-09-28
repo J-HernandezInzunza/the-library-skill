@@ -3567,6 +3567,7 @@ def make_receipt(dest: str, **kw: Any) -> dict[str, Any]:
         "scope": "global",
         "source": "https://github.com/org/repo/blob/main/x/SKILL.md",
         "commit": "a" * 40,
+        "source_oid": "b" * 40,
         "content_hash": "sha256:deadbeef",
         "installed_at": "2026-08-13T13:35:19Z",
     }
@@ -3595,6 +3596,18 @@ class TestReceiptStore(unittest.TestCase):
         loaded = library.load_receipts()[rec["dest"]]
         self.assertIsNone(loaded["catalog_key"])
         self.assertEqual(loaded["catalog"], "shared")
+
+    def test_a_receipt_written_before_source_oid_still_loads(self) -> None:
+        # No RECEIPTS_VERSION bump (C-D3): an older receipt reads with the key as None,
+        # which staleness treats as "compare heads", today's behavior.
+        rec = make_receipt(str(self.tool.home / ".claude/skills/alpha"))
+        legacy = {k: v for k, v in rec.items() if k != "source_oid"}
+        self.tool.receipts_path.write_text(
+            json.dumps({"version": 1, "installs": [legacy]}) + "\n")
+
+        loaded = library.load_receipts()[rec["dest"]]
+        self.assertIsNone(loaded["source_oid"])
+        self.assertEqual(loaded["commit"], rec["commit"])
 
     def test_round_trips_a_receipt(self) -> None:
         rec = make_receipt(str(self.tool.home / ".claude/skills/alpha"))
@@ -5374,6 +5387,7 @@ library:
 
 class TestInstallsWriteReceipts(unittest.TestCase):
     REMOTE_SOURCE = "https://github.com/acme/agentics/blob/main/skills/from-git/SKILL.md"
+    REMOTE_AGENT_SOURCE = "https://github.com/acme/agentics/blob/main/agents/from-git-agent.md"
 
     def setUp(self) -> None:
         self.tool = TempTool()
@@ -5387,6 +5401,7 @@ class TestInstallsWriteReceipts(unittest.TestCase):
         # clone_urls is redirected at it so the clone stays offline (R18.6).
         self.repo = TempGitRepo(self.tool.root, name="agentics")
         self.repo.commit("skills/from-git/SKILL.md", "# from-git\n")
+        self.repo.commit("agents/from-git-agent.md", "# from-git-agent\n")
         self.repo.push()
         self.head = self.repo.head()
 
@@ -5403,7 +5418,10 @@ library:
     - name: from-git
       description: Installed from a git remote
       source: {self.REMOTE_SOURCE}
-  agents: []
+  agents:
+    - name: from-git-agent
+      description: A single file from a git remote
+      source: {self.REMOTE_AGENT_SOURCE}
   prompts: []
 """)
 
@@ -5453,6 +5471,25 @@ library:
         rec = library.load_receipts()[str(self.installed_dir("from-git"))]
         self.assertEqual(rec["commit"], self.head)
         self.assertEqual(rec["source"], self.REMOTE_SOURCE)
+
+    def test_a_remote_skill_records_the_oid_of_its_folder(self) -> None:
+        # The folder is what gets copied, so its tree oid is what staleness compares.
+        with self._local_remote():
+            self.use("from-git")
+        rec = library.load_receipts()[str(self.installed_dir("from-git"))]
+        self.assertEqual(rec["source_oid"],
+                         self.repo.git("rev-parse", "HEAD:skills/from-git").stdout.strip())
+
+    def test_a_remote_single_file_entry_records_the_oid_of_its_file(self) -> None:
+        with self._local_remote():
+            self.use("from-git-agent")
+        rec = library.load_receipts()[str(self.tool.home / ".claude/agents/from-git-agent.md")]
+        self.assertEqual(rec["source_oid"],
+                         self.repo.git("rev-parse", "HEAD:agents/from-git-agent.md").stdout.strip())
+
+    def test_a_local_source_records_a_null_oid(self) -> None:
+        self.use("own-dep")
+        self.assertIsNone(library.load_receipts()[str(self.installed_dir("own-dep"))]["source_oid"])
 
     def test_a_project_scope_install_records_its_own_dest_and_scope(self) -> None:
         code, _, err = run_cli("use", "own-dep", "--project", "--no-pull", "--json")
