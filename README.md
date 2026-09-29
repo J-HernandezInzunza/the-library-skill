@@ -52,7 +52,7 @@ Build it once from your own clone, then launch it like any Mac app:
 
 Building needs **just**, **Node ≥ 20**, and the **Rust toolchain** (Tauri's backend compiles from source), so the first build takes several minutes.
 
-### → Full setup, what it does, and the guided-setup walkthrough: [desktop/README.md](desktop/README.md)
+## → Full setup, what it does, and the guided-setup walkthrough: [desktop/README.md](desktop/README.md)
 
 ---
 
@@ -66,7 +66,7 @@ the fuzzy parts: vague names, dependency detection, source resolution, confirmat
 - **The CLI** (`./library …`) — deterministic, no LLM, no tokens. The read-mostly commands
 run instantly, and scripts and CI drive it directly.
 
-**→ CLI Prerequisites, the full CLI steps, and the agent-guided alternative: [docs/install.md](docs/install.md)**
+### → CLI + Claude Code setup, and the agent-guided alternative: [docs/install.md](docs/install.md)**
 
 ---
 
