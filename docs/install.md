@@ -1,7 +1,7 @@
 # Installation
 
 Setting up the **CLI and the agent skill**. If you only want the desktop app, it builds
-on this tool but has its own setup path — see **[desktop/README.md](../desktop/README.md)**.
+on this tool but has its own setup path — see [**desktop/README.md**](../desktop/README.md).
 
 [← Back to the README](../README.md) · [Commands](commands.md) · [Troubleshooting](troubleshooting.md)
 
@@ -94,10 +94,12 @@ Otherwise go grab these now: your **catalog repo's clone URL** (the Clone button
 
 Pick **one** of two paths — both end in the same place:
 
-| Path | What you do | Then |
-|---|---|---|
+
+| Path                 | What you do                            | Then                                              |
+| -------------------- | -------------------------------------- | ------------------------------------------------- |
 | **A — Agent-guided** | In Claude Code, run `/library install` | Done — ask the agent to list the skills to verify |
-| **B — Terminal** | Run the commands yourself | Continue to step 6 |
+| **B — Terminal**     | Run the commands yourself              | Continue to step 6                                |
+
 
 > 🗣 **Path A:** `/library install` walks you through the rest (point the tool at your
 > catalog repo + branch, verify). When it's done, ask your agent to list the skills —
@@ -137,7 +139,21 @@ You should see the catalog entries with install status. `./library doctor` also
 validates the skill link along with config and catalog health. If the clone fails, check your git
 auth to the catalog repo — the tool never prompts (see Troubleshooting).
 
+---
+
+The 30-second version:
+
+```bash
+git clone <this-repo> && cd the-library-skill
+python3 bootstrap.py                                  # one-time: .venv + PyYAML
+./library link                                        # → ~/.claude/skills/library
+./library init --repo <catalog-url> --branch <branch> # point at your team's catalog
+./library list                                        # confirm you can see it
+```
+
+Then either ask your agent (`/library use the deploy skill`) or run it yourself
+(`./library use deploy`).
 
 ---
 
-Next: **[docs/workflows.md](workflows.md)** walks the full build → catalog → distribute → use loop.
+Next: [**docs/workflows.md**](workflows.md) walks the full build → catalog → distribute → use loop.

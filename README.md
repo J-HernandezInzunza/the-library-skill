@@ -13,7 +13,7 @@ If you work in one or two repos, you don't need this. If you install skills from
 The Library solves a specific problem: you've built powerful agentics scattered across repos, devices, and teams. They're duplicated, out of sync, and hard to coordinate. This gives you a single reference catalog to distribute them privately.
 
 For the full pitch and the design behind it — what the catalog looks like, why it's built
-this way — see **[docs/concepts.md](docs/concepts.md)**.
+this way — see [**docs/concepts.md**](docs/concepts.md).
 
 ---
 
@@ -44,7 +44,9 @@ a move, not a re-fetch. A `disabled` tab appears at the end of the strip, so wha
 stays findable instead of vanishing from the list. Claude Code reads its skills when a session
 starts, so the change lands in your next session rather than one you already have open.
 
-### Get it
+---
+
+## Get it (Setup)
 
 Build it once from your own clone, then launch it like any Mac app:
 
@@ -54,63 +56,51 @@ Building needs **just**, **Node ≥ 20**, and the **Rust toolchain** (Tauri's ba
 
 ---
 
-## Prefer the Terminal?
+### Prefer the Terminal?
 
 The app is a **thin client** over a CLI that has two other front doors, all reading the same
 catalog:
 
 - **The agent** (Claude Code, Pi, any harness that reads skill files) — natural language for
-  the fuzzy parts: vague names, dependency detection, source resolution, confirmations.
+the fuzzy parts: vague names, dependency detection, source resolution, confirmations.
 - **The CLI** (`./library …`) — deterministic, no LLM, no tokens. The read-mostly commands
-  run instantly, and scripts and CI drive it directly.
+run instantly, and scripts and CI drive it directly.
 
-The 30-second version:
-
-```bash
-git clone <this-repo> && cd the-library-skill
-python3 bootstrap.py                                  # one-time: .venv + PyYAML
-./library link                                        # → ~/.claude/skills/library
-./library init --repo <catalog-url> --branch <branch> # point at your team's catalog
-./library list                                        # confirm you can see it
-```
-
-Then either ask your agent (`/library use the deploy skill`) or run it yourself
-(`./library use deploy`).
-
-**→ Prerequisites, the full seven steps, and the agent-guided alternative:
-[docs/install.md](docs/install.md)**
+**→ CLI Prerequisites, the full CLI steps, and the agent-guided alternative: [docs/install.md](docs/install.md)**
 
 ---
 
 ## Documentation
 
-| Doc | What's in it |
-| --- | --- |
-| **[desktop/README.md](desktop/README.md)** | The desktop app: prerequisites, install, what it does, guided setup walkthroughs |
-| **[docs/install.md](docs/install.md)** | CLI + agent setup, start to finish |
-| **[docs/workflows.md](docs/workflows.md)** | The full loop, worked: build → catalog → distribute → use |
-| **[docs/commands.md](docs/commands.md)** | Every command, both front doors, plus flags and `just` shortcuts |
-| **[cookbook/](cookbook/)** | A step-by-step guide per command — the deepest per-command reference |
-| **[docs/catalogs.md](docs/catalogs.md)** | Personal catalogs, precedence and overriding, where writes and installs land |
-| **[docs/reference.md](docs/reference.md)** | File formats: the catalog, per-device config, install receipts, source formats, repo layout |
-| **[docs/concepts.md](docs/concepts.md)** | What it is, why it exists, design principles, the agentic stack |
-| **[docs/troubleshooting.md](docs/troubleshooting.md)** | Symptom → fix, plus auth and setup gotchas |
-| **[docs/contributing.md](docs/contributing.md)** | Working on the tool or maintaining a catalog |
-| **[docs/roadmap.md](docs/roadmap.md)** | Deferred work and feature requests, each with why it isn't done yet |
+
+| Doc                                                    | What's in it                                                                                |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| [**desktop/README.md**](desktop/README.md)             | The desktop app: prerequisites, install, what it does, guided setup walkthroughs            |
+| [**docs/install.md**](docs/install.md)                 | CLI + agent setup, start to finish                                                          |
+| [**docs/workflows.md**](docs/workflows.md)             | The full loop, worked: build → catalog → distribute → use                                   |
+| [**docs/commands.md**](docs/commands.md)               | Every command, both front doors, plus flags and `just` shortcuts                            |
+| [**cookbook/**](cookbook/)                             | A step-by-step guide per command — the deepest per-command reference                        |
+| [**docs/catalogs.md**](docs/catalogs.md)               | Personal catalogs, precedence and overriding, where writes and installs land                |
+| [**docs/reference.md**](docs/reference.md)             | File formats: the catalog, per-device config, install receipts, source formats, repo layout |
+| [**docs/concepts.md**](docs/concepts.md)               | What it is, why it exists, design principles, the agentic stack                             |
+| [**docs/troubleshooting.md**](docs/troubleshooting.md) | Symptom → fix, plus auth and setup gotchas                                                  |
+| [**docs/contributing.md**](docs/contributing.md)       | Working on the tool or maintaining a catalog                                                |
+| [**docs/roadmap.md**](docs/roadmap.md)                 | Deferred work and feature requests, each with why it isn't done yet                         |
+
 
 ## Troubleshooting
 
 Most issues are catalog health — the fastest triage is `./library doctor` (add `--deep` to
 also check that every source repo/branch is reachable). The full symptom → fix table, plus
-auth/setup gotchas, lives in **[docs/troubleshooting.md](docs/troubleshooting.md)**.
+auth/setup gotchas, lives in [**docs/troubleshooting.md**](docs/troubleshooting.md).
 
 ## Contributing
 
-Working on the tool, or maintaining a catalog? See **[docs/contributing.md](docs/contributing.md)**.
+Working on the tool, or maintaining a catalog? See [**docs/contributing.md**](docs/contributing.md).
 The short version: run `just check` before pushing (Python compile + doc/CLI drift + tests), enable
 the pre-push hook once with `just install-hooks`, and let catalog integrity (`doctor`) run in
 CI on the catalog repo.
 
-Got an idea, or a feature you want that isn't here? **[docs/roadmap.md](docs/roadmap.md)** is
+Got an idea, or a feature you want that isn't here? [**docs/roadmap.md**](docs/roadmap.md) is
 where deferred work and feature requests are collected, each with what it is, why it isn't
 being done now, and what it would unlock.

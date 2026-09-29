@@ -21,7 +21,7 @@ Four things have to be on the machine before you can build. `just` is one of the
 the one that checks the other three, run this as you configure your env:
 
 ```bash
-just app-prereqs
+just app-prereqs # You only need this command, below are ways to manually install/verify each tool if needed
 ```
 
 ```
@@ -40,7 +40,7 @@ just app-prereqs
 - **Rust** (stable) — Tauri's backend, compiled from source. `cargo --version`; install with:
 
   ```bash
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs
   source "$HOME/.cargo/env"     # ← don't skip this
   ```
 
@@ -70,9 +70,7 @@ satisfy beforehand:
 - **`claude code`, installed and authenticated** — only for guided setup walkthroughs. Everything else
   works without it, and the app says so next to the disabled control rather than failing.
 
-**The app sets no credentials of its own.** The agent inherits whatever auth your Claude Code CLI
-already uses — a subscription login or an API key, whichever you have. There is nothing to
-configure here and nothing for the app to store.
+**Note: The app sets no credentials of its own.** The agent inherits whatever auth your Claude Code CLI already uses — a subscription login or an API key, whichever you have. There is nothing to configure here and nothing for the app to store.
 
 ## Install it
 
@@ -83,16 +81,20 @@ just app-setup      # npm install
 just app-install    # build, then copy into /Applications
 ```
 
-`just app-install` takes several minutes the first time, because Rust compiles the backend from
-scratch. After that it is in `/Applications` and in Spotlight as **The Library**, launched by
-double-clicking it like anything else. `just app` opens it from the terminal.
+`just app-install` takes several minutes the first time, because Rust compiles the backend from  
+scratch.
+
+After that it is in `/Applications` and in Spotlight as **The Library**, launched by
+double-clicking it like anything else. `just app` opens it from the terminal as well.
 
 You need the network for the in-app setup step (it pip-installs PyYAML) and the URL of your team's
 catalog repository, with git access to it, the app clones it for you but cannot invent the address
 or your credentials.
 
 To pick the bundle up yourself instead of installing it, `just app-build` leaves it at
-`desktop/src-tauri/target/release/bundle/macos/The Library.app`. If you want a shareable `.dmg`
+`desktop/src-tauri/target/release/bundle/macos/The Library.app`.
+
+If you want a shareable `.dmg`
 instead, `just app-dmg` builds one under `desktop/src-tauri/target/release/bundle/dmg/`.
 
 Rebuild after pulling: `git pull && just app-install`. There is no auto-update, and the app does
