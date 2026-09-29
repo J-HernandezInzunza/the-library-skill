@@ -56,7 +56,7 @@ Building needs **just**, **Node ≥ 20**, and the **Rust toolchain** (Tauri's ba
 
 ---
 
-### Prefer the Terminal?
+#### Prefer the Terminal?
 
 The app is a **thin client** over a CLI that has two other front doors, all reading the same
 catalog:
@@ -66,7 +66,7 @@ the fuzzy parts: vague names, dependency detection, source resolution, confirmat
 - **The CLI** (`./library …`) — deterministic, no LLM, no tokens. The read-mostly commands
 run instantly, and scripts and CI drive it directly.
 
-### → CLI + Claude Code setup, and the agent-guided alternative: [docs/install.md](docs/install.md)**
+#### → CLI + Claude Code setup, and the agent-guided alternative: [docs/install.md](docs/install.md)**
 
 ---
 
