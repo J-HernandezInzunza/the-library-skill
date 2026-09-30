@@ -349,9 +349,9 @@ const hueByCatalog = computed(
   width: 1.9rem;
   height: 1.05rem;
   padding: 0;
-  border: 1px solid var(--control-off-edge);
+  border: 1px solid var(--control-off);
   border-radius: 999px;
-  background: var(--control-off);
+  background: transparent;
   cursor: pointer;
   transition:
     background 0.12s ease,
@@ -366,10 +366,7 @@ const hueByCatalog = computed(
   width: 0.75rem;
   height: 0.75rem;
   border-radius: 50%;
-  /* The knob is the light one in both states, because the off track is light and the on
-     track is dark. Only the on knob is a token: the off knob has to stay white to carry
-     any contrast at all against a track that is nearly the card colour. */
-  background: var(--text-on-accent);
+  background: var(--control-off);
   transform: translateY(-50%);
   transition: transform 0.12s ease;
 }

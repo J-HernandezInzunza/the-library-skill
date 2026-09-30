@@ -3,14 +3,15 @@ import { useCommandActivity } from "../commandActivity";
 
 // Driven by the command events rather than by any view's own flag, so it covers every
 // command the backend runs — including ones added later, which is the point.
-const { busy, label } = useCommandActivity();
+const { busy } = useCommandActivity();
 </script>
 
 <template>
   <Transition name="activity">
-    <div v-if="busy" class="activity" role="status" aria-live="polite">
+    <!-- The label naming the command lives in the command log's bar, not floating here over
+         whatever the view has in its top corner. -->
+    <div v-if="busy" class="activity">
       <div class="activity__track"><div class="activity__bar" /></div>
-      <span class="activity__label">{{ label }}</span>
     </div>
   </Transition>
 </template>
@@ -34,24 +35,6 @@ const { busy, label } = useCommandActivity();
   height: 100%;
   background: var(--accent-bright);
   animation: activity-slide 1.1s ease-in-out infinite;
-}
-.activity__label {
-  position: absolute;
-  top: 0.4rem;
-  right: 0.75rem;
-  /* Bounded to one line, always. This is an absolutely-positioned element with no layout
-     parent to constrain it, so a long label does not wrap into a corner — it paints across
-     the whole window, over the view, at the opacity of a watermark. */
-  max-width: 40vw;
-  overflow: hidden;
-  padding: 0.1rem 0.45rem;
-  border-radius: 999px;
-  background: var(--surface-sticky);
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 0.68rem;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  opacity: 0.6;
 }
 
 @keyframes activity-slide {

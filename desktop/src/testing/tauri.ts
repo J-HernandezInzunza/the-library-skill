@@ -1,8 +1,8 @@
 /**
  * The Tauri IPC, stood in for so components can be mounted without a backend.
  *
- * Aliased over `@tauri-apps/api/core`, `@tauri-apps/api/event`, and the two plugins by
- * `test.alias` in vite.config.ts. One module for all four because they share the one
+ * Aliased over `@tauri-apps/api/app`, `/core`, `/event`, and the two plugins by
+ * `test.alias` in vite.config.ts. One module for all of them because they share the one
  * thing the tests care about: an ordered record of what the UI asked the backend to do.
  *
  * Nothing here is imported by the app. It exists on the `src/` side of the tree rather
@@ -136,6 +136,11 @@ export async function openUrl(url: string): Promise<void> {
 /** `@tauri-apps/plugin-opener`. */
 export async function revealItemInDir(path: string): Promise<void> {
   calls.push({ command: "opener.revealItemInDir", args: { path } });
+}
+
+/** `@tauri-apps/api/app`. */
+export async function setTheme(theme?: "light" | "dark" | null): Promise<void> {
+  calls.push({ command: "app.setTheme", args: { theme } });
 }
 
 /** The commands sent, in order. For asserting that something ran, or did not. */

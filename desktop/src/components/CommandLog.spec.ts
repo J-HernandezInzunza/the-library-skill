@@ -2,6 +2,7 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { afterEach, describe, expect, it } from "vitest";
 import { emitEvent, resetTauri } from "../testing/tauri";
+import { describeArgv } from "../commandActivity";
 import CommandLog from "./CommandLog.vue";
 
 afterEach(resetTauri);
@@ -137,5 +138,24 @@ describe("CommandLog", () => {
     // No control where nothing is hidden: its presence has to mean something.
     expect(log.findAll(".command-log__argv")[0].text()).toBe("library list --json");
     expect(log.findAll(".command-log__row")[0].find(".command-log__more").exists()).toBe(false);
+  });
+
+  it("names the running command at the right of the bar, outside the toggle", async () => {
+    const log = await mountLog();
+    const argv = ["library", "doctor", "--json"];
+
+    emitEvent("command://started", { id: 50, argv });
+    await flushPromises();
+
+    // A sibling of the toggle, not a child: inside it, the label would become part of the
+    // button's accessible name and change on every command.
+    const activity = log.find(".command-log__activity");
+    expect(activity.text()).toBe(describeArgv(argv));
+    expect(log.find(".command-log__toggle .command-log__activity").exists()).toBe(false);
+
+    emitEvent("command://finished", { id: 50, code: 0, duration_ms: 90 });
+    await flushPromises();
+
+    expect(activity.text()).not.toBe(describeArgv(argv));
   });
 });

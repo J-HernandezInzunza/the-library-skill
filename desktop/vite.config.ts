@@ -8,8 +8,9 @@ const host = process.env.TAURI_DEV_HOST;
 // @ts-expect-error process is a nodejs global
 const demo = process.env.VITE_DEMO === "1";
 
-/** The four modules that only exist inside Tauri's WebView. */
+/** The modules that only exist inside Tauri's WebView. */
 const TAURI_MODULES = [
+  "@tauri-apps/api/app",
   "@tauri-apps/api/core",
   "@tauri-apps/api/event",
   "@tauri-apps/plugin-dialog",
@@ -53,7 +54,7 @@ export default defineConfig(async () => ({
      * boundary rather than mocked per file.
      *
      * `test.alias` and not `vi.mock`: the substitution is the same in every spec, and
-     * four hoisted `vi.mock` calls repeated across a dozen files is a place for one of
+     * a hoisted `vi.mock` per module repeated across a dozen files is a place for one of
      * them to be forgotten — which fails as `invoke is not a function` deep inside a
      * component, not as a missing mock. Declared once, it cannot be half-applied.
      */

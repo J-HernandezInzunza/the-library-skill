@@ -4,7 +4,7 @@ import { useCommandActivity, type LoggedCommand } from "../commandActivity";
 
 // The stream lives outside this component, so the log keeps recording while the panel
 // is collapsed — which is most of the time, and the log is the only safeguard there is.
-const { commands } = useCommandActivity();
+const { commands, label: activity } = useCommandActivity();
 const open = ref(false);
 
 /**
@@ -50,6 +50,9 @@ function shown(run: LoggedCommand): string {
       Commands
       <span class="command-log__count">{{ commands.length }}</span>
     </button>
+    <!-- Beside the toggle, not in it, so the button's accessible name stays "Commands". Always
+         rendered: a live region added at the moment it has something to say is not announced. -->
+    <span class="command-log__activity" role="status" aria-live="polite">{{ activity }}</span>
 
     <ol v-show="open" class="command-log__list">
       <li v-for="run in commands" :key="run.id" class="command-log__row">
@@ -117,6 +120,22 @@ function shown(run: LoggedCommand): string {
   font-size: 0.78rem;
   font-weight: 500;
   opacity: 0.75;
+}
+/* Over the toggle's empty right end. Sized by `line-height` rather than flex so the ellipsis
+   still applies to a long label. */
+.command-log__activity {
+  position: absolute;
+  top: 0;
+  right: 1rem;
+  max-width: 50%;
+  overflow: hidden;
+  line-height: calc(2.1rem - 1px);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.68rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  opacity: 0.6;
+  pointer-events: none;
 }
 .command-log__caret {
   opacity: 0.6;

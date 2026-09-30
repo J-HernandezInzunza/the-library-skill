@@ -35,7 +35,7 @@ export interface Row {
   overrides: string[];
 }
 
-const HUES = [211, 275, 25, 155];
+const HUES = [211, 275, 25, 320];
 
 /** A stable colour per catalog, so origin reads at a glance without a legend. */
 export function catalogHue(precedence: number): number {

@@ -1,11 +1,11 @@
 /**
  * The Tauri IPC, answered from fixtures so the app runs in an ordinary browser.
  *
- * Vite aliases `@tauri-apps/api/core`, `/event`, `plugin-dialog`, and `plugin-opener` onto
+ * Vite aliases `@tauri-apps/api/app`, `/core`, `/event`, `plugin-dialog`, and `plugin-opener` onto
  * this module when `VITE_DEMO=1` (see vite.config.ts). Nothing in `src/` imports it, and
  * it is never part of a real build.
  *
- * Separate from `src/testing/tauri.ts` on purpose, though they stand in for the same four
+ * Separate from `src/testing/tauri.ts` on purpose, though they stand in for the same
  * modules. The test double is programmed per spec and errors on a command nobody thought
  * about, which is right for a test and wrong for a recording: a demo has to answer every
  * command the user's click path touches, on the first try, with something that looks like a
@@ -164,6 +164,9 @@ export async function openUrl(_url: string): Promise<void> {}
 
 /** `@tauri-apps/plugin-opener`. Swallowed, same reason. */
 export async function revealItemInDir(_path: string): Promise<void> {}
+
+/** `@tauri-apps/api/app`. A browser has no window appearance to set. */
+export async function setTheme(_theme?: "light" | "dark" | null): Promise<void> {}
 
 /** Put the fixture catalog back to its seed. The recorder calls this before each take. */
 export function resetDemo(): void {

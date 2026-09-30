@@ -11,10 +11,8 @@
  * not careless — it was 26 files each picking a reasonable value in isolation, arriving at
  * 17 different alphas of the same grey and two different yellows for one meaning.
  *
- * Two things deliberately stay out of here: `--catalog-hue`, which is per-element data
- * rather than a theme value (each catalog carries its own hue), and pure geometry like the
- * switch knob's white, which is part of the control's construction and has no meaning to
- * name. The spec's allowlist names them.
+ * One thing deliberately stays out of here: `--catalog-hue`, which is per-element data
+ * rather than a theme value (each catalog carries its own hue).
  *
  * ## Reading a token name
  *
@@ -23,13 +21,18 @@
  *   --border-*    a line, by how much it should assert itself
  *   --status-*    the app's own vocabulary: what the CLI reports about an entry
  *   --control-*   chrome the user operates, deliberately outside the status vocabulary
+ *   --shadow-*    depth
  *   --accent-*    the app's own voice: progress, primary actions, selection
  *
  * ## Light and dark
  *
- * Surfaces and borders never need a dark variant, and that is not an accident: they are
- * all alpha-composited grey-128, which darkens over a light ground and lightens over a
- * dark one. Only the inks, which are real hues, are declared twice.
+ * Same meanings, different values. Dark is not the light palette on a dark ground:
+ *
+ *   - Depth is lightness. A shadow does not read on a near-black page, so surfaces and
+ *     borders are white overlays on dark and step up further than grey-128 did.
+ *   - Colour is lighter and less saturated. A saturated fill vibrates against a dark
+ *     ground, so fills, tints, and inks move to the 300/400 tones, and text sitting on a
+ *     filled accent or catalog chip turns dark to match.
  */
 
 :root {
@@ -39,10 +42,6 @@
      A ramp, not a set: each step is the same grey at more alpha, so "deeper" is a
      position on one scale rather than a different colour. */
   --surface-page: #f6f6f7;
-  /* For the one thing that still floats over content: the activity bar's label. It needs
-     a surface of its own, since a bare backdrop-filter leaves the text overlapping the
-     view. */
-  --surface-sticky: rgba(246, 246, 247, 0.95);
   /* Below the card — a walkthrough turn nested inside a turn. */
   --surface-recessed: rgba(128, 128, 128, 0.05);
   --surface-raised: rgba(128, 128, 128, 0.08);
@@ -111,49 +110,65 @@
   /* The lighter blue stays for progress chrome and the selection tick: those are shapes
      on a surface rather than text, so they are read by their fill and need to stay
      visible on a dark ground, where --accent-ink is close to the background. */
-  --accent-bright: #3b82f6;
+  --accent-bright: #2563eb;
 
   /* ---- Controls ------------------------------------------------------------------
-     The on/off switch, deliberately the only chromaless thing on a card. Every other
-     colour here carries a meaning — green installed, amber attention, violet switched
-     off, red destructive, plus the catalog hues — so a switch in any of them reads as a
-     status rather than a control, and one in green says the same thing as the
-     `installed` badge sitting beside it. Graphite is the one value that cannot be
-     mistaken for a report of state, including under any colour-vision deficiency. */
+     The on/off switch. On is a filled green track; off is a hollow track with a grey
+     knob, so the two states differ in shape as well as colour and stay distinct under
+     any colour-vision deficiency. */
   --control-on: #4d9172;
   --control-on-knob: #ffffff;
-  --control-off: rgba(126, 115, 115, 0.732);
-  /* The off track composites to rgb(210,210,210) on a light card — 1.29:1 against it, and
-     1.51:1 against its own white knob, which is invisible rather than subtle. No alpha of
-     grey-128 fixes that (even opaque it reaches 3.95:1), so the edge is what makes the off
-     state perceivable at all: 4.52:1. */
-  --control-off-edge: #6b6b72;
+  /* The off knob and the off track's edge, the only visible parts of the off state:
+     4.50:1 against the card. */
+  --control-off: #6b6b72;
 
-  /* ---- Catalog identity ----------------------------------------------------------
-     The hue itself is per-element data (catalogHue() in catalog.ts sets --catalog-hue on
-     the element), but the saturation and lightness applied to it are a theme decision and
-     were drifting: 65%/50%, 65%/52% and one stray 45%/50%. These resolve lazily — the
-     `var(--catalog-hue)` inside is substituted at the point of *use*, so the element's own
-     hue is what lands, not :root's fallback.
+  /* ---- Elevation -----------------------------------------------------------------
+     For the one thing that floats over content: a toast. */
+  --shadow-float: rgb(0 0 0 / 18%);
+}
 
-     Note the fills are known to be low-contrast for white text at some hues (hue 155
-     measures 1.96:1). Fixing that is a lightness change here plus a hue swap in
-     catalog.ts, and it changes what a catalog looks like to someone who has learned it. */
-  --catalog-fill: hsl(var(--catalog-hue, 220), 65%, 50%);
-  --catalog-edge: hsl(var(--catalog-hue, 220), 65%, 52%);
-  --catalog-wash: hsl(var(--catalog-hue, 220), 65%, 50%, 0.08);
+/* ---- Catalog identity ----------------------------------------------------------
+   The hue itself is per-element data (catalogHue() in catalog.ts sets --catalog-hue on the
+   element), but the saturation and lightness applied to it are a theme decision.
+
+   On every element rather than :root, because a `var()` inside a custom property is
+   substituted where the property is declared and descendants inherit the result. Declared on
+   :root, `var(--catalog-hue)` resolved there, to the fallback, and every catalog in the app
+   rendered the same blue. Pseudo-elements need no entry: they inherit from an element that
+   has already resolved its own hue.
+
+   42% so white text clears 4.5:1 at every hue in catalog.ts; the edge, which is a line and
+   not a ground for text, can sit lighter and still clear 3:1. */
+* {
+  --catalog-fill: hsl(var(--catalog-hue, 220), 65%, 42%);
+  --catalog-edge: hsl(var(--catalog-hue, 220), 65%, 45%);
+  --catalog-wash: hsl(var(--catalog-hue, 220), 65%, 42%, 0.08);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --surface-page: #1e1e20;
-    --surface-sticky: rgba(30, 30, 32, 0.88);
     --text-primary: #e6e6e6;
+    /* Dark, on a fill that is now light. */
+    --text-on-accent: #1a1a1a;
 
-    /* The inks, and only the inks. Light-mode hues on the dark card measured between
-       2.05:1 and 3.31:1 — dark mode was shipping with badge text no one could read.
-       Two components had already worked this out and patched it locally; these are
-       those values, promoted to where every component gets them. */
+    /* White rather than grey-128: the same alpha of grey barely lifts a near-black page,
+       which left a card at 1.10:1 against it. This ramp puts the card at 1.15:1 and each
+       step above it clearly lighter. */
+    --surface-recessed: rgba(255, 255, 255, 0.03);
+    --surface-raised: rgba(255, 255, 255, 0.05);
+    --surface-hover: rgba(255, 255, 255, 0.09);
+    --surface-sunken: rgba(255, 255, 255, 0.13);
+    --surface-strong: rgba(255, 255, 255, 0.2);
+
+    --border-subtle: rgba(255, 255, 255, 0.1);
+    --border-hairline: rgba(255, 255, 255, 0.16);
+    --border-control: rgba(255, 255, 255, 0.3);
+
+    /* Light-mode inks on the dark card measured between 2.05:1 and 3.31:1 — dark mode was
+       shipping with badge text no one could read. Two components had already worked this
+       out and patched it locally; these are those values, promoted to where every
+       component gets them. */
     --status-ok-ink: #4ade80;
     --status-absent-ink: #d4d4d8;
     --status-attention-ink: #fcd34d;
@@ -162,9 +177,32 @@
     --status-danger-ink: #fca5a5;
     --accent-ink: #93c5fd;
 
-    /* Inverted, not brightened: on a dark card the filled track has to be the light one
-       for "on" to still read as the stronger of the two states. */
-    --control-on: #d4d4d8;
-    --control-on-knob: #27272a;
+    /* The 300 tones at less alpha. A 500 tone mixed into a dark grey comes out brown; these
+       stay recognisably their hue, with every ink above at or above 5.9:1 on its tint. */
+    --status-ok-tint: rgba(134, 239, 172, 0.12);
+    --status-absent-tint: rgba(161, 161, 170, 0.12);
+    --status-attention-tint: rgba(252, 211, 77, 0.12);
+    --status-disabled-tint: rgba(196, 181, 253, 0.12);
+    --status-override-tint: rgba(253, 224, 71, 0.12);
+    --status-danger-tint: rgba(252, 165, 165, 0.12);
+    --accent-tint: rgba(147, 197, 253, 0.12);
+
+    --accent-bright: #60a5fa;
+
+    /* A lighter green with a dark knob: 6.89:1 against the card. */
+    --control-on: #6cc49a;
+    --control-on-knob: #1e1e20;
+    /* #6b6b72 measures 2.86:1 on the dark card, below the 3:1 a control needs. */
+    --control-off: #8e8e96;
+    /* A shadow is darker than what it falls on, and the dark page is already near black:
+       the light-mode alpha disappears. */
+    --shadow-float: rgb(0 0 0 / 50%);
+  }
+
+  /* Light chips with dark text. */
+  * {
+    --catalog-fill: hsl(var(--catalog-hue, 220), 55%, 70%);
+    --catalog-edge: hsl(var(--catalog-hue, 220), 55%, 65%);
+    --catalog-wash: hsl(var(--catalog-hue, 220), 55%, 70%, 0.1);
   }
 }

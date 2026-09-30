@@ -40,7 +40,7 @@ just app-prereqs # You only need this command, below are ways to manually instal
 - **Rust** (stable) — Tauri's backend, compiled from source. `cargo --version`; install with:
 
   ```bash
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs # If prompted, select standard install
   source "$HOME/.cargo/env"     # ← don't skip this
   ```
 

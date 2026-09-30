@@ -51,7 +51,8 @@ const ALLOWED = new Set([
   // Link-styled: no box at all, so no box to size.
   "components/SecretPrompt.vue: .secret__link",
   "components/SetupReadiness.vue: .setup__toggle",
-  // An icon button, sized by its icon.
+  // Icon buttons, sized by their icon.
+  "components/AppearanceToggle.vue: .appearance-toggle",
   "components/Toasts.vue: .toasts__close",
   // Height comes from the composer row, which stretches it to the textarea beside it.
   "components/Walkthrough.vue: .walkthrough__send",

@@ -119,7 +119,7 @@ export function activityLabel(runningArgv: string[] | undefined, intents: string
 /**
  * How long a phrase the bar will show.
  *
- * It is a pill in the corner, not a log line — and a positional argument can be any length at
+ * It is a status line, not a log line — and a positional argument can be any length at
  * all. The agent spawn passes the entire walkthrough prompt as one, and the bar rendered all two
  * thousand characters of it across and down the window, in monospace at 40% opacity, looking for
  * all the world like the page had a second layer behind it. The CSS bounds this too; the cap is

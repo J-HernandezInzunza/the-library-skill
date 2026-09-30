@@ -28,6 +28,7 @@ import {
   type InstallSource,
 } from "./types";
 import ActivityBar from "./components/ActivityBar.vue";
+import AppearanceToggle from "./components/AppearanceToggle.vue";
 import Busy from "./components/Busy.vue";
 import CatalogSummary from "./components/CatalogSummary.vue";
 import CatalogTabs from "./components/CatalogTabs.vue";
@@ -607,7 +608,10 @@ onMounted(async () => {
          health both moved into Catalogs, which is their subject (D18). -->
     <section v-else class="view">
       <header class="view__head column">
-        <h1>The Library</h1>
+        <div class="view__title">
+          <h1>The Library</h1>
+          <AppearanceToggle />
+        </div>
         <form class="searchbar" @submit.prevent>
           <input
             v-model="query"
@@ -1054,6 +1058,15 @@ button:disabled {
 h1 {
   margin: 0 0 0.75rem;
   font-size: 1.5rem;
+}
+.view__title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+.view__title h1 {
+  margin: 0;
 }
 .searchbar {
   display: flex;

@@ -30,22 +30,11 @@ const SOURCES = import.meta.glob("../**/*.vue", {
   eager: true,
 }) as Record<string, string>;
 
-/** Colour literals: hex, and any `rgb()`/`hsl()` function with numbers in it. */
-const LITERAL = /#[0-9a-fA-F]{3,8}\b|\brgba?\([\d\s.,%]+\)|\bhsla?\([\d\s.,%]+\)/g;
-
 /**
- * Lines allowed to carry a literal, by the substring that identifies them.
- *
- * Kept to construction rather than meaning: a value here is part of how a control is
- * drawn, not a decision about what a colour signifies. Anything that *means* something
- * belongs in tokens.css, where the meaning can be named.
+ * Colour literals: hex, and any `rgb()`/`hsl()` function with numbers in it, in either the
+ * comma syntax or the space syntax with a `/ alpha`.
  */
-const ALLOWED = [
-  // The switch knob in its off position. The track is nearly the card colour, so the knob
-  // has to be the lightest thing available or the off state disappears; it is geometry,
-  // not a theme choice, and the on-state knob IS a token.
-  "background: #fff;",
-];
+const LITERAL = /#[0-9a-fA-F]{3,8}\b|\brgba?\([\d\s.,%/]+\)|\bhsla?\([\d\s.,%/]+\)/g;
 
 /** Every `.vue` file as [path, contents], with the glob's `../` prefix trimmed off. */
 function components(): [string, string][] {
@@ -75,7 +64,6 @@ describe("colour lives in tokens.css and nowhere else", () => {
 
     for (const [path, source] of components()) {
       for (const line of styles(source).split("\n")) {
-        if (ALLOWED.some((allowed) => line.includes(allowed))) continue;
         for (const literal of line.match(LITERAL) ?? []) {
           offences.push(`${path}: ${literal} in "${line.trim()}"`);
         }

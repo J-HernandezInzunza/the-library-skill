@@ -72,7 +72,7 @@ import { activeToasts, dismiss, hold, release } from "../toasts";
   /* Opaque, unlike the inline banner this replaces: it has the list behind it now, and a
      tinted-transparent panel over text is unreadable. */
   background: var(--surface-page);
-  box-shadow: 0 6px 20px rgb(0 0 0 / 18%);
+  box-shadow: 0 6px 20px var(--shadow-float);
   font-size: 0.85rem;
   line-height: 1.45;
   pointer-events: auto;
